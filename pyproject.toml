@@ -9,7 +9,7 @@ description = "Components for building PyTorch and Lightning training code."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "torch>=2.8",
+    "torch>=2.4",
     "lightning>=2.0",
     "einops>=0.7",
     "typing-extensions>=4.12",
@@ -30,10 +30,8 @@ bicodec = [
 ]
 chat = ["openai>=1.0", "requests>=2.31", "zai-sdk>=0.2.3"]
 dac = ["descript-audio-codec>=1.0"]
-data = []
 logger = ["wandb>=0.16"]
 module = ["transformers"]
-plot = ["matplotlib>=3.7", "plotly>=5.0", "seaborn>=0.13"]
 tokenizer = ["tokenizers>=0.20"]
 text = ["jiwer>=4.0", "sacrebleu>=2.0"]
 speech = [
@@ -43,7 +41,6 @@ speech = [
     "soundfile>=0.12",
     "torchaudio>=2.0",
 ]
-evaluator = []
 flow = ["flow_matching"]
 longcat = [
     "huggingface-hub>=0.23",
@@ -57,7 +54,7 @@ unicodec = [
     "huggingface-hub>=0.23",
     "unicodec @ git+https://github.com/rookiejune/UniCodec.git",
 ]
-test = ["pytest>=8.0", "ruff>=0.8"]
+test = ["basedpyright>=1.31", "pytest>=8.0", "ruff>=0.8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -76,3 +73,11 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.basedpyright]
+include = ["src", "examples"]
+exclude = ["tests"]
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
+reportMissingImports = "warning"
+reportMissingModuleSource = "warning"

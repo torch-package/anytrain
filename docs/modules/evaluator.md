@@ -65,7 +65,7 @@ core 组件：
 - `EvaluatorABC`：继承 `torch.nn.Module` 的无状态 evaluator 抽象基类，子类实现 `evaluate()`。
 - `MetricValue`：只允许 Python `float` 或 0 维 `torch.Tensor`。
 - `MetricDict`：`dict[str, MetricValue]`，不再额外维护 metric map / mapping 类型。
-- `EvaluatorGroup`：组合多个 `EvaluatorABC`，内部用 `nn.ModuleDict` 注册子 evaluator，处理 key 校验并代理可选的状态生命周期。
+- `EvaluatorGroup`：组合多个返回 metric mapping 的 `nn.Module`，内部用 `nn.ModuleDict` 注册子 evaluator，处理 key 校验并代理可选的状态生命周期。
 
 `EvaluatorGroup` 接收 evaluator mapping，并通过 `evaluators` 属性注册子模块：
 
@@ -133,7 +133,10 @@ evaluator.reset()
 当前 rank 的本地文本状态。某个 rank 可以没有本地样本，只要聚合后的全局 corpus 非空；所有
 rank 都为空时 `compute()` 会明确抛出 `ValueError`。
 
-`EvaluatorGroup` 只接受 `EvaluatorABC` 实例，不支持 plain callable evaluator。
+`EvaluatorGroup` 接受任意 `nn.Module`，只要即时调用返回合法的 metric mapping；这允许下游
+直接接入结构兼容的第三方 metric module。plain callable 不会被接受，因为组合器需要通过
+`nn.ModuleDict` 正确注册设备和状态。调用 group 的 stateful 生命周期时，每个子模块仍必须
+完整实现 `update()`、`compute()` 和 `reset()`。
 
 ## 依赖分层
 

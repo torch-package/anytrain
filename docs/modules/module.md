@@ -8,49 +8,25 @@
 
 ## 当前状态
 
-当前提供这些跨项目复用组件：
+`anytrain.module` 顶层只导出少量稳定组件：
 
 - `ADTConfig`
 - `AdaptiveDirichletTempering`
 - `ADT` 兼容别名
 - `DiT`
-- `DynamicConv1d`
-- `DynamicConv2d`
-- `DynamicConvTranspose1d`
-- `ADTRouter1d`
-- `ADTRouter2d`
-- `MultiScalePool1d`
-- `make_qwen3_config`
-- `build_qwen3_rms_norm`
-- `build_qwen3_rotary_embedding`
-- `build_qwen3_attention`
-- `build_qwen3_mlp`
-- `build_qwen3_decoder_layer`
-- `build_qwen3_model`
-- `require_qwen3_class`
-- `QwenMTPCodebookPredictor`
-- `DEFAULT_FSQ_LEVELS`
-- `default_fsq_levels`
-- `FSQConfig`
-- `FiniteScalarQuantizer`
-- `VQConfig`
-- `EmbeddingVectorQuantizer`
-- `GVQConfig`
-- `GroupedVectorQuantizer`
-- `RVQConfig`
-- `ResidualVectorQuantizer`
-- `QuantizerProtocol`
-- `QuantizerType`
-- `QuantizeOutput`
-- `QuantizationLoss`
+- `DiTAttentionBackend`
+- `DiTConditionState`
+- `DiTConditionType`
+
+子包显式导出其它组件：
+
+- `anytrain.module.dynamic_conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
+- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`QuantizerType`、`QuantizeOutput` 和 `QuantizationLoss`。
+- `anytrain.module.qwen`：Qwen3 builder、resolver、`QwenMTPCodebookPredictor` 和 `top_p_filter`。
+- `anytrain.module.idspace`：`Layout` 和 `Embedding`。
 
 `anytrain.module.dynamic_conv` 还公开 `eca_kernel_size`，用于按 channel 数计算 router 的 odd
 kernel size。
-
-`anytrain.module.quantization` 还公开：
-
-- `AGRVQConfig`
-- `AutoGroupResidualVectorQuantizer`
 
 ADT 用于 MoE/router logits 的自适应温度缩放和专家利用率统计，适合跨 audio、vision、text 等项目复用。
 统计收集路径会先把 FP16/BF16 logits 升到 FP32，再计算用于统计的 softmax、计数和各阶矩，
@@ -69,8 +45,7 @@ Dynamic Conv 用于按样本或按分段动态组合 expert convolution kernel�
 `anytrain.module.qwen.qwen3` 是 Hugging Face Qwen3 的薄复用层，不重新实现
 transformer block，也不要求下游维护一份庞大的项目级 config：
 
-- `anytrain.module` 顶层只导出 builder 和 resolver，所以默认 import 不依赖
-  `transformers`。
+- `anytrain.module.qwen` 导出 builder 和 resolver；`import anytrain.module` 不导入 Qwen 子模块。
 - `anytrain.module.qwen.qwen3.Qwen3RMSNorm`、`Qwen3MLP`、`Qwen3Attention` 等名字通过
   module `__getattr__` 按需解析到
   `transformers.models.qwen3.modeling_qwen3`。
@@ -90,7 +65,8 @@ transformer block，也不要求下游维护一份庞大的项目级 config：
   codebook；MTP Qwen 再在同一 frame 内依次预测剩余 codebook。
 - `forward()` 返回每个 codebook 一个 teacher-forced logits tensor；`generate()` 提供同一
   预测顺序的自回归采样。
-- `top_p_filter()` 作为 `anytrain.module.qwen` 子模块工具公开给需要复用采样逻辑的下游。
+- `top_p_filter()` 从 `anytrain.module.qwen` 导出，供下游 generator 复用同一 nucleus sampling
+  语义；它不进入 `anytrain.module` 顶层。
 
 `anytrain.module.dit` 提供通用 `DiT` sequence backbone。它只负责把 noisy sequence、
 flow time 和单一外部条件模式组合成输出 sequence，不接管 flow matching、batch schema 或
@@ -136,8 +112,8 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
 
 迁移设计见 [`docs/quantization-migration.md`](../quantization-migration.md)。第一版不迁入 audio codec、model zoo 或 deepaudio 的 projector/MoE 体系。
 
-多模态 token id space 和 block embedding 路由已独立到 `anytrain.idspace`，
-设计见 [`docs/modules/idspace.md`](idspace.md)。
+多模态 token id space 和 block embedding 路由放在 `anytrain.module.idspace`，
+设计见 [`anytrain.module.idspace`](idspace.md)。
 
 ## 依赖策略
 

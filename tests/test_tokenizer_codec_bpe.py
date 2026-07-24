@@ -54,7 +54,7 @@ class BPETest(unittest.TestCase):
     def test_train_reports_missing_tokenizer_extra(self):
         with (
             patch.dict(sys.modules, {"tokenizers": None, "tokenizers.models": None}),
-            self.assertRaisesRegex(ImportError, r"anytrain\[tokenizer\]"),
+            self.assertRaisesRegex(ImportError, r'pip install "tokenizers>=0.20"'),
         ):
             CodecBPE.train(
                 replay([[[1], [2]]]),

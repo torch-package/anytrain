@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from anytrain.module.qwen.mtp import QwenMTPCodebookPredictor, top_p_filter
+from anytrain.module.qwen import QwenMTPCodebookPredictor, top_p_filter
 
 TRANSFORMERS_AVAILABLE = importlib.util.find_spec("transformers") is not None
 

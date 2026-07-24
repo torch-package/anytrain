@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from anytrain._buffer import register_buffer
 from anytrain._compat import StrEnum
 
 
@@ -122,11 +123,15 @@ def _attention_backend(value: DiTAttentionBackend | str) -> DiTAttentionBackend:
 
 
 class TimeEmbedding(nn.Module):
+    frequency: Tensor
+
     def __init__(self, hidden_dim: int) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
         half = hidden_dim // 2
-        self.frequency = nn.Buffer(
+        register_buffer(
+            self,
+            "frequency",
             torch.exp(
                 -math.log(10_000)
                 * torch.arange(half, dtype=torch.float32)
@@ -304,6 +309,9 @@ class DiTBlock(nn.Module):
 
 
 class DiT(nn.Module):
+    position_embedding: Tensor
+    position_frequency: Tensor
+
     """Sequence DiT with one explicit condition mode and reusable condition state."""
 
     def __init__(
@@ -354,7 +362,9 @@ class DiT(nn.Module):
         self.condition_type = condition_type
         self.attention_backend = attention_backend
         half = hidden_dim // 2
-        self.position_frequency = nn.Buffer(
+        register_buffer(
+            self,
+            "position_frequency",
             torch.exp(
                 -math.log(10_000)
                 * torch.arange(half, dtype=torch.float32)
@@ -362,7 +372,12 @@ class DiT(nn.Module):
             ),
             persistent=False,
         )
-        self.position_embedding = nn.Buffer(torch.empty(0, hidden_dim), persistent=False)
+        register_buffer(
+            self,
+            "position_embedding",
+            torch.empty(0, hidden_dim),
+            persistent=False,
+        )
         self.input = nn.Linear(input_dim, hidden_dim)
         self.time = TimeEmbedding(hidden_dim)
         self.condition = None if condition_dim is None else nn.Linear(condition_dim, hidden_dim)

@@ -3,7 +3,7 @@
 ## 定位
 
 `anytrain.tokenizer` 放 tokenizer 算法组件。统一 token id space 和 token embedding/head
-已独立到 [`anytrain.idspace`](idspace.md)。
+已独立到 [`anytrain.module.idspace`](idspace.md)。
 
 当前公开对象：
 

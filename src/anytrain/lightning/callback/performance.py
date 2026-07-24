@@ -10,7 +10,7 @@ from typing import Any, Protocol
 import torch
 from lightning import pytorch as pl
 
-from anytrain.perf import (
+from anytrain.lightning.perf import (
     PeakFlops,
     count_parameters,
     infer_peak_flops,

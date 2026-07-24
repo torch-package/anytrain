@@ -14,19 +14,18 @@ Lightning 原生 `LightningModule`，自己实现 batch 解释、训练 step、o
 开发环境推荐在项目自己的虚拟环境中安装：
 
 ```bash
-python -m pip install -e .
-python -m pip install pytest ruff
+python -m pip install -e ".[test]"
 ```
 
 按需安装可选依赖：
 
 ```bash
-python -m pip install "wandb>=0.16" transformers "matplotlib>=3.7" "plotly>=5.0" "seaborn>=0.13" "tokenizers>=0.20"
+python -m pip install "wandb>=0.16" transformers "tokenizers>=0.20"
 ```
 
-当前包要求 Python `>=3.9`，核心依赖包括 `torch>=2.8` 和 `lightning>=2.0`。Python 3.9
-使用 PyTorch 2.8；Muon 依赖提供 `torch.optim.Muon` 的更新版 PyTorch，因此需要更新版
-Python/PyTorch 环境。可以用 `anytrain.optim.muon_available()` 查询当前环境能力。
+当前包要求 Python `>=3.9`，核心依赖包括 `torch>=2.4` 和 `lightning>=2.0`。Muon 是条件
+能力：只有当前 PyTorch 提供 `torch.optim.Muon` 时才可用。可以用
+`anytrain.optim.muon_available()` 查询当前环境能力。
 
 ## Quick Start
 
@@ -109,18 +108,20 @@ PYTHONPATH=src python examples/tiny_regression.py
 
 | 模块 | 作用 |
 | --- | --- |
-| `anytrain.lightning` | Lightning logging mixin 和 task-agnostic debug callback。 |
-| `anytrain.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
+| `anytrain.lightning` | Lightning logging mixin、task-agnostic debug callback 和性能观测 callback。 |
+| `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
 | `anytrain.stats` | 纯 tensor 统计 helper，例如按 time bucket 聚合 loss。 |
 | `anytrain.loss` | 通用 loss 接口、loss 组合器和 loss balancer。 |
 | `anytrain.evaluator` | 通用 evaluator 接口、组合器，以及 text/speech evaluator 子模块。 |
 | `anytrain.optim` | AdamW/Muon 参数分组、scheduler helper 和 LLM optimizer helper。 |
-| `anytrain.module` | task-agnostic `torch.nn.Module` 积木，例如 ADT、dynamic conv、FSQ/VQ/GVQ/RVQ/AGRVQ quantizer 和 Qwen3 helper。 |
-| `anytrain.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
+| `anytrain.module` | 少量稳定的 task-agnostic `torch.nn.Module` 积木，例如 ADT 和 DiT。 |
+| `anytrain.module.dynamic_conv` | 动态卷积和 router 组件。 |
+| `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
+| `anytrain.module.qwen` | Qwen3 复用 helper 和 MTP codebook predictor。 |
+| `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
 | `anytrain.tokenizer` | 依赖 `tokenizer` extra 的 codec frame BPE。 |
-| `anytrain.codec` | 可选音频 codec wrapper，包括普通离散 audio codec 和 Spark-TTS BiCodec token wrapper。 |
+| `anytrain.codec` | 轻量 codec protocol；具体 backend 从 `anytrain.codec.*` 子模块导入。 |
 | `anytrain.tts` | TTS 公共协议和可选 backend adapter。 |
-| `anytrain.plotter` | 延迟加载绘图库的训练期可视化对象生成器。 |
 | `anytrain.chat` | 可选 LLM provider 调用入口。 |
 | `anytrain.framework` | 可选研究训练范式组件。 |
 
@@ -132,7 +133,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 - 下游项目负责具体任务语义、`training_step`、batch 解释和模型组合。
 - 配置组合和对象实例化由下游选择，可以用普通 Python、Hydra、argparse、pydantic 或其它项目内约定。
 - `anytrain.lightning` 是核心依赖层；Lightning 不是 optional integration。
-- `perf`、`loss`、`evaluator`、`optim`、`module`、`idspace`、`plotter`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
+- `lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
 
 明确不做：
 
@@ -148,7 +149,11 @@ PYTHONPATH=src python examples/tiny_regression.py
 ```bash
 python -m pytest
 python -m ruff check .
+python -m basedpyright --pythonpath "$(command -v python)"
 ```
+
+basedpyright 使用仓库 baseline 记录迁入组件已有的类型债务；新增诊断仍会让检查失败。修复已有
+诊断后运行同一命令确认通过，再用 `--writebaseline` 删除已经失效的 baseline 项。
 
 Lightning 边界见 `docs/lightning.md`，组件分层见 `docs/components.md`，总体架构见
 `docs/architecture.md`，未实现需求见 `todo.md`。

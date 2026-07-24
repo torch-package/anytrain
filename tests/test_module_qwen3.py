@@ -3,8 +3,7 @@ import unittest
 
 import torch
 
-from anytrain.module import build_qwen3_mlp, make_qwen3_config
-from anytrain.module.qwen import qwen3
+from anytrain.module.qwen import build_qwen3_mlp, make_qwen3_config, qwen3
 
 TRANSFORMERS_AVAILABLE = importlib.util.find_spec("transformers") is not None
 

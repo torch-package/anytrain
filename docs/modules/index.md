@@ -5,18 +5,17 @@
 ## 模块列表
 
 - [`anytrain` package root](package-root.md)：轻量公开导出和 import 边界。
-- [`anytrain.lightning`](lightning.md)：LightningModule logging mixin 和调试 callback。
-- [`anytrain.perf`](perf.md)：参数量、FLOPs、硬件峰值算力和 MFU。
+- [`anytrain.lightning`](lightning.md)：LightningModule logging mixin、调试 callback 和性能观测 callback。
+- [`anytrain.lightning.perf`](perf.md)：参数量、FLOPs、硬件峰值算力和 MFU。
 - [`anytrain.loss`](loss.md)：通用 loss 组件和组合器。
 - [`anytrain.evaluator`](evaluator.md)：训练期 evaluator 接口和组合器边界。
 - [`anytrain.optim`](optim.md)：optimizer、scheduler 和 LLM/Muon helper。
-- [`anytrain.module`](module.md)：task-agnostic `torch.nn.Module` 积木。
-- [`anytrain.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。
+- [`anytrain.module`](module.md)：task-agnostic `torch.nn.Module` 积木和子模块入口边界。
+- [`anytrain.module.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。
 - [`anytrain.tokenizer`](tokenizer.md)：int BPE。
 - [`anytrain.codec`](../codec.md)：optional audio codec wrapper 和统一离散张量契约。
 - [`anytrain.tts`](../tts.md)：TTS 公共协议和 optional backend adapter。
 - [`anytrain.chat`](chat.md)：环境变量驱动的可选大模型调用入口。
-- [`anytrain.plotter`](plotter.md)：可视化组件边界和 optional plot 依赖约定。
 - [`anytrain.framework`](framework.md)：可选研究框架层。
 
 ## 关联文档

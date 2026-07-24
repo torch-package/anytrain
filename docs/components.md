@@ -2,7 +2,7 @@
 
 ## 设计原则
 
-`anytrain` 的组件是给用户写 PyTorch/Lightning 训练代码时使用的积木，尤其服务普通 `LightningModule` 的实现。下游项目负责训练入口和配置装配；用户仍然控制训练逻辑，但可以选择 `anytrain` 提供的 module、loss、evaluator、optim、chat、plotter 和 framework。
+`anytrain` 的组件是给用户写 PyTorch/Lightning 训练代码时使用的积木，尤其服务普通 `LightningModule` 的实现。下游项目负责训练入口和配置装配；用户仍然控制训练逻辑，但可以选择 `anytrain` 提供的 module、loss、evaluator、optim、chat 和 framework。
 
 组件应该是显式可组合的对象，而不是隐藏在自定义 `LightningModule` 基类里的行为。一个组件如果会改变训练流程、文件系统状态或日志行为，应通过明确的 helper、callback 或 `pl_module.__init__` 参数暴露。
 
@@ -10,7 +10,7 @@
 
 - core 组件默认可用。
 - optional 组件在对应子模块中提供。
-- optional 子模块缺依赖时应给出清晰错误，而不是影响 core import。
+- optional 子模块缺依赖时应给出实际缺失的包和可执行安装命令，而不是影响 core import。
 
 ## Logging
 
@@ -32,7 +32,7 @@ optional backend：
 
 ## Perf
 
-`perf` 是 core 组件，负责训练效率观测的通用定义和 task-agnostic 计算，不接管 batch schema。
+`anytrain.lightning.perf` 是 core 组件，负责训练效率观测的通用定义和 task-agnostic 计算，不接管 batch schema。
 
 当前提供：
 
@@ -82,7 +82,7 @@ metrics = evaluator(prediction, target)
 当前接口：
 
 - `EvaluatorABC`：继承 `torch.nn.Module` 的无状态 evaluator 抽象基类，子类实现 `evaluate()`。
-- `EvaluatorGroup`：用 `nn.ModuleDict` 组合多个 evaluator，并处理 key 校验。
+- `EvaluatorGroup`：用 `nn.ModuleDict` 组合返回 metric mapping 的 evaluator module，并处理 key 校验。
 - `EvaluatorABC.update/compute/reset` 是可选状态生命周期；基类默认明确抛出
   `NotImplementedError`，具体 evaluator 按指标定义实现正确状态。
 - `EvaluatorGroup` 逐个代理状态生命周期，不跳过无状态子 evaluator。
@@ -112,8 +112,8 @@ optim 不提供魔法 LightningModule 基类。下游在自己的 `configure_opt
 
 ## Module
 
-`module` 是 core 组件，提供 task-agnostic 的 `torch.nn.Module` 积木。ADT、dynamic conv 和
-quantization 只依赖 core；Qwen3 builder 单独要求 `module` extra。
+`module` 是 core 组件，提供 task-agnostic 的 `torch.nn.Module` 积木。顶层只导出少量稳定组件；
+dynamic conv、quantization、Qwen 和 idspace 从各自子模块显式导入。
 
 适合放入：
 
@@ -130,22 +130,12 @@ quantization 只依赖 core；Qwen3 builder 单独要求 `module` extra。
 当前提供：
 
 - Adaptive Dirichlet Tempering，用于 MoE/router logits 的自适应温度缩放。
-- 1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel；router 可注入，也可通过显式入口传入 expert 权重。
-- embedding、finite scalar、grouped、residual 和 auto-group residual quantizer。
-- 依赖 `module` extra 的 Qwen3 builder。
+- `anytrain.module.dynamic_conv`：1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel。
+- `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer。
+- `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 MTP codebook predictor。
 
-`idspace` 也是 core 组件，但作为独立模块维护 local/global token id 映射和 block embedding
-路由，不把 tokenizer 或任务 special-token 语义塞进 `module`。
-
-## Plotter
-
-plotter 是 optional general 组件，依赖 `plot` extra。
-
-建议边界：
-
-- plotter 只负责从 tensor/state 生成 figure 或可记录对象。
-- 下游 LightningModule 负责把图记录到 Lightning logger。
-- audio/image/MoE 等具体 plotter 放 optional 子模块。
+`anytrain.module.idspace` 也是 core 组件，维护 local/global token id 映射和 block embedding
+路由，不把 tokenizer 或任务 special-token 语义塞进 tokenizer 或任务层。
 
 ## Chat
 
@@ -181,11 +171,11 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
 
 - `import anytrain` 不导入 optional 领域依赖。
 - `import anytrain.lightning` 可以假设 torch/lightning 已安装。
-- `import anytrain.module` 可以假设 torch/einops 已安装；需要额外依赖的后续组件再要求 `module` extra。
+- `import anytrain.module` 可以假设 torch/einops 已安装；dynamic conv、quantization、Qwen 和 idspace 使用显式子模块入口。
 - `import anytrain.loss.spectral` 和 `import anytrain.loss.temporal` 当前只依赖 core torch。
 - `import anytrain.optim` 可以假设 torch 已安装。
 - `import anytrain.chat` 不应要求 chat extra；真实 provider 请求路径可以要求 `chat` extra。
-- `import anytrain.plotter` 不加载绘图库；调用具体 matplotlib-backed plotter 时要求 `plot` extra。
 - `import anytrain.tokenizer` 不加载 `tokenizers`；构造或训练 `CodecBPE` 时要求 `tokenizer` extra。
-- `import anytrain.codec` 和 `import anytrain.tts` 不加载具体 backend；加载模型时要求对应 extra。
-- optional 缺依赖时抛出明确错误，例如提示安装对应 extra。
+- `import anytrain.codec` 只暴露轻量 protocol，不加载具体 backend；加载模型时从具体 backend 子模块导入并要求对应 extra。
+- `import anytrain.tts` 不加载具体 backend；加载模型时要求对应 extra。
+- optional 缺依赖时抛出明确错误，包含实际缺失的包和可执行安装命令。

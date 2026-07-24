@@ -20,15 +20,15 @@
 - 替用户决定 optimizer / scheduler。
 - 内置模型 zoo、组件加载协议或单模型快捷封装。
 
-下游项目定义自己的 `pl_module`，直接继承 Lightning 原生 `LightningModule`，并按需组合 `anytrain` 提供的 loss、evaluator、plotter 或 framework 组件。
+下游项目定义自己的 `pl_module`，直接继承 Lightning 原生 `LightningModule`，并按需组合 `anytrain` 提供的 loss、evaluator 或 framework 组件。
 
 ## Core 与 Optional
 
 `anytrain` 可以提供训练组件，但按依赖层级拆分：
 
-- core：`lightning`、通用 loss/evaluator/optim/module 接口和 `idspace`。
-- optional general：plotter、通用 torchmetrics evaluator、第三方 logger backend。
-- optional domain：audio/text/speech 等领域 loss、evaluator、plotter。
+- core：`lightning`、`lightning.perf`、通用 loss/evaluator/optim/module 接口和 `module.idspace`。
+- optional general：通用 torchmetrics evaluator、第三方 logger backend。
+- optional domain：audio/text/speech 等领域 loss、evaluator。
 - optional framework：flow matching、MAE、GAN adversarial training 等研究框架。
 
 core import 只依赖默认依赖；optional 子模块可以要求额外依赖，但错误信息应明确提示安装对应 extra。

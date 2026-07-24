@@ -12,6 +12,7 @@ from .qwen3 import (
 
 __all__ = [
     "QwenMTPCodebookPredictor",
+    "top_p_filter",
     "build_qwen3_attention",
     "build_qwen3_decoder_layer",
     "build_qwen3_mlp",
@@ -20,5 +21,4 @@ __all__ = [
     "build_qwen3_rotary_embedding",
     "make_qwen3_config",
     "require_qwen3_class",
-    "top_p_filter",
 ]

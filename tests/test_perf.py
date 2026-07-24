@@ -8,7 +8,7 @@ class PerfTest(unittest.TestCase):
     def test_count_parameters_respects_trainable_only(self):
         import torch
 
-        from anytrain.perf import count_parameters
+        from anytrain.lightning.perf import count_parameters
 
         module = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.Linear(4, 2))
         module[1].weight.requires_grad_(False)
@@ -18,13 +18,13 @@ class PerfTest(unittest.TestCase):
         self.assertEqual(count_parameters(module, trainable_only=True), 16)
 
     def test_training_flops_from_forward_uses_explicit_backward_multiplier(self):
-        from anytrain.perf import training_flops_from_forward
+        from anytrain.lightning.perf import training_flops_from_forward
 
         self.assertEqual(training_flops_from_forward(10.0), 30.0)
         self.assertEqual(training_flops_from_forward(10.0, backward_multiplier=1.5), 25.0)
 
     def test_model_flops_utilization(self):
-        from anytrain.perf import model_flops_utilization
+        from anytrain.lightning.perf import model_flops_utilization
 
         self.assertEqual(
             model_flops_utilization(
@@ -36,7 +36,7 @@ class PerfTest(unittest.TestCase):
         )
 
     def test_infer_peak_flops_uses_override(self):
-        from anytrain.perf import infer_peak_flops
+        from anytrain.lightning.perf import infer_peak_flops
 
         peak = infer_peak_flops(
             dtype="bf16",
@@ -52,7 +52,7 @@ class PerfTest(unittest.TestCase):
         self.assertEqual(peak.dtype, "bfloat16")
 
     def test_infer_peak_flops_matches_known_gpu(self):
-        from anytrain.perf import infer_peak_flops
+        from anytrain.lightning.perf import infer_peak_flops
 
         peak = infer_peak_flops(dtype="bf16", device_name="NVIDIA A100-PCIE-40GB")
 
@@ -64,7 +64,7 @@ class PerfTest(unittest.TestCase):
     def test_profile_forward_flops_reports_linear_ops(self):
         import torch
 
-        from anytrain.perf import profile_forward_flops
+        from anytrain.lightning.perf import profile_forward_flops
 
         module = torch.nn.Linear(4, 3)
         flops = profile_forward_flops(module, args=(torch.ones(2, 4),))

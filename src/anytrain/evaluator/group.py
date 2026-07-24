@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from torch import nn
@@ -14,13 +14,10 @@ class EvaluatorGroup(nn.Module):
 
     def __init__(
         self,
-        evaluators: Mapping[str, EvaluatorABC],
+        evaluators: Mapping[str, nn.Module],
     ) -> None:
         super().__init__()
-        self.evaluators = cast(
-            dict[str, EvaluatorABC],
-            nn.ModuleDict(self._validate_evaluators(evaluators)),
-        )
+        self.evaluators = nn.ModuleDict(self._validate_evaluators(evaluators))
 
     def forward(self, *args: Any, **kwargs: Any) -> MetricDict:
         output: MetricDict = {}
@@ -32,28 +29,28 @@ class EvaluatorGroup(nn.Module):
     def update(self, *args: Any, **kwargs: Any) -> None:
         self._require_stateful_lifecycle()
         for evaluator in self.evaluators.values():
-            evaluator.update(*args, **kwargs)
+            _method(evaluator, "update")(*args, **kwargs)
 
     def compute(self) -> MetricDict:
         self._require_stateful_lifecycle()
         output: MetricDict = {}
         for name, evaluator in self.evaluators.items():
-            metrics = evaluator.compute()
+            metrics = _method(evaluator, "compute")()
             self._merge_metric_output(output, name, metrics)
         return output
 
     def reset(self) -> None:
         self._require_stateful_lifecycle()
         for evaluator in self.evaluators.values():
-            evaluator.reset()
+            _method(evaluator, "reset")()
 
     def _require_stateful_lifecycle(self) -> None:
         for name, evaluator in self.evaluators.items():
-            missing = [
-                method
-                for method in ("update", "compute", "reset")
-                if getattr(type(evaluator), method) is getattr(EvaluatorABC, method)
-            ]
+            missing = []
+            for method in ("update", "compute", "reset"):
+                implementation = getattr(type(evaluator), method, None)
+                if implementation is None or implementation is getattr(EvaluatorABC, method):
+                    missing.append(method)
             if missing:
                 methods = ", ".join(f"{method}()" for method in missing)
                 raise NotImplementedError(
@@ -63,19 +60,19 @@ class EvaluatorGroup(nn.Module):
 
     def _validate_evaluators(
         self,
-        evaluators: Mapping[str, EvaluatorABC],
-    ) -> dict[str, EvaluatorABC]:
+        evaluators: Mapping[str, nn.Module],
+    ) -> dict[str, nn.Module]:
         if not isinstance(evaluators, Mapping):
             raise TypeError("evaluators must be a mapping of names to evaluators.")
 
         if not evaluators:
             raise ValueError("evaluators must contain at least one evaluator.")
 
-        validated: dict[str, EvaluatorABC] = {}
+        validated: dict[str, nn.Module] = {}
         for raw_name, evaluator in evaluators.items():
             name = self._validate_name(raw_name, "evaluator name")
-            if not isinstance(evaluator, EvaluatorABC):
-                raise TypeError(f"Evaluator {name!r} must inherit EvaluatorABC.")
+            if not isinstance(evaluator, nn.Module):
+                raise TypeError(f"Evaluator {name!r} must be a torch.nn.Module.")
             validated[name] = evaluator
         return validated
 
@@ -103,3 +100,7 @@ class EvaluatorGroup(nn.Module):
         if self.metric_key_separator in name:
             raise ValueError(f"{label} must not contain separator {self.metric_key_separator!r}.")
         return name
+
+
+def _method(module: nn.Module, name: str) -> Callable[..., object]:
+    return cast(Callable[..., object], getattr(module, name))

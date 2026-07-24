@@ -99,7 +99,7 @@ tensor 是 logits，前面 tensor 是 feature maps；简单判别器返回 `[[lo
 - 可跨多个项目复用的训练目标或采样调度。
 - 可组合进下游 LightningModule 的 helper。
 - 明确依赖 extra 和测试边界的研究范式模块。
-- 与 `loss`、`evaluator`、`plotter` 可组合但不强耦合的组件。
+- 与 `loss`、`evaluator` 可组合但不强耦合的组件。
 
 ## 不适合放入的内容
 

@@ -78,7 +78,10 @@ class ExampleAssetsTest(unittest.TestCase):
                 side_effect=RuntimeError("torchaudio unavailable"),
             ),
             self.assertWarns(RuntimeWarning),
-            self.assertRaisesRegex(RuntimeError, "pip install anytrain\\[audio\\]"),
+            self.assertRaisesRegex(
+                RuntimeError,
+                r'pip install "torchcodec>=0.2" "torchaudio>=2.0"',
+            ),
         ):
             load_example_audio(Path("dummy.wav"), duration=0.1)
 

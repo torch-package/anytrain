@@ -1,8 +1,8 @@
-# `anytrain.idspace` Design
+# `anytrain.module.idspace` Design
 
 ## 定位
 
-`anytrain.idspace` 只管理统一 token id space 里的命名连续区间，并提供按区间路由的
+`anytrain.module.idspace` 只管理统一 token id space 里的命名连续区间，并提供按区间路由的
 embedding wrapper。它不训练 tokenizer，不组合 tokenizer，不保存 pad/eos/bos 等业务 token
 别名，不定义 batch schema，也不替下游组合跨 block 输出 head。
 
@@ -17,7 +17,7 @@ embedding wrapper。它不训练 tokenizer，不组合 tokenizer，不保存 pad
 block 构成，每个 block 用字符串命名，并用半开区间 `(start, end)` 描述：
 
 ```python
-from anytrain.idspace import Layout
+from anytrain.module.idspace import Layout
 
 layout = Layout(
     text=(0, 32000),
@@ -64,7 +64,7 @@ labels = layout.to_local(text_global_ids, ignore=-100)
 ```python
 import torch
 from torch import nn
-from anytrain.idspace import Embedding, Layout
+from anytrain.module.idspace import Embedding, Layout
 
 layout = Layout(text=(0, 32000), audio=(32000, 33024))
 embed = Embedding(

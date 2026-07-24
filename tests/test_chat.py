@@ -7,6 +7,21 @@ from unittest.mock import patch
 import anytrain.chat as chat_api
 from anytrain import __all__ as anytrain_exports
 from anytrain.chat import Chat
+from anytrain.chat._provider import (
+    DEEPSEEK_REASONING_EFFORT,
+    DEEPSEEK_SYSTEM_PROMPT,
+    GLM_IMAGE_MODEL,
+    GLM_MAX_TOKENS,
+    GLM_TEMPERATURE,
+)
+from anytrain.chat.config import (
+    DEEPSEEK_API_KEY_ENV,
+    DEEPSEEK_BASE_URL_ENV,
+    DEEPSEEK_MODEL_ENV,
+    GLM_API_KEY_ENV,
+    GLM_BASE_URL_ENV,
+    GLM_MODEL_ENV,
+)
 
 
 class ChatTest(unittest.TestCase):
@@ -32,9 +47,9 @@ class ChatTest(unittest.TestCase):
 
     def test_config_from_env_uses_deepseek_envs(self):
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-chat",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-chat",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with patch.dict(os.environ, env, clear=True):
             config = chat_api.config_from_env("deepseek")
@@ -45,9 +60,9 @@ class ChatTest(unittest.TestCase):
 
     def test_config_from_env_uses_glm_envs(self):
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with patch.dict(os.environ, env, clear=True):
             config = chat_api.config_from_env(chat_api.ModelType.GLM)
@@ -58,19 +73,19 @@ class ChatTest(unittest.TestCase):
     def test_missing_env_fails_explicitly(self):
         with (
             patch.dict(os.environ, {}, clear=True),
-            self.assertRaisesRegex(ValueError, chat_api.DEEPSEEK_BASE_URL_ENV),
+            self.assertRaisesRegex(ValueError, DEEPSEEK_BASE_URL_ENV),
         ):
             chat_api.config_from_env(chat_api.ModelType.DEEPSEEK)
 
     def test_empty_env_fails_explicitly(self):
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-chat",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "",
+            DEEPSEEK_MODEL_ENV: "deepseek-chat",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
-            self.assertRaisesRegex(ValueError, chat_api.DEEPSEEK_BASE_URL_ENV),
+            self.assertRaisesRegex(ValueError, DEEPSEEK_BASE_URL_ENV),
         ):
             chat_api.config_from_env(chat_api.ModelType.DEEPSEEK)
 
@@ -97,9 +112,9 @@ class ChatTest(unittest.TestCase):
 
         fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -120,11 +135,11 @@ class ChatTest(unittest.TestCase):
             {
                 "model": "deepseek-v4-pro",
                 "messages": [
-                    {"role": "system", "content": chat_api.DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
                     {"role": "user", "content": "hello"},
                 ],
                 "stream": False,
-                "reasoning_effort": chat_api.DEEPSEEK_REASONING_EFFORT,
+                "reasoning_effort": DEEPSEEK_REASONING_EFFORT,
                 "extra_body": {"thinking": {"type": "enabled"}},
             },
         )
@@ -150,9 +165,9 @@ class ChatTest(unittest.TestCase):
 
         fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -167,11 +182,11 @@ class ChatTest(unittest.TestCase):
             create_messages,
             [
                 [
-                    {"role": "system", "content": chat_api.DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
                     {"role": "user", "content": "first"},
                 ],
                 [
-                    {"role": "system", "content": chat_api.DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
                     {"role": "user", "content": "first"},
                     {"role": "assistant", "content": "first"},
                     {"role": "user", "content": "second"},
@@ -197,9 +212,9 @@ class ChatTest(unittest.TestCase):
 
         fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -215,15 +230,15 @@ class ChatTest(unittest.TestCase):
             create_messages,
             [
                 [
-                    {"role": "system", "content": chat_api.DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
                     {"role": "user", "content": "first"},
                 ],
                 [
-                    {"role": "system", "content": chat_api.DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
                     {"role": "user", "content": "second"},
                 ],
                 [
-                    {"role": "system", "content": chat_api.DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
                     {"role": "user", "content": "third"},
                 ],
             ],
@@ -231,14 +246,14 @@ class ChatTest(unittest.TestCase):
 
     def test_deepseek_backend_requires_chat_extra(self):
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
             patch.dict(sys.modules, {"openai": None}),
-            self.assertRaisesRegex(ImportError, r"anytrain\[chat\]"),
+            self.assertRaisesRegex(ImportError, r"anytrain\.chat"),
         ):
             Chat("deepseek")("hello")
 
@@ -261,9 +276,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -285,8 +300,8 @@ class ChatTest(unittest.TestCase):
                 "model": "glm-5.2",
                 "messages": [{"role": "user", "content": "hello"}],
                 "thinking": {"type": "enabled"},
-                "max_tokens": chat_api.GLM_MAX_TOKENS,
-                "temperature": chat_api.GLM_TEMPERATURE,
+                "max_tokens": GLM_MAX_TOKENS,
+                "temperature": GLM_TEMPERATURE,
             },
         )
 
@@ -308,9 +323,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -336,14 +351,14 @@ class ChatTest(unittest.TestCase):
 
     def test_glm_backend_requires_chat_extra(self):
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
             patch.dict(sys.modules, {"zai": None}),
-            self.assertRaisesRegex(ImportError, r"anytrain\[chat\]"),
+            self.assertRaisesRegex(ImportError, r"anytrain\.chat"),
         ):
             Chat("glm")("hello")
 
@@ -356,9 +371,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -400,9 +415,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4/",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4/",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -415,7 +430,7 @@ class ChatTest(unittest.TestCase):
             {
                 "url": "https://example.test/api/paas/v4/images/generations",
                 "json": {
-                    "model": chat_api.GLM_IMAGE_MODEL,
+                    "model": GLM_IMAGE_MODEL,
                     "prompt": "draw a cat",
                     "size": "1024x1024",
                 },
@@ -427,7 +442,7 @@ class ChatTest(unittest.TestCase):
             },
         )
         self.assertEqual(calls[1], "raise_for_status")
-        self.assertEqual(result.model, chat_api.GLM_IMAGE_MODEL)
+        self.assertEqual(result.model, GLM_IMAGE_MODEL)
         self.assertEqual(result.prompt, "draw a cat")
         self.assertEqual(result.size, "1024x1024")
         self.assertEqual(result.url, "https://example.test/image.png")
@@ -456,9 +471,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -479,9 +494,9 @@ class ChatTest(unittest.TestCase):
 
         fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
         env = {
-            chat_api.DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
-            chat_api.DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
-            chat_api.DEEPSEEK_API_KEY_ENV: "secret",
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -500,9 +515,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -537,9 +552,9 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
@@ -557,14 +572,14 @@ class ChatTest(unittest.TestCase):
 
         fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
         env = {
-            chat_api.GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
-            chat_api.GLM_MODEL_ENV: "glm-5.2",
-            chat_api.GLM_API_KEY_ENV: "secret",
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
         }
         with (
             patch.dict(os.environ, env, clear=True),
             patch.dict(sys.modules, {"requests": None, "zai": fake_zai}),
-            self.assertRaisesRegex(ImportError, r"anytrain\[chat\]"),
+            self.assertRaisesRegex(ImportError, r"anytrain\.chat"),
         ):
             Chat("glm").image("draw a cat")
 

@@ -3,7 +3,7 @@ import unittest
 import torch
 from torch import nn
 
-from anytrain.idspace import Embedding, Layout
+from anytrain.module.idspace import Embedding, Layout
 
 
 class EmbeddingTest(unittest.TestCase):

@@ -15,21 +15,19 @@ python -m pip install -U flash-attn --no-build-isolation
 ```
 
 当前官方 `stable-codec==0.1.2` 的 `setup.py` 硬性依赖 `torch==2.4` 和
-`torchaudio==2.4`，而 `anytrain` 当前核心依赖是 `torch>=2.8`。因此第一版不把
-`stable-codec` 放进 `anytrain` extra 自动安装，避免 pip resolver 得到互相冲突的
-环境。需要使用 Stable Codec 时，先在兼容环境里安装上游包；如果确认新版本放宽了
-torch pin，再把依赖加入 `pyproject.toml`。
+`torchaudio==2.4`。`anytrain` 的核心下限也是 `torch>=2.4`，因此元数据不再冲突；但
+Stable Codec 还要求特定 CUDA、FlashAttention 和旧构建链，所以暂不放进自动安装的 extra。
+需要使用时应先创建匹配上游约束的独立环境，再安装 `anytrain` 和 Stable Codec。
 
-兼容环境不能通过普通 `pip install anytrain` 安装当前包，否则 resolver 会因 `torch>=2.8`
-再次升级或报冲突。先固定下面的 Stable Codec 依赖，再从 anytrain checkout 只暴露 wrapper
-源码：
+为了避免 pip 重新解析已固定的 Torch 栈，可以先固定下面的 Stable Codec 依赖，再以
+`--no-deps` 安装 `anytrain`，或从 checkout 暴露 wrapper 源码：
 
 ```bash
 export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH
 ```
 
 这个桥接环境只用于 `anytrain.codec.stable_codec` 推理和离线生成 codes/latents；其它 anytrain
-模块仍以项目声明的 torch 2.8+ 环境为准。
+模块仍需满足各自依赖和运行环境约束。
 
 Stable Codec 官方 README 还说明当前模型依赖 FlashAttention，不建议 CPU 推理。
 

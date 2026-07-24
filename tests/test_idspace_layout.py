@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from anytrain.idspace import Layout
+from anytrain.module.idspace import Layout
 
 
 class LayoutTest(unittest.TestCase):

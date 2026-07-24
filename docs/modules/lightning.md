@@ -69,7 +69,7 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 `PerformanceCallback` 记录参数量、optimizer step time、硬件峰值算力和 MFU。固定计算量使用
 `model_flops_per_step`；变长 batch 使用 `model_flops_per_batch: FlopsProvider`，callback 在
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
-[`perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
+[`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
 
 Python 入口示例：

@@ -174,13 +174,22 @@ class EvaluatorTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "mapping"):
             EvaluatorGroup([ErrorEvaluator()])
 
-    def test_evaluator_group_requires_evaluator_abc(self):
+    def test_evaluator_group_accepts_structurally_compatible_module(self):
         class PlainEvaluator(nn.Module):
-            def evaluate(self, prediction: torch.Tensor, target: torch.Tensor):
+            def forward(self, prediction: torch.Tensor, target: torch.Tensor):
                 return {"mae": (prediction - target).abs().mean()}
 
-        with self.assertRaisesRegex(TypeError, "EvaluatorABC"):
-            EvaluatorGroup({"plain": PlainEvaluator()})
+        evaluator = EvaluatorGroup({"plain": PlainEvaluator()})
+
+        metrics = evaluator(torch.tensor([2.0]), torch.tensor([0.5]))
+
+        self.assertEqual(metrics, {"plain/mae": torch.tensor(1.5)})
+        with self.assertRaisesRegex(NotImplementedError, "complete stateful lifecycle"):
+            evaluator.compute()
+
+    def test_evaluator_group_rejects_non_modules(self):
+        with self.assertRaisesRegex(TypeError, "torch.nn.Module"):
+            EvaluatorGroup({"plain": lambda: {"score": 1.0}})
 
 
 if __name__ == "__main__":

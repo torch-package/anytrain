@@ -56,7 +56,10 @@ class MossTTSImportTest(unittest.TestCase):
                 "anytrain.tts.moss.tts.load_transformers_auto_model_class",
                 side_effect=ImportError("transformers missing"),
             ),
-            self.assertRaisesRegex(ImportError, r"anytrain\[moss-tts\]"),
+            self.assertRaisesRegex(
+                ImportError,
+                r'pip install "torchaudio>=2.0" transformers',
+            ),
         ):
             MossTTS.from_pretrained(local_files_only=True)
 
