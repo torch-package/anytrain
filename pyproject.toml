@@ -48,7 +48,7 @@ longcat = [
 ]
 moss-tts = ["torchaudio>=2.0", "transformers"]
 qwen-tts = [
-    "qwen3-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git",
+    "qwen-tts@git+https://github.com/QwenLM/Qwen3-TTS.git",
 ]
 unicodec = [
     "huggingface-hub>=0.23",
