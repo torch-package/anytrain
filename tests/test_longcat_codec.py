@@ -10,6 +10,7 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
+from anytrain.codec import AcousticLayout, SemanticAcousticCodes
 from anytrain.codec.longcat.assets import LongCatAssets, LongCatConfigPaths
 from anytrain.codec.longcat.codec import LongCat
 
@@ -62,7 +63,11 @@ class LongCatCodecTest(unittest.TestCase):
                 self.assertIsInstance(codec.encoder, nn.Identity)
                 self.assertIsInstance(codec.decoders["16k_4codebooks"], nn.Identity)
                 self.assertEqual(codec.sample_rate, 16000)
+                self.assertEqual(codec.name, "longcat")
                 self.assertEqual(codec.codebook_sizes, (8192, 8100, 8100, 8100))
+                self.assertEqual(codec.semantic_codebook_sizes, (8192,))
+                self.assertEqual(codec.acoustic_codebook_sizes, (8100, 8100, 8100))
+                self.assertEqual(codec.acoustic_layout, AcousticLayout.FRAME_ALIGNED)
                 self.assertNotIn("LONGCAT_AUDIO_CODEC_CKPT_DIR", os.environ)
 
     def test_encode_returns_time_major_aligned_codebooks(self):
@@ -79,6 +84,22 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertTrue(torch.equal(codes[..., 0], torch.tensor([[7, 8], [7, 8]])))
         self.assertTrue(torch.equal(codes[..., 1:], torch.ones((2, 2, 3), dtype=torch.long)))
 
+    def test_tokenize_returns_structured_time_major_codebooks(self):
+        codec = LongCat(
+            encoder=FakeLongCatEncoder(),
+            decoders={"16k_4codebooks": FakeLongCatDecoder()},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+
+        codes = codec.tokenize(torch.zeros((2, 1, 12)), 16000)
+
+        self.assertIsInstance(codes, SemanticAcousticCodes)
+        self.assertEqual(tuple(codes.semantic.shape), (2, 2, 1))
+        self.assertEqual(tuple(codes.acoustic.shape), (2, 2, 3))
+        self.assertTrue(torch.equal(codes.semantic[..., 0], torch.tensor([[7, 8], [7, 8]])))
+        self.assertTrue(torch.equal(codes.acoustic, torch.ones((2, 2, 3), dtype=torch.long)))
+
     def test_decode_splits_time_major_codebooks_for_backend(self):
         decoder = FakeLongCatDecoder()
         codec = LongCat(
@@ -94,6 +115,40 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertEqual(tuple(audio.shape), (2, 1, 6))
         self.assertTrue(torch.equal(decoder.semantic_codes, codes[..., 0]))
         self.assertTrue(torch.equal(decoder.acoustic, codes[..., 1:].transpose(1, 2)))
+
+    def test_detokenize_converts_structured_codes_for_backend(self):
+        decoder = FakeLongCatDecoder()
+        codec = LongCat(
+            encoder=FakeLongCatEncoder(),
+            decoders={"16k_4codebooks": decoder},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+        codes = SemanticAcousticCodes(
+            semantic=torch.arange(4).reshape(2, 2, 1),
+            acoustic=torch.arange(12).reshape(2, 2, 3),
+        )
+
+        audio = codec.detokenize(codes)
+
+        self.assertEqual(tuple(audio.shape), (2, 1, 6))
+        self.assertTrue(torch.equal(decoder.semantic_codes, codes.semantic[..., 0]))
+        self.assertTrue(torch.equal(decoder.acoustic, codes.acoustic.transpose(1, 2)))
+
+    def test_detokenize_requires_frame_aligned_structured_codes(self):
+        codec = LongCat(
+            encoder=FakeLongCatEncoder(),
+            decoders={"16k_4codebooks": FakeLongCatDecoder()},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+        codes = SemanticAcousticCodes(
+            semantic=torch.ones((1, 2, 1), dtype=torch.long),
+            acoustic=torch.ones((1, 3, 3), dtype=torch.long),
+        )
+
+        with self.assertRaisesRegex(ValueError, "align on batch and time"):
+            codec.detokenize(codes)
 
     def test_acoustic_codes_to_features_exposes_decoder_latents_as_time_major(self):
         decoder = FakeLongCatDecoder()
@@ -179,6 +234,24 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertEqual(codec.device, torch.device("meta"))
         self.assertEqual(codec.encoder.device_probe.device, codec.device)
         self.assertEqual(codec.decoders["16k_4codebooks"].device_probe.device, codec.device)
+
+    def test_semantic_frame_rate_accepts_numpy_integer_attrs(self):
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy is not installed.")
+
+        encoder = FakeLongCatEncoder()
+        encoder.input_sample_rate = np.int64(16000)
+        encoder.hop_length = np.int64(960)
+        codec = LongCat(
+            encoder=encoder,
+            decoders={"16k_4codebooks": FakeLongCatDecoder()},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+
+        self.assertAlmostEqual(codec.semantic_frame_rate, 16000 / 960)
 
 
 class FakeLongCatDecoder(nn.Module):

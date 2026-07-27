@@ -13,7 +13,7 @@
 - [`anytrain.module`](module.md)：task-agnostic `torch.nn.Module` 积木和子模块入口边界。
 - [`anytrain.module.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。
 - [`anytrain.tokenizer`](tokenizer.md)：int BPE。
-- [`anytrain.codec`](../codec.md)：optional audio codec wrapper 和统一离散张量契约。
+- [`anytrain.codec`](../codec.md)：optional audio codec wrapper、frame codes 与 semantic-acoustic capability 契约。
 - [`anytrain.tts`](../tts.md)：TTS 公共协议和 optional backend adapter。
 - [`anytrain.chat`](chat.md)：环境变量驱动的可选大模型调用入口。
 - [`anytrain.framework`](framework.md)：可选研究框架层。

@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from .._audio import resample
+from .._audio import model_frame_rate, resample
 from .._module import DeviceModule
 from .assets import (
     DEFAULT_MODEL_BITRATE,
@@ -22,6 +22,8 @@ NUM_CHANNELS = 1
 
 
 class DAC(DeviceModule):
+    name = "dac"
+
     def __init__(
         self,
         model: nn.Module,
@@ -44,6 +46,10 @@ class DAC(DeviceModule):
             raise ValueError(f"n_quantizers must be between 1 and {total}.")
         self.codebook_sizes = (int(model.codebook_size),) * self.n_quantizers
         self._init_device(device)
+
+    @property
+    def frame_rate(self) -> float:
+        return model_frame_rate(self.model, self.sample_rate)
 
     @classmethod
     def from_pretrained(

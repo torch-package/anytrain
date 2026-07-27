@@ -10,13 +10,11 @@ from .codec import (
     NUM_CHANNELS,
     SAMPLE_RATE,
     BiCodec,
-    BiCodecTokens,
 )
 
 __all__ = [
     "BiCodec",
     "BiCodecAssets",
-    "BiCodecTokens",
     "DEFAULT_HF_HOME",
     "DEFAULT_HF_REPO_ID",
     "FEATURE_HIDDEN_STATE_INDEXES",

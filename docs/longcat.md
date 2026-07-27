@@ -58,6 +58,9 @@ codes = codec.encode(
 )
 audio_24k = codec.decode(codes)
 
+units = codec.tokenize(audio, sample_rate=16000)
+audio_from_units = codec.detokenize(units)
+
 acoustic_features = codec.acoustic_codes_to_features(
     codes[..., 1:],
 )
@@ -72,6 +75,12 @@ audio_from_features = codec.decode_features(
 `(8192, 8100, 8100, 8100)`；2-codebook decoder 是 `(8192, 8100)`。上游每个 acoustic
 codebook 由两个 size-90 factor codebook 组成，wrapper 对外将其展平为 `90**2 == 8100` 个
 local id，并在调用上游 decoder 时还原。调用方不需要拆分 semantic/acoustic 或 factor ids。
+
+LongCat 同时满足 `FrameCodec` 和 `SemanticAcousticCodec`。structured 路径中，
+`units.semantic` 是 `[batch, frame, 1]`，`units.acoustic` 是
+`[batch, frame, acoustic_codebook]`，`acoustic_layout` 为 `FRAME_ALIGNED`。
+`encode()` / `decode()` 保留原有拼接 tensor 契约；需要独立 semantic/acoustic 边界时使用
+`tokenize()` / `detokenize()`。
 
 `codec.sample_rate` 是所选 decoder 的输出采样率。encoder 内部固定使用 16 kHz，
 `encode(audio, sample_rate)` 会把输入采样率交给上游预处理逻辑。

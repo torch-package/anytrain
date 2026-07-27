@@ -10,8 +10,9 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
+from anytrain.codec import AcousticLayout, SemanticAcousticCodes
 from anytrain.codec.bicodec.assets import BiCodecAssets
-from anytrain.codec.bicodec.codec import BiCodec, BiCodecTokens
+from anytrain.codec.bicodec.codec import BiCodec
 
 
 class BiCodecCodecTest(unittest.TestCase):
@@ -57,12 +58,14 @@ class BiCodecCodecTest(unittest.TestCase):
         self.assertEqual(codec.device, torch.device("cpu"))
         self.assertEqual(codec.sample_rate, 16000)
         self.assertEqual(codec.ref_segment_length, 8000)
+        self.assertEqual(codec.name, "bicodec")
+        self.assertEqual(codec.acoustic_layout, AcousticLayout.FIXED_LENGTH)
         self.assertEqual(codec.semantic_codebook_sizes, (4096,))
-        self.assertEqual(codec.global_codebook_sizes, (8192,))
+        self.assertEqual(codec.acoustic_codebook_sizes, (8192,))
         self.assertTrue(codec.feature_extractor.config.output_hidden_states)
         self.assertTrue(codec.model.eval_called)
 
-    def test_tokenize_returns_explicit_semantic_and_global_tokens(self):
+    def test_tokenize_returns_canonical_semantic_and_acoustic_codes(self):
         model = FakeBiCodecModel()
         processor = FakeProcessor()
         feature_extractor = FakeFeatureExtractor()
@@ -79,15 +82,26 @@ class BiCodecCodecTest(unittest.TestCase):
         )
         audio = torch.zeros((2, 1, 4000))
 
-        tokens = codec.encode(audio, 16000)
+        codes = codec.tokenize(audio, 16000)
 
-        self.assertIsInstance(tokens, BiCodecTokens)
-        self.assertEqual(tuple(tokens.semantic.shape), (2, 5))
-        self.assertEqual(tuple(tokens.global_tokens.shape), (2, 1, 3))
+        self.assertIsInstance(codes, SemanticAcousticCodes)
+        self.assertEqual(tuple(codes.semantic.shape), (2, 5, 1))
+        self.assertEqual(tuple(codes.acoustic.shape), (2, 3, 1))
+        expected = torch.arange(6, dtype=torch.long).reshape(2, 1, 3).transpose(1, 2)
+        self.assertTrue(torch.equal(codes.acoustic, expected))
         self.assertEqual(tuple(model.batch["wav"].shape), (2, 4000))
         self.assertEqual(tuple(model.batch["ref_wav"].shape), (2, 8000))
         self.assertEqual(tuple(model.batch["feat"].shape), (2, 4, 3))
         self.assertEqual(processor.sample_rate, 16000)
+
+    def test_bicodec_exposes_only_structured_token_methods(self):
+        codec = _codec(FakeBiCodecModel())
+
+        self.assertTrue(hasattr(codec, "tokenize"))
+        self.assertTrue(hasattr(codec, "detokenize"))
+        self.assertFalse(hasattr(codec, "encode"))
+        self.assertFalse(hasattr(codec, "decode"))
+        self.assertFalse(hasattr(codec, "global_codebook_sizes"))
 
     def test_tokenize_accepts_separate_reference_audio(self):
         model = FakeBiCodecModel()
@@ -99,7 +113,7 @@ class BiCodecCodecTest(unittest.TestCase):
             "anytrain.codec.bicodec.codec.resample",
             side_effect=[audio, ref_audio],
         ) as resample:
-            codec.encode(
+            codec.tokenize(
                 audio,
                 8000,
                 ref_audio=ref_audio,
@@ -124,19 +138,19 @@ class BiCodecCodecTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hidden states"):
             codec.extract_features(torch.zeros((1, 16)))
 
-    def test_detokenize_uses_semantic_and_global_tokens(self):
+    def test_detokenize_restores_backend_semantic_and_acoustic_layouts(self):
         model = FakeBiCodecModel()
         codec = _codec(model)
-        tokens = BiCodecTokens(
-            semantic=torch.ones((2, 5), dtype=torch.long),
-            global_tokens=torch.ones((2, 1, 3), dtype=torch.long),
+        codes = SemanticAcousticCodes(
+            semantic=torch.arange(10, dtype=torch.long).reshape(2, 5, 1),
+            acoustic=torch.arange(6, dtype=torch.long).reshape(2, 3, 1),
         )
 
-        audio = codec.decode(tokens)
+        audio = codec.detokenize(codes)
 
         self.assertEqual(tuple(audio.shape), (2, 1, 16))
-        self.assertTrue(torch.equal(model.semantic, tokens.semantic))
-        self.assertTrue(torch.equal(model.global_tokens, tokens.global_tokens))
+        self.assertTrue(torch.equal(model.semantic, codes.semantic[..., 0]))
+        self.assertTrue(torch.equal(model.acoustic_tokens, codes.acoustic.transpose(1, 2)))
 
     def test_detokenize_adds_channel_axis_for_backend_2d_audio(self):
         model = FakeBiCodecModel()
@@ -144,8 +158,10 @@ class BiCodecCodecTest(unittest.TestCase):
         codec = _codec(model)
 
         audio = codec.detokenize(
-            torch.ones((2, 5), dtype=torch.long),
-            torch.ones((2, 1, 3), dtype=torch.long),
+            SemanticAcousticCodes(
+                semantic=torch.ones((2, 5, 1), dtype=torch.long),
+                acoustic=torch.ones((2, 3, 1), dtype=torch.long),
+            )
         )
 
         self.assertEqual(tuple(audio.shape), (2, 1, 16))
@@ -158,21 +174,23 @@ class BiCodecCodecTest(unittest.TestCase):
 
         self.assertEqual(tuple(audio.shape), (2, 1, 16))
         self.assertIsNotNone(model.semantic)
-        self.assertIsNotNone(model.global_tokens)
+        self.assertIsNotNone(model.acoustic_tokens)
 
-    def test_encode_rejects_non_mono_audio(self):
+    def test_tokenize_rejects_non_mono_audio(self):
         codec = _codec(FakeBiCodecModel())
 
         with self.assertRaisesRegex(ValueError, "mono"):
-            codec.encode(torch.zeros((2, 2, 16)), 16000)
+            codec.tokenize(torch.zeros((2, 2, 16)), 16000)
 
     def test_detokenize_rejects_batch_mismatch(self):
         codec = _codec(FakeBiCodecModel())
 
         with self.assertRaisesRegex(ValueError, "align on batch"):
             codec.detokenize(
-                torch.ones((2, 5), dtype=torch.long),
-                torch.ones((1, 1, 3), dtype=torch.long),
+                SemanticAcousticCodes(
+                    semantic=torch.ones((2, 5, 1), dtype=torch.long),
+                    acoustic=torch.ones((1, 3, 1), dtype=torch.long),
+                )
             )
 
     def test_to_moves_model_feature_extractor_and_public_device_together(self):
@@ -191,6 +209,29 @@ class BiCodecCodecTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "assign=True"):
             codec.load_state_dict(codec.state_dict(), assign=True)
 
+    def test_fixed_acoustic_features_have_independent_32_slot_axis(self):
+        codec = _feature_codec()
+
+        self.assertEqual(codec.acoustic_unit_length, 32)
+        self.assertEqual(codec.acoustic_feature_dim, 3)
+        self.assertEqual(tuple(codec.semantic_codebook.shape), (4, 2))
+
+        codes = torch.zeros((2, 32, 1), dtype=torch.long)
+        features = codec.acoustic_codes_to_features(codes)
+        decoded = codec.decode_features(
+            torch.zeros((2, 5, 1), dtype=torch.long),
+            features,
+        )
+
+        self.assertEqual(tuple(features.shape), (2, 32, 3))
+        self.assertEqual(tuple(decoded.shape), (2, 1, 5))
+
+    def test_fixed_acoustic_features_reject_wrong_slot_length(self):
+        codec = _feature_codec()
+
+        with self.assertRaisesRegex(ValueError, "fixed acoustic unit length"):
+            codec.acoustic_codes_to_features(torch.zeros((1, 31, 1), dtype=torch.long))
+
 
 class FakeBiCodecFactory:
     model_dir: Path | None = None
@@ -206,11 +247,14 @@ class FakeBiCodecModel(nn.Module):
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
         self.quantizer = SimpleNamespace(codebook_size=4096)
-        self.speaker_encoder = SimpleNamespace(codebook_size=8192)
+        self.speaker_encoder = SimpleNamespace(
+            quantizer=SimpleNamespace(codebook_size=8192, num_quantizers=1),
+            perceiver_sampler=SimpleNamespace(latents=torch.zeros(3, 128)),
+        )
         self.eval_called = False
         self.batch = None
         self.semantic = None
-        self.global_tokens = None
+        self.acoustic_tokens = None
         self.detokenized_audio = None
 
     def eval(self):
@@ -221,12 +265,12 @@ class FakeBiCodecModel(nn.Module):
         self.batch = batch
         batch_size = batch["wav"].size(0)
         semantic = torch.ones((batch_size, 5), dtype=torch.long)
-        global_tokens = torch.ones((batch_size, 1, 3), dtype=torch.long)
-        return semantic, global_tokens
+        acoustic_tokens = torch.arange(batch_size * 3, dtype=torch.long).reshape(batch_size, 1, 3)
+        return semantic, acoustic_tokens
 
-    def detokenize(self, semantic, global_tokens):
+    def detokenize(self, semantic, acoustic_tokens):
         self.semantic = semantic
-        self.global_tokens = global_tokens
+        self.acoustic_tokens = acoustic_tokens
         if self.detokenized_audio is not None:
             return self.detokenized_audio
         return torch.ones((semantic.size(0), 1, 16))
@@ -264,10 +308,7 @@ class FakeFeatureExtractor(nn.Module):
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
         self.config = SimpleNamespace(output_hidden_states=False)
         self.eval_called = False
-        self.hidden_states = [
-            torch.full((2, 4, 3), float(index))
-            for index in range(17)
-        ]
+        self.hidden_states = [torch.full((2, 4, 3), float(index)) for index in range(17)]
 
     @classmethod
     def from_pretrained(cls, path):
@@ -297,6 +338,49 @@ def _codec(model: FakeBiCodecModel) -> BiCodec:
             "ref_segment_duration": 0.5,
             "latent_hop_length": 320,
         },
+    )
+
+
+class FeatureQuantizer(nn.Module):
+    def __init__(self, size: int, dim: int) -> None:
+        super().__init__()
+        self.codebook_size = size
+        self.codebook_dim = dim
+        self.codebook = nn.Embedding(size, dim)
+        self.project_out = nn.Identity()
+
+    def detokenize(self, indices: torch.Tensor) -> torch.Tensor:
+        return self.codebook(indices).transpose(1, 2)
+
+    def get_output_from_indices(self, indices: torch.Tensor) -> torch.Tensor:
+        return self.codebook(indices[..., 0])
+
+
+class FeatureSpeakerEncoder(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quantizer = FeatureQuantizer(8, 3)
+        self.perceiver_sampler = SimpleNamespace(latents=torch.zeros(32, 3))
+        self.project = nn.Linear(32 * 3, 2)
+
+
+class FeatureBiCodecModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quantizer = FeatureQuantizer(4, 2)
+        self.speaker_encoder = FeatureSpeakerEncoder()
+        self.prenet = lambda z, condition: z
+        self.decoder = lambda value: value[:, :1]
+
+
+def _feature_codec() -> BiCodec:
+    model = FeatureBiCodecModel()
+    return BiCodec(
+        model=model,
+        processor=FakeProcessor(),
+        feature_extractor=FakeFeatureExtractor(),
+        device=torch.device("cpu"),
+        config={"sample_rate": 16000, "latent_hop_length": 320},
     )
 
 

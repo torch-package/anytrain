@@ -26,18 +26,17 @@ installable package，再把 `sparktts` 依赖加入 extra。
         device="cuda",
     )
 
-    tokens = codec.encode(audio, sample_rate=48000)
-    audio_out = codec.decode(tokens)
+    codes = codec.tokenize(audio, sample_rate=48000)
+    audio_out = codec.detokenize(codes)
 
-    semantic = tokens.semantic
-    global_tokens = tokens.global_tokens
-    audio_out = codec.detokenize(semantic, global_tokens)
+    semantic = codes.semantic
+    acoustic = codes.acoustic
 
 `audio` 使用 `[batch, 1, time]` 单声道 waveform。wrapper 会重采样到 Spark-TTS 的
 16 kHz，并用上游 Wav2Vec2 特征抽取器生成 BiCodec 所需的 `feat`。默认把同一段音频裁成
 reference clip 来提取说话人全局 token；如果目标音频和参考音频不同，可以显式传入：
 
-    tokens = codec.encode(
+    codes = codec.tokenize(
         target_audio,
         sample_rate=target_sample_rate,
         ref_audio=prompt_audio,
@@ -46,14 +45,28 @@ reference clip 来提取说话人全局 token；如果目标音频和参考音�
 
 ## Token 契约
 
-Spark-TTS BiCodec 的主边界不是统一 codec protocol 的单个 codes Tensor，而是：
+Spark-TTS BiCodec 的主边界不是 `FrameCodec` 的单个 codes Tensor，而是：
 
 - `semantic`：随时间变化的语义 token，由 BiCodec quantizer 产生。
-- `global_tokens`：reference audio 产生的全局说话人 token。
+- `acoustic`：reference audio 产生的固定长度全局声学 token。
 
-因此 `encode()` 返回 `BiCodecTokens` dataclass，`decode()` 接收该 dataclass。
-如果下游需要把 token 交给 LLM，请分别保存 semantic 和 global token 的 shape、dtype
-和来源音频；不要把 global token 拼进 frame/codebook 轴伪装成普通 codec codes。
+规范 `SemanticAcousticCodec` 接口中，`tokenize()` 返回 `SemanticAcousticCodes`：
+
+- `semantic` 使用 `[batch, time, 1]`。
+- `acoustic` 使用 `[batch, slot, 1]`，released Spark-TTS-0.5B 固定为 32 个 slot。
+- `acoustic_layout` 是 `FIXED_LENGTH`；32 表示整段 reference 的固定 slot 数，不是
+  `32 token/s`，也不是 32 个 codebook。
+
+上游原生 global tensor 是 `[batch, quantizer, slot]`。wrapper 在 `tokenize()` 边界转换为
+`[batch, slot, codebook]`，在 `detokenize()` 时转回上游布局。released config 使用一个 FSQ
+quantizer，因此 `acoustic_codebook_sizes` 只有一项。reference 配置当前裁成 6 秒，再压缩成固定
+32 slots；slot 数不随 reference 秒数变化。
+
+BiCodec 提供 `tokenize()` / `detokenize(codes)` structured 接口，以及同一
+`SemanticAcousticCodec` 契约中的 acoustic feature boundary：`acoustic_codes_to_features()` 返回 `[batch, 32, latent]`
+的 global slot 特征，`decode_features()` 接收同样的独立 acoustic 轴。不要把 global slot
+广播到 semantic frame，也不要把 slot 解释成 codebook 轴。FM 因此可以在 32 个 slot 上做
+flow matching；semantic condition 由训练侧 pooling 后广播到这 32 个输出位置。
 
 ## Checkpoint 与缓存
 

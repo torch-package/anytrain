@@ -27,6 +27,7 @@ class StableCodecTest(unittest.TestCase):
         self.assertEqual(FakeStableCodecBackend.kwargs["pretrained_model"], DEFAULT_PRETRAINED_MODEL)
         self.assertEqual(FakeStableCodecBackend.kwargs["device"], torch.device("cpu"))
         self.assertEqual(codec.device, torch.device("cpu"))
+        self.assertEqual(codec.name, "stable_codec")
         self.assertEqual(codec.sample_rate, 16000)
         self.assertEqual(DEFAULT_CODEBOOK_SIZE, 17**6)
         self.assertEqual(DEFAULT_POSTHOC_BOTTLENECK, "1x46656_400bps")

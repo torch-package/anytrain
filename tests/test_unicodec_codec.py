@@ -40,6 +40,7 @@ class UniCodecCodecTest(unittest.TestCase):
             self.assertEqual(FakeUniCodecFactory.model_path, str(assets["checkpoint"]))
             self.assertEqual(codec.device, torch.device("cpu"))
             self.assertEqual(codec.assets, assets)
+            self.assertEqual(codec.name, "unicodec")
             self.assertEqual(codec.sample_rate, 24000)
             self.assertEqual(codec.codebook_sizes, (16384,))
             self.assertTrue(codec.model.eval_called)

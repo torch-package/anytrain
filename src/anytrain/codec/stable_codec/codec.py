@@ -9,7 +9,7 @@ import torch
 from torch import Tensor, nn
 from typing_extensions import TypeAlias
 
-from .._audio import resample
+from .._audio import model_frame_rate, resample
 from .._module import DeviceModule
 
 SupportedVersion = Literal["speech-16k", "speech-16k-base"]
@@ -37,6 +37,7 @@ POSTHOC_CODEBOOK_SIZES: dict[PosthocBottleneckPreset, tuple[int, ...]] = {
 
 
 class StableCodec(DeviceModule):
+    name = "stable_codec"
     num_channels: int = NUM_CHANNELS
     sample_rate: int = SAMPLE_RATE
 
@@ -58,6 +59,10 @@ class StableCodec(DeviceModule):
         self.sample_rate = int(getattr(model, "sample_rate", SAMPLE_RATE))
         self.codebook_sizes = _codebook_sizes(model, posthoc_bottleneck)
         self._init_device(device)
+
+    @property
+    def frame_rate(self) -> float:
+        return model_frame_rate(self.model, self.sample_rate)
 
     @classmethod
     def from_pretrained(
@@ -142,14 +147,14 @@ class StableCodec(DeviceModule):
     @torch.no_grad()
     def decode(
         self,
-        tokens: Tensor,
+        codes: Tensor,
     ) -> Tensor:
-        self._validate_codes(tokens)
+        self._validate_codes(codes)
         backend_tokens: Tensor | list[Tensor]
         if self.posthoc_bottleneck:
-            backend_tokens = list(tokens.to(self.device).split(1, dim=-1))
+            backend_tokens = list(codes.to(self.device).split(1, dim=-1))
         else:
-            backend_tokens = tokens.to(self.device)
+            backend_tokens = codes.to(self.device)
         return self.model.decode(
             backend_tokens,
             posthoc_bottleneck=self.posthoc_bottleneck,

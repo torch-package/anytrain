@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 from typing_extensions import TypeAlias
 
-from .._audio import resample
+from .._audio import model_frame_rate, resample
 from .._module import DeviceModule
 from .assets import UniCodecAssets, ensure_unicodec_assets
 
@@ -18,6 +18,8 @@ DEFAULT_CODEBOOK_SIZE = 16_384
 
 
 class UniCodec(DeviceModule):
+    name = "unicodec"
+
     def __init__(
         self,
         model: nn.Module,
@@ -36,6 +38,10 @@ class UniCodec(DeviceModule):
         self.sample_rate = SAMPLE_RATE
         self.codebook_sizes = _codebook_sizes(model)
         self._init_device(device)
+
+    @property
+    def frame_rate(self) -> float:
+        return model_frame_rate(self.model.feature_extractor, self.sample_rate)
 
     @classmethod
     def from_pretrained(

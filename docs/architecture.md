@@ -63,9 +63,9 @@ PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 对应 extra；只依赖 core torch 的 temporal/spectral loss 不额外要求 audio extra：
 
 - temporal/spectral audio loss：torch backend 使用 core；torchaudio backend 安装 `audio` extra。
-- codec wrapper：DAC、LongCat、UniCodec 分别使用 `dac`、`longcat`、`unicodec` backend
-  extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装 codec 模型。Stable Codec 的
-  torch pin 与 core 冲突，按 `docs/stable-codec.md` 使用独立兼容环境。
+- codec wrapper：DAC、LongCat、BiCodec、UniCodec 分别使用 `dac`、`longcat`、`bicodec`、
+  `unicodec` backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装 codec 模型。
+  Stable Codec 的 torch pin 与 core 冲突，按 `docs/stable-codec.md` 使用独立兼容环境。
 - text evaluator：安装 `text` extra 使用 sacreBLEU/jiwer backend；无 extra 时有显式 warning
   的轻量 fallback。
 - speech evaluator：安装 `speech` extra 使用 Whisper、UTMOS 和 speech text metrics。
@@ -147,7 +147,7 @@ general 算法层；CodecBPE 需要 `tokenizer` extra，不进入 package root i
 
 ### `codec` / `tts`
 
-`codec` 顶层只提供轻量 protocol；具体 audio codec wrapper 从 `anytrain.codec.*` 子模块导入。`tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。两者都不接管数据集、训练 step 或模型组合。
+`codec` 顶层只提供轻量 protocol、structured unit 类型和 lazy registry；具体 audio codec wrapper 从 `anytrain.codec.*` 子模块导入。`tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。两者都不接管数据集、训练 step 或模型组合。
 
 ### `chat`
 

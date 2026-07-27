@@ -42,6 +42,7 @@ class DACCodecTest(unittest.TestCase):
             self.assertEqual(FakeDACFactory.checkpoint, checkpoint)
             self.assertEqual(codec.checkpoint, checkpoint)
             self.assertEqual(codec.assets, assets)
+            self.assertEqual(codec.name, "dac")
             self.assertEqual(codec.sample_rate, 24000)
             self.assertEqual(codec.codebook_sizes, (1024, 1024))
             self.assertTrue(codec.model.eval_called)
