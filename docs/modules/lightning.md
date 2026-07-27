@@ -13,10 +13,14 @@ Lightning 是 core 依赖，不作为 optional integration。
 ```text
 src/anytrain/lightning/
   __init__.py
+  experiment.py
+  validation.py
   callback/
     __init__.py
     checkpoint.py
     debug.py
+    grad.py
+    loss.py
     performance.py
   mixin/
     __init__.py
@@ -25,15 +29,63 @@ src/anytrain/lightning/
 
 当前公开导出：
 
+- `experiment`：从 Trainer 主 logger 获取 text/scalar/audio/histogram 能力。
+- `validation`：加权 validation logging 与可恢复指标历史。
 - `LightningLogMixin`
 - `ModelCheckpoint`
 - `DebugCallback`
+- `GradientLoggerCallback`
+- `GradientNormLoggerCallback`
+- `LossItemLoggerCallback`
+- `LossSummaryCallback`
+- `LossTimeBucketLoggerCallback`
 - `FlopsProvider`
 - `PerformanceCallback`
 - `RankLogMode`
 - `prefixed_log_dict`
 
 `anytrain.lightning` 不导出自定义 LightningModule 基类，也不通过继承改变训练行为。下游项目直接继承 `lightning.pytorch.LightningModule`。
+
+## Validation
+
+validation 能力从显式子模块使用，不把短名字重新导出到 `anytrain.lightning`：
+
+```python
+from anytrain.lightning import validation
+
+validation.log(
+    module,
+    {"loss": validation.Metric(values, counts)},
+)
+history = validation.History(prefix="val")
+```
+
+`Metric` 是 `anytrain.evaluator.weighted.Metric` 在 validation 子模块中的转发名；它的 weights 是
+observation count，而不是任意浮点 importance weight。`log()` 统一负责 epoch/DDP 加权聚合，并在进入
+Lightning 的整数 batch-size accumulator 前按 world size 缩放 count，避免不等 rank count 的 mean
+reduction 截断分母；`History` 只消费已经归约到 `trainer.callback_metrics` 的 scalar，不解释下游 batch
+或指标名。两者共享 `val/` 默认 prefix，但没有对象引用关系；LightningModule 不持有或查找 Trainer
+callback。数值归约委托给 `evaluator.weighted.reduce()`，共享 weights tensor 的指标只同步读取一次
+count。
+
+下游负责是否创建 validation dataloader、是否执行 validation，以及具体指标按 sample、token 还是 frame
+计数。没有 validation dataloader 时 callback 不会自行触发 validation。
+
+## Experiment 能力
+
+`experiment` 统一提供 Trainer 主 logger 的窄能力访问：
+
+```python
+from anytrain.lightning import experiment
+
+writer = experiment.audio(trainer)
+if writer is not None:
+    writer.add_audio("sample", waveform, trainer.global_step, sample_rate=16_000)
+```
+
+`text()`、`scalar()`、`audio()` 和 `histogram()` 只在 logger experiment 暴露对应 callable 时返回
+类型化 Protocol；没有 logger 或 backend 不支持该能力时返回 `None`。这个模块不选择 logger backend，
+也不决定 rank、cadence、tag 或 tensor 的设备转换，这些仍由调用 callback 负责。
 
 ## Logging Mixin
 
@@ -110,6 +162,8 @@ trainer = pl.Trainer(
 
 当前覆盖：
 
+- validation count-weighted epoch aggregation、history state 和严格错误路径。
+- experiment text/scalar/audio/histogram 能力探测及缺失路径。
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
 - `ModelCheckpoint` 的原生接口兼容、异步复制、同步 opt-out 和删除排队。

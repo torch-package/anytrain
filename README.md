@@ -108,7 +108,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 
 | 模块 | 作用 |
 | --- | --- |
-| `anytrain.lightning` | Lightning logging mixin、task-agnostic debug callback 和性能观测 callback。 |
+| `anytrain.lightning` | Lightning logging mixin、loss summary / loss item / gradient / time-bucket logging、task-agnostic debug callback 和性能观测 callback。 |
 | `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
 | `anytrain.stats` | 纯 tensor 统计 helper，例如按 time bucket 聚合 loss。 |
 | `anytrain.loss` | 通用 loss 接口、loss 组合器和 loss balancer。 |

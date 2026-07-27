@@ -14,6 +14,7 @@ src/anytrain/evaluator/
   _validation.py
   abc.py
   group.py
+  weighted.py
   speech/
     __init__.py
     _torch.py
@@ -36,6 +37,7 @@ src/anytrain/evaluator/
 - `MetricValue`
 - `MetricDict`
 - `EvaluatorGroup`
+- `weighted`：逐行 values 与 observation counts 的通用加权指标契约。
 
 optional 子模块导出：
 
@@ -66,6 +68,14 @@ core 组件：
 - `MetricValue`：只允许 Python `float` 或 0 维 `torch.Tensor`。
 - `MetricDict`：`dict[str, MetricValue]`，不再额外维护 metric map / mapping 类型。
 - `EvaluatorGroup`：组合多个返回 metric mapping 的 `nn.Module`，内部用 `nn.ModuleDict` 注册子 evaluator，处理 key 校验并代理可选的状态生命周期。
+- `weighted.Metric`：保存 shape 对齐的逐行 values/weights；weights 只能是有限、非负的整数
+  observation count。`reduced()` 返回加权均值与精确 count；`weighted.reduce()` 批量归约指标，并让
+  共享同一 weights tensor 的指标只同步读取一次 count。
+
+加权乘加至少使用 FP32，FP64 values 则保持 FP64，避免 FP16/BF16 的大 observation count 溢出或量化。
+归约会先把 count 为 0 的位置清零，因此 padding 位置即使含 NaN/Inf 也不会污染有效均值；正权重位置的
+非有限值仍会保留并由下游显式暴露。Lightning epoch/DDP 生命周期由
+`anytrain.lightning.validation.log()` 负责，不放进这个纯数值契约。
 
 `EvaluatorGroup` 接收 evaluator mapping，并通过 `evaluators` 属性注册子模块：
 

@@ -9,6 +9,11 @@
 它负责：
 
 - LightningModule 侧的轻量 logging helper。
+- Trainer 主 logger 的 text/scalar/audio/histogram experiment 能力访问。
+- validation 指标按实际 observation count 做 epoch/DDP 加权聚合，并记录可恢复的指标历史。
+- 训练 outputs 里的 total loss 和命名 loss item 窗口汇总 callback。
+- 训练 outputs 里的命名 loss item 按下游 label 分组记录 callback。
+- 基于命名 `LossItem` 的梯度关系、全局梯度范数和 time-bucket loss 观测 callback。
 - non-finite loss 检查等训练调试 callback。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
 - 训练效率观测 callback，记录参数量、step time、硬件峰值算力和 MFU。
@@ -167,6 +172,63 @@ pl_module:
 ```
 
 这些领域组件属于 optional dependency，不应影响 core import。
+
+## Validation
+
+`anytrain.lightning.validation` 把 validation 的数值聚合与 Lightning 生命周期放在同一个公开功能模块中，
+但不要求 LightningModule 持有 callback。下游仍负责计算指标、命名指标以及选择 sample、token、frame
+或其他 observation count：
+
+```python
+from anytrain.lightning import validation
+
+
+def validation_step(self, batch, batch_idx):
+    values, token_counts = self.validation_values(batch)
+    validation.log(
+        self,
+        {
+            "cross_entropy": validation.Metric(values, token_counts),
+        },
+    )
+```
+
+`validation.Metric` 转发 `anytrain.evaluator.weighted.Metric` 的纯数值契约：values/weights shape
+必须一致；weights 是有限、非负、整数 observation count，且总数为正。`validation.log()` 固定使用
+`on_step=False`、`on_epoch=True`、`sync_dist=True`，并把 count 交给 Lightning 做跨 batch/rank 的
+加权均值。内部会按 world size 缩放传给 Lightning 的整数 count，避免 rank 总 count 不能整除 world
+size 时被 mean reduction 截断；该共同缩放不改变加权均值。它不接受任意浮点 importance weight，
+也不解释指标属于哪个任务。多个指标共享同一 weights tensor 时，纯 `evaluator.weighted.reduce()`
+只同步读取一次 count。
+
+需要把 `val/*` epoch 指标写入实验报告时，显式挂载 history callback：
+
+```python
+history = validation.History()
+trainer = pl.Trainer(callbacks=[history])
+trainer.fit(module, datamodule=data)
+report = history.report()
+```
+
+`History` 区分 sanity 与正式 interval validation；同 step 的重复记录覆盖，state 随 checkpoint 保存和恢复。
+validation 已运行但没有匹配 prefix 的 scalar metric 时默认报错；`strict=False` 时跳过该次记录。没有
+validation dataloader 时 Lightning 不触发 validation hook，是否启用 validation 仍完全由下游入口决定。
+
+## Experiment 能力访问
+
+callback 需要直接使用 TensorBoard 等 logger experiment 时，通过统一的窄能力接口获取：
+
+```python
+from anytrain.lightning import experiment
+
+writer = experiment.scalar(trainer)
+if writer is not None:
+    writer.add_scalar("train/example", value, trainer.global_step)
+```
+
+`experiment.text()`、`scalar()`、`audio()` 和 `histogram()` 检查 Trainer 主 logger 的 experiment 是否
+暴露对应 callable。没有 logger 或 backend 不支持时返回 `None`；helper 不决定 rank、记录 cadence、
+tag 或 tensor 设备，下游 callback 继续拥有这些语义。
 
 ## Optimizer / Scheduler
 

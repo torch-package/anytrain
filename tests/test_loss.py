@@ -9,7 +9,12 @@ from anytrain.loss import (
     LossABC,
     LossBalancerABC,
     LossGroup,
+    LossItem,
+    MaskedCosineAlignmentLoss,
+    MaskedFrameMSELoss,
     UncertaintyLossBalancer,
+    combine_loss_outputs,
+    iter_loss_items,
 )
 from anytrain.loss.spectral import (
     CompressedSpectrogramLoss,
@@ -181,6 +186,87 @@ class LossTest(unittest.TestCase):
 
         self.assertTrue(torch.isclose(total, torch.tensor(1.5)))
         self.assertEqual(set(details), {"total"})
+
+    def test_loss_item_weighted_mean(self):
+        item = LossItem(
+            torch.tensor([1.0, 3.0]),
+            {"tokens": torch.tensor([1.0, 3.0])},
+        )
+
+        mean = item.weighted_mean(item.details["tokens"])
+
+        torch.testing.assert_close(mean, torch.tensor(2.5))
+
+    def test_combine_loss_outputs_uses_units_and_weights(self):
+        first = {
+            "loss": torch.tensor(0.0),
+            "token": LossItem(
+                torch.tensor([1.0]),
+                {"tokens": torch.tensor([2.0])},
+            ),
+            "acoustic": LossItem(
+                torch.tensor([5.0]),
+                {"frames": torch.tensor([1.0])},
+            ),
+            "loss_weights": {"acoustic": 0.5},
+        }
+        second = {
+            "loss": torch.tensor(0.0),
+            "token": LossItem(
+                torch.tensor([3.0]),
+                {"tokens": torch.tensor([6.0])},
+            ),
+        }
+
+        outputs = combine_loss_outputs(
+            [first, second],
+            {"token": "tokens", "acoustic": "frames"},
+        )
+
+        self.assertEqual([name for name, _ in iter_loss_items(outputs, ["acoustic", "token"])], ["acoustic", "token"])
+        torch.testing.assert_close(outputs["loss"], torch.tensor(5.0))
+        torch.testing.assert_close(outputs["token"].loss, torch.tensor([1.0, 3.0]))
+
+    def test_masked_frame_mse_loss_ignores_padding(self):
+        prediction = torch.tensor([[[1.0, 2.0], [1000.0, float("nan")]]], requires_grad=True)
+        target = torch.tensor([[[3.0, 4.0], [float("inf"), 1000.0]]])
+        mask = torch.tensor([[True, False]])
+
+        item = MaskedFrameMSELoss()(
+            prediction,
+            target,
+            mask,
+            details={"t": torch.tensor([0.25])},
+        )
+        item.loss.mean().backward()
+
+        torch.testing.assert_close(item.loss, torch.tensor([4.0]))
+        self.assertIsNotNone(item.details)
+        torch.testing.assert_close(item.details["frames"], torch.tensor([1.0]))
+        torch.testing.assert_close(item.details["t"], torch.tensor([0.25]))
+        gradient = prediction.grad
+        if gradient is None:
+            self.fail("prediction gradient is unavailable")
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertTrue(torch.equal(gradient[:, 1], torch.zeros_like(gradient[:, 1])))
+
+    def test_masked_cosine_alignment_loss_detaches_target(self):
+        prediction = torch.tensor(
+            [[[1.0, 0.0], [float("nan"), float("inf")]]],
+            requires_grad=True,
+        )
+        target = torch.tensor([[[1.0, 0.0], [float("nan"), float("inf")]]], requires_grad=True)
+        mask = torch.tensor([[True, False]])
+
+        item = MaskedCosineAlignmentLoss()(prediction, target, mask)
+        item.loss.mean().backward()
+
+        torch.testing.assert_close(item.loss, torch.tensor([0.0]))
+        self.assertIsNotNone(item.details)
+        torch.testing.assert_close(item.details["frames"], torch.tensor([1.0]))
+        torch.testing.assert_close(item.details["cosine"], torch.tensor([1.0]))
+        self.assertIsNotNone(prediction.grad)
+        self.assertIsNone(target.grad)
 
     def test_loss_group_rejects_ambiguous_names(self):
 
