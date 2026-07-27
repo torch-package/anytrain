@@ -106,6 +106,10 @@ class LongCat(DeviceModule):
             raise ValueError("LongCat semantic codebook must have shape [dim, vocab].")
         return codebook.transpose(0, 1).contiguous().to(self.device)
 
+    @property
+    def semantic_feature_dim(self) -> int:
+        return int(self.semantic_codebook.size(-1))
+
     @classmethod
     def from_pretrained(
         cls,

@@ -84,6 +84,16 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertTrue(torch.equal(codes[..., 0], torch.tensor([[7, 8], [7, 8]])))
         self.assertTrue(torch.equal(codes[..., 1:], torch.ones((2, 2, 3), dtype=torch.long)))
 
+    def test_semantic_feature_dim_matches_semantic_codebook(self):
+        codec = LongCat(
+            encoder=FakeLongCatEncoder(),
+            decoders={"16k_4codebooks": FakeLongCatDecoder()},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+
+        self.assertEqual(codec.semantic_feature_dim, 3)
+
     def test_tokenize_returns_structured_time_major_codebooks(self):
         codec = LongCat(
             encoder=FakeLongCatEncoder(),
@@ -292,6 +302,9 @@ class FakeLongCatEncoder(nn.Module):
         semantic = torch.tensor([[7, 8]]).expand(batch, -1)
         acoustic = torch.ones((batch, n_acoustic_codebooks, 2), dtype=torch.long)
         return semantic, acoustic
+
+    def get_semantic_codebook(self) -> torch.Tensor:
+        return torch.zeros((3, 8192))
 
 
 def _assets() -> LongCatAssets:
