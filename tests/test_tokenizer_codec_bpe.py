@@ -4,7 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -220,7 +220,10 @@ class BPETest(unittest.TestCase):
         tqdm.write.assert_any_call("CodecBPE corpus: 6 frames in 2 sequences; frame limit reached")
 
     def test_train_max_frames_none_keeps_default_progress(self):
-        with patch("tqdm.auto.tqdm") as tqdm:
+        with (
+            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=True),
+            patch("tqdm.auto.tqdm") as tqdm,
+        ):
             CodecBPE.train(
                 replay([[[1], [2]]]),
                 codebook_sizes=(16,),
@@ -262,6 +265,8 @@ class BPETest(unittest.TestCase):
     def test_train_progress_uses_static_logs_without_dynamic_bars_non_interactive(self):
         with (
             patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.tokenizer.codec_bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
+            patch("builtins.print") as output,
             patch("tqdm.auto.tqdm") as tqdm,
         ):
             CodecBPE.train(
@@ -272,10 +277,31 @@ class BPETest(unittest.TestCase):
             )
 
         tqdm.assert_not_called()
-        tqdm.write.assert_any_call("CodecBPE alphabet: skipped for single codebook")
-        tqdm.write.assert_any_call("CodecBPE corpus: 2 frames in 1 sequences; frame limit reached")
-        tqdm.write.assert_any_call("CodecBPE trainer: started (corpus, pair counts, merges)")
-        tqdm.write.assert_any_call("CodecBPE trainer: completed")
+        output.assert_any_call(
+            "CodecBPE alphabet: skipped for single codebook",
+            file=sys.stderr,
+            flush=True,
+        )
+        output.assert_any_call(
+            "CodecBPE corpus: 2/2 frames (100.0%) in 1 sequences processed",
+            file=sys.stderr,
+            flush=True,
+        )
+        output.assert_any_call(
+            "CodecBPE corpus: 2 frames in 1 sequences; frame limit reached",
+            file=sys.stderr,
+            flush=True,
+        )
+        output.assert_any_call(
+            "CodecBPE trainer: started (corpus, pair counts, merges)",
+            file=sys.stderr,
+            flush=True,
+        )
+        output.assert_any_call(
+            "CodecBPE trainer: completed",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def test_train_disables_tokenizers_progress_non_interactive(self):
         from tokenizers.trainers import BpeTrainer
@@ -291,6 +317,25 @@ class BPETest(unittest.TestCase):
             )
 
         self.assertFalse(trainer.call_args.kwargs["show_progress"])
+
+    def test_multi_codebook_alphabet_uses_periodic_static_logs_non_interactive(self):
+        with (
+            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.tokenizer.codec_bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
+            patch("builtins.print") as output,
+        ):
+            CodecBPE.train(
+                replay([[[1, 2], [2, 3]]]),
+                codebook_sizes=(4, 4),
+                max_frames=2,
+                show_progress=True,
+            )
+
+        output.assert_any_call(
+            "CodecBPE alphabet: 1 sequences processed",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def test_train_max_frames_progress_closes_on_corpus_error(self):
         def corpus():
@@ -487,7 +532,7 @@ class BPETest(unittest.TestCase):
     def test_single_codebook_reports_skipped_alphabet(self):
         output = io.StringIO()
 
-        with redirect_stdout(output):
+        with redirect_stderr(output):
             CodecBPE.train(
                 replay([[[1], [2]]]),
                 codebook_sizes=(4,),
@@ -627,11 +672,18 @@ class BPETest(unittest.TestCase):
 
         with (
             patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.tokenizer.codec_bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
+            patch("builtins.print") as output,
             patch("tqdm.auto.tqdm") as tqdm,
         ):
             bpe.evaluate([[[1], [2], [3]]], show_progress=True)
 
         tqdm.assert_not_called()
+        output.assert_any_call(
+            "CodecBPE eval: 1 sequences processed",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def test_eval_rejects_empty_corpus(self):
         bpe = CodecBPE.train(replay([[[1], [2], [3]]]), codebook_sizes=(16,), vocab_size=4)

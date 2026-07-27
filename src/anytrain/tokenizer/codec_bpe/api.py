@@ -10,6 +10,7 @@ from anytrain._compat import Self
 
 from ._core import (
     CoreBPE,
+    ProgressLog,
     base_text,
     dynamic_progress,
     private_use_capacity,
@@ -184,6 +185,7 @@ def _encode_corpus(
 
     remaining = max_frames
     progress_bar = None
+    progress_log = ProgressLog(enabled=show_progress)
     if dynamic_progress(show_progress) and max_frames is not None:
         from tqdm.auto import tqdm
 
@@ -203,6 +205,18 @@ def _encode_corpus(
             frame_count = len(base_ids)
             num_frames += frame_count
             num_sequences += 1
+            if max_frames is None:
+                progress_message = (
+                    f"CodecBPE corpus: {num_frames:,} frames "
+                    f"in {num_sequences:,} sequences processed"
+                )
+            else:
+                progress_message = (
+                    f"CodecBPE corpus: {num_frames:,}/{max_frames:,} frames "
+                    f"({min(num_frames / max_frames, 1.0):.1%}) "
+                    f"in {num_sequences:,} sequences processed"
+                )
+            progress_log.write(progress_message)
             if progress_bar is not None and remaining is not None:
                 progress_bar.update(min(frame_count, remaining))
             if remaining is not None:

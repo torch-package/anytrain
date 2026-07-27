@@ -94,9 +94,10 @@ tokenizer 参数暂不暴露，因为 `CodecBPE` 的每个 token 都必须能无
 最后一条 sequence 的 frame 数，但不会引入人为的 sequence 分界。
 `show_progress=True` 且 `max_frames` 为整数时，会在交互式终端里额外按已读取的原始
 codec frame 显示相对 frame 上限的百分比，并在语料读取结束后报告实际 frame 和 sequence
-数。非交互式 job 日志中不会渲染动态进度条，只保留 corpus、alphabet 和 trainer 阶段的
-静态日志。语料可以在上限前耗尽，此时进度停在实际比例；触发上限的完整 sequence 仍会全部
-送入训练，但进度最多显示 100%。`max_frames=None` 时不接管 `BpeTrainer` 的默认进度。trainer
+数。非交互式 job 不渲染动态进度条，每 60 秒向 stderr 写一条 corpus、alphabet 或 eval
+静态进度，trainer 阶段开始和结束也会留下静态消息。语料可以在上限前耗尽，此时进度停在
+实际比例；触发上限的完整 sequence 仍会全部送入训练，但进度最多显示 100%。
+`max_frames=None` 时不接管 `BpeTrainer` 的默认进度。trainer
 开始和完成会分别输出静态日志，便于在不渲染动态进度条的 job 日志中确认训练阶段。
 能由 Unicode 私用区完整表达时，单 codebook 的 alphabet 直接由 `codebook_sizes` 构造，训练
 只扫描 corpus 一遍；合法但未在训练语料出现的 code id 仍可编码。完整 alphabet 会计入

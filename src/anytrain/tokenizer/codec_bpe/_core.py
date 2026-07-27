@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, TypeVar
 
@@ -20,6 +21,7 @@ PRIVATE_USE_RANGES = (
 
 Merge = tuple[int, int, int]
 _ProgressT = TypeVar("_ProgressT")
+STATIC_PROGRESS_INTERVAL_SECONDS = 60.0
 
 
 class CoreBPE:
@@ -136,9 +138,30 @@ def dynamic_progress(enabled: bool) -> bool:
 def write_progress(message: str, *, enabled: bool) -> None:
     if not enabled:
         return
-    from tqdm.auto import tqdm
 
-    tqdm.write(message)
+    if dynamic_progress(enabled):
+        from tqdm.auto import tqdm
+
+        tqdm.write(message)
+    else:
+        print(message, file=sys.stderr, flush=True)
+
+
+class ProgressLog:
+    """Write periodic static progress without emitting terminal control output."""
+
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled and not dynamic_progress(enabled)
+        self.last_write = time.monotonic()
+
+    def write(self, message: str) -> None:
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if now - self.last_write < STATIC_PROGRESS_INTERVAL_SECONDS:
+            return
+        self.last_write = now
+        write_progress(message, enabled=True)
 
 
 def progress(
@@ -147,11 +170,21 @@ def progress(
     enabled: bool,
     desc: str,
 ) -> Iterable[_ProgressT]:
-    if not dynamic_progress(enabled):
+    if not enabled:
         return iterable
-    from tqdm.auto import tqdm
+    if dynamic_progress(enabled):
+        from tqdm.auto import tqdm
 
-    return tqdm(iterable, desc=desc)
+        return tqdm(iterable, desc=desc)
+
+    progress_log = ProgressLog(enabled=True)
+
+    def logged() -> Iterable[_ProgressT]:
+        for count, item in enumerate(iterable, start=1):
+            yield item
+            progress_log.write(f"{desc}: {count:,} sequences processed")
+
+    return logged()
 
 
 def scan_base_corpus(
