@@ -12,6 +12,7 @@ from anytrain.codec import (
     capabilities,
     load_frame,
     load_semantic_acoustic,
+    masked_acoustic_features,
 )
 
 
@@ -35,6 +36,34 @@ def test_semantic_acoustic_codes_preserve_tensor_boundaries() -> None:
     assert codes.acoustic is acoustic
     with pytest.raises(FrozenInstanceError):
         codes.semantic = acoustic  # type: ignore[misc]
+
+
+class _FeatureCodec:
+    def acoustic_codes_to_features(self, acoustic_codes: torch.Tensor) -> torch.Tensor:
+        return acoustic_codes.float().sum(dim=-1, keepdim=True)
+
+
+def test_masked_acoustic_features_zeroes_padded_units() -> None:
+    codes = torch.tensor([[[1, 2], [9, 9]]])
+    mask = torch.tensor([[True, False]])
+
+    features = masked_acoustic_features(_FeatureCodec(), codes, mask)  # type: ignore[arg-type]
+
+    torch.testing.assert_close(features, torch.tensor([[[3.0], [0.0]]]))
+
+
+def test_masked_acoustic_features_validation_can_be_skipped() -> None:
+    codes = torch.tensor([[[1, 2], [9, 9]]])
+    mask = torch.tensor([[True, False]])
+
+    features = masked_acoustic_features(
+        _FeatureCodec(),
+        codes,
+        mask,
+        validate=False,
+    )  # type: ignore[arg-type]
+
+    torch.testing.assert_close(features, torch.tensor([[[3.0], [0.0]]]))
 
 
 def test_structured_codec_protocol_is_exported() -> None:

@@ -1,3 +1,4 @@
+from .features import masked_acoustic_features
 from .protocol import (
     AcousticLayout,
     CodecBackend,
@@ -15,6 +16,7 @@ __all__ = [
     "FrameCodec",
     "SemanticAcousticCodec",
     "SemanticAcousticCodes",
+    "masked_acoustic_features",
     "capabilities",
     "load_frame",
     "load_semantic_acoustic",

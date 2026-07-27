@@ -19,6 +19,10 @@ LightningModule 侧 logging helper 是 core。
 core 提供：
 
 - `LightningLogMixin`：prefixed dict、audio 和 figure logging helper。
+- `LossSummaryCallback`：从 training outputs 中汇总 total loss 和命名 `LossItem` 的窗口均值。
+- `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
+- `GradientLoggerCallback` / `GradientNormLoggerCallback`：记录命名 `LossItem` 对指定参数的梯度关系，或记录全局梯度范数。
+- `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
 
@@ -60,6 +64,11 @@ loss = loss_fn(prediction, target)
 
 - `LossABC`：抽象基类，子类实现 `compute_loss()`，统一校验 scalar 主 loss 和可选 details。
 - `LossGroup`：用 mapping/`ModuleDict` 组合多个 loss，返回 `(total, details)`。
+- `LossItem`：保存按样本/行聚合的 loss 与可选 details，供下游训练 step 组合和记录。
+- `MaskedFrameMSELoss` / `MaskedCosineAlignmentLoss`：对 `[B, F, D]` 表示执行 frame mask 后的
+  MSE 或 cosine alignment。
+- `MaskedCodebookCrossEntropyLoss`：对多 codebook logits 执行 masked CE，并可选返回逐 codebook
+  top-1。
 - `LossBalancerABC`：把多个命名 scalar loss 合成为一个 scalar total，可选返回 details；默认实现是 `MeanLossBalancer`，core 也提供 `FixedWeightLossBalancer` 和 `UncertaintyLossBalancer`。
 
 规划接口：
@@ -176,6 +185,6 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
 - `import anytrain.optim` 可以假设 torch 已安装。
 - `import anytrain.chat` 不应要求 chat extra；真实 provider 请求路径可以要求 `chat` extra。
 - `import anytrain.tokenizer` 不加载 `tokenizers`；构造或训练 `CodecBPE` 时要求 `tokenizer` extra。
-- `import anytrain.codec` 只暴露轻量 protocol，不加载具体 backend；加载模型时从具体 backend 子模块导入并要求对应 extra。
+- `import anytrain.codec` 只暴露轻量 protocol 和 lazy registry，不加载具体 backend；加载模型时从具体 backend 子模块导入，或使用 capability 约束的默认 loader，并要求对应 extra。
 - `import anytrain.tts` 不加载具体 backend；加载模型时要求对应 extra。
 - optional 缺依赖时抛出明确错误，包含实际缺失的包和可执行安装命令。

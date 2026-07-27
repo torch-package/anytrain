@@ -73,24 +73,30 @@ def _position(
     return embedding.to(dtype=reference.dtype)
 
 
-def _expand_time(t: Tensor, batch_size: int) -> Tensor:
+def _expand_time(t: Tensor, batch_size: int, *, validate: bool = True) -> Tensor:
     if t.ndim == 0:
         return t.expand(batch_size)
     if t.shape == (1,) and batch_size != 1:
         return t.expand(batch_size)
-    if t.shape != (batch_size,):
+    if validate and t.shape != (batch_size,):
         raise ValueError("time must have shape [batch].")
     return t
 
 
-def _mask(reference: Tensor, mask: Tensor | None, name: str) -> Tensor:
+def _mask(
+    reference: Tensor,
+    mask: Tensor | None,
+    name: str,
+    *,
+    validate: bool = True,
+) -> Tensor:
     if mask is None:
         return torch.ones(reference.shape[:2], dtype=torch.bool, device=reference.device)
-    if mask.shape != reference.shape[:2]:
+    if validate and mask.shape != reference.shape[:2]:
         raise ValueError(f"{name} must align with the sequence batch and length.")
-    if mask.dtype != torch.bool:
+    if validate and mask.dtype != torch.bool:
         raise TypeError(f"{name} must be boolean.")
-    if mask.device != reference.device:
+    if validate and mask.device != reference.device:
         raise ValueError(f"{name} and sequence tensor must use the same device.")
     return mask
 
@@ -402,9 +408,10 @@ class DiT(nn.Module):
         condition: Tensor | None = None,
         *,
         condition_mask: Tensor | None = None,
+        validate: bool = True,
     ) -> DiTConditionState:
         if self.condition_type is DiTConditionType.NONE:
-            if condition is not None or condition_mask is not None:
+            if validate and (condition is not None or condition_mask is not None):
                 raise ValueError("condition_type none does not accept condition inputs.")
             return DiTConditionState(condition_type=self.condition_type)
         if condition is None:
@@ -413,8 +420,9 @@ class DiT(nn.Module):
             raise RuntimeError("condition projection is not configured.")
 
         if self.condition_type is DiTConditionType.FILM:
-            _require_vector(condition, self.condition_dim, condition.size(0), "condition")
-            if condition_mask is not None:
+            if validate:
+                _require_vector(condition, self.condition_dim, condition.size(0), "condition")
+            if validate and condition_mask is not None:
                 raise ValueError("condition_mask is only valid for cross_attn conditions.")
             return DiTConditionState(
                 condition_type=self.condition_type,
@@ -422,8 +430,9 @@ class DiT(nn.Module):
             )
 
         if self.condition_type is DiTConditionType.FRAME_FILM:
-            _require_sequence(condition, self.condition_dim, "condition")
-            if condition_mask is not None:
+            if validate:
+                _require_sequence(condition, self.condition_dim, "condition")
+            if validate and condition_mask is not None:
                 raise ValueError("condition_mask is only valid for cross_attn conditions.")
             return DiTConditionState(
                 condition_type=self.condition_type,
@@ -431,9 +440,11 @@ class DiT(nn.Module):
             )
 
         if self.condition_type is DiTConditionType.CROSS_ATTN:
-            _require_sequence(condition, self.condition_dim, "condition")
-            valid_mask = _mask(condition, condition_mask, "condition_mask")
-            _require_valid_row(valid_mask, "condition_mask")
+            if validate:
+                _require_sequence(condition, self.condition_dim, "condition")
+            valid_mask = _mask(condition, condition_mask, "condition_mask", validate=validate)
+            if validate:
+                _require_valid_row(valid_mask, "condition_mask")
             context = self.condition(condition).masked_fill(~valid_mask[..., None], 0)
             return DiTConditionState(
                 condition_type=self.condition_type,
@@ -451,6 +462,7 @@ class DiT(nn.Module):
         condition_mask: Tensor | None = None,
         condition_state: DiTConditionState | None = None,
         mask: Tensor | None = None,
+        validate: bool = True,
     ) -> Tensor:
         output, _ = self._forward(
             x_t,
@@ -459,6 +471,7 @@ class DiT(nn.Module):
             condition_mask=condition_mask,
             condition_state=condition_state,
             mask=mask,
+            validate=validate,
         )
         return output
 
@@ -471,6 +484,7 @@ class DiT(nn.Module):
         condition_mask: Tensor | None = None,
         condition_state: DiTConditionState | None = None,
         mask: Tensor | None = None,
+        validate: bool = True,
     ) -> tuple[Tensor, Tensor]:
         if self.feature_projection is None:
             raise RuntimeError("feature projection is not configured.")
@@ -481,6 +495,7 @@ class DiT(nn.Module):
             condition_mask=condition_mask,
             condition_state=condition_state,
             mask=mask,
+            validate=validate,
         )
         return output, self.feature_projection(representation)
 
@@ -493,19 +508,27 @@ class DiT(nn.Module):
         condition_mask: Tensor | None,
         condition_state: DiTConditionState | None,
         mask: Tensor | None,
+        validate: bool,
     ) -> tuple[Tensor, Tensor]:
         if condition_state is not None and (condition is not None or condition_mask is not None):
             raise ValueError("condition_state cannot be combined with raw condition inputs.")
         if condition_state is None:
-            condition_state = self.prepare_condition(condition, condition_mask=condition_mask)
-        self._validate_condition_state(condition_state)
+            condition_state = self.prepare_condition(
+                condition,
+                condition_mask=condition_mask,
+                validate=validate,
+            )
+        if validate:
+            self._validate_condition_state(condition_state)
 
-        if x_t.dim() != 3 or x_t.size(-1) != self.input_dim:
+        if validate and (x_t.dim() != 3 or x_t.size(-1) != self.input_dim):
             raise ValueError("x_t must have shape [batch, frame, input_dim].")
-        t = _expand_time(t, x_t.size(0))
-        frame_mask = _mask(x_t, mask, "mask")
-        _require_valid_row(frame_mask, "mask")
-        self._validate_condition_batch(condition_state, x_t)
+        t = _expand_time(t, x_t.size(0), validate=validate)
+        frame_mask = _mask(x_t, mask, "mask", validate=validate)
+        if validate:
+            _require_valid_row(frame_mask, "mask")
+        if validate:
+            self._validate_condition_batch(condition_state, x_t)
 
         hidden = self.input(x_t)
         hidden = hidden + self._position(hidden)[None]

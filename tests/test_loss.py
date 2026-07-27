@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ from anytrain.loss import (
     LossBalancerABC,
     LossGroup,
     LossItem,
+    MaskedCodebookCrossEntropyLoss,
     MaskedCosineAlignmentLoss,
     MaskedFrameMSELoss,
     UncertaintyLossBalancer,
@@ -267,6 +269,86 @@ class LossTest(unittest.TestCase):
         torch.testing.assert_close(item.details["cosine"], torch.tensor([1.0]))
         self.assertIsNotNone(prediction.grad)
         self.assertIsNone(target.grad)
+
+    def test_masked_codebook_cross_entropy_reports_masked_top1(self):
+        labels = torch.tensor(
+            [
+                [[1, 2], [0, 1], [-1, -1]],
+                [[2, 3], [-1, -1], [-1, -1]],
+            ]
+        )
+        mask = torch.tensor([[True, True, False], [True, False, False]])
+        predictions = (
+            torch.tensor([[1, 2, 0], [2, 0, 0]]),
+            torch.tensor([[2, 1, 0], [0, 0, 0]]),
+        )
+        logits = tuple(
+            torch.nn.functional.one_hot(value, classes).to(dtype=torch.float32)
+            for value, classes in zip(predictions, (3, 4))
+        )
+
+        item = MaskedCodebookCrossEntropyLoss()(
+            logits,
+            labels,
+            mask,
+            include_top1=True,
+        )
+        details = item.details
+        self.assertIsNotNone(details)
+        torch.testing.assert_close(details["codebook_0_top1"], torch.tensor([0.5, 1.0]))
+        torch.testing.assert_close(details["codebook_1_top1"], torch.tensor([1.0, 0.0]))
+
+    def test_masked_codebook_cross_entropy_ignores_padding_logits(self):
+        labels = torch.tensor([[[1], [0], [-1]]])
+        mask = torch.tensor([[True, True, False]])
+        logits = (torch.randn(1, 3, 3),)
+        changed = (logits[0].clone(),)
+        changed[0][~mask] = 1000
+
+        baseline = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+        padded = MaskedCodebookCrossEntropyLoss()(changed, labels, mask)
+        torch.testing.assert_close(baseline.loss, padded.loss)
+
+    def test_masked_codebook_cross_entropy_can_skip_details(self):
+        labels = torch.tensor([[[1, 2], [0, 1], [-1, -1]]])
+        mask = torch.tensor([[True, True, False]])
+        logits = tuple(
+            torch.randn(1, 3, classes, requires_grad=True)
+            for classes in (3, 4)
+        )
+
+        with_details = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+        without_details = MaskedCodebookCrossEntropyLoss()(
+            logits,
+            labels,
+            mask,
+            include_details=False,
+            include_top1=True,
+        )
+
+        torch.testing.assert_close(without_details.loss, with_details.loss)
+        self.assertIsNone(without_details.details)
+
+    def test_masked_codebook_cross_entropy_validation_can_be_skipped(self):
+        labels = torch.tensor([[[1], [0]]])
+        mask = torch.tensor([[True, False]])
+        logits = (torch.randn(1, 2, 3),)
+
+        with patch(
+            "anytrain.loss.codebook._validate_inputs",
+            side_effect=AssertionError("validation should be skipped"),
+        ):
+            item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask, validate=False)
+        self.assertEqual(item.loss.shape, (1,))
+
+    def test_masked_codebook_cross_entropy_validates_large_vocab_with_small_labels(self):
+        labels = torch.tensor([[[127], [1]]], dtype=torch.int8)
+        mask = torch.tensor([[True, True]])
+        logits = (torch.randn(1, 2, 256),)
+
+        item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+
+        self.assertEqual(item.loss.shape, (1,))
 
     def test_loss_group_rejects_ambiguous_names(self):
 

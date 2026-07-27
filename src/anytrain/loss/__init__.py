@@ -6,6 +6,7 @@ from .balancer import (
     MeanLossBalancer,
     UncertaintyLossBalancer,
 )
+from .codebook import MaskedCodebookCrossEntropyLoss
 from .frame import (
     MaskedCosineAlignmentLoss,
     MaskedFrameMSELoss,
@@ -35,6 +36,7 @@ __all__ = [
     "MaskedFrameMSELoss",
     "LossResult",
     "LossTensorDict",
+    "MaskedCodebookCrossEntropyLoss",
     "MeanLossBalancer",
     "UncertaintyLossBalancer",
     "combine_loss_outputs",

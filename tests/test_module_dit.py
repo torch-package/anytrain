@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -108,6 +109,29 @@ class DiTModuleTest(unittest.TestCase):
 
         self.assertEqual(output.shape, x_t.shape)
         self.assertEqual(features.shape, (2, 3, 6))
+
+    def test_trusted_forward_skips_row_validation(self):
+        model = DiT(
+            input_dim=5,
+            hidden_dim=8,
+            layers=1,
+            heads=2,
+            ffn_ratio=2,
+            condition_dim=4,
+            condition_type=DiTConditionType.FRAME_FILM,
+        )
+        x_t = torch.randn(2, 3, 5)
+        t = torch.tensor([0.2, 0.4])
+        condition = torch.randn(2, 3, 4)
+        mask = torch.tensor([[True, True, True], [True, False, False]])
+
+        with patch(
+            "anytrain.module.dit._require_valid_row",
+            side_effect=AssertionError("trusted path should skip validation"),
+        ):
+            output = model(x_t, t, condition=condition, mask=mask, validate=False)
+
+        self.assertEqual(output.shape, x_t.shape)
 
     def test_validates_public_shapes_and_state_contract(self):
         model = DiT(

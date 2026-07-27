@@ -43,9 +43,10 @@ class QwenMTPCodebookPredictor(nn.Module):
         if len(sizes) != codebooks or any(size <= 0 for size in sizes):
             raise ValueError("codebook_size must provide one positive size per codebook.")
         if codebook_embeddings is not None:
-            _validate_embeddings(codebook_embeddings, sizes)
-            embedding_dim = codebook_embeddings[0].size(-1)
+            embedding_values = _used_codebook_embeddings(codebook_embeddings, sizes)
+            embedding_dim = embedding_values[0].size(-1)
         else:
+            embedding_values = None
             embedding_dim = hidden_dim
 
         self.condition_dim = condition_dim
@@ -53,26 +54,33 @@ class QwenMTPCodebookPredictor(nn.Module):
         self.codebooks = codebooks
         self.codebook_sizes = sizes
         self.embedding_dim = embedding_dim
-        self.codebook_embeddings = nn.ModuleList(nn.Embedding(size, embedding_dim) for size in sizes)
+        # MTP predicts codebooks 1..Q-1 and only consumes preceding
+        # embeddings. For Q=1, embedding zero remains needed by temporal AR.
+        used_sizes = _embedding_sizes(sizes)
+        self.codebook_embeddings = nn.ModuleList(
+            nn.Embedding(size, embedding_dim) for size in used_sizes
+        )
         if codebook_embeddings is None:
             for module in self.codebook_embeddings:
                 embedding = cast(nn.Embedding, cast(object, module))
                 nn.init.normal_(embedding.weight, std=embedding_dim**-0.5)
         else:
             with torch.no_grad():
+                if embedding_values is None:
+                    raise RuntimeError("MTP embedding values are unexpectedly unavailable.")
                 for index, module in enumerate(self.codebook_embeddings):
                     embedding = cast(nn.Embedding, cast(object, module))
-                    embedding.weight.copy_(codebook_embeddings[index])
+                    embedding.weight.copy_(embedding_values[index])
 
         self.embedding_projections = nn.ModuleList(
             nn.Identity()
             if embedding_dim == hidden_dim
             else nn.Linear(embedding_dim, hidden_dim)
-            for _ in range(codebooks)
+            for _ in used_sizes
         )
         self.condition = nn.Identity() if condition_dim == hidden_dim else nn.Linear(condition_dim, hidden_dim)
         self.first_bos = nn.Parameter(torch.zeros(hidden_dim))
-        self.codebook_bos = nn.Parameter(torch.zeros(codebooks, hidden_dim))
+        self.codebook_bos = nn.Parameter(torch.zeros(codebooks - 1, hidden_dim))
         self.temporal = _qwen3_model(
             hidden_dim=hidden_dim,
             ffn_ratio=ffn_ratio,
@@ -88,6 +96,45 @@ class QwenMTPCodebookPredictor(nn.Module):
         )
         self.mtp.embed_tokens.requires_grad_(False)
         self.heads = nn.ModuleList(nn.Linear(hidden_dim, size) for size in sizes)
+
+    def _load_from_state_dict(
+        self,
+        state_dict: dict[str, Tensor],
+        prefix: str,
+        local_metadata: dict[str, object],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
+    ) -> None:
+        """Load checkpoints written before unused MTP parameters were removed."""
+        # Older versions registered one embedding/projection for every
+        # codebook. The last pair was never read, so discard it during load.
+        if self.codebooks > 1:
+            dead_index = self.codebooks - 1
+            for name in ("codebook_embeddings", "embedding_projections"):
+                dead_prefix = f"{prefix}{name}.{dead_index}."
+                for key in tuple(state_dict):
+                    if key.startswith(dead_prefix):
+                        del state_dict[key]
+
+        bos_key = f"{prefix}codebook_bos"
+        if bos_key in state_dict:
+            old_bos = state_dict[bos_key]
+            if old_bos.shape == (self.codebooks, self.hidden_dim):
+                # The old row zero was unused; the remaining rows map directly to
+                # the compact residual-codebook BOS parameter.
+                state_dict[bos_key] = old_bos[1:].clone()
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def _validate_condition(self, condition: Tensor) -> None:
         if condition.dim() != 3 or condition.size(-1) != self.condition_dim:
@@ -105,12 +152,25 @@ class QwenMTPCodebookPredictor(nn.Module):
         target_codes: Tensor | None = None,
         *,
         mask: Tensor | None = None,
+        validate: bool = True,
     ) -> tuple[Tensor, ...]:
-        """Return one teacher-forced [B, F, vocab_q] logits tensor per codebook."""
-        self._validate_condition(condition)
-        frame_mask = _frame_mask(condition, mask)
+        """Return one teacher-forced [B, F, vocab_q] logits tensor per codebook.
+
+        Set ``validate=False`` only for batches validated by the owning
+        datamodule; this avoids repeated shape, dtype, and range checks.
+        """
+        if validate:
+            self._validate_condition(condition)
+        frame_mask = _frame_mask(condition, mask, validate=validate)
         if target_codes is not None:
-            _validate_targets(target_codes, condition, self.codebooks, self.codebook_sizes, frame_mask)
+            if validate:
+                _validate_targets(
+                    target_codes,
+                    condition,
+                    self.codebooks,
+                    self.codebook_sizes,
+                    frame_mask,
+                )
             previous_first = _shift_right(target_codes[..., 0], frame_mask)
         else:
             previous_first = torch.zeros(condition.shape[:2], dtype=torch.long, device=condition.device)
@@ -199,7 +259,7 @@ class QwenMTPCodebookPredictor(nn.Module):
                 previous = packed_targets[..., codebook - 1]
             inputs.append(
                 frame_state
-                + self.codebook_bos[codebook]
+                + self.codebook_bos[codebook - 1]
                 + self._embedding(codebook - 1, previous)
             )
         hidden = self.mtp(
@@ -232,7 +292,7 @@ class QwenMTPCodebookPredictor(nn.Module):
         for codebook in range(1, self.codebooks):
             decoder_input = (
                 frame_state
-                + self.codebook_bos[codebook]
+                + self.codebook_bos[codebook - 1]
                 + self._embedding(codebook - 1, previous)
             )
             state_output = self.mtp(
@@ -280,9 +340,31 @@ def _qwen3_model(
         ) from exc
 
 
+def _used_codebook_embeddings(values: Sequence[Tensor], sizes: Sequence[int]) -> tuple[Tensor, ...]:
+    """Accept both the historical Q embeddings and the compact Q-1 form."""
+    used_sizes = _embedding_sizes(sizes)
+    if len(values) == len(sizes):
+        _validate_embeddings(values, sizes)
+        return tuple(values[: len(used_sizes)])
+    if len(values) == len(used_sizes):
+        _validate_embeddings(values, used_sizes)
+        return tuple(values)
+    raise ValueError(
+        "codebook_embeddings must provide one tensor per codebook or one "
+        "tensor per predicted residual codebook."
+    )
+
+
+def _embedding_sizes(sizes: Sequence[int]) -> tuple[int, ...]:
+    # The temporal first-codebook input still needs embedding zero when Q=1.
+    return tuple(sizes if len(sizes) == 1 else sizes[:-1])
+
+
 def _validate_embeddings(values: Sequence[Tensor], sizes: Sequence[int]) -> None:
     if len(values) != len(sizes):
         raise ValueError("codebook_embeddings must provide one tensor per codebook.")
+    if not values:
+        return
     if any(not torch.is_floating_point(value) for value in values):
         raise TypeError("codebook_embeddings must be floating point.")
     if any(value.dim() != 2 for value in values):
@@ -318,18 +400,19 @@ def _heads(hidden_dim: int, requested: int) -> int:
     raise RuntimeError("Qwen MTP predictor requires an even attention head dimension.")
 
 
-def _frame_mask(condition: Tensor, mask: Tensor | None) -> Tensor:
+def _frame_mask(condition: Tensor, mask: Tensor | None, *, validate: bool = True) -> Tensor:
     if mask is None:
         frame_mask = torch.ones(condition.shape[:2], dtype=torch.bool, device=condition.device)
     else:
-        if mask.shape != condition.shape[:2]:
-            raise ValueError("frame mask must align with condition.")
-        if mask.dtype != torch.bool:
-            raise TypeError("frame mask must be boolean.")
-        if mask.device != condition.device:
-            raise ValueError("frame mask and condition must use the same device.")
+        if validate:
+            if mask.shape != condition.shape[:2]:
+                raise ValueError("frame mask must align with condition.")
+            if mask.dtype != torch.bool:
+                raise TypeError("frame mask must be boolean.")
+            if mask.device != condition.device:
+                raise ValueError("frame mask and condition must use the same device.")
         frame_mask = mask
-    if frame_mask.size(0) < 1 or not bool(frame_mask.any(dim=1).all()):
+    if validate and (frame_mask.size(0) < 1 or not bool(frame_mask.any(dim=1).all())):
         raise ValueError("each condition row must contain a valid frame.")
     return frame_mask
 

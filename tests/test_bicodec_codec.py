@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,10 +14,35 @@ from torch import nn
 from anytrain._buffer import register_buffer
 from anytrain.codec import AcousticLayout, SemanticAcousticCodes
 from anytrain.codec.bicodec.assets import BiCodecAssets
-from anytrain.codec.bicodec.codec import BiCodec
+from anytrain.codec.bicodec.codec import BICODEC_INSTALL_COMMAND, BiCodec
 
 
 class BiCodecCodecTest(unittest.TestCase):
+    def test_install_command_is_copyable_and_uses_the_project_fork(self):
+        self.assertEqual(
+            BICODEC_INSTALL_COMMAND,
+            'python -m pip install "spark-tts @ '
+            "git+https://github.com/rookiejune/Spark-TTS.git@"
+            'cf5302b0da797aeffc18af172de4dda0bb6ab718"',
+        )
+        subprocess.run(
+            ["/bin/sh", "-n"],
+            input=BICODEC_INSTALL_COMMAND,
+            text=True,
+            check=True,
+        )
+
+    def test_missing_spark_tts_error_includes_the_install_command(self):
+        with (
+            patch.dict(sys.modules, {"sparktts": None}),
+            patch("anytrain.codec.bicodec.codec.ensure_bicodec_assets") as assets,
+            self.assertRaises(ImportError) as raised,
+        ):
+            BiCodec.from_pretrained(device="cpu")
+
+        self.assertTrue(str(raised.exception).endswith(BICODEC_INSTALL_COMMAND))
+        assets.assert_not_called()
+
     def test_from_pretrained_loads_resolved_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -61,6 +61,11 @@ class SemanticAcousticCodec(CodecBackend, Protocol):
 `[batch, acoustic_unit, codebook]`。`FRAME_ALIGNED` 要求两个 unit 轴对齐，
 `FIXED_LENGTH` 表示 acoustic unit 数由 codec 固定，不随 semantic 帧数变化。
 
+需要把 acoustic code 转成连续训练特征时，使用
+`anytrain.codec.masked_acoustic_features(codec, acoustic_codes, mask)`。该 helper 会先把
+padding code 置零，再调用 backend，并对输出特征重新应用 unit mask，避免 padding 泄漏到
+下游 loss；已经由上游 batch 契约验证过的内部热路径可以传 `validate=False`。
+
 structured codec 的 acoustic feature training boundary 把 feature tensor 保持为
 `[batch, acoustic_unit, feature_dim]`；`acoustic_unit_length=None` 只适用于可变长度的
 `FRAME_ALIGNED` codec。BiCodec 的 feature target 是 32 个 global slot 的 speaker latent，

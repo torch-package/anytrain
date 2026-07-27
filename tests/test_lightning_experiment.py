@@ -40,6 +40,18 @@ class ExperimentTest(unittest.TestCase):
         self.assertIsNone(experiment.audio(trainer))
         self.assertIsNone(experiment.histogram(trainer))
 
+    def test_uses_first_logger_when_trainer_logger_is_missing(self) -> None:
+        writer = SimpleNamespace(add_scalar=lambda *args, **kwargs: None)
+        trainer = cast(
+            Trainer,
+            SimpleNamespace(
+                logger=None,
+                loggers=[SimpleNamespace(experiment=writer)],
+            ),
+        )
+
+        self.assertIs(experiment.scalar(trainer), writer)
+
 
 def _trainer(writer: object) -> Trainer:
     return cast(

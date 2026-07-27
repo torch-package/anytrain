@@ -1,11 +1,28 @@
 import importlib.util
 import unittest
+from collections import OrderedDict
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
+from torch import nn
 
 from anytrain.module.qwen import QwenMTPCodebookPredictor, top_p_filter
 
 TRANSFORMERS_AVAILABLE = importlib.util.find_spec("transformers") is not None
+
+
+class _FakeQwen3Model(nn.Module):
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.embed_tokens = nn.Embedding(1, hidden_size)
+
+    def forward(self, *, inputs_embeds, use_cache=False, **kwargs):
+        del kwargs
+        return SimpleNamespace(
+            last_hidden_state=inputs_embeds,
+            past_key_values=() if use_cache else None,
+        )
 
 
 class QwenMTPModuleTest(unittest.TestCase):
@@ -21,6 +38,91 @@ class QwenMTPModuleTest(unittest.TestCase):
     def test_predictor_reports_missing_transformers(self):
         with self.assertRaisesRegex(ImportError, "transformers"):
             QwenMTPCodebookPredictor(4, 2, (5, 7), hidden_dim=4, layers=1, heads=1)
+
+    def test_predictor_registers_only_used_residual_parameters(self):
+        with patch(
+            "anytrain.module.qwen.mtp.build_qwen3_model",
+            side_effect=lambda **kwargs: _FakeQwen3Model(kwargs["hidden_size"]),
+        ):
+            predictor = QwenMTPCodebookPredictor(
+                4,
+                3,
+                (5, 7, 9),
+                codebook_embeddings=tuple(torch.randn(size, 2) for size in (5, 7, 9)),
+                hidden_dim=4,
+                layers=1,
+                heads=1,
+                ffn_ratio=2,
+                mtp_layers=1,
+                mtp_heads=1,
+            )
+
+        self.assertEqual(len(predictor.codebook_embeddings), 2)
+        self.assertEqual(len(predictor.embedding_projections), 2)
+        self.assertEqual(tuple(predictor.codebook_bos.shape), (2, 4))
+        self.assertNotIn("codebook_embeddings.2.weight", predictor.state_dict())
+        self.assertNotIn("embedding_projections.2.weight", predictor.state_dict())
+
+    def test_predictor_loads_legacy_dead_parameters(self):
+        with patch(
+            "anytrain.module.qwen.mtp.build_qwen3_model",
+            side_effect=lambda **kwargs: _FakeQwen3Model(kwargs["hidden_size"]),
+        ):
+            predictor = QwenMTPCodebookPredictor(
+                4,
+                3,
+                (5, 7, 9),
+                codebook_embeddings=tuple(torch.randn(size, 2) for size in (5, 7, 9)),
+                hidden_dim=4,
+                layers=1,
+                heads=1,
+                ffn_ratio=2,
+                mtp_layers=1,
+                mtp_heads=1,
+            )
+
+        state = predictor.state_dict()
+        legacy = OrderedDict((key, value.clone()) for key, value in state.items())
+        legacy["codebook_bos"] = torch.cat(
+            (torch.full((1, 4), 11.0), state["codebook_bos"]),
+            dim=0,
+        )
+        legacy["codebook_embeddings.2.weight"] = torch.randn(9, 2)
+        legacy["embedding_projections.2.weight"] = torch.randn(4, 2)
+        legacy["embedding_projections.2.bias"] = torch.randn(4)
+
+        result = predictor.load_state_dict(legacy, strict=True)
+
+        self.assertEqual(result.missing_keys, [])
+        self.assertEqual(result.unexpected_keys, [])
+        torch.testing.assert_close(predictor.codebook_bos, state["codebook_bos"])
+
+    def test_single_codebook_keeps_temporal_embedding(self):
+        with patch(
+            "anytrain.module.qwen.mtp.build_qwen3_model",
+            side_effect=lambda **kwargs: _FakeQwen3Model(kwargs["hidden_size"]),
+        ):
+            predictor = QwenMTPCodebookPredictor(
+                4,
+                1,
+                5,
+                hidden_dim=4,
+                layers=1,
+                heads=1,
+                ffn_ratio=2,
+                mtp_layers=1,
+                mtp_heads=1,
+            )
+
+        self.assertEqual(len(predictor.codebook_embeddings), 1)
+        self.assertEqual(len(predictor.embedding_projections), 1)
+        self.assertEqual(tuple(predictor.codebook_bos.shape), (0, 4))
+        logits = predictor(
+            torch.randn(1, 2, 4),
+            torch.tensor([[[1], [2]]]),
+            validate=False,
+        )
+        self.assertEqual([value.shape for value in logits], [(1, 2, 5)])
 
     @unittest.skipUnless(TRANSFORMERS_AVAILABLE, "transformers is not installed")
     def test_predictor_trains_and_generates(self):

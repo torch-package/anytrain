@@ -58,10 +58,15 @@ def histogram(trainer: Trainer) -> Histogram | None:
 
 
 def _experiment(trainer: Trainer) -> object | None:
-    logger = trainer.logger
-    if logger is None:
-        return None
-    return getattr(logger, "experiment", None)
+    logger = getattr(trainer, "logger", None)
+    if logger is not None:
+        experiment = getattr(logger, "experiment", None)
+        if experiment is not None:
+            return experiment
+    loggers = getattr(trainer, "loggers", None)
+    if loggers:
+        return getattr(loggers[0], "experiment", None)
+    return None
 
 
 __all__ = [

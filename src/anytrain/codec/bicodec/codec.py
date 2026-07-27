@@ -16,11 +16,10 @@ from .assets import BiCodecAssets, ensure_bicodec_assets
 SAMPLE_RATE = 16_000
 NUM_CHANNELS = 1
 FEATURE_HIDDEN_STATE_INDEXES = (11, 14, 16)
-BICODEC_INSTALL_HINT = (
-    "Clone https://github.com/SparkAudio/Spark-TTS, add it to PYTHONPATH, and install "
-    'wrapper dependencies with `python -m pip install "einx>=0.3" "huggingface-hub>=0.23" '
-    '"omegaconf>=2.3" "safetensors>=0.5" "soundfile>=0.12" "soxr>=0.5" '
-    '"torchaudio>=2.5" "transformers>=4.46"`.'
+BICODEC_INSTALL_COMMAND = (
+    'python -m pip install "spark-tts @ '
+    "git+https://github.com/rookiejune/Spark-TTS.git@"
+    'cf5302b0da797aeffc18af172de4dda0bb6ab718"'
 )
 
 
@@ -109,6 +108,8 @@ class BiCodec(DeviceModule):
         local_files_only: bool = False,
         force_download: bool = False,
     ) -> BiCodec:
+        model_cls = _load_bicodec_model()
+        processor_cls, feature_extractor_cls = _load_wav2vec2_classes()
         assets: BiCodecAssets | None = None
         if model_dir is None:
             assets = ensure_bicodec_assets(
@@ -124,8 +125,6 @@ class BiCodec(DeviceModule):
                 raise FileNotFoundError(f"BiCodec model directory does not exist: {root}.")
 
         resolved_device = _device(device)
-        model_cls = _load_bicodec_model()
-        processor_cls, feature_extractor_cls = _load_wav2vec2_classes()
         config = _load_config(root / "config.yaml")
 
         model = model_cls.load_from_checkpoint(root / "BiCodec").to(resolved_device)
@@ -508,8 +507,9 @@ def _load_bicodec_model() -> Any:
         from sparktts.models.bicodec import BiCodec as UpstreamBiCodec
     except ImportError as exc:
         raise ImportError(
-            "BiCodec requires the Spark-TTS source package on PYTHONPATH and its "
-            f"runtime dependencies. {BICODEC_INSTALL_HINT}"
+            "BiCodec requires the Spark-TTS source package and its runtime dependencies. "
+            "Run this command in the shell that will launch Python:\n"
+            f"{BICODEC_INSTALL_COMMAND}"
         ) from exc
     return UpstreamBiCodec
 
@@ -519,7 +519,9 @@ def _load_config(path: Path) -> dict[str, Any]:
         from sparktts.utils.file import load_config
     except ImportError as exc:
         raise ImportError(
-            "BiCodec config loading requires the Spark-TTS source package on PYTHONPATH."
+            "BiCodec config loading requires the Spark-TTS source package. "
+            "Run this command in the shell that will launch Python:\n"
+            f"{BICODEC_INSTALL_COMMAND}"
         ) from exc
     config = load_config(str(path))
     try:

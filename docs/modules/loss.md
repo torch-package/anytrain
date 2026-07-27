@@ -13,6 +13,8 @@ src/anytrain/loss/
   __init__.py
   abc.py
   balancer.py
+  codebook.py
+  frame.py
   group.py
   temporal/
     __init__.py
@@ -39,6 +41,10 @@ src/anytrain/loss/
 - `FixedWeightLossBalancer`
 - `UncertaintyLossBalancer`
 - `LossGroup`
+- `LossItem`
+- `MaskedFrameMSELoss` / `masked_frame_mse_loss`
+- `MaskedCosineAlignmentLoss` / `masked_cosine_alignment_loss`
+- `MaskedCodebookCrossEntropyLoss`
 
 音频相关 loss 通过子模块导出：
 
@@ -78,6 +84,11 @@ loss, details
 - `details` 的 key 必须是非空字符串，普通子 loss 中不能包含 `/`。
 - `details` 的 value 必须是 float 或 0-d `torch.Tensor`。
 - 返回给调用方的 `details` tensor 会被 detach，避免把日志路径接进反传图。
+
+`LossItem` 保存按样本/行聚合的 loss 与可选 details。`MaskedFrameMSELoss` 和
+`MaskedCosineAlignmentLoss` 对 `[B, F, D]` 表示执行 frame mask 后的 MSE 或 cosine alignment；
+`MaskedCodebookCrossEntropyLoss` 接收每个 codebook 一个 `[B, F, vocab_q]` logits，支持不同
+vocab size、frame mask、逐 codebook CE 和可选 `codebook_N_top1` 监控。
 
 ## 基础 Loss
 

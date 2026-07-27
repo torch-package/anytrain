@@ -6,16 +6,13 @@ Spark-TTS 源码，也不在 import `anytrain.codec` 时导入 `sparktts`；只�
 
 ## 安装
 
-Spark-TTS 当前仓库没有标准 Python package metadata，不能仅靠 pip extra 安装出
-`sparktts` 包。推荐先克隆官方源码并加入 `PYTHONPATH`：
+`rookiejune/Spark-TTS` fork 提供标准 Python package metadata。直接安装固定 commit；该命令会同时
+安装 `sparktts` 和 BiCodec runtime 依赖：
 
-    git clone https://github.com/SparkAudio/Spark-TTS.git /path/to/Spark-TTS
-    export PYTHONPATH=/path/to/Spark-TTS:$PYTHONPATH
-    python -m pip install "einx>=0.3" "huggingface-hub>=0.23" "omegaconf>=2.3" "safetensors>=0.5" "soundfile>=0.12" "soxr>=0.5" "torchaudio>=2.5" "transformers>=4.46"
+    python -m pip install "spark-tts @ git+https://github.com/rookiejune/Spark-TTS.git@cf5302b0da797aeffc18af172de4dda0bb6ab718"
 
-`bicodec` extra 只声明 wrapper 需要的通用依赖，例如 `einx`、`huggingface-hub`、
-`transformers`、`torchaudio`、`safetensors` 和 `omegaconf`。如果 Spark-TTS 后续发布
-installable package，再把 `sparktts` 依赖加入 extra。
+安装不需要手动 clone 或设置 `PYTHONPATH`。fork 的 package metadata 不包含 Gradio Web UI；
+BiCodec runtime 不依赖该 UI。
 
 ## 使用
 
