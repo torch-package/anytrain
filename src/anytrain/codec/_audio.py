@@ -33,4 +33,13 @@ def model_frame_rate(model: object, sample_rate: int) -> float:
         hop_length = getattr(candidate, "hop_length", None)
         if isinstance(hop_length, (int, float)) and not isinstance(hop_length, bool) and hop_length > 0:
             return float(sample_rate / hop_length)
-    raise TypeError("codec backend must expose a positive frame_rate or hop_length.")
+        downsampling_ratio = getattr(candidate, "downsampling_ratio", None)
+        if (
+            isinstance(downsampling_ratio, (int, float))
+            and not isinstance(downsampling_ratio, bool)
+            and downsampling_ratio > 0
+        ):
+            return float(sample_rate / downsampling_ratio)
+    raise TypeError(
+        "codec backend must expose a positive frame_rate, hop_length, or downsampling_ratio."
+    )

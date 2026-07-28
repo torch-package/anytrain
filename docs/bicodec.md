@@ -62,8 +62,9 @@ quantizer，因此 `acoustic_codebook_sizes` 只有一项。reference 配置当�
 BiCodec 提供 `tokenize()` / `detokenize(codes)` structured 接口，以及同一
 `SemanticAcousticCodec` 契约中的 acoustic feature boundary：`acoustic_codes_to_features()` 返回 `[batch, 32, latent]`
 的 global slot 特征，`decode_features()` 接收同样的独立 acoustic 轴。不要把 global slot
-广播到 semantic frame，也不要把 slot 解释成 codebook 轴。FM 因此可以在 32 个 slot 上做
-flow matching；semantic condition 由训练侧 pooling 后广播到这 32 个输出位置。
+广播到 semantic frame，也不要把 slot 解释成 codebook 轴。FM 因此可以在 32 个 slot 上做 flow matching；
+acoustic generator 需要为每个固定 slot 构造 condition，例如让 learned slot query 通过 masked
+cross-attention 读取完整 semantic memory。BiCodec wrapper 本身不规定训练侧 condition 结构。
 
 ## Checkpoint 与缓存
 

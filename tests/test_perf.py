@@ -169,6 +169,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             {"on_step": False, "on_epoch": True, "logger": True},
         )
         self.assertEqual(logger.hyperparams[0]["perf/hardware_peak_flops_source"], "override")
+        self.assertEqual(logger.hyperparams[0]["perf/model_flops_source"], "static")
 
         with patch("time.perf_counter", side_effect=[1.0, 3.0]):
             callback.on_train_batch_start(trainer, module, batch=None, batch_idx=0)
@@ -526,6 +527,60 @@ class PerformanceCallbackTest(unittest.TestCase):
         self.assertEqual(module.performance_logs[0]["perf/model_flops_per_step"], 30.0)
         self.assertEqual(module.performance_logs[1]["perf/model_flops_per_step"], 70.0)
 
+    def test_callback_profiles_real_train_batch_flops(self):
+        import torch
+        from lightning import pytorch as pl
+        from torch.utils.data import DataLoader, TensorDataset
+
+        from anytrain.lightning import PerformanceCallback
+
+        class Module(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(2, 1)
+                self.performance_logs = []
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                inputs, targets = batch
+                return torch.nn.functional.mse_loss(self.linear(inputs), targets)
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.01)
+
+            def log_dict(self, dictionary, *args, **kwargs):
+                if "perf/step_time" in dictionary:
+                    self.performance_logs.append(dict(dictionary))
+                return super().log_dict(dictionary, *args, **kwargs)
+
+        callback = PerformanceCallback(
+            profile_flops=True,
+            hardware_peak_flops=200.0,
+            warmup_steps=0,
+            log_every_n_steps=1,
+            sync_cuda=False,
+        )
+        module = Module()
+        dataset = TensorDataset(torch.ones(1, 2), torch.zeros(1, 1))
+        with TemporaryDirectory() as directory:
+            trainer = pl.Trainer(
+                accelerator="cpu",
+                devices=1,
+                max_steps=1,
+                callbacks=[callback],
+                default_root_dir=directory,
+                logger=False,
+                enable_checkpointing=False,
+                enable_model_summary=False,
+                enable_progress_bar=False,
+            )
+            trainer.fit(module, train_dataloaders=DataLoader(dataset, batch_size=1))
+
+        self.assertEqual(len(module.performance_logs), 1)
+        metrics = module.performance_logs[0]
+        self.assertGreater(metrics["perf/model_flops_per_step"], 0.0)
+        self.assertGreater(metrics["perf/mfu"], 0.0)
+
     def test_callback_rejects_static_and_dynamic_flops_together(self):
         from anytrain.lightning import PerformanceCallback
 
@@ -533,6 +588,12 @@ class PerformanceCallbackTest(unittest.TestCase):
             PerformanceCallback(
                 model_flops_per_step=100.0,
                 model_flops_per_batch=_FlopsProvider(),
+            )
+
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            PerformanceCallback(
+                model_flops_per_step=100.0,
+                profile_flops=True,
             )
 
     def test_callback_rejects_invalid_dynamic_flops(self):

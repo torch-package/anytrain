@@ -5,7 +5,7 @@ import time
 import warnings
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
 from lightning import pytorch as pl
@@ -16,6 +16,9 @@ from anytrain.lightning.perf import (
     infer_peak_flops,
     model_flops_utilization,
 )
+
+if TYPE_CHECKING:
+    from torch.utils.flop_counter import FlopCounterMode
 
 
 class FlopsProvider(Protocol):
@@ -53,6 +56,7 @@ class PerformanceCallback(pl.Callback):
         *,
         model_flops_per_step: float | None = None,
         model_flops_per_batch: FlopsProvider | None = None,
+        profile_flops: bool = False,
         compute_dtype: torch.dtype | str | None = None,
         hardware_peak_flops: float | None = None,
         log_every_n_steps: int = 100,
@@ -68,9 +72,19 @@ class PerformanceCallback(pl.Callback):
             _require_positive(model_flops_per_step, "model_flops_per_step")
         if model_flops_per_batch is not None and not callable(model_flops_per_batch):
             raise TypeError("model_flops_per_batch must be callable.")
-        if model_flops_per_step is not None and model_flops_per_batch is not None:
+        if not isinstance(profile_flops, bool):
+            raise TypeError("profile_flops must be a boolean.")
+        flops_sources = sum(
+            (
+                model_flops_per_step is not None,
+                model_flops_per_batch is not None,
+                profile_flops,
+            )
+        )
+        if flops_sources > 1:
             raise ValueError(
-                "model_flops_per_step and model_flops_per_batch are mutually exclusive."
+                "model_flops_per_step, model_flops_per_batch, and profile_flops "
+                "are mutually exclusive."
             )
         if hardware_peak_flops is not None:
             _require_positive(hardware_peak_flops, "hardware_peak_flops")
@@ -83,6 +97,7 @@ class PerformanceCallback(pl.Callback):
 
         self.model_flops_per_step = model_flops_per_step
         self.model_flops_per_batch = model_flops_per_batch
+        self.profile_flops = profile_flops
         self.compute_dtype = compute_dtype
         self.hardware_peak_flops = hardware_peak_flops
         self.log_every_n_steps = log_every_n_steps
@@ -95,10 +110,12 @@ class PerformanceCallback(pl.Callback):
         self._last_global_step: int | None = None
         self._pending_time = 0.0
         self._pending_flops = 0.0
+        self._flop_counter: FlopCounterMode | None = None
         self._measurements: deque[_Measurement] = deque(maxlen=measure_window_steps)
 
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._reset(global_step=int(trainer.global_step))
+        _reset_peak_memory(pl_module)
         self.hardware = _infer_hardware(
             trainer=trainer,
             pl_module=pl_module,
@@ -116,7 +133,17 @@ class PerformanceCallback(pl.Callback):
             metrics["perf/hardware_peak_flops"] = float(self.hardware.flops)
 
         pl_module.log_dict(metrics, on_step=False, on_epoch=True, logger=True)
-        _log_metadata(trainer, _metadata(self.hardware))
+        _log_metadata(
+            trainer,
+            _metadata(
+                self.hardware,
+                model_flops_source=_model_flops_source(
+                    model_flops_per_step=self.model_flops_per_step,
+                    model_flops_per_batch=self.model_flops_per_batch,
+                    profile_flops=self.profile_flops,
+                ),
+            ),
+        )
 
     def on_train_batch_start(
         self,
@@ -132,6 +159,10 @@ class PerformanceCallback(pl.Callback):
             self._last_global_step = int(trainer.global_step)
         _sync_distributed(trainer, self.sync_distributed)
         _sync_cuda(self.sync_cuda)
+        if self.profile_flops:
+            counter = _flop_counter()
+            counter.__enter__()
+            self._flop_counter = counter
         self._step_started_at = time.perf_counter()
 
     def on_train_batch_end(
@@ -145,12 +176,15 @@ class PerformanceCallback(pl.Callback):
         if self._step_started_at is None:
             return
 
+        profiled_flops = self._stop_flop_counter()
         _sync_cuda(self.sync_cuda)
         batch_time = time.perf_counter() - self._step_started_at
         self._step_started_at = None
         _require_positive(batch_time, "measured batch time")
         self._pending_time += batch_time
-        if self.model_flops_per_batch is not None:
+        if profiled_flops is not None:
+            self._pending_flops += _flops(profiled_flops, "profiled train batch FLOPs")
+        elif self.model_flops_per_batch is not None:
             self._pending_flops += _flops(
                 self.model_flops_per_batch(
                     trainer=trainer,
@@ -173,7 +207,7 @@ class PerformanceCallback(pl.Callback):
             return
 
         flops: float | None = None
-        if self.model_flops_per_batch is not None:
+        if self.profile_flops or self.model_flops_per_batch is not None:
             flops = self._pending_flops
         elif self.model_flops_per_step is not None:
             flops = float(self.model_flops_per_step) * optimizer_steps
@@ -218,6 +252,7 @@ class PerformanceCallback(pl.Callback):
                 step_time=totals.window_time,
                 hardware_peak_flops=totals.hardware_peak_flops,
             )
+        metrics.update(_memory_metrics(trainer, pl_module))
 
         pl_module.log_dict(metrics, on_step=True, on_epoch=False, logger=True, sync_dist=False)
 
@@ -234,10 +269,19 @@ class PerformanceCallback(pl.Callback):
         self._measurements.clear()
 
     def _discard_pending(self, *, global_step: int) -> None:
+        self._stop_flop_counter()
         self._step_started_at = None
         self._last_global_step = global_step
         self._pending_time = 0.0
         self._pending_flops = 0.0
+
+    def _stop_flop_counter(self) -> float | None:
+        counter = self._flop_counter
+        if counter is None:
+            return None
+        self._flop_counter = None
+        counter.__exit__(None, None, None)
+        return float(counter.get_total_flops())
 
 
 def _window_flops(measurements: deque[_Measurement]) -> float | None:
@@ -372,15 +416,77 @@ def _sync_distributed(trainer: pl.Trainer, enabled: bool) -> None:
     barrier()
 
 
-def _metadata(hardware: PeakFlops | None) -> dict[str, str | float]:
-    if hardware is None:
-        return {"perf/hardware_peak_flops_source": "unresolved"}
+def _reset_peak_memory(pl_module: pl.LightningModule) -> None:
+    device = _device(pl_module)
+    if device is not None and device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+
+def _memory_metrics(
+    trainer: pl.Trainer,
+    pl_module: pl.LightningModule,
+) -> dict[str, float]:
+    device = _device(pl_module)
+    if device is None or device.type != "cuda":
+        return {}
+    values = torch.tensor(
+        [
+            torch.cuda.max_memory_allocated(device),
+            torch.cuda.max_memory_reserved(device),
+        ],
+        dtype=torch.float64,
+        device=device,
+    )
+    if int(getattr(trainer, "world_size", 1)) > 1:
+        strategy = getattr(trainer, "strategy", None)
+        if strategy is None:
+            raise RuntimeError("distributed memory measurement requires trainer.strategy.")
+        values = strategy.reduce(values, reduce_op="max")
+    allocated, reserved = values.detach().cpu().tolist()
     return {
+        "perf/gpu_peak_memory_allocated_bytes": float(allocated),
+        "perf/gpu_peak_memory_reserved_bytes": float(reserved),
+    }
+
+
+def _metadata(
+    hardware: PeakFlops | None,
+    *,
+    model_flops_source: str,
+) -> dict[str, str | float]:
+    if hardware is None:
+        return {
+            "perf/model_flops_source": model_flops_source,
+            "perf/hardware_peak_flops_source": "unresolved",
+        }
+    return {
+        "perf/model_flops_source": model_flops_source,
         "perf/hardware_peak_flops_source": hardware.source,
         "perf/hardware_device_name": hardware.device_name,
         "perf/hardware_compute_dtype": hardware.dtype,
         "perf/hardware_peak_flops": hardware.flops,
     }
+
+
+def _model_flops_source(
+    *,
+    model_flops_per_step: float | None,
+    model_flops_per_batch: FlopsProvider | None,
+    profile_flops: bool,
+) -> str:
+    if profile_flops:
+        return "profile"
+    if model_flops_per_batch is not None:
+        return "provider"
+    if model_flops_per_step is not None:
+        return "static"
+    return "unresolved"
+
+
+def _flop_counter() -> FlopCounterMode:
+    from torch.utils.flop_counter import FlopCounterMode
+
+    return FlopCounterMode(display=False)
 
 
 def _log_metadata(trainer: pl.Trainer, metadata: dict[str, str | float]) -> None:

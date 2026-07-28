@@ -88,13 +88,15 @@ class QwenMTPCodebookPredictor(nn.Module):
             attention_heads=_heads(hidden_dim, heads),
         )
         self.temporal.embed_tokens.requires_grad_(False)
-        self.mtp = _qwen3_model(
-            hidden_dim=hidden_dim,
-            ffn_ratio=ffn_ratio,
-            layers=mtp_layers,
-            attention_heads=_heads(hidden_dim, mtp_heads),
-        )
-        self.mtp.embed_tokens.requires_grad_(False)
+        self.mtp: nn.Module | None = None
+        if codebooks > 1:
+            self.mtp = _qwen3_model(
+                hidden_dim=hidden_dim,
+                ffn_ratio=ffn_ratio,
+                layers=mtp_layers,
+                attention_heads=_heads(hidden_dim, mtp_heads),
+            )
+            self.mtp.embed_tokens.requires_grad_(False)
         self.heads = nn.ModuleList(nn.Linear(hidden_dim, size) for size in sizes)
 
     def _load_from_state_dict(
@@ -117,6 +119,11 @@ class QwenMTPCodebookPredictor(nn.Module):
                 for key in tuple(state_dict):
                     if key.startswith(dead_prefix):
                         del state_dict[key]
+        else:
+            legacy_mtp_prefix = f"{prefix}mtp."
+            for key in tuple(state_dict):
+                if key.startswith(legacy_mtp_prefix):
+                    del state_dict[key]
 
         bos_key = f"{prefix}codebook_bos"
         if bos_key in state_dict:
@@ -251,6 +258,8 @@ class QwenMTPCodebookPredictor(nn.Module):
         packed_targets: Tensor | None,
         frame_mask: Tensor,
     ) -> list[Tensor]:
+        if self.mtp is None:
+            raise RuntimeError("MTP logits require more than one codebook.")
         inputs = []
         for codebook in range(1, self.codebooks):
             if packed_targets is None:
@@ -286,6 +295,8 @@ class QwenMTPCodebookPredictor(nn.Module):
     ) -> Tensor:
         if self.codebooks == 1:
             return first.new_zeros((first.size(0), 0))
+        if self.mtp is None:
+            raise RuntimeError("MTP sampling requires more than one codebook.")
         output: list[Tensor] = []
         past_key_values = None
         previous = first

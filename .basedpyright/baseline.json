@@ -1,0 +1,922 @@
+{
+    "files": {
+        "./src/anytrain/_compat.py": [
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 14,
+                    "endColumn": 25,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 14,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/chat/_provider.py": [
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 26,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 26,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/bicodec/assets.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 44,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/bicodec/codec.py": [
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 9,
+                    "lineCount": 4
+                }
+            },
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 36,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportOptionalMemberAccess",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 39,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 17,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/dac/codec.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 31,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 31,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 20,
+                    "endColumn": 37,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 20,
+                    "endColumn": 37,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 35,
+                    "endColumn": 54,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 35,
+                    "endColumn": 54,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 62,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 30,
+                    "endColumn": 86,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 25,
+                    "endColumn": 71,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 46,
+                    "endColumn": 56,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 74,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/longcat/assets.py": [
+            {
+                "code": "reportIndexIssue",
+                "range": {
+                    "startColumn": 8,
+                    "endColumn": 28,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/longcat/codec.py": [
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 32,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/stable_codec/codec.py": [
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 12,
+                    "endColumn": 65,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 9,
+                    "lineCount": 5
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 9,
+                    "lineCount": 4
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 8,
+                    "endColumn": 49,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 25,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/unicodec/assets.py": [
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 21,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/codec/unicodec/codec.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 48,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 9,
+                    "lineCount": 5
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 9,
+                    "lineCount": 4
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 58,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 21,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/evaluator/speech/asr.py": [
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 19,
+                    "endColumn": 26,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/evaluator/speech/audio.py": [
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 20,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/evaluator/speech/utmos.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 31,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 31,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/evaluator/text/scores.py": [
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 38,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 38,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 45,
+                    "endColumn": 49,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/example/audio.py": [
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 9,
+                    "endColumn": 28,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/example/resources.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 24,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/framework/flow_matching/sampler.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 31,
+                    "endColumn": 37,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 19,
+                    "endColumn": 64,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/lightning/callback/debug.py": [
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 39,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/loss/task/codec.py": [
+            {
+                "code": "reportIncompatibleMethodOverride",
+                "range": {
+                    "startColumn": 8,
+                    "endColumn": 15,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 45,
+                    "endColumn": 50,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/module/dit.py": [
+            {
+                "code": "reportPossiblyUnboundVariable",
+                "range": {
+                    "startColumn": 43,
+                    "endColumn": 56,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPossiblyUnboundVariable",
+                "range": {
+                    "startColumn": 60,
+                    "endColumn": 73,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPossiblyUnboundVariable",
+                "range": {
+                    "startColumn": 30,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 31,
+                    "endColumn": 61,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/module/idspace/embedding.py": [
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 17,
+                    "endColumn": 71,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 28,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/module/quantization/auto_group_residual.py": [
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 24,
+                    "endColumn": 71,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 34,
+                    "endColumn": 79,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 97,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 55,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 43,
+                    "endColumn": 49,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 34,
+                    "endColumn": 88,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 29,
+                    "endColumn": 96,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/module/quantization/lookup.py": [
+            {
+                "code": "reportOptionalOperand",
+                "range": {
+                    "startColumn": 20,
+                    "endColumn": 39,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPossiblyUnboundVariable",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 43,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/module/quantization/residual.py": [
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 20,
+                    "endColumn": 63,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 31,
+                    "endColumn": 78,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 34,
+                    "endColumn": 86,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 97,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 53,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 41,
+                    "endColumn": 47,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 34,
+                    "endColumn": 88,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 29,
+                    "endColumn": 96,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/optim/adamw.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 13,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 10,
+                    "endColumn": 27,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/optim/muon.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/optim/scheduler/compose.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/tts/moss/tts.py": [
+            {
+                "code": "reportInconsistentOverload",
+                "range": {
+                    "startColumn": 8,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAttributeAccessIssue",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/tts/protocol.py": [
+            {
+                "code": "reportInconsistentOverload",
+                "range": {
+                    "startColumn": 8,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/tts/qwen/_deps.py": [
+            {
+                "code": "reportMissingImports",
+                "range": {
+                    "startColumn": 13,
+                    "endColumn": 21,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./src/anytrain/tts/qwen/tts.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 34,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 25,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportInconsistentOverload",
+                "range": {
+                    "startColumn": 8,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 68,
+                    "endColumn": 77,
+                    "lineCount": 1
+                }
+            }
+        ]
+    }
+}

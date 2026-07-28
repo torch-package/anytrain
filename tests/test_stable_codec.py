@@ -165,6 +165,13 @@ class StableCodecTest(unittest.TestCase):
 
         resample.assert_called_once_with(audio, 8000, 16000)
 
+    def test_frame_rate_reads_nested_downsampling_ratio(self):
+        model = FakeStableCodecBackend(pretrained_model="fake", device=torch.device("cpu"))
+        model.model.downsampling_ratio = 640
+        codec = StableCodec(model=model, device=torch.device("cpu"), posthoc_bottleneck=None)
+
+        self.assertEqual(codec.frame_rate, 25.0)
+
     def test_decode_uses_tokens(self):
         model = FakeStableCodecBackend(pretrained_model="fake", device=torch.device("cpu"))
         codec = StableCodec(model=model, device=torch.device("cpu"), posthoc_bottleneck=None)

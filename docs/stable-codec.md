@@ -61,6 +61,8 @@ latents, codes = codec.encode_latents(audio, sample_rate=16000)
 
 `audio` 需要是 `[batch, 1, time]` 的 16 kHz 单声道 waveform。Stable Codec 没有
 UniCodec 的 `domain` 参数；默认模型是 `stabilityai/stable-codec-speech-16k`。
+官方 speech 模型通过 `downsampling_ratio=640` 暴露帧步长，因此 wrapper 的
+`frame_rate` 为 `16000 / 640 = 25 Hz`。
 
 主路径按统一 codec 契约设计：`encode()` 返回 `[batch, frame, codebook]` codes，
 `decode()` 接收同样形状的 codes

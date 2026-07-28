@@ -101,7 +101,7 @@ class QwenMTPModuleTest(unittest.TestCase):
         with patch(
             "anytrain.module.qwen.mtp.build_qwen3_model",
             side_effect=lambda **kwargs: _FakeQwen3Model(kwargs["hidden_size"]),
-        ):
+        ) as build:
             predictor = QwenMTPCodebookPredictor(
                 4,
                 1,
@@ -117,12 +117,41 @@ class QwenMTPModuleTest(unittest.TestCase):
         self.assertEqual(len(predictor.codebook_embeddings), 1)
         self.assertEqual(len(predictor.embedding_projections), 1)
         self.assertEqual(tuple(predictor.codebook_bos.shape), (0, 4))
+        self.assertEqual(build.call_count, 1)
+        self.assertIsNone(predictor.mtp)
+        self.assertFalse(any(key.startswith("mtp.") for key in predictor.state_dict()))
         logits = predictor(
             torch.randn(1, 2, 4),
             torch.tensor([[[1], [2]]]),
             validate=False,
         )
         self.assertEqual([value.shape for value in logits], [(1, 2, 5)])
+
+    def test_single_codebook_loads_legacy_mtp_parameters(self):
+        with patch(
+            "anytrain.module.qwen.mtp.build_qwen3_model",
+            side_effect=lambda **kwargs: _FakeQwen3Model(kwargs["hidden_size"]),
+        ):
+            predictor = QwenMTPCodebookPredictor(
+                4,
+                1,
+                5,
+                hidden_dim=4,
+                layers=1,
+                heads=1,
+                ffn_ratio=2,
+                mtp_layers=1,
+                mtp_heads=1,
+            )
+
+        legacy = OrderedDict(
+            (key, value.clone()) for key, value in predictor.state_dict().items()
+        )
+        legacy["mtp.embed_tokens.weight"] = torch.randn(1, 4)
+        result = predictor.load_state_dict(legacy, strict=True)
+
+        self.assertEqual(result.missing_keys, [])
+        self.assertEqual(result.unexpected_keys, [])
 
     @unittest.skipUnless(TRANSFORMERS_AVAILABLE, "transformers is not installed")
     def test_predictor_trains_and_generates(self):

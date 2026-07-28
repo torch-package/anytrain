@@ -99,6 +99,27 @@ provider 返回当前 rank、当前 train batch/microbatch 的训练 FLOPs，必
 number。它可以按下游 batch、module 和 `training_step` output 解释动态结构，但应保持轻量、
 确定且无 I/O。`model_flops_per_batch` 和 `model_flops_per_step` 互斥。
 
+## 真实 Batch Profiling
+
+当下游还没有解析 batch 的 FLOPs provider 时，可以显式对真实 train batch 启用 PyTorch dispatch
+FLOPs counter：
+
+```python
+callback = PerformanceCallback(
+    profile_flops=True,
+    hardware_peak_flops=None,
+)
+```
+
+counter 从 `on_train_batch_start` 持续到 `on_train_batch_end`，覆盖 Lightning 自动优化中的 forward、
+backward 和 optimizer step，并按当前 batch shape 记录动态 FLOPs。`profile_flops` 与
+`model_flops_per_step`、`model_flops_per_batch` 互斥；metadata 中记录
+`perf/model_flops_source=profile`。
+
+dispatch profiling 会增加 CPU 调度开销，因此它面向 calibration、smoke 和短 screening，不应默认用于
+长时间生产训练。需要同时报告无 profiler 的真实吞吐时，先用相同数据顺序做 calibration，再关闭
+`profile_flops` 运行独立的 timing job；不能把带 profiler 的 step time 冒充生产吞吐。
+
 ## Optimizer 与梯度累积边界
 
 callback 用 `trainer.global_step` 的推进识别 optimizer update 边界：
@@ -150,3 +171,6 @@ parallel 的 FLOPs 归属和设备峰值分母需要下游另行定义，callbac
 - `perf/step_time_window`：窗口内每 optimizer update 的最慢 rank 平均时间。
 - `perf/hardware_peak_flops`：当前 rank 的设备理论峰值 FLOP/s。
 - `perf/mfu`：窗口 FLOPs 总和除以窗口时间总和及硬件峰值总和。
+- `perf/gpu_peak_memory_allocated_bytes`、`perf/gpu_peak_memory_reserved_bytes`：训练开始后 CUDA
+  allocator 的峰值；DDP 日志点取各 rank 最大值。
+- `perf/model_flops_source`：metadata 字段，取 `static`、`provider`、`profile` 或 `unresolved`。

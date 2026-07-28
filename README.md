@@ -120,7 +120,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 MTP codebook predictor。 |
 | `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
 | `anytrain.tokenizer` | 依赖 `tokenizer` extra 的 codec frame BPE。 |
-| `anytrain.codec` | 轻量 codec protocol；具体 backend 从 `anytrain.codec.*` 子模块导入。 |
+| `anytrain.codec` | codec protocol、structured semantic-acoustic units、feature helper 和 lazy capability registry；具体 backend 从 `anytrain.codec.*` 子模块导入。 |
 | `anytrain.tts` | TTS 公共协议和可选 backend adapter。 |
 | `anytrain.chat` | 可选 LLM provider 调用入口。 |
 | `anytrain.framework` | 可选研究训练范式组件。 |
