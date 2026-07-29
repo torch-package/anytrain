@@ -82,6 +82,20 @@ class LightningTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "at train start"):
             DebugCallback().on_train_start(trainer, module)
 
+    def test_debug_callback_rejects_nonfinite_loss_before_backward(self):
+        import torch
+
+        from anytrain.lightning import DebugCallback
+
+        trainer = SimpleNamespace(current_epoch=0, global_step=0, global_rank=0)
+
+        with self.assertRaisesRegex(RuntimeError, "Non-finite loss"):
+            DebugCallback().on_before_backward(
+                trainer,
+                torch.nn.Linear(1, 1),
+                torch.tensor(float("nan"), requires_grad=True),
+            )
+
     def test_debug_callback_uses_aggregate_fast_path_for_finite_tensors(self):
         from unittest.mock import patch
 
@@ -288,6 +302,39 @@ class LightningTest(unittest.TestCase):
             ],
         )
         self.assertEqual(strategy.reduce.call_count, 2)
+
+    def test_loss_time_bucket_logger_skips_histogram_on_nonzero_rank(self):
+        from unittest.mock import Mock
+
+        import torch
+
+        from anytrain.lightning import LossTimeBucketLoggerCallback
+        from anytrain.loss import LossItem
+
+        experiment = Mock()
+        trainer = SimpleNamespace(
+            global_step=2,
+            is_global_zero=False,
+            logger=SimpleNamespace(experiment=experiment),
+            strategy=SimpleNamespace(reduce=lambda value, *, reduce_op: value),
+        )
+        callback = LossTimeBucketLoggerCallback(
+            item_name="flow",
+            detail_key="t",
+            histogram_tag="flow/time",
+            scalar_template="{item}/{key}/{lower:.1f}_{upper:.1f}",
+            every_n_steps=1,
+        )
+
+        callback.on_train_batch_end(
+            trainer,
+            SimpleNamespace(),
+            {"flow": LossItem(torch.tensor([1.0]), {"t": torch.tensor([0.5])})},
+            None,
+            0,
+        )
+
+        experiment.add_histogram.assert_not_called()
 
     def test_gradient_norm_logger_respects_step_interval(self):
         import torch
@@ -534,6 +581,71 @@ class LightningTest(unittest.TestCase):
                 self.assertFalse(trainer.saved_paths[0][1])
                 self.assertEqual(callback._last_checkpoint_saved, str(target))
         finally:
+            callback._close_async_storage()
+
+    def test_model_checkpoint_notifies_loggers_after_async_copy(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class Logger:
+            def __init__(self, target):
+                self.target = target
+                self.seen = []
+
+            def after_save_checkpoint(self, callback):
+                self.seen.append((callback._last_checkpoint_saved, self.target.exists()))
+
+        callback = ModelCheckpoint(async_save=True)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                target = Path(tmp_dir) / "nfs" / "model.ckpt"
+                logger = Logger(target)
+                trainer = _CheckpointTrainer(payload=b"saved")
+                trainer.loggers = [logger]
+
+                callback._save_checkpoint(trainer, str(target))
+
+                self.assertEqual(logger.seen, [])
+                callback.wait_async_saves()
+                self.assertEqual(logger.seen, [(str(target), True)])
+        finally:
+            callback._close_async_storage()
+
+    def test_model_checkpoint_rejects_sharded_async_strategy(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class FSDPStrategy:
+            pass
+
+        with TemporaryDirectory() as tmp_dir:
+            trainer = _CheckpointTrainer()
+            trainer.strategy = FSDPStrategy()
+            callback = ModelCheckpoint(async_save=True)
+
+            with self.assertRaisesRegex(RuntimeError, "async_save.*FSDP"):
+                callback._save_checkpoint(trainer, str(Path(tmp_dir) / "model.ckpt"))
+
+    def test_model_checkpoint_rejects_directory_async_output(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class DirectoryCheckpointTrainer(_CheckpointTrainer):
+            def save_checkpoint(self, filepath, weights_only):
+                del weights_only
+                path = Path(filepath)
+                path.mkdir(parents=True, exist_ok=True)
+
+        with TemporaryDirectory() as tmp_dir:
+            trainer = DirectoryCheckpointTrainer()
+            callback = ModelCheckpoint(async_save=True)
+
+            with self.assertRaisesRegex(RuntimeError, "regular file"):
+                callback._save_checkpoint(trainer, str(Path(tmp_dir) / "model.ckpt"))
+
             callback._close_async_storage()
 
     def test_model_checkpoint_sync_opt_out_uses_target_path(self):

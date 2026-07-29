@@ -65,7 +65,7 @@ def nearest_codebook_indices(
                 best_indices = chunk_indices
                 continue
             better = chunk_values > best_values if normalize else chunk_values < best_values
-            better |= torch.isnan(chunk_values) & ~torch.isnan(best_values)
+            better |= torch.isnan(best_values) & ~torch.isnan(chunk_values)
             best_values = torch.where(better, chunk_values, best_values)
             best_indices = torch.where(better, chunk_indices, best_indices)
 

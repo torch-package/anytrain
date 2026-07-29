@@ -58,6 +58,20 @@ class QwenTTSAdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported Qwen speaker ids"):
             tts.synthesize_custom_voice("hello", speakers="Unknown")
 
+    def test_rejects_extra_generated_waveforms(self):
+        with _fake_qwen_tts():
+            tts = QwenCustomVoiceTTS.from_pretrained("fake-qwen")
+
+        tts.model.generate_custom_voice = lambda **kwargs: (
+            [torch.zeros(2), torch.ones(2), torch.full((2,), 2.0)],
+            16000,
+        )
+        with self.assertRaisesRegex(RuntimeError, "output count"):
+            tts.synthesize_custom_voice(
+                ["hello", "world"],
+                speakers=["Vivian", "Ryan"],
+            )
+
 
 class QwenTTSConfigTest(unittest.TestCase):
     def test_default_model_is_customvoice(self):

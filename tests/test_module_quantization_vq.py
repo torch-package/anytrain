@@ -209,6 +209,28 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
                 self.assertTrue(torch.equal(chunked, dense))
 
+    def test_lookup_prefers_finite_codebook_vectors_over_nan(self):
+        latents = torch.tensor([[1.0, 0.0]])
+        codebook = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [float("nan"), 0.0],
+                [-1.0, 0.0],
+            ]
+        )
+
+        for normalize in (False, True):
+            with self.subTest(normalize=normalize):
+                indices = nearest_codebook_indices(
+                    latents,
+                    codebook,
+                    normalize=normalize,
+                    max_lookup_elements=2,
+                )
+
+                self.assertTrue(torch.equal(indices, torch.tensor([0])))
+
     def test_non_normalized_lookup(self):
         quantizer = EmbeddingVectorQuantizer(
             VQConfig(input_dim=2, codebook_size=2, normalize_latents=False)

@@ -110,6 +110,11 @@ class LossTest(unittest.TestCase):
         self.assertIn("balancer/l1_weight", details)
         self.assertIn("balancer/l2_weight", details)
 
+    def test_fixed_weight_loss_balancer_rejects_nonfinite_weights(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite"):
+                FixedWeightLossBalancer({"loss": value})
+
     def test_loss_group_flattens_balancer_details(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
         target = torch.tensor([0.0, 1.0])
@@ -198,6 +203,20 @@ class LossTest(unittest.TestCase):
         mean = item.weighted_mean(item.details["tokens"])
 
         torch.testing.assert_close(mean, torch.tensor(2.5))
+
+    def test_loss_item_weighted_mean_ignores_zero_weight_nonfinite_rows(self):
+        item = LossItem(
+            torch.tensor([1.0, float("nan")]),
+            {"tokens": torch.tensor([2.0, 0.0])},
+        )
+
+        torch.testing.assert_close(item.weighted_mean(item.details["tokens"]), torch.tensor(1.0))
+
+    def test_loss_item_weighted_mean_rejects_invalid_weights(self):
+        item = LossItem(torch.tensor([1.0, 2.0]))
+        for weight in (torch.tensor([1.0, float("nan")]), torch.tensor([1.0, -1.0])):
+            with self.subTest(weight=weight), self.assertRaisesRegex(ValueError, "finite"):
+                item.weighted_mean(weight)
 
     def test_combine_loss_outputs_uses_units_and_weights(self):
         first = {
@@ -297,6 +316,24 @@ class LossTest(unittest.TestCase):
         self.assertIsNotNone(details)
         torch.testing.assert_close(details["codebook_0_top1"], torch.tensor([0.5, 1.0]))
         torch.testing.assert_close(details["codebook_1_top1"], torch.tensor([1.0, 0.0]))
+
+    def test_masked_codebook_cross_entropy_preserves_zero_frame_count(self):
+        labels = torch.tensor([[[1]], [[-1]]])
+        mask = torch.tensor([[True], [False]])
+        logits = (torch.tensor([[[0.0, 1.0]], [[0.0, 0.0]]]),)
+
+        item = MaskedCodebookCrossEntropyLoss()(
+            logits,
+            labels,
+            mask,
+            include_top1=True,
+        )
+
+        details = item.details
+        self.assertIsNotNone(details)
+        torch.testing.assert_close(item.loss[1], torch.tensor(0.0))
+        torch.testing.assert_close(details["frames"], torch.tensor([1.0, 0.0]))
+        torch.testing.assert_close(details["codebook_0_top1"], torch.tensor([1.0, 0.0]))
 
     def test_masked_codebook_cross_entropy_ignores_padding_logits(self):
         labels = torch.tensor([[[1], [0], [-1]]])

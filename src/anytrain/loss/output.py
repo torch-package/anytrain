@@ -25,10 +25,17 @@ class LossItem:
     def weighted_mean(self, weight: Tensor) -> Tensor:
         if weight.shape != self.loss.shape:
             raise ValueError("loss weights must align with loss rows.")
+        if weight.device != self.loss.device:
+            raise ValueError("loss weights must be on the same device as loss rows.")
+        if weight.is_complex():
+            raise TypeError("loss weights must be real-valued observation counts.")
+        if not bool(torch.isfinite(weight).all()) or bool((weight < 0).any()):
+            raise ValueError("loss weights must be finite and non-negative.")
         total = weight.sum()
         if bool(total.le(0)):
             raise ValueError("loss weights must contain a positive total.")
-        return (self.loss * weight).sum() / total
+        safe_loss = self.loss.masked_fill(weight == 0, 0)
+        return (safe_loss * weight).sum() / total
 
 
 class LossOutputs(TypedDict):
@@ -99,7 +106,7 @@ def loss_item_mean(
         if fallback_to_mean:
             return item.loss.mean()
         raise ValueError(f"loss item details must contain unit {unit!r}.")
-    return item.weighted_mean(details[unit].to(dtype=item.loss.dtype))
+    return item.weighted_mean(details[unit].to(device=item.loss.device, dtype=item.loss.dtype))
 
 
 def _loss_tensor(output: Mapping[str, Any], *, loss_key: str) -> Tensor:

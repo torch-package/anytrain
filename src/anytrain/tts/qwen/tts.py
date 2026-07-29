@@ -214,8 +214,6 @@ class QwenCustomVoiceTTS:
             languages=resolved_languages,
             default_sample_rate=self.config.sample_rate,
         )
-        if len(outputs) != len(texts):
-            raise RuntimeError("Qwen3-TTS output count does not match text batch length.")
         return outputs[0] if single else outputs
 
     def _validate_speakers(self, speakers: Sequence[str]) -> None:
@@ -297,6 +295,8 @@ def _outputs(
 ) -> list[TTSOutput]:
     waveforms, sample_rate = _generated_parts(generated, default_sample_rate)
     values = [waveforms] if _is_waveform_value(waveforms) else list(waveforms)
+    if len(values) != len(speakers):
+        raise RuntimeError("Qwen3-TTS output count does not match text batch length.")
     return [
         _output(value, sample_rate, speaker=speaker, language=language)
         for value, speaker, language in zip(values, speakers, languages)

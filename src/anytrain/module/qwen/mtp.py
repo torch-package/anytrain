@@ -6,6 +6,7 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
+from anytrain._compat import strict_zip
 from anytrain.module.qwen.qwen3 import build_qwen3_model
 
 
@@ -380,7 +381,7 @@ def _validate_embeddings(values: Sequence[Tensor], sizes: Sequence[int]) -> None
         raise TypeError("codebook_embeddings must be floating point.")
     if any(value.dim() != 2 for value in values):
         raise ValueError("each codebook embedding must have shape [size_q, dim].")
-    if any(value.size(0) != size for value, size in zip(values, sizes, strict=True)):
+    if any(value.size(0) != size for value, size in strict_zip(values, sizes)):
         raise ValueError("codebook embeddings must match codebook sizes.")
     embedding_dim = values[0].size(-1)
     if any(value.size(-1) != embedding_dim for value in values):

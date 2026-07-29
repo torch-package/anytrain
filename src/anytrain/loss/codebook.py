@@ -30,7 +30,8 @@ class MaskedCodebookCrossEntropyLoss(nn.Module):
         if validate:
             _validate_inputs(logits, labels, mask)
 
-        frame_count = mask.sum(dim=1).clamp_min(1)
+        frame_count = mask.sum(dim=1)
+        frame_denominator = frame_count.clamp_min(1)
         codebook_losses: list[Tensor] = []
         total_loss: Tensor | None = None
         accuracies: list[Tensor] = []
@@ -43,7 +44,7 @@ class MaskedCodebookCrossEntropyLoss(nn.Module):
                 safe_target,
                 reduction="none",
             ).masked_fill(~mask, 0)
-            row_loss = loss.sum(dim=1) / frame_count
+            row_loss = loss.sum(dim=1) / frame_denominator
             if include_details:
                 codebook_losses.append(row_loss)
             else:
@@ -63,7 +64,7 @@ class MaskedCodebookCrossEntropyLoss(nn.Module):
             for codebook in range(len(logits))
         }
         if include_top1:
-            codebook_top1 = torch.stack(accuracies, dim=-1) / frame_count[:, None]
+            codebook_top1 = torch.stack(accuracies, dim=-1) / frame_denominator[:, None]
             details.update(
                 {
                     f"codebook_{codebook}_top1": codebook_top1[:, codebook]

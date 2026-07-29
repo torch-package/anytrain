@@ -118,6 +118,8 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 
 `ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
 
+异步模式要求 `trainer.save_checkpoint()` 产出普通文件，并明确不支持 FSDP/DeepSpeed 的目录型或分片 checkpoint；这类训练应设置 `async_save=False`。异步复制完成后才通知 logger 的 `after_save_checkpoint`。
+
 `PerformanceCallback` 记录参数量、optimizer step time、硬件峰值算力和 MFU。固定计算量使用
 `model_flops_per_step`；变长 batch 使用 `model_flops_per_batch: FlopsProvider`，callback 在
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见

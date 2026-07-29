@@ -398,6 +398,15 @@ class AdamWOptimizerTest(unittest.TestCase):
                 lr_scale_rules=[{"name": "0", "lr_scale": 0.0}],
             )
 
+    def test_create_adamw_optimizer_rejects_nonfinite_lr_scale(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite"):
+                create_adamw_optimizer(
+                    TinyLLM(),
+                    _adamw_options(3e-4),
+                    lr_scale_rules=[{"name": "proj", "lr_scale": value}],
+                )
+
     def test_create_adamw_optimizer_rejects_unknown_lr_scale_rule_name(self):
         with self.assertRaisesRegex(ValueError, "belong"):
             create_adamw_optimizer(
@@ -533,6 +542,42 @@ class MuonAdamWOptimizerTest(unittest.TestCase):
 
         first_child_group = optimizer.optimizers["muon"].param_groups[0]
         self.assertIs(optimizer.param_groups[0], first_child_group)
+
+    def test_composite_optimizer_restore_reorders_children_for_scheduler_state(self):
+        first = nn.Parameter(torch.tensor(1.0))
+        second = nn.Parameter(torch.tensor(2.0))
+        optimizer = CompositeOptimizer(
+            {
+                "first": torch.optim.SGD([first], lr=1.0),
+                "second": torch.optim.SGD([second], lr=2.0),
+            }
+        )
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 0.5)
+        scheduler.step()
+        optimizer_state = optimizer.state_dict()
+        scheduler_state = scheduler.state_dict()
+
+        restored_first = nn.Parameter(torch.tensor(1.0))
+        restored_second = nn.Parameter(torch.tensor(2.0))
+        restored = CompositeOptimizer(
+            {
+                "second": torch.optim.SGD([restored_second], lr=2.0),
+                "first": torch.optim.SGD([restored_first], lr=1.0),
+            }
+        )
+        restored_scheduler = torch.optim.lr_scheduler.LambdaLR(restored, lambda _: 0.5)
+        restored.load_state_dict(optimizer_state)
+        restored_scheduler.load_state_dict(scheduler_state)
+
+        scheduler.step()
+        restored_scheduler.step()
+
+        self.assertEqual(restored.optimizers["first"].param_groups[0]["lr"], 0.5)
+        self.assertEqual(restored.optimizers["second"].param_groups[0]["lr"], 1.0)
+        self.assertEqual(
+            [group["lr"] for group in restored.param_groups],
+            [group["lr"] for group in optimizer.param_groups],
+        )
 
     def test_composite_optimizer_rejects_mismatched_state_names(self):
         model = TinyLLM()

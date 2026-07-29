@@ -264,6 +264,15 @@ class PerformanceCallback(pl.Callback):
         del pl_module
         self._discard_pending(global_step=int(trainer.global_step))
 
+    def on_exception(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        exception: BaseException,
+    ) -> None:
+        del pl_module, exception
+        self._discard_pending(global_step=int(trainer.global_step))
+
     def _reset(self, *, global_step: int) -> None:
         self._discard_pending(global_step=global_step)
         self._measurements.clear()

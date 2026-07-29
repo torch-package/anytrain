@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -120,7 +121,7 @@ def infer_peak_flops(
     key = dtype_key(dtype)
     name = _device_name(device=device, device_name=device_name)
     if hardware_peak_flops is not None:
-        _require_positive(hardware_peak_flops, "hardware_peak_flops")
+        hardware_peak_flops = _require_positive(hardware_peak_flops, "hardware_peak_flops")
         return PeakFlops(
             flops=float(hardware_peak_flops),
             source="override",
@@ -171,6 +172,11 @@ def _normalize(value: str) -> str:
     return " ".join(value.lower().split())
 
 
-def _require_positive(value: float, name: str) -> None:
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
+def _require_positive(value: float, name: str) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be a real number.") from exc
+    if not math.isfinite(resolved) or resolved <= 0:
+        raise ValueError(f"{name} must be finite and positive.")
+    return resolved

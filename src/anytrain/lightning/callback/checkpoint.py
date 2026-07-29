@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import threading
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -58,6 +59,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._async_executor: ThreadPoolExecutor | None = None
         self._async_tmp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._async_futures: list[Future[None]] = []
+        self._async_callbacks: dict[Future[None], tuple[Callable[[], None], ...]] = {}
         self._async_lock = threading.Lock()
 
     def __getstate__(self) -> dict[str, Any]:
@@ -68,6 +70,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         state["_async_executor"] = None
         state["_async_tmp_dir"] = None
         state["_async_futures"] = []
+        state["_async_callbacks"] = {}
         state["_async_lock"] = None
         return state
 
@@ -76,6 +79,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._async_executor = None
         self._async_tmp_dir = None
         self._async_futures = []
+        self._async_callbacks = {}
         self._async_lock = threading.Lock()
 
     def wait_async_saves(self) -> None:
@@ -90,6 +94,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
             except BaseException as error:
                 if first_error is None:
                     first_error = error
+            else:
+                self._run_async_callbacks(future)
 
         if first_error is not None:
             raise RuntimeError("Asynchronous checkpoint storage failed.") from first_error
@@ -119,17 +125,25 @@ class ModelCheckpoint(LightningModelCheckpoint):
             return
 
         self._raise_async_error()
+        self._validate_async_strategy(trainer)
         target = self._target_path(filepath)
         local = self._local_checkpoint_path(target)
 
         trainer.save_checkpoint(str(local), self.save_weights_only)
+        if not local.is_file():
+            raise RuntimeError(
+                "async_save requires trainer.save_checkpoint() to produce a regular file; "
+                "use async_save=False for directory-based or sharded checkpoints."
+            )
         self._last_global_step_saved = trainer.global_step
         self._last_checkpoint_saved = filepath
 
         if trainer.is_global_zero:
-            self._submit_async_copy(local, target)
-            for logger in trainer.loggers:
-                logger.after_save_checkpoint(proxy(self))
+            callbacks = tuple(
+                lambda logger=logger: logger.after_save_checkpoint(proxy(self))
+                for logger in trainer.loggers
+            )
+            self._submit_async_copy(local, target, callbacks=callbacks)
 
     def _remove_checkpoint(self, trainer: pl.Trainer, filepath: str) -> None:
         if not self.async_save:
@@ -141,9 +155,15 @@ class ModelCheckpoint(LightningModelCheckpoint):
             target = self._target_path(filepath)
             self._submit_async_remove(target)
 
-    def _submit_async_copy(self, source: Path, target: Path) -> None:
+    def _submit_async_copy(
+        self,
+        source: Path,
+        target: Path,
+        *,
+        callbacks: Iterable[Callable[[], None]] = (),
+    ) -> None:
         future = self._async_executor_or_create().submit(self._copy_to_target, source, target)
-        self._track_async_future(future)
+        self._track_async_future(future, callbacks=callbacks)
 
     def _submit_async_remove(self, target: Path) -> None:
         future = self._async_executor_or_create().submit(self._remove_target, target)
@@ -168,9 +188,11 @@ class ModelCheckpoint(LightningModelCheckpoint):
     def _raise_async_error(self) -> None:
         futures = self._drain_done_async_futures()
         for future in futures:
-            error = future.exception()
-            if error is not None:
+            try:
+                future.result()
+            except BaseException as error:
                 raise RuntimeError("Asynchronous checkpoint storage failed.") from error
+            self._run_async_callbacks(future)
 
     def _async_executor_or_create(self) -> ThreadPoolExecutor:
         if self._async_executor is None:
@@ -196,9 +218,15 @@ class ModelCheckpoint(LightningModelCheckpoint):
             self._async_tmp_dir.cleanup()
             self._async_tmp_dir = None
 
-    def _track_async_future(self, future: Future[None]) -> None:
+    def _track_async_future(
+        self,
+        future: Future[None],
+        *,
+        callbacks: Iterable[Callable[[], None]] = (),
+    ) -> None:
         with self._async_lock:
             self._async_futures.append(future)
+            self._async_callbacks[future] = tuple(callbacks)
 
     def _pop_async_futures(self) -> list[Future[None]]:
         with self._async_lock:
@@ -217,6 +245,22 @@ class ModelCheckpoint(LightningModelCheckpoint):
                     pending.append(future)
             self._async_futures = pending
         return done
+
+    def _run_async_callbacks(self, future: Future[None]) -> None:
+        with self._async_lock:
+            callbacks = self._async_callbacks.pop(future, ())
+        for callback in callbacks:
+            callback()
+
+    @staticmethod
+    def _validate_async_strategy(trainer: pl.Trainer) -> None:
+        strategy = getattr(trainer, "strategy", None)
+        strategy_name = type(strategy).__name__.lower()
+        if "fsdp" in strategy_name or "deepspeed" in strategy_name:
+            raise RuntimeError(
+                "async_save is not supported with FSDP or DeepSpeed strategies; "
+                "use async_save=False."
+            )
 
     @staticmethod
     def _target_path(filepath: str | Path) -> Path:

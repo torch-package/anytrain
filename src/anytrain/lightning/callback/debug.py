@@ -9,7 +9,7 @@ from typing import Literal
 import torch
 from lightning import pytorch as pl
 
-_Kind = Literal["parameter", "gradient"]
+_Kind = Literal["loss", "parameter", "gradient"]
 _NamedTensor = tuple[str, _Kind, torch.Tensor]
 
 
@@ -54,6 +54,17 @@ class DebugCallback(pl.Callback):
         issue = _find_first_nonfinite(values)
         if issue is not None:
             _raise(trainer, issue, where="after backward")
+
+    def on_before_backward(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        loss: torch.Tensor,
+    ) -> None:
+        del pl_module
+        issue = _find_first_nonfinite([("loss", "loss", loss)])
+        if issue is not None:
+            _raise(trainer, issue, where="before backward")
 
 
 def _find_first_nonfinite(

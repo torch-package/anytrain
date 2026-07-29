@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 
 from torch import nn
@@ -172,9 +173,12 @@ def _parse_lr_scale_rule(rule: LRScaleRule, *, index: int) -> tuple[str, float]:
     lr_scale = rule["lr_scale"]
     if isinstance(lr_scale, bool) or not isinstance(lr_scale, (int, float)):
         raise TypeError(f"lr_scale_rules[{index}].lr_scale must be a float.")
-    if lr_scale <= 0:
-        raise ValueError(f"lr_scale_rules[{index}].lr_scale must be positive.")
-    return name, float(lr_scale)
+    resolved_scale = float(lr_scale)
+    if not math.isfinite(resolved_scale) or resolved_scale <= 0:
+        raise ValueError(
+            f"lr_scale_rules[{index}].lr_scale must be finite and positive."
+        )
+    return name, resolved_scale
 
 
 def _matching_lr_scale_rules(

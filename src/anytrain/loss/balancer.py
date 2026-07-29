@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 
@@ -63,7 +64,9 @@ class FixedWeightLossBalancer(LossBalancerABC):
     ) -> None:
         super().__init__()
         self.loss_names = _validate_ordered_loss_names(list(loss_weights), label="loss_weights")
-        weights = torch.tensor([float(loss_weights[name]) for name in self.loss_names])
+        weights = torch.tensor(
+            [_finite_weight(loss_weights[name], name=name) for name in self.loss_names]
+        )
         if normalize:
             weight_sum = weights.sum()
             if weight_sum <= 0:
@@ -82,6 +85,16 @@ class FixedWeightLossBalancer(LossBalancerABC):
 
     def _stack_losses(self, losses: LossTensorDict) -> Tensor:
         return _stack_named_losses(losses, self.loss_names)
+
+
+def _finite_weight(value: float, *, name: str) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"loss weight {name!r} must be a real number.") from exc
+    if not math.isfinite(resolved):
+        raise ValueError(f"loss weight {name!r} must be finite.")
+    return resolved
 
 
 class UncertaintyLossBalancer(LossBalancerABC):

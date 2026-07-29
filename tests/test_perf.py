@@ -35,6 +35,60 @@ class PerfTest(unittest.TestCase):
             0.25,
         )
 
+    def test_perf_helpers_reject_nonfinite_values(self):
+        from anytrain.lightning.perf import (
+            infer_peak_flops,
+            model_flops_utilization,
+            training_flops_from_forward,
+        )
+
+        with self.assertRaisesRegex(ValueError, "finite"):
+            model_flops_utilization(
+                model_flops_per_step=float("nan"),
+                step_time=1.0,
+                hardware_peak_flops=1.0,
+            )
+        with self.assertRaisesRegex(ValueError, "finite"):
+            training_flops_from_forward(1.0, backward_multiplier=float("nan"))
+        with self.assertRaisesRegex(ValueError, "finite"):
+            infer_peak_flops(
+                dtype="float32",
+                device_name="Custom GPU",
+                hardware_peak_flops=float("nan"),
+            )
+
+    def test_performance_callback_cleans_up_profiler_on_exception(self):
+        import torch
+
+        from anytrain.lightning import PerformanceCallback
+
+        class Counter:
+            def __init__(self):
+                self.exited = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.exited = True
+
+            def get_total_flops(self):
+                return 1.0
+
+        trainer = SimpleNamespace(global_step=0, world_size=1)
+        counter = Counter()
+        callback = PerformanceCallback(profile_flops=True, sync_cuda=False)
+        module = SimpleNamespace(device=torch.device("cpu"))
+        with patch(
+            "anytrain.lightning.callback.performance._flop_counter",
+            return_value=counter,
+        ):
+            callback.on_train_batch_start(trainer, module, None, 0)
+            callback.on_exception(trainer, module, RuntimeError("boom"))
+
+        self.assertTrue(counter.exited)
+        self.assertIsNone(callback._flop_counter)
+
     def test_infer_peak_flops_uses_override(self):
         from anytrain.lightning.perf import infer_peak_flops
 

@@ -63,6 +63,13 @@ class CompositeOptimizer(Optimizer):
                 f"expected {sorted(expected_names)}, got {sorted(actual_names)}."
             )
 
+        # Keep the checkpoint's child order so a separately serialized scheduler
+        # (which addresses param groups positionally) still targets the same
+        # named optimizer after a config mapping is reconstructed in another order.
+        self.optimizers = {
+            name: self.optimizers[name]
+            for name in optimizer_states
+        }
         for name, optimizer in self.optimizers.items():
             optimizer.load_state_dict(optimizer_states[name])
         self.param_groups = self._collect_param_groups()

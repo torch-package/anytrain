@@ -241,6 +241,8 @@ class LossTimeBucketLoggerCallback(pl.Callback):
     def _log_histogram(self, trainer: pl.Trainer, values: Tensor) -> None:
         if self.histogram_tag is None:
             return
+        if not _is_global_zero(trainer):
+            return
         writer = experiment.histogram(trainer)
         if writer is None:
             return

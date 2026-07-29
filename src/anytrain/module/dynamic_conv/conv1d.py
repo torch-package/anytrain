@@ -506,7 +506,7 @@ class DynamicConvTranspose1d(nn.Module):
             padding=padding,
         )
         coverage = fold_transposed_segments_1d(
-            torch.ones_like(segment_bias),
+            segment_bias.new_ones((num_segments, 1, raw_segment_output_size)),
             num_segments=num_segments,
             segment_size=segment_size,
             stride=scalar_1d(self.stride, name="stride"),
