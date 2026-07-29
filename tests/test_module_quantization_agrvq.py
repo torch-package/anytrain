@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import torch
 
@@ -90,6 +91,21 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
         self.assertTrue((output.indices == -1).any())
         self.assertFalse(output.active_codebook_mask.all())
+
+    def test_dropout_preserves_empty_trailing_codebooks(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=3, codebook_size=3, dropout=1.0)
+        )
+        active_mask = torch.tensor([[True, False, False], [True, False, False]])
+
+        with mock.patch.object(quantizer, "_sample_active_mask", return_value=active_mask):
+            output = quantizer(torch.randn(2, 4))
+
+        self.assertTrue(torch.equal(output.active_codebook_mask, active_mask))
+        self.assertTrue((output.indices[:, 0] >= 0).all())
+        self.assertTrue((output.indices[:, 1:] == -1).all())
+        self.assertTrue((output.codebook_vectors[:, 1:] == 0).all())
+        self.assertTrue((output.latents[:, 1:] == 0).all())
 
     def test_sample_active_mask_dropout_boundaries(self):
         quantizer = AutoGroupResidualVectorQuantizer(

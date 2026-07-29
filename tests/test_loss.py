@@ -440,6 +440,14 @@ class LossTest(unittest.TestCase):
         self.assertEqual(torch_stft.backend, "torch")
         self.assertEqual(torch_mel.backend, "torch")
 
+    def test_stft_cache_key_uses_backend_default_hop_length(self):
+        torch_stft = STFTTransform(n_fft=64, backend="torch")
+        auto_stft = STFTTransform(n_fft=64)
+
+        self.assertEqual(torch_stft.cache_key[2], 16)
+        expected_auto_hop = 32 if auto_stft.backend == "torchaudio" else 16
+        self.assertEqual(auto_stft.cache_key[2], expected_auto_hop)
+
     def test_mel_transform_supports_mel_scale(self):
         htk_mel = MelSpectrogramTransform(
             sample_rate=16000,
@@ -506,6 +514,60 @@ class LossTest(unittest.TestCase):
         self.assertEqual(mel_loss.ndim, 0)
         self.assertTrue(any(key.startswith("stft_16") for key in stft_details))
         self.assertTrue(any(key.startswith("mel_32_8") for key in mel_details))
+
+    def test_codec_loss_reuses_overlapping_stft_transforms_per_forward(self):
+        estimate = torch.randn(1, 1, 128)
+        reference = torch.randn_like(estimate)
+        loss = CodecLoss.from_preset(
+            "dynacodec",
+            sample_rate=16000,
+            mel_n_fft_list=(64, 32),
+            mel_n_mels_list=(8, 4),
+            stft_n_fft_list=(64, 32),
+            backend="auto",
+        )
+
+        with patch("torch.stft", wraps=torch.stft) as stft:
+            loss(estimate, reference)
+            self.assertEqual(stft.call_count, 4)
+            loss(estimate, reference)
+            self.assertEqual(stft.call_count, 8)
+
+    def test_codec_loss_spectral_cache_preserves_values_and_gradients(self):
+        torch.manual_seed(7)
+        estimate = torch.randn(1, 1, 64, requires_grad=True)
+        reference = torch.randn_like(estimate)
+        cached_loss = CodecLoss.from_preset(
+            "dynacodec",
+            sample_rate=16000,
+            mel_n_fft_list=(16, 8),
+            mel_n_mels_list=(8, 4),
+            stft_n_fft_list=(16, 8),
+            backend="torch",
+        )
+        cached_value, _ = cached_loss(estimate, reference)
+
+        expected_estimate = estimate.detach().clone().requires_grad_()
+        expected_reference = reference.detach().clone()
+        expected_mel = MultiScaleMelLoss(
+            sample_rate=16000,
+            n_fft_list=(16, 8),
+            n_mels_list=(8, 4),
+            backend="torch",
+        )
+        expected_stft = MultiScaleSTFTLoss(n_fft_list=(16, 8), backend="torch")
+        expected_sdr = SDRLoss()
+        mel_value, _ = expected_mel(expected_estimate, expected_reference)
+        stft_value, _ = expected_stft(expected_estimate, expected_reference)
+        expected_value = expected_sdr(expected_estimate, expected_reference)
+        expected_value = expected_value + 10 * mel_value + 10 * stft_value
+
+        self.assertTrue(torch.allclose(cached_value, expected_value, rtol=1e-5, atol=1e-6))
+        cached_value.backward()
+        expected_value.backward()
+        self.assertTrue(
+            torch.allclose(estimate.grad, expected_estimate.grad, rtol=1e-5, atol=2e-5)
+        )
 
     def test_codec_loss_presets(self):
         dac_loss = CodecLoss.from_preset(CodecLossPreset.DAC, backend="torch")

@@ -148,6 +148,10 @@ total, details = loss_fn(*args, **kwargs)
 
 `STFTLoss` 和 `MelLoss` 先把 waveform 转成表示，再调用内部 `LossGroup`。`MultiScaleSTFTLoss` 和 `MultiScaleMelLoss` 再用多个尺度的 `STFTLoss` / `MelLoss` 组成多尺度目标。
 
+`CodecLoss` 在单次 `forward` 内为重叠的 multi-scale mel/STFT 配置共享原始 STFT，
+仅当后端和 STFT 参数完全一致时复用；缓存不会跨 forward 保留。torchaudio 后端的
+mel 路径使用相同的原始 `Spectrogram` 和已有 `MelScale`，与未缓存路径保持数值等价。
+
 谱变换支持 `backend="auto" | "torchaudio" | "torch"`：
 
 - `auto` 默认优先使用 `torchaudio.transforms`。

@@ -1,12 +1,16 @@
 import copy
 import math
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch import nn
 
 import anytrain.optim as optim_api
 from anytrain.optim import LoRAFactorPair, LoRAMuon
+from anytrain.optim.lora_muon import _inverse_gram_root as _actual_inverse_gram_root
+from anytrain.optim.lora_muon import _matrix_sign as _actual_matrix_sign
+from anytrain.optim.lora_muon import _validate_finite_pair as _actual_validate_finite_pair
 
 
 def _parameter(value: torch.Tensor) -> nn.Parameter:
@@ -225,6 +229,66 @@ class LoRAMuonTest(unittest.TestCase):
 
         torch.testing.assert_close(left, 0.9 * torch.eye(2, dtype=torch.float64))
         torch.testing.assert_close(right, torch.eye(2, dtype=torch.float64))
+
+    def test_matrix_sign_does_not_sync_for_zero_singular_value_branch(self):
+        calls = []
+        original_bool = torch.Tensor.__bool__
+
+        def tracked_bool(value):
+            calls.append(value)
+            return original_bool(value)
+
+        matrix = torch.randn(5, 3, dtype=torch.float64)
+        with patch.object(torch.Tensor, "__bool__", tracked_bool):
+            result = _actual_matrix_sign(matrix)
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(torch.isfinite(result).all())
+
+        calls.clear()
+        with patch.object(torch.Tensor, "__bool__", tracked_bool):
+            result = _actual_matrix_sign(torch.zeros_like(matrix))
+
+        self.assertEqual(len(calls), 1)
+        torch.testing.assert_close(result, torch.zeros_like(matrix))
+
+    def test_inverse_gram_root_combines_rank_predicates(self):
+        calls = []
+        original_bool = torch.Tensor.__bool__
+
+        def tracked_bool(value):
+            calls.append(value)
+            return original_bool(value)
+
+        factor = torch.randn(5, 3, dtype=torch.float64)
+        with patch.object(torch.Tensor, "__bool__", tracked_bool):
+            result = _actual_inverse_gram_root(factor, name="factor")
+
+        self.assertEqual(len(calls), 2)
+        torch.testing.assert_close(
+            result @ (factor.mT @ factor) @ result,
+            torch.eye(factor.shape[1], dtype=factor.dtype),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+    def test_finite_pair_validation_uses_one_scalar_conversion(self):
+        calls = []
+        original_bool = torch.Tensor.__bool__
+
+        def tracked_bool(value):
+            calls.append(value)
+            return original_bool(value)
+
+        with patch.object(torch.Tensor, "__bool__", tracked_bool):
+            _actual_validate_finite_pair(
+                torch.randn(5, 3),
+                name="left",
+                other=torch.randn(3, 4),
+                other_name="right",
+            )
+
+        self.assertEqual(len(calls), 1)
 
     def test_state_dict_round_trip_preserves_next_update(self):
         left = _parameter(torch.randn(5, 2, dtype=torch.float64))

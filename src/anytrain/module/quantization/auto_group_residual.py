@@ -127,10 +127,16 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         codebook_loss_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
         loss_weight_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
         has_loss = False
+        # `_sample_active_mask` always returns a prefix mask: each vector keeps
+        # the first N codebooks.  Reduce that prefix depth once so the loop
+        # does not synchronize the device once per codebook.
+        active_depth = (
+            0 if active_mask.numel() == 0 else int(active_mask.sum(dim=1).max().item())
+        )
 
         for index, quantizer in enumerate(self.quantizers[:active_count]):
             mask = active_mask[:, index]
-            if bool(mask.any().item()):
+            if index < active_depth:
                 output = quantizer(residual[mask])
                 residual[mask] = residual[mask] - output.quantized_latents
                 quantized_sum[mask] = quantized_sum[mask] + output.quantized_latents

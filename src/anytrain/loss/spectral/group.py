@@ -10,7 +10,7 @@ from anytrain._compat import strict_zip
 from ..balancer import LossBalancerABC
 from ..group import LossGroup
 from .single import LogMagnitudeLoss
-from .transform import MelSpectrogramTransform, STFTTransform
+from .transform import MelSpectrogramTransform, SpectralTransformCache, STFTTransform
 
 
 def _default_log_magnitude_losses() -> dict[str, nn.Module]:
@@ -32,6 +32,18 @@ class STFTLoss(LossGroup):
 
     def forward(self, input: Tensor, target: Tensor):
         return super().forward(self.transform(input), self.transform(target))
+
+    def _forward_with_spectral_cache(
+        self,
+        input: Tensor,
+        target: Tensor,
+        *,
+        spectral_cache: SpectralTransformCache,
+    ):
+        return super().forward(
+            self.transform(input, cache=spectral_cache),
+            self.transform(target, cache=spectral_cache),
+        )
 
 
 class MelLoss(LossGroup):
@@ -60,6 +72,18 @@ class MelLoss(LossGroup):
     def forward(self, input: Tensor, target: Tensor):
         return super().forward(self.transform(input), self.transform(target))
 
+    def _forward_with_spectral_cache(
+        self,
+        input: Tensor,
+        target: Tensor,
+        *,
+        spectral_cache: SpectralTransformCache,
+    ):
+        return super().forward(
+            self.transform(input, cache=spectral_cache),
+            self.transform(target, cache=spectral_cache),
+        )
+
 
 class MultiScaleSTFTLoss(LossGroup):
     def __init__(
@@ -81,6 +105,14 @@ class MultiScaleSTFTLoss(LossGroup):
         if not values:
             raise ValueError(f"{label} must contain at least one scale.")
         return tuple(int(value) for value in values)
+
+    def _forward_with_spectral_cache(
+        self,
+        *args: Any,
+        spectral_cache: SpectralTransformCache,
+        **kwargs: Any,
+    ):
+        return self(*args, _spectral_cache=spectral_cache, **kwargs)
 
 
 class MultiScaleMelLoss(LossGroup):
@@ -118,3 +150,11 @@ class MultiScaleMelLoss(LossGroup):
         if not values:
             raise ValueError(f"{label} must contain at least one scale.")
         return tuple(int(value) for value in values)
+
+    def _forward_with_spectral_cache(
+        self,
+        *args: Any,
+        spectral_cache: SpectralTransformCache,
+        **kwargs: Any,
+    ):
+        return self(*args, _spectral_cache=spectral_cache, **kwargs)

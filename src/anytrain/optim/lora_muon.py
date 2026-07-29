@@ -120,8 +120,12 @@ class LoRAMuon(Optimizer):
 
             left_work_grad = left_grad.detach().to(dtype=work_dtype) / sqrt_scale
             right_work_grad = right_grad.detach().to(dtype=work_dtype) / sqrt_scale
-            _validate_finite(left_work_grad, name=f"factor pair {index} left gradient")
-            _validate_finite(right_work_grad, name=f"factor pair {index} right gradient")
+            _validate_finite_pair(
+                left_work_grad,
+                name=f"factor pair {index} left gradient",
+                other=right_work_grad,
+                other_name=f"factor pair {index} right gradient",
+            )
             left_momentum = _next_momentum(
                 self.state.get(left, {}),
                 left_work_grad,
@@ -372,7 +376,8 @@ def _inverse_gram_root(factor: torch.Tensor, *, name: str) -> torch.Tensor:
     eigenvalues, eigenvectors = torch.linalg.eigh(gram)
     largest = eigenvalues[-1]
     tolerance = largest * max(factor.shape) * torch.finfo(work.dtype).eps
-    if not bool(largest > 0) or not bool(eigenvalues[0] > tolerance):
+    full_rank = (largest > 0) & (eigenvalues[0] > tolerance)
+    if not bool(full_rank):
         raise ValueError(
             f"{name} must be numerically full column rank for paper-faithful LoRA-Muon."
         )
@@ -384,15 +389,39 @@ def _inverse_gram_root(factor: torch.Tensor, *, name: str) -> torch.Tensor:
 def _matrix_sign(matrix: torch.Tensor) -> torch.Tensor:
     _validate_finite(matrix, name="LoRA-Muon momentum")
     left, singular_values, right = torch.linalg.svd(matrix, full_matrices=False)
-    if singular_values.numel() == 0 or not bool(singular_values[0] > 0):
+    if singular_values.numel() == 0:
         # The paper's Newton-Schulz realization fixes an all-zero input at zero.
         return torch.zeros_like(matrix)
-    return left @ right
+    # Keep the zero-input branch on device.  Calling bool() here would force a
+    # host synchronization for every factor pair even though the SVD already
+    # produced the predicate needed to mask the result.
+    return (left @ right) * (singular_values[0] > 0)
 
 
 def _validate_finite(value: torch.Tensor, *, name: str) -> None:
     if not bool(torch.isfinite(value).all()):
         raise ValueError(f"{name} must contain only finite values.")
+
+
+def _validate_finite_pair(
+    value: torch.Tensor,
+    *,
+    name: str,
+    other: torch.Tensor,
+    other_name: str,
+) -> None:
+    flags = torch.stack(
+        (
+            torch.isfinite(value).all(),
+            torch.isfinite(other).all(),
+        )
+    )
+    if bool(flags.all()):
+        return
+    if not bool(flags[0]):
+        raise ValueError(f"{name} must contain only finite values.")
+    if not bool(flags[1]):
+        raise ValueError(f"{other_name} must contain only finite values.")
 
 
 def _work_dtype(dtype: torch.dtype) -> torch.dtype:

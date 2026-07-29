@@ -1,6 +1,6 @@
 from .group import MelLoss, MultiScaleMelLoss, MultiScaleSTFTLoss, STFTLoss
 from .single import CompressedSpectrogramLoss, LogMagnitudeLoss, SpectralRMSELoss
-from .transform import MelSpectrogramTransform, STFTTransform
+from .transform import MelSpectrogramTransform, SpectralTransformCache, STFTTransform
 
 __all__ = [
     "CompressedSpectrogramLoss",
@@ -11,5 +11,6 @@ __all__ = [
     "MultiScaleSTFTLoss",
     "STFTLoss",
     "STFTTransform",
+    "SpectralTransformCache",
     "SpectralRMSELoss",
 ]

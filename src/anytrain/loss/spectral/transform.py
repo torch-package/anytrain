@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import Protocol, cast
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from anytrain._buffer import register_buffer
@@ -37,6 +38,18 @@ class _MelSpectrogramFactory(Protocol):
         power: float,
         mel_scale: str,
     ) -> nn.Module: ...
+
+
+class _TorchAudioSpectrogramModule(Protocol):
+    n_fft: int
+    hop_length: int
+    win_length: int
+    window: Tensor
+    normalized: bool | str
+    center: bool
+    pad_mode: str
+    onesided: bool
+    pad: int
 
 
 TorchAudioMelSpectrogram: _MelSpectrogramFactory | None
@@ -74,6 +87,80 @@ def _require_torchaudio_mel_spectrogram() -> _MelSpectrogramFactory:
     if TorchAudioMelSpectrogram is None:
         raise ImportError("torchaudio is required for backend='torchaudio'.")
     return TorchAudioMelSpectrogram
+
+
+def _forward_torchaudio_spectrogram(
+    transform: _TorchAudioSpectrogramModule,
+    waveform: Tensor,
+) -> Tensor:
+    if transform.pad > 0:
+        waveform = F.pad(waveform, (transform.pad, transform.pad), "constant")
+
+    normalized = transform.normalized
+    if normalized is True or normalized == "window":
+        normalized_for_stft = False
+        normalize_window = True
+    elif normalized == "frame_length":
+        normalized_for_stft = True
+        normalize_window = False
+    else:
+        normalized_for_stft = bool(normalized)
+        normalize_window = False
+
+    original_shape = waveform.shape
+    flattened = waveform.reshape(-1, original_shape[-1])
+    spectrum = torch.stft(
+        input=flattened,
+        n_fft=transform.n_fft,
+        hop_length=transform.hop_length,
+        win_length=transform.win_length,
+        window=transform.window,
+        center=transform.center,
+        pad_mode=transform.pad_mode,
+        normalized=normalized_for_stft,
+        onesided=transform.onesided,
+        return_complex=True,
+    )
+    spectrum = spectrum.reshape(*original_shape[:-1], *spectrum.shape[-2:])
+    if normalize_window:
+        spectrum = spectrum / transform.window.pow(2.0).sum().sqrt()
+    return spectrum
+
+
+class SpectralTransformCache:
+    """Cache raw STFTs for one loss forward pass.
+
+    Entries are keyed by the transform configuration and tensor identity.  Keeping
+    the source tensor in each entry makes the identity check robust against object
+    id reuse while preserving autograd history for the cached result.  The cache is
+    intentionally not a module or a process-wide singleton: callers own its
+    lifetime and should create one per forward pass.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[object, ...], list[tuple[Tensor, Tensor]]] = {}
+
+    def get(self, transform: STFTTransform, waveform: Tensor) -> Tensor:
+        return self.get_with_key(
+            transform.cache_key,
+            waveform,
+            lambda: transform._forward_uncached(waveform),
+        )
+
+    def get_with_key(
+        self,
+        key: tuple[object, ...],
+        waveform: Tensor,
+        compute: Callable[[], Tensor],
+    ) -> Tensor:
+        entries = self._entries.setdefault(key, [])
+        for source, spectrum in entries:
+            if source is waveform:
+                return spectrum
+
+        spectrum = compute()
+        entries.append((waveform, spectrum))
+        return spectrum
 
 
 class STFTTransform(nn.Module):
@@ -117,7 +204,48 @@ class STFTTransform(nn.Module):
                 self._create_window(window, self.win_length),
             )
 
-    def forward(self, waveform: Tensor) -> Tensor:
+    @property
+    def cache_key(self) -> tuple[object, ...]:
+        if self.backend == "torch":
+            window_device = self.window_tensor.device
+            window_dtype = self.window_tensor.dtype
+        else:
+            if self.transform is None:
+                raise RuntimeError("torchaudio spectrogram transform is not initialized.")
+            window = getattr(self.transform, "window", None)
+            if not isinstance(window, Tensor):
+                raise RuntimeError("torchaudio spectrogram has no window tensor.")
+            window_tensor = cast(Tensor, window)
+            window_device = window_tensor.device
+            window_dtype = window_tensor.dtype
+        return (
+            self.backend,
+            self.n_fft,
+            self.hop_length
+            if self.hop_length is not None
+            else (self.win_length // 2 if self.backend == "torchaudio" else self.n_fft // 4),
+            self.win_length,
+            self.window,
+            self.center,
+            self.normalized,
+            0,
+            "reflect",
+            True,
+            window_device,
+            window_dtype,
+        )
+
+    def forward(
+        self,
+        waveform: Tensor,
+        *,
+        cache: SpectralTransformCache | None = None,
+    ) -> Tensor:
+        if cache is not None:
+            return cache.get(self, waveform)
+        return self._forward_uncached(waveform)
+
+    def _forward_uncached(self, waveform: Tensor) -> Tensor:
         if self.backend == "torchaudio":
             if self.transform is None:
                 raise RuntimeError("torchaudio spectrogram transform is not initialized.")
@@ -177,8 +305,8 @@ class MelSpectrogramTransform(nn.Module):
             raise ValueError("mel_scale must be 'htk' or 'slaney'.")
 
         self.backend = _backend(backend, TorchAudioMelSpectrogram)
-        self.mel_scale = mel_scale
         self.power = power
+        self.mel_scale = mel_scale
         self.transform: nn.Module | None = None
         self.stft: STFTTransform | None = None
         f_max = f_max or sample_rate / 2
@@ -215,20 +343,63 @@ class MelSpectrogramTransform(nn.Module):
                 ),
             )
 
-    def forward(self, waveform: Tensor) -> Tensor:
+    def forward(
+        self,
+        waveform: Tensor,
+        *,
+        cache: SpectralTransformCache | None = None,
+    ) -> Tensor:
         if self.backend == "torchaudio":
             if self.transform is None:
                 raise RuntimeError("torchaudio mel transform is not initialized.")
+            if cache is not None:
+                return self._forward_torchaudio_cached(waveform, cache=cache)
             return self.transform(waveform)
 
         if self.stft is None:
             raise RuntimeError("torch STFT fallback is not initialized.")
-        magnitude = self.stft(waveform).abs().pow(self.power)
+        magnitude = self.stft(waveform, cache=cache).abs().pow(self.power)
         return torch.einsum(
             "mf,...ft->...mt",
             self.mel_filter.to(device=waveform.device, dtype=waveform.dtype),
             magnitude,
         )
+
+    def _forward_torchaudio_cached(
+        self,
+        waveform: Tensor,
+        *,
+        cache: SpectralTransformCache,
+    ) -> Tensor:
+        if self.transform is None:
+            raise RuntimeError("torchaudio mel transform is not initialized.")
+        spectrogram = getattr(self.transform, "spectrogram", None)
+        mel_scale = getattr(self.transform, "mel_scale", None)
+        if not isinstance(spectrogram, nn.Module) or not isinstance(mel_scale, nn.Module):
+            raise RuntimeError("torchaudio mel transform has an unsupported structure.")
+
+        module = cast(_TorchAudioSpectrogramModule, spectrogram)
+        key = (
+            "torchaudio",
+            module.n_fft,
+            module.hop_length,
+            module.win_length,
+            "hann",
+            module.center,
+            module.normalized,
+            module.pad,
+            module.pad_mode,
+            module.onesided,
+            module.window.device,
+            module.window.dtype,
+        )
+        spectrum = cache.get_with_key(
+            key,
+            waveform,
+            lambda: _forward_torchaudio_spectrogram(module, waveform),
+        )
+        mel_scale_module = cast(nn.Module, mel_scale)
+        return mel_scale_module(spectrum.abs().pow(self.power))
 
     def _create_mel_filter(
         self,

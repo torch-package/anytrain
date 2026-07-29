@@ -11,7 +11,7 @@ from anytrain._compat import StrEnum
 
 from ..balancer import FixedWeightLossBalancer, LossBalancerABC
 from ..group import LossGroup
-from ..spectral import MultiScaleMelLoss, MultiScaleSTFTLoss
+from ..spectral import MultiScaleMelLoss, MultiScaleSTFTLoss, SpectralTransformCache
 from ..temporal import SDRLoss
 
 DAC_MEL_N_FFT_LIST = (2048, 1024, 512, 256, 128, 64, 32)
@@ -49,9 +49,15 @@ class CodecLoss(LossGroup):
         *,
         lengths: Tensor | Sequence[int] | None = None,
     ):
+        spectral_cache = SpectralTransformCache()
         if lengths is None:
-            return super().forward(input, target)
-        return self._forward_with_lengths(input, target, lengths=lengths)
+            return super().forward(input, target, _spectral_cache=spectral_cache)
+        return self._forward_with_lengths(
+            input,
+            target,
+            lengths=lengths,
+            spectral_cache=spectral_cache,
+        )
 
     @classmethod
     def from_preset(
@@ -125,6 +131,7 @@ class CodecLoss(LossGroup):
         target: Tensor,
         *,
         lengths: Tensor | Sequence[int],
+        spectral_cache: SpectralTransformCache,
     ):
         _validate_audio_pair(input, target)
         length_values = _validate_lengths(lengths, batch_size=input.size(0), max_length=input.size(-1))
@@ -133,7 +140,11 @@ class CodecLoss(LossGroup):
         for sample_length, batch_indices in _group_length_indices(length_values):
             group_input = input[batch_indices, ..., :sample_length]
             group_target = target[batch_indices, ..., :sample_length]
-            group_total, group_details = super().forward(group_input, group_target)
+            group_total, group_details = super().forward(
+                group_input,
+                group_target,
+                _spectral_cache=spectral_cache,
+            )
             weight = input.new_tensor(float(len(batch_indices)))
             total = total + group_total * weight
             for name, value in group_details.items():
