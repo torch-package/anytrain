@@ -32,6 +32,7 @@ chat = ["openai>=1.0", "requests>=2.31", "zai-sdk>=0.2.3"]
 dac = ["descript-audio-codec>=1.0"]
 logger = ["wandb>=0.16"]
 module = ["transformers"]
+peft = ["peft>=0.17.1,<0.21"]
 tokenizer = ["tokenizers>=0.20"]
 text = ["jiwer>=4.0", "sacrebleu>=2.0"]
 speech = [

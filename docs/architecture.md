@@ -49,6 +49,7 @@ PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 
 当前已实现的组件不绑定具体领域，但需要额外依赖：
 
+- `anytrain.optim.peft`：从 Hugging Face PEFT 的 vanilla Linear adapter 构造 LoRA-Muon。
 - `chat`：环境变量驱动的大模型调用入口，用于训练工程里的实验总结、日志解释和 LLM 辅助评估原型。
 - `tokenizer`：基于 Hugging Face `tokenizers` 的 codec frame BPE。
 - third-party logger backend：wandb、mlflow 等。

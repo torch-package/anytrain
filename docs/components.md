@@ -114,6 +114,7 @@ optim 负责 optimizer / scheduler 构造 helper，不接管训练流程。
 
 - AdamW 参数组 helper：按标准 AdamW 或 Muon-eligible policy 拆分 decay 和 no-decay。
 - Muon 参数组 helper：默认只把 hidden 2D weight 放入 Muon，其余参数走 AdamW；head 等特殊模块由用户显式传入排除。
+- LoRA-Muon：核心接收显式低秩因子对；`anytrain.optim.peft` extra 提供 vanilla PEFT Linear adapter 收集和 optimizer factory。
 - `CompositeOptimizer`：把 Muon 和 AdamW 包成一个 optimizer，方便 Lightning 和 scheduler 使用。
 - LLM helper：按 `pretrain` / `cpt` / `sft` stage 生成 AdamW 或 Muon+AdamW optimizer，并提供 `constant` / `warmup_cosine` / `wsd` 命名 scheduler 和显式 phase DSL。
 

@@ -16,8 +16,10 @@ src/anytrain/optim/
   adamw.py
   compose.py
   llm.py
+  lora_muon.py
   muon.py
   options.py
+  peft.py
   rules.py
   scheduler/
     __init__.py
@@ -34,6 +36,8 @@ src/anytrain/optim/
 - `ExcludedModules`
 - `LRScaleRule`
 - `LRScaleRules`
+- `LoRAFactorPair`
+- `LoRAMuon`
 - `create_adamw_optimizer`
 - `split_adamw_decay_params`
 - `create_muon_adamw_optimizer`
@@ -48,6 +52,8 @@ src/anytrain/optim/
 - `anytrain.optim.adamw`: `create_adamw_optimizer`
 - `anytrain.optim.options`: `AdamWOptions`、`MuonOptions`、`MuonAdamWOptions`、`OptimizerOptions`、`MuonAdjustLRFn`
 - `anytrain.optim.muon`: `create_muon_adamw_optimizer`
+- `anytrain.optim.lora_muon`: `LoRAFactorPair`、`LoRAMuon`
+- `anytrain.optim.peft`: `lora_factor_pairs`、`create_lora_muon_optimizer`
 - `anytrain.optim.scheduler`: `CurveShape`、`Phase`、`Schedule`、`PhaseLike`、`make_scheduler_config`、`make_named_scheduler_config`、`create_scheduler_from_config`
 - `anytrain.optim.llm`: `OptimizationConfig`、`create_optimizer_from_config`、`create_lightning_optimizers_from_config`
 
@@ -82,6 +88,81 @@ shared parameter 分配不同 `lr_scale` 时会抛错。
 
 `lr_scale_rules` 是通用参数分组逻辑，AdamW、Muon+AdamW 和 LLM preset helper 都使用同一套规则。
 LLM preset 会把规则透传给底层 optimizer。
+
+## LoRA-Muon
+
+`LoRAMuon` 是 [LoRA-Muon: Spectral Steepest Descent on the Low-Rank Manifold](https://arxiv.org/abs/2606.12921)
+Algorithm 1 的 paper-faithful 参考实现。核心 optimizer 不依赖 PEFT，也可以直接接收显式因子对：
+
+```python
+from anytrain.optim import LoRAFactorPair, LoRAMuon
+
+optimizer = LoRAMuon(
+    [
+        LoRAFactorPair(
+            left=layer.lora_B["default"].weight,   # [out_features, rank]
+            right=layer.lora_A["default"].weight,  # [rank, in_features]
+            scale=layer.scaling["default"],
+        )
+    ],
+    lr=0.1,
+    momentum=0.95,
+    weight_decay=0.0,
+)
+```
+
+每一对的有效增量是 `scale * left @ right`。`scale` 会被精确吸收到论文的
+`A = sqrt(scale) * left`、`B = sqrt(scale) * right.T` 参数化中；它不是额外的学习率缩放。
+optimizer 为每对因子保存一个一阶动量，使用精确 SVD matrix sign 和 Gram 矩阵 EVD
+inverse root，低精度参数的几何计算暂时提升到 float32。
+
+安装 `peft` extra 后，使用基于类型的 PEFT 入口，不需要按参数名扫描：
+
+```bash
+python -m pip install -e ".[peft]"
+```
+
+```python
+from peft import LoraConfig, get_peft_model
+
+from anytrain.optim.peft import create_lora_muon_optimizer
+
+model = get_peft_model(
+    backbone,
+    LoraConfig(
+        r=16,
+        lora_alpha=32,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        init_lora_weights="pissa",
+    ),
+)
+optimizer = create_lora_muon_optimizer(
+    model,
+    lr=0.1,
+    momentum=0.95,
+    weight_decay=0.0,
+)
+```
+
+`anytrain.optim.peft` 支持 PEFT `>=0.17.1,<0.21`。Python 3.9 会由包解析器选择仍支持
+该 Python 版本的 PEFT 0.17.1；Python 3.10+ 可以使用 0.20.x。`adapter_names=None`
+默认收集每个 `LoraLayer` 当前 active adapter，也可以显式传多个 adapter name。factory
+要求模型所有 trainable parameter 都属于选中的 LoRA A/B；存在 trainable bias、
+`modules_to_save` 或其它参数时，使用 `lora_factor_pairs()` 分组后和 AdamW 组成
+`CompositeOptimizer`，避免参数被静默遗漏。
+
+这是实验性参考实现，不是 `torch.optim.Muon` 的别名。两个因子
+在构造和每次更新时，paper 参数化中的 `left` 和 `right.T` 都必须保持数值满列秩；标准 LoRA 的一侧零初始化位于 rank-deficient
+边界，因此 PEFT 默认的 `init_lora_weights=True` 会明确报错。对零初始化的阻尼扩展尚未实现；
+PiSSA、OLoRA 等初始化只有在最终 A/B 都数值满秩时才可用。
+
+PEFT 自动收集首版只支持 active、enabled、unmerged 的官方 vanilla `Linear` adapter；
+DoRA/QALoRA/aLoRA/VeLoRA 等 `lora_variant`、LoRA bias、Embedding、卷积、MHA、
+parameter/MoE adapter、tensor-parallel 和量化 wrapper 均明确拒绝。LoRA dropout 作用在
+adapter 输入上，loss 对参数仍只通过 `scale * B @ A` 依赖，因此可以使用。收集时会拒绝
+重复参数和共享 storage。optimizer 构造后不要切换 active adapter，也不要调用 PEFT 的
+enable/disable、merge/unmerge、`set_scale()` 或 `scale_layer()`；adapter 集合、运行状态和
+scale 都是 optimizer 契约的一部分，需要改变时应重建 optimizer。
 
 ## AdamW
 
