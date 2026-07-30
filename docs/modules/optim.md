@@ -46,7 +46,7 @@ src/anytrain/optim/
 - `anytrain.optim.options`: `AdamWOptions`、`MuonOptions`、`MuonAdamWOptions`、`OptimizerOptions`、`MuonAdjustLRFn`
 - `anytrain.optim.muon`: `create_muon_adamw_optimizer`
 - `anytrain.optim.lora_muon`: `LoRAFactorPair`、`LoRAMuon`
-- `anytrain.optim.peft`: `lora_factor_pairs`、`create_lora_muon_optimizer`
+- `anytrain.optim.peft`: `lora_factor_pairs`、`create_lora_muon_optimizer`、`create_lora_muon_adamw_optimizer`
 - `anytrain.optim.scheduler`: `create_scheduler`
 - `anytrain.optim.llm`: `create_optimizer`
 
@@ -140,10 +140,13 @@ optimizer = create_lora_muon_optimizer(
 
 `anytrain.optim.peft` 支持 PEFT `>=0.17.1,<0.21`。Python 3.9 会由包解析器选择仍支持
 该 Python 版本的 PEFT 0.17.1；Python 3.10+ 可以使用 0.20.x。`adapter_names=None`
-默认收集每个 `LoraLayer` 当前 active adapter，也可以显式传多个 adapter name。factory
-要求模型所有 trainable parameter 都属于选中的 LoRA A/B；存在 trainable bias、
-`modules_to_save` 或其它参数时，使用 `lora_factor_pairs()` 分组后和 AdamW 组成
-`CompositeOptimizer`，避免参数被静默遗漏。
+默认收集每个 `LoraLayer` 当前 active adapter，也可以显式传多个 adapter name。
+
+- `create_lora_muon_optimizer()` 要求模型所有 trainable parameter 都属于选中的 LoRA A/B。
+- `create_lora_muon_adamw_optimizer()` 用于混合训练：LoRA 因子走 `LoRAMuon`，其余 trainable
+  参数走 AdamW，并以 `CompositeOptimizer` 暴露；没有剩余参数时退回纯 `LoRAMuon`。
+- 存在 trainable bias、`modules_to_save` 或其它非 LoRA 参数时，应使用混合入口或自行调用
+  `lora_factor_pairs()` 再组装，避免参数被静默遗漏。
 
 这是实验性参考实现，不是 `torch.optim.Muon` 的别名。两个因子
 在构造和每次更新时，paper 参数化中的 `left` 和 `right.T` 都必须保持数值满列秩；标准 LoRA 的一侧零初始化位于 rank-deficient
@@ -249,7 +252,7 @@ create_scheduler(
 
 ## LLM Helper
 
-`create_llm_optimizer(module, preset=..., optimizer=..., lr=..., ...)` 用于按扁平参数创建 LLM 常用 optimizer。`preset` 负责默认值，`optimizer` 只决定用 AdamW 还是 Muon+AdamW。
+`create_llm_optimizer(module, preset=..., optimizer=..., lr=..., ...)` 用于按扁平参数创建 LLM 常用 optimizer。`preset` 负责默认值，`optimizer` 决定用 AdamW 还是 Muon 系路径。
 
 ```python
 optimizer = create_llm_optimizer(
@@ -260,10 +263,21 @@ optimizer = create_llm_optimizer(
 )
 ```
 
-LLM 预设下 AdamW 默认 `weight_decay=0.01`，Muon 默认 `weight_decay=0.0`。Muon 和 AdamW fallback
-共用同一套 `lr`，顶层 `weight_decay` override 只作用于 AdamW options。需要局部调整学习率时使用
-`lr_scale_rules`；需要控制 Muon 专属超参或 Muon weight decay 时，直接使用
-`create_muon_adamw_optimizer()`。
+`optimizer="adamw"` 始终对全部 trainable 参数走 AdamW（含 PEFT LoRA 因子）。
+
+`optimizer="muon"` 按模型内容自动路由：
+
+- 模型含 vanilla PEFT `Linear` LoRA 时，调用
+  `create_lora_muon_adamw_optimizer()`：LoRA A/B 走 `LoRAMuon`，其余 trainable 走 AdamW；
+  若没有剩余参数则退回纯 `LoRAMuon`。
+- 否则走现有 `create_muon_adamw_optimizer()`（Muon + AdamW）。
+- 未安装 `peft` 时按无 LoRA 处理；一旦检测到 PEFT Linear 并进入混合入口，构造期校验错误
+  （零初始化、不支持 variant、参数漏覆盖等）会直接抛出，不静默回退。
+
+LLM 预设下 AdamW 默认 `weight_decay=0.01`，Muon / LoRA-Muon 默认 `weight_decay=0.0`。
+Muon 系路径与 AdamW fallback 共用同一套 `lr`，顶层 `weight_decay` override 只作用于 AdamW
+options。需要局部调整学习率时使用 `lr_scale_rules`；需要控制 Muon 专属超参或 Muon weight
+decay 时，直接使用 `create_muon_adamw_optimizer()` 或 `create_lora_muon_adamw_optimizer()`。
 
 Lightning 返回结构由下游显式组装：
 

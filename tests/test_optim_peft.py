@@ -11,8 +11,12 @@ if PEFT_AVAILABLE:
     from peft.tuners.lora import Linear as PeftLinear
     from transformers.pytorch_utils import Conv1D
 
-    from anytrain.optim import LoRAMuon
-    from anytrain.optim.peft import create_lora_muon_optimizer, lora_factor_pairs
+    from anytrain.optim import CompositeOptimizer, LoRAMuon, create_llm_optimizer
+    from anytrain.optim.peft import (
+        create_lora_muon_adamw_optimizer,
+        create_lora_muon_optimizer,
+        lora_factor_pairs,
+    )
 
 
 @unittest.skipUnless(PEFT_AVAILABLE, "PEFT is not installed")
@@ -169,6 +173,57 @@ class PeftLoRAMuonTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "without an optimizer"):
             create_lora_muon_optimizer(model, lr=0.03)
+
+    def test_mixed_factory_covers_remaining_trainable_with_adamw(self):
+        model = _linear_model(bias="all", init_lora_weights=False)
+        layer = _linear_layers(model)[0]
+        left_before = layer.lora_B["default"].weight.detach().clone()
+        bias_before = layer.base_layer.bias.detach().clone()
+
+        optimizer = create_lora_muon_adamw_optimizer(
+            model,
+            lr=0.03,
+            adamw={"lr": 0.03, "weight_decay": 0.0},
+        )
+        loss = model(torch.randn(6, 4)).square().mean()
+        loss.backward()
+        optimizer.step()
+
+        self.assertIsInstance(optimizer, CompositeOptimizer)
+        self.assertEqual(set(optimizer.optimizers), {"lora_muon", "adamw"})
+        self.assertIsInstance(optimizer.optimizers["lora_muon"], LoRAMuon)
+        self.assertFalse(torch.equal(layer.lora_B["default"].weight, left_before))
+        self.assertFalse(torch.equal(layer.base_layer.bias, bias_before))
+
+    def test_mixed_factory_returns_pure_lora_muon_without_remaining(self):
+        model = _linear_model(bias="none", init_lora_weights=False)
+        for name, parameter in model.named_parameters():
+            if "lora_" not in name:
+                parameter.requires_grad_(False)
+
+        optimizer = create_lora_muon_adamw_optimizer(
+            model,
+            lr=0.03,
+            adamw={"lr": 0.03},
+        )
+
+        self.assertIsInstance(optimizer, LoRAMuon)
+
+    def test_llm_helper_routes_muon_to_lora_muon_for_peft(self):
+        model = _linear_model(bias="all", init_lora_weights=False)
+
+        optimizer = create_llm_optimizer(model, preset="sft", optimizer="muon", lr=0.03)
+
+        self.assertIsInstance(optimizer, CompositeOptimizer)
+        self.assertEqual(set(optimizer.optimizers), {"lora_muon", "adamw"})
+        self.assertIsInstance(optimizer.optimizers["lora_muon"], LoRAMuon)
+
+    def test_llm_helper_adamw_does_not_use_lora_muon(self):
+        model = _linear_model(bias="all", init_lora_weights=False)
+
+        optimizer = create_llm_optimizer(model, preset="sft", optimizer="adamw", lr=0.03)
+
+        self.assertIsInstance(optimizer, torch.optim.AdamW)
 
     def test_rejects_tensor_parallel_markers(self):
         layer_model = _linear_model()

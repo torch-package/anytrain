@@ -17,7 +17,12 @@ except ImportError as exc:  # pragma: no cover - depends on the optional environ
         "Install it with `python -m pip install 'anytrain[peft]'`."
     ) from exc
 
+from ._params import build_parameter_plan
+from .adamw import create_adamw_optimizer_from_plan
+from .compose import CompositeOptimizer
 from .lora_muon import LoRAFactorPair, LoRAMuon
+from .options import AdamWOptions
+from .rules import ExcludedModules, LRScaleRules
 
 
 def lora_factor_pairs(
@@ -106,11 +111,7 @@ def create_lora_muon_optimizer(
 ) -> LoRAMuon:
     """Create LoRA-Muon when all trainable parameters are selected LoRA factors."""
     pairs = lora_factor_pairs(module, adapter_names=adapter_names)
-    selected_ids = {
-        id(parameter)
-        for pair in pairs
-        for parameter in (pair.left, pair.right)
-    }
+    selected_ids = _pair_parameter_ids(pairs)
     uncovered = [
         name
         for name, parameter in module.named_parameters()
@@ -122,7 +123,7 @@ def create_lora_muon_optimizer(
             preview = f"{preview}, ..."
         raise ValueError(
             "PEFT LoRA-Muon would leave trainable parameters without an optimizer: "
-            f"{preview}. Use lora_factor_pairs() with CompositeOptimizer for mixed training."
+            f"{preview}. Use create_lora_muon_adamw_optimizer() for mixed training."
         )
     return LoRAMuon(
         pairs,
@@ -130,6 +131,56 @@ def create_lora_muon_optimizer(
         momentum=momentum,
         weight_decay=weight_decay,
     )
+
+
+def create_lora_muon_adamw_optimizer(
+    module: nn.Module,
+    *,
+    lr: float,
+    adamw: AdamWOptions,
+    momentum: float = 0.95,
+    weight_decay: float = 0.0,
+    adapter_names: Sequence[str] | None = None,
+    excluded_modules: ExcludedModules = (),
+    lr_scale_rules: LRScaleRules = (),
+) -> LoRAMuon | CompositeOptimizer:
+    """Optimize PEFT LoRA factors with LoRA-Muon and remaining params with AdamW."""
+    pairs = lora_factor_pairs(module, adapter_names=adapter_names)
+    selected_ids = _pair_parameter_ids(pairs)
+    remaining = tuple(
+        parameter
+        for _, parameter in module.named_parameters()
+        if parameter.requires_grad and id(parameter) not in selected_ids
+    )
+    lora_muon = LoRAMuon(
+        pairs,
+        lr=lr,
+        momentum=momentum,
+        weight_decay=weight_decay,
+    )
+    if not remaining:
+        return lora_muon
+
+    plan = build_parameter_plan(
+        module,
+        selected_params=remaining,
+        excluded_modules=excluded_modules,
+        lr_scale_rules=lr_scale_rules,
+    )
+    return CompositeOptimizer(
+        {
+            "lora_muon": lora_muon,
+            "adamw": create_adamw_optimizer_from_plan(plan, adamw),
+        }
+    )
+
+
+def _pair_parameter_ids(pairs: Sequence[LoRAFactorPair]) -> set[int]:
+    return {
+        id(parameter)
+        for pair in pairs
+        for parameter in (pair.left, pair.right)
+    }
 
 
 def _adapter_names(adapter_names: Sequence[str] | None) -> tuple[str, ...] | None:
@@ -240,4 +291,8 @@ def _register_parameter(
     storage_keys.add(storage_key)
 
 
-__all__ = ["create_lora_muon_optimizer", "lora_factor_pairs"]
+__all__ = [
+    "create_lora_muon_adamw_optimizer",
+    "create_lora_muon_optimizer",
+    "lora_factor_pairs",
+]

@@ -17,6 +17,7 @@ from .rules import ExcludedModules, LRScaleRules
 
 DEFAULT_ADAMW_WEIGHT_DECAY = 0.01
 DEFAULT_MUON_WEIGHT_DECAY = 0.0
+DEFAULT_LORA_MUON_MOMENTUM = 0.95
 
 
 class _OptimizationPreset(StrEnum):
@@ -61,6 +62,19 @@ def create_optimizer(
             lr_scale_rules=lr_scale_rules,
         )
 
+    if _peft_linear_lora_present(module):
+        from .peft import create_lora_muon_adamw_optimizer
+
+        return create_lora_muon_adamw_optimizer(
+            module,
+            lr=adamw["lr"],
+            adamw=adamw,
+            momentum=DEFAULT_LORA_MUON_MOMENTUM,
+            weight_decay=DEFAULT_MUON_WEIGHT_DECAY,
+            excluded_modules=excluded_modules,
+            lr_scale_rules=lr_scale_rules,
+        )
+
     muon: MuonOptions = {
         "lr": adamw["lr"],
         "weight_decay": DEFAULT_MUON_WEIGHT_DECAY,
@@ -72,6 +86,14 @@ def create_optimizer(
         excluded_modules=excluded_modules,
         lr_scale_rules=lr_scale_rules,
     )
+
+
+def _peft_linear_lora_present(module: nn.Module) -> bool:
+    try:
+        from peft.tuners.lora import Linear as PeftLinear
+    except ImportError:
+        return False
+    return any(type(child) is PeftLinear for child in module.modules())
 
 
 def _preset(value: str) -> _OptimizationPreset:
