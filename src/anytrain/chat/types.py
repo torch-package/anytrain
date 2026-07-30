@@ -10,6 +10,7 @@ from anytrain._compat import StrEnum
 class ModelType(StrEnum):
     DEEPSEEK = auto()
     GLM = auto()
+    OPENROUTER = auto()
 
 
 class ChatMessage(TypedDict):

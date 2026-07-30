@@ -137,9 +137,14 @@ def _distributed_count(count: int) -> int:
 def _name(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError("validation metric names must be strings.")
-    if not value or "/" in value:
-        raise ValueError("validation metric names must be non-empty path segments.")
-    return value
+    normalized = value.strip("/")
+    if (
+        not normalized
+        or "//" in normalized
+        or any(not part for part in normalized.split("/"))
+    ):
+        raise ValueError("validation metric names must contain non-empty path segments.")
+    return normalized
 
 
 def _scalar(name: str, value: object) -> float:

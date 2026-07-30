@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
-from .config import ChatConfig
+from .config import ChatConfig, OPENROUTER_MAX_FALLBACK_MODELS
 from .types import ChatMessage, ImageGeneration, ImageOutput, ModelType
 
 DEEPSEEK_REASONING_EFFORT = "high"
@@ -17,22 +18,23 @@ GLM_IMAGE_GENERATIONS_PATH = "/images/generations"
 INSTALL_HINT = (
     'Install chat dependencies with `python -m pip install "openai>=1.0" "requests>=2.31" "zai-sdk>=0.2.3"`.'
 )
+LOGGER = logging.getLogger("anytrain.chat")
 
 
 def create_client(model_type: ModelType, config: ChatConfig) -> object:
     if model_type == ModelType.GLM:
         return _create_glm_client(config)
-    if model_type == ModelType.DEEPSEEK:
-        return _create_deepseek_client(config)
+    if model_type in {ModelType.DEEPSEEK, ModelType.OPENROUTER}:
+        return _create_openai_client(config, provider=_provider_name(model_type))
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
 
-def _create_deepseek_client(config: ChatConfig) -> object:
+def _create_openai_client(config: ChatConfig, *, provider: str) -> object:
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover - exercised in environments without the extra.
         raise ImportError(
-            f"`anytrain.chat` DeepSeek backend requires `openai`. {INSTALL_HINT}"
+            f"`anytrain.chat` {provider} backend requires `openai`. {INSTALL_HINT}"
         ) from exc
 
     return OpenAI(api_key=config.api_key, base_url=config.base_url)
@@ -52,7 +54,7 @@ def _create_glm_client(config: ChatConfig) -> object:
 def initial_messages(model_type: ModelType) -> list[ChatMessage]:
     if model_type == ModelType.DEEPSEEK:
         return [{"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT}]
-    if model_type == ModelType.GLM:
+    if model_type in {ModelType.GLM, ModelType.OPENROUTER}:
         return []
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
@@ -62,11 +64,15 @@ def request(
     client: object,
     model: str,
     messages: Sequence[ChatMessage],
+    *,
+    models: Sequence[str] | None = None,
 ) -> str:
     if model_type == ModelType.GLM:
         return _request_glm(client, model, messages)
     if model_type == ModelType.DEEPSEEK:
         return _request_deepseek(client, model, messages)
+    if model_type == ModelType.OPENROUTER:
+        return _request_openrouter(client, models if models is not None else (model,), messages)
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
 
@@ -100,6 +106,37 @@ def _request_glm(
     return _response_text(response, provider="GLM")
 
 
+def _request_openrouter(
+    client: object,
+    models: Sequence[str],
+    messages: Sequence[ChatMessage],
+) -> str:
+    if len(models) == 0:
+        raise ValueError("OpenRouter models must not be empty.")
+    completions = cast(Any, client).chat.completions
+    fallbacks = list(models[1 : 1 + OPENROUTER_MAX_FALLBACK_MODELS])
+    if len(fallbacks) == 0:
+        response = completions.create(
+            model=models[0],
+            messages=messages,
+            stream=False,
+        )
+    else:
+        response = completions.create(
+            model=models[0],
+            messages=messages,
+            stream=False,
+            extra_body={"models": fallbacks},
+        )
+    used_model = _response_model(response)
+    LOGGER.info(
+        "openrouter using model=%s candidates=%s",
+        used_model if used_model is not None else models[0],
+        list(models),
+    )
+    return _response_text(response, provider="OpenRouter")
+
+
 def generate_image(
     model_type: ModelType,
     config: ChatConfig,
@@ -119,6 +156,8 @@ def generate_image(
         )
     if model_type == ModelType.DEEPSEEK:
         raise NotImplementedError("DeepSeek image generation is not supported.")
+    if model_type == ModelType.OPENROUTER:
+        raise NotImplementedError("OpenRouter image generation is not supported.")
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
 
@@ -205,6 +244,17 @@ def _optional_str(payload: Mapping[object, object], key: str) -> str | None:
     return value
 
 
+def _response_model(response: object) -> str | None:
+    model = getattr(response, "model", None)
+    if isinstance(model, str):
+        return model
+    if isinstance(response, Mapping):
+        value = response.get("model")
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _response_text(response: object, *, provider: str) -> str:
     try:
         message = response.choices[0].message
@@ -221,3 +271,11 @@ def _response_text(response: object, *, provider: str) -> str:
         if isinstance(content, str):
             return content
     raise TypeError(f"{provider} response message must be a string or contain string content.")
+
+
+def _provider_name(model_type: ModelType) -> str:
+    if model_type == ModelType.DEEPSEEK:
+        return "DeepSeek"
+    if model_type == ModelType.OPENROUTER:
+        return "OpenRouter"
+    raise AssertionError(f"Unhandled openai-compatible model_type: {model_type!r}")

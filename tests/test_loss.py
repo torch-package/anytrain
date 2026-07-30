@@ -14,6 +14,7 @@ from anytrain.loss import (
     MaskedCodebookCrossEntropyLoss,
     MaskedCosineAlignmentLoss,
     MaskedFrameMSELoss,
+    TeacherLoss,
     UncertaintyLossBalancer,
     combine_loss_outputs,
     iter_loss_items,
@@ -288,6 +289,44 @@ class LossTest(unittest.TestCase):
         torch.testing.assert_close(item.details["cosine"], torch.tensor([1.0]))
         self.assertIsNotNone(prediction.grad)
         self.assertIsNone(target.grad)
+
+    def test_teacher_loss_combines_cosine_and_smooth_l1(self):
+        prediction = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]], requires_grad=True)
+        target = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]], requires_grad=True)
+        mask = torch.tensor([[True, True]])
+
+        item = TeacherLoss(smooth_l1_weight=1.0)(prediction, target, mask)
+        item.loss.mean().backward()
+
+        # Row mean of: frame0 (cos_dist=0, smooth~0) and frame1 (cos_dist=1, smooth>0).
+        self.assertIsNotNone(item.details)
+        torch.testing.assert_close(item.details["frames"], torch.tensor([2.0]))
+        torch.testing.assert_close(item.details["cosine"], torch.tensor([0.5]))
+        self.assertGreater(float(item.details["smooth_l1"].detach()), 0.0)
+        self.assertGreater(float(item.loss.detach()), 0.5)
+        self.assertIsNotNone(prediction.grad)
+        self.assertIsNone(target.grad)
+
+    def test_teacher_loss_ignores_padding_and_zero_smooth_weight(self):
+        prediction = torch.tensor(
+            [[[1.0, 0.0], [float("nan"), float("inf")]]],
+            requires_grad=True,
+        )
+        target = torch.tensor([[[0.0, 1.0], [float("nan"), float("inf")]]], requires_grad=True)
+        mask = torch.tensor([[True, False]])
+
+        item = TeacherLoss(smooth_l1_weight=0.0)(prediction, target, mask)
+        item.loss.mean().backward()
+
+        # Weight 0 drops Smooth L1 from the optimand; detail still reports the metric.
+        torch.testing.assert_close(item.loss, torch.tensor([1.0]))
+        self.assertIsNotNone(item.details)
+        torch.testing.assert_close(item.details["cosine"], torch.tensor([0.0]))
+        torch.testing.assert_close(item.details["smooth_l1"], torch.tensor([0.5]))
+        gradient = prediction.grad
+        if gradient is None:
+            self.fail("prediction gradient is unavailable")
+        self.assertTrue(torch.equal(gradient[:, 1], torch.zeros_like(gradient[:, 1])))
 
     def test_masked_codebook_cross_entropy_reports_masked_top1(self):
         labels = torch.tensor(

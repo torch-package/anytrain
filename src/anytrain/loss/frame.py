@@ -34,20 +34,62 @@ def masked_cosine_alignment_loss(
     detail_dtype: torch.dtype | None = None,
 ) -> LossItem:
     _validate_frame_tensors(prediction, target, mask, name="cosine alignment")
-    frame_mask = mask[..., None]
-    safe_prediction = prediction.masked_fill(~frame_mask, 0).float()
-    safe_target = target.to(device=prediction.device)
-    if detach_target:
-        safe_target = safe_target.detach()
-    safe_target = safe_target.masked_fill(~frame_mask, 0).float()
-    normalized_prediction = F.normalize(safe_prediction, dim=-1)
-    normalized_target = F.normalize(safe_target, dim=-1)
-    frame_loss = (1 - (normalized_prediction * normalized_target).sum(dim=-1)).masked_fill(
-        ~mask, 0
+    safe_prediction, safe_target, _frame_mask = _prepared_pair(
+        prediction,
+        target,
+        mask,
+        detach_target=detach_target,
     )
+    frame_loss = _cosine_distance(safe_prediction, safe_target).masked_fill(~mask, 0)
     item = _item(frame_loss, mask, detail_dtype=detail_dtype or prediction.dtype)
     details = dict(item.details or {})
     details["cosine"] = 1 - item.loss
+    return LossItem(item.loss, details)
+
+
+def teacher_loss(
+    prediction: Tensor,
+    target: Tensor,
+    mask: Tensor,
+    *,
+    smooth_l1_weight: float = 1.0,
+    detach_target: bool = True,
+    beta: float = 1.0,
+    detail_dtype: torch.dtype | None = None,
+) -> LossItem:
+    """Masked teacher feature distill: ``1 - cosine`` plus optional Smooth L1.
+
+    Both terms share the same ``[B, F]`` mask. Smooth L1 uses
+    ``torch.nn.functional.smooth_l1_loss``. Details expose per-row
+    ``cosine`` (similarity), ``smooth_l1``, and ``frames``.
+    """
+    if isinstance(smooth_l1_weight, bool) or not isinstance(smooth_l1_weight, (int, float)):
+        raise TypeError("smooth_l1_weight must be a float.")
+    if smooth_l1_weight < 0:
+        raise ValueError("smooth_l1_weight must be non-negative.")
+    if isinstance(beta, bool) or not isinstance(beta, (int, float)) or beta <= 0:
+        raise ValueError("beta must be a positive float.")
+    _validate_frame_tensors(prediction, target, mask, name="teacher")
+    safe_prediction, safe_target, _frame_mask = _prepared_pair(
+        prediction,
+        target,
+        mask,
+        detach_target=detach_target,
+    )
+    cosine_distance = _cosine_distance(safe_prediction, safe_target).masked_fill(~mask, 0)
+    smooth_l1 = (
+        F.smooth_l1_loss(safe_prediction, safe_target, reduction="none", beta=float(beta))
+        .mean(dim=-1)
+        .masked_fill(~mask, 0)
+    )
+    frame_loss = cosine_distance + float(smooth_l1_weight) * smooth_l1
+    dtype = detail_dtype or prediction.dtype
+    cosine_rows = _item(cosine_distance, mask, detail_dtype=dtype).loss
+    smooth_rows = _item(smooth_l1, mask, detail_dtype=dtype).loss
+    item = _item(frame_loss, mask, detail_dtype=dtype)
+    details = dict(item.details or {})
+    details["cosine"] = 1 - cosine_rows
+    details["smooth_l1"] = smooth_rows
     return LossItem(item.loss, details)
 
 
@@ -90,6 +132,68 @@ class MaskedCosineAlignmentLoss(nn.Module):
             detach_target=self.detach_target,
             detail_dtype=detail_dtype,
         )
+
+
+class TeacherLoss(nn.Module):
+    """Teacher feature distillation with shared frame mask."""
+
+    def __init__(
+        self,
+        smooth_l1_weight: float = 1.0,
+        *,
+        detach_target: bool = True,
+        beta: float = 1.0,
+    ) -> None:
+        super().__init__()
+        if isinstance(smooth_l1_weight, bool) or not isinstance(smooth_l1_weight, (int, float)):
+            raise TypeError("smooth_l1_weight must be a float.")
+        if smooth_l1_weight < 0:
+            raise ValueError("smooth_l1_weight must be non-negative.")
+        if isinstance(beta, bool) or not isinstance(beta, (int, float)) or beta <= 0:
+            raise ValueError("beta must be a positive float.")
+        self.smooth_l1_weight = float(smooth_l1_weight)
+        self.detach_target = detach_target
+        self.beta = float(beta)
+
+    def forward(
+        self,
+        prediction: Tensor,
+        target: Tensor,
+        mask: Tensor,
+        *,
+        detail_dtype: torch.dtype | None = None,
+    ) -> LossItem:
+        return teacher_loss(
+            prediction,
+            target,
+            mask,
+            smooth_l1_weight=self.smooth_l1_weight,
+            detach_target=self.detach_target,
+            beta=self.beta,
+            detail_dtype=detail_dtype,
+        )
+
+
+def _prepared_pair(
+    prediction: Tensor,
+    target: Tensor,
+    mask: Tensor,
+    *,
+    detach_target: bool,
+) -> tuple[Tensor, Tensor, Tensor]:
+    frame_mask = mask[..., None]
+    safe_prediction = prediction.masked_fill(~frame_mask, 0).float()
+    safe_target = target.to(device=prediction.device)
+    if detach_target:
+        safe_target = safe_target.detach()
+    safe_target = safe_target.masked_fill(~frame_mask, 0).float()
+    return safe_prediction, safe_target, frame_mask
+
+
+def _cosine_distance(prediction: Tensor, target: Tensor) -> Tensor:
+    normalized_prediction = F.normalize(prediction, dim=-1)
+    normalized_target = F.normalize(target, dim=-1)
+    return 1 - (normalized_prediction * normalized_target).sum(dim=-1)
 
 
 def _validate_frame_tensors(

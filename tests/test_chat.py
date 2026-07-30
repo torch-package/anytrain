@@ -7,6 +7,7 @@ from unittest.mock import patch
 import anytrain.chat as chat_api
 from anytrain import __all__ as anytrain_exports
 from anytrain.chat import Chat
+from anytrain.chat._openrouter import resolve_models
 from anytrain.chat._provider import (
     DEEPSEEK_REASONING_EFFORT,
     DEEPSEEK_SYSTEM_PROMPT,
@@ -21,7 +22,46 @@ from anytrain.chat.config import (
     GLM_API_KEY_ENV,
     GLM_BASE_URL_ENV,
     GLM_MODEL_ENV,
+    OPENROUTER_API_KEY_ENV,
+    OPENROUTER_BASE_URL_ENV,
+    OPENROUTER_CANDIDATE_LIMIT_ENV,
+    OPENROUTER_DEFAULT_BASE_URL,
+    OPENROUTER_MODELS_ENV,
 )
+
+
+def _chat_model(model_id, *, prompt, completion, discount=0.0, outputs=("text",), inputs=("text",)):
+    return {
+        "id": model_id,
+        "architecture": {
+            "input_modalities": list(inputs),
+            "output_modalities": list(outputs),
+        },
+        "supported_parameters": ["temperature"],
+        "pricing": {
+            "prompt": str(prompt),
+            "completion": str(completion),
+            "discount": discount,
+        },
+    }
+
+
+def _models_requests(catalog):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": catalog}
+
+    class FakeRequests:
+        @staticmethod
+        def get(**kwargs):
+            FakeRequests.calls.append(kwargs)
+            return FakeResponse()
+
+    FakeRequests.calls = []
+    return FakeRequests
 
 
 class ChatTest(unittest.TestCase):
@@ -44,6 +84,7 @@ class ChatTest(unittest.TestCase):
     def test_model_type_uses_lowercase_string_values(self):
         self.assertEqual(chat_api.ModelType.DEEPSEEK.value, "deepseek")
         self.assertEqual(chat_api.ModelType.GLM.value, "glm")
+        self.assertEqual(chat_api.ModelType.OPENROUTER.value, "openrouter")
 
     def test_config_from_env_uses_deepseek_envs(self):
         env = {
@@ -56,6 +97,7 @@ class ChatTest(unittest.TestCase):
 
         self.assertEqual(config.base_url, "https://example.test/deepseek")
         self.assertEqual(config.model, "deepseek-chat")
+        self.assertEqual(config.models, ("deepseek-chat",))
         self.assertNotIn("secret", repr(config))
 
     def test_config_from_env_uses_glm_envs(self):
@@ -69,6 +111,113 @@ class ChatTest(unittest.TestCase):
 
         self.assertEqual(config.base_url, "https://example.test/api/paas/v4")
         self.assertEqual(config.model, "glm-5.2")
+        self.assertEqual(config.models, ("glm-5.2",))
+
+    def test_config_from_env_loads_openrouter_without_selecting_models(self):
+        env = {
+            OPENROUTER_API_KEY_ENV: "secret",
+            OPENROUTER_MODELS_ENV: "openai/gpt-4o-mini,meta-llama/llama-3.2-3b-instruct:free",
+            OPENROUTER_CANDIDATE_LIMIT_ENV: "3",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = chat_api.config_from_env("openrouter")
+
+        self.assertEqual(config.base_url, OPENROUTER_DEFAULT_BASE_URL)
+        self.assertEqual(config.model, "")
+        self.assertEqual(config.models, ())
+        self.assertEqual(
+            config.allowlist,
+            ("openai/gpt-4o-mini", "meta-llama/llama-3.2-3b-instruct:free"),
+        )
+        self.assertEqual(config.candidate_limit, 3)
+        self.assertNotIn("secret", repr(config))
+
+    def test_openrouter_models_reject_empty_entries(self):
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: "openai/gpt-4o-mini,,google/gemini-flash-1.5",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(ValueError, OPENROUTER_MODELS_ENV),
+        ):
+            chat_api.config_from_env(chat_api.ModelType.OPENROUTER)
+
+    def test_openrouter_resolve_models_prefers_free_then_discount_then_price(self):
+        catalog = [
+            _chat_model("paid/expensive", prompt=0.000002, completion=0.000004),
+            _chat_model("paid/cheap", prompt=0.0000001, completion=0.0000002),
+            _chat_model(
+                "paid/discounted",
+                prompt=0.000001,
+                completion=0.000002,
+                discount=0.5,
+            ),
+            _chat_model("vendor/model:free", prompt=0, completion=0),
+            _chat_model("openrouter/free", prompt=0, completion=0),
+            _chat_model(
+                "audio/model",
+                prompt=0,
+                completion=0,
+                outputs=("text", "audio"),
+            ),
+            _chat_model("openrouter/auto", prompt=-1, completion=-1),
+        ]
+        config = chat_api.ChatConfig(
+            base_url="https://openrouter.ai/api/v1",
+            model="",
+            api_key="secret",
+            models=(),
+            candidate_limit=4,
+        )
+        with (
+            patch.dict(sys.modules, {"requests": _models_requests(catalog)}),
+            self.assertLogs("anytrain.chat", level="INFO") as logs,
+        ):
+            resolved = resolve_models(config)
+
+        self.assertEqual(
+            resolved.models,
+            (
+                "openrouter/free",
+                "vendor/model:free",
+                "paid/discounted",
+                "paid/cheap",
+            ),
+        )
+        self.assertEqual(resolved.model, "openrouter/free")
+        self.assertTrue(any("openrouter selected candidates=" in message for message in logs.output))
+
+    def test_openrouter_resolve_models_ranks_allowlist_from_live_catalog(self):
+        catalog = [
+            _chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006),
+            _chat_model("meta-llama/llama-3.2-3b-instruct:free", prompt=0, completion=0),
+            _chat_model("google/gemini-flash-1.5", prompt=0.000000075, completion=0.0000003),
+        ]
+        config = chat_api.ChatConfig(
+            base_url="https://openrouter.ai/api/v1",
+            model="",
+            api_key="secret",
+            models=(),
+            allowlist=(
+                "openai/gpt-4o-mini",
+                "meta-llama/llama-3.2-3b-instruct:free",
+                "google/gemini-flash-1.5",
+            ),
+            candidate_limit=5,
+        )
+        with patch.dict(sys.modules, {"requests": _models_requests(catalog)}):
+            resolved = resolve_models(config)
+
+        self.assertEqual(
+            resolved.models,
+            (
+                "meta-llama/llama-3.2-3b-instruct:free",
+                "google/gemini-flash-1.5",
+                "openai/gpt-4o-mini",
+            ),
+        )
 
     def test_missing_env_fails_explicitly(self):
         with (
@@ -503,6 +652,190 @@ class ChatTest(unittest.TestCase):
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
             client = Chat("deepseek")
+            with self.assertRaises(NotImplementedError):
+                client.image("draw a cat")
+
+    def test_openrouter_backend_uses_openai_client_without_extra_body_for_single_model(self):
+        calls = []
+        catalog = [_chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006)]
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice], model="openai/gpt-4o-mini")
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                calls.append({"api_key": api_key, "base_url": base_url})
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: "openai/gpt-4o-mini",
+            OPENROUTER_API_KEY_ENV: "secret",
+            OPENROUTER_CANDIDATE_LIMIT_ENV: "1",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(
+                sys.modules,
+                {"openai": fake_openai, "requests": _models_requests(catalog)},
+            ),
+            self.assertLogs("anytrain.chat", level="INFO") as logs,
+        ):
+            response = Chat("openrouter")("hello")
+
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            calls[0],
+            {
+                "api_key": "secret",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        )
+        self.assertEqual(
+            calls[1],
+            {
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+        self.assertTrue(
+            any("openrouter using model=openai/gpt-4o-mini" in message for message in logs.output)
+        )
+
+    def test_openrouter_backend_passes_fallback_models(self):
+        calls = []
+        catalog = [
+            _chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006),
+            _chat_model("meta-llama/llama-3.2-3b-instruct:free", prompt=0, completion=0),
+            _chat_model("google/gemini-flash-1.5", prompt=0.000000075, completion=0.0000003),
+        ]
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(
+                    choices=[choice],
+                    model="google/gemini-flash-1.5",
+                )
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: (
+                "openai/gpt-4o-mini,meta-llama/llama-3.2-3b-instruct:free,"
+                "google/gemini-flash-1.5"
+            ),
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(
+                sys.modules,
+                {"openai": fake_openai, "requests": _models_requests(catalog)},
+            ),
+            self.assertLogs("anytrain.chat", level="INFO") as logs,
+        ):
+            client = Chat("openrouter")
+            response = client("hello")
+
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            client.models,
+            (
+                "meta-llama/llama-3.2-3b-instruct:free",
+                "google/gemini-flash-1.5",
+                "openai/gpt-4o-mini",
+            ),
+        )
+        self.assertEqual(
+            calls[0],
+            {
+                "model": "meta-llama/llama-3.2-3b-instruct:free",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+                "extra_body": {
+                    "models": [
+                        "google/gemini-flash-1.5",
+                        "openai/gpt-4o-mini",
+                    ]
+                },
+            },
+        )
+        self.assertTrue(
+            any(
+                "openrouter using model=google/gemini-flash-1.5" in message
+                for message in logs.output
+            )
+        )
+
+    def test_openrouter_backend_requires_requests_extra_for_selection(self):
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"requests": None}),
+            self.assertRaisesRegex(ImportError, r"anytrain\.chat"),
+        ):
+            Chat("openrouter")
+
+    def test_openrouter_backend_requires_chat_extra(self):
+        catalog = [_chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006)]
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: "openai/gpt-4o-mini",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(
+                sys.modules,
+                {"openai": None, "requests": _models_requests(catalog)},
+            ),
+            self.assertRaisesRegex(ImportError, r"anytrain\.chat"),
+        ):
+            Chat("openrouter")("hello")
+
+    def test_openrouter_image_generation_is_not_supported(self):
+        catalog = [_chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006)]
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=types.SimpleNamespace(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: "openai/gpt-4o-mini",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(
+                sys.modules,
+                {"openai": fake_openai, "requests": _models_requests(catalog)},
+            ),
+        ):
+            client = Chat("openrouter")
             with self.assertRaises(NotImplementedError):
                 client.image("draw a cat")
 

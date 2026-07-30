@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._openrouter import resolve_models
 from ._provider import (
     GLM_IMAGE_MODEL,
     GLM_IMAGE_SIZE,
@@ -16,7 +17,10 @@ from .types import ChatMessage, ImageGeneration, ModelType
 class Chat:
     def __init__(self, model_type: ModelType | str = ModelType.DEEPSEEK):
         self.model_type = ModelType(model_type)
-        self._config = config_from_env(self.model_type)
+        config = config_from_env(self.model_type)
+        if self.model_type == ModelType.OPENROUTER:
+            config = resolve_models(config)
+        self._config = config
         self._client = create_client(self.model_type, self._config)
         self._messages = initial_messages(self.model_type)
 
@@ -27,6 +31,10 @@ class Chat:
     @property
     def model(self) -> str:
         return self._config.model
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        return self._config.models
 
     def refresh(self) -> None:
         self._messages = initial_messages(self.model_type)
@@ -40,7 +48,13 @@ class Chat:
             *self._messages,
             {"role": "user", "content": prompt},
         ]
-        response = request(self.model_type, self._client, self._config.model, messages)
+        response = request(
+            self.model_type,
+            self._client,
+            self._config.model,
+            messages,
+            models=self._config.models,
+        )
         self._messages = [*messages, {"role": "assistant", "content": response}]
         return response
 

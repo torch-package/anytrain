@@ -10,8 +10,10 @@ from .codebook import MaskedCodebookCrossEntropyLoss
 from .frame import (
     MaskedCosineAlignmentLoss,
     MaskedFrameMSELoss,
+    TeacherLoss,
     masked_cosine_alignment_loss,
     masked_frame_mse_loss,
+    teacher_loss,
 )
 from .group import LossGroup
 from .output import (
@@ -34,6 +36,7 @@ __all__ = [
     "LossOutputs",
     "MaskedCosineAlignmentLoss",
     "MaskedFrameMSELoss",
+    "TeacherLoss",
     "LossResult",
     "LossTensorDict",
     "MaskedCodebookCrossEntropyLoss",
@@ -45,4 +48,5 @@ __all__ = [
     "loss_item_mean",
     "masked_cosine_alignment_loss",
     "masked_frame_mse_loss",
+    "teacher_loss",
 ]
