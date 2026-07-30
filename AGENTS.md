@@ -24,6 +24,13 @@
 - `codec`、`tts`：optional domain adapter。
 - `framework`：flow matching、GAN 等 optional/experimental 训练范式组件。
 
+## 代码组织
+
+- 文件按单一职责和功能归属拆分。
+- 当一组文件形成明确、可命名、可独立导入的功能域、公开 API 边界或依赖边界时，将其组织为子包。
+- 文件数量只作为目录可读性的信号，不设置按文件数拆子包的机械阈值；同一内聚功能域可以保持扁平，不能只因文件较多而增加包层级。
+- 子包入口保持显式且轻量；通过 `__init__.py` 暴露稳定接口，不为缩短 import 路径向上层或 package root 扩散快捷别名。
+
 ## 明确避免
 
 - 不迁移 `datasets/`、`data_module/`、具体 `task/`、`wrapper/`、`zoo/`、`_pretrained/`。

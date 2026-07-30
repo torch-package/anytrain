@@ -4,7 +4,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from .config import ChatConfig, OPENROUTER_MAX_FALLBACK_MODELS
+from .config import OPENROUTER_MAX_FALLBACK_MODELS, ChatConfig
 from .types import ChatMessage, ImageGeneration, ImageOutput, ModelType
 
 DEEPSEEK_REASONING_EFFORT = "high"
