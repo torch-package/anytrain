@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import torch
 
-from anytrain.tts import TTSOptions, TTSOutput, TTSTokens
+from anytrain.tts import TTSOptions, TTSOutput
 from anytrain.tts.moss import DEFAULT_CODEC_MODEL, MossTTS, MossTTSConfig
 
 
@@ -24,14 +24,15 @@ class TTSProtocolTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "temperature"):
             TTSOptions(temperature=0.0)
 
-    def test_tokens_build_model_inputs(self):
-        tokens = TTSTokens(
-            input_ids=torch.tensor([[1, 2]]),
-            attention_mask=torch.tensor([[1, 1]]),
-            extra_tensors={"prompt_ids": torch.tensor([[3]])},
-        )
+    def test_options_merge_preserves_explicit_fields_and_none(self):
+        defaults = TTSOptions(speaker="default", language="Chinese", seed=7)
+        configured = TTSOptions(language="English").merged(TTSOptions(speaker=None))
 
-        self.assertEqual(set(tokens.model_inputs()), {"attention_mask", "input_ids", "prompt_ids"})
+        merged = defaults.merged(configured)
+
+        self.assertIsNone(merged.speaker)
+        self.assertEqual(merged.language, "English")
+        self.assertEqual(merged.seed, 7)
 
 
 class MossTTSImportTest(unittest.TestCase):
@@ -219,6 +220,17 @@ class MossTTSAdapterTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "text batch length"):
             tts.synthesize(["hello", "world"])
+
+    def test_synthesize_one_rejects_extra_decoded_outputs(self):
+        class ExtraOutputProcessor(FakeMossProcessor):
+            def decode(self, value):
+                message = FakeProcessorMessage(torch.zeros(4))
+                return [message, message]
+
+        tts = MossTTS(model=FakeMossModel(), processor=ExtraOutputProcessor())
+
+        with self.assertRaisesRegex(ValueError, "text batch length"):
+            tts.synthesize("hello")
 
     def test_synthesize_batch_rejects_reference_length_mismatch(self):
         tts = MossTTS(model=FakeBatchMossModel(), processor=FakeMossProcessor())

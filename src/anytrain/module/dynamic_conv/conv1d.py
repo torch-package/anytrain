@@ -7,6 +7,21 @@ from einops import rearrange
 from torch import Size, Tensor, nn
 from torch.nn import functional as F
 
+from ._expert import (
+    expand_expert_weights as _expand_expert_weights,
+)
+from ._expert import (
+    mix_expert_bias as _mix_expert_bias,
+)
+from ._expert import (
+    mix_expert_weights as _mix_expert_weights,
+)
+from ._expert import (
+    validate_channels as _validate_channels,
+)
+from ._expert import (
+    validate_expert_weights as _validate_expert_weights,
+)
 from .segment import (
     PaddingMode,
     fold_transposed_segments_1d,
@@ -529,80 +544,11 @@ class DynamicConvTranspose1d(nn.Module):
         return self._raw_output_length(input_length) - 2 * padding + output_padding
 
 
-def _validate_channels(
-    *,
-    in_channels: int,
-    out_channels: int,
-    groups: int,
-    num_experts: int,
-) -> None:
-    if in_channels <= 0:
-        raise ValueError(f"in_channels must be positive, got {in_channels}.")
-    if out_channels <= 0:
-        raise ValueError(f"out_channels must be positive, got {out_channels}.")
-    if groups <= 0:
-        raise ValueError(f"groups must be positive, got {groups}.")
-    if num_experts <= 0:
-        raise ValueError(f"num_experts must be positive, got {num_experts}.")
-    if in_channels % groups != 0:
-        raise ValueError(
-            f"in_channels must be divisible by groups: got {in_channels} and {groups}."
-        )
-    if out_channels % groups != 0:
-        raise ValueError(
-            f"out_channels must be divisible by groups: got {out_channels} and {groups}."
-        )
-
-
 def _validate_input_1d(x: Tensor, *, channels: int, name: str) -> None:
     if x.ndim != 3:
         raise ValueError(f"{name} expects input shape (B, C, T), got {tuple(x.shape)}.")
     if x.size(1) != channels:
         raise ValueError(f"{name} channel mismatch: got {x.size(1)}, expected {channels}.")
-
-
-def _validate_expert_weights(expert_weights: Tensor, *, num_experts: int) -> None:
-    if expert_weights.ndim != 2:
-        raise ValueError(f"expert_weights must be 2D, got shape {tuple(expert_weights.shape)}.")
-    if expert_weights.size(1) != num_experts:
-        raise ValueError(
-            "expert_weights last dimension must match num_experts: "
-            f"got {expert_weights.size(1)}, expected {num_experts}."
-        )
-
-
-def _expand_expert_weights(
-    expert_weights: Tensor,
-    *,
-    batch_size: int,
-    original_batch_size: int | None = None,
-    num_segments: int = 1,
-) -> Tensor:
-    if expert_weights.size(0) == batch_size:
-        return expert_weights
-    if expert_weights.size(0) == 1:
-        return expert_weights.repeat(batch_size, 1)
-    if (
-        original_batch_size is not None
-        and num_segments > 1
-        and expert_weights.size(0) == original_batch_size
-    ):
-        return expert_weights.repeat_interleave(num_segments, dim=0)
-    raise ValueError(
-        f"expert_weights batch size {expert_weights.size(0)} must match input batch size "
-        f"{batch_size} or be 1."
-    )
-
-
-def _mix_expert_weights(expert_weights: Tensor, weight: Tensor) -> Tensor:
-    return torch.matmul(expert_weights, weight.flatten(start_dim=1)).reshape(
-        expert_weights.size(0),
-        *weight.shape[1:],
-    )
-
-
-def _mix_expert_bias(expert_weights: Tensor, bias: Tensor) -> Tensor:
-    return expert_weights @ bias
 
 
 def _validate_output_padding(*, output_padding: int, stride: int, dilation: int) -> None:

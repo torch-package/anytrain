@@ -1,22 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
+
 import torch
 from torch import nn
 
-from ._params import make_scaled_param_groups, split_parameters_by_predicate, validate_module
-from .adamw import create_adamw_optimizer
+from ._params import build_parameter_plan, make_scaled_param_groups
+from .adamw import create_adamw_optimizer_from_plan
 from .compose import CompositeOptimizer
 from .options import (
     DEFAULT_MUON_ADJUST_LR_FN,
     AdamWOptions,
     MuonOptions,
 )
-from .rules import (
-    ExcludedModules,
-    LRScaleRules,
-    _excluded_module_ids,
-    is_muon_parameter_for_module,
-)
+from .rules import ExcludedModules, LRScaleRules
 
 
 def muon_available() -> bool:
@@ -32,30 +29,28 @@ def create_muon_adamw_optimizer(
     excluded_modules: ExcludedModules = (),
     lr_scale_rules: LRScaleRules = (),
 ) -> CompositeOptimizer:
-    muon_parameters, adamw_parameters = split_muon_params(
+    plan = build_parameter_plan(
         module,
         requires_grad_only=requires_grad_only,
         excluded_modules=excluded_modules,
+        lr_scale_rules=lr_scale_rules,
     )
-    if not muon_parameters:
+    if not plan.muon_params:
         raise ValueError("No parameters are eligible for Muon.")
 
     optimizers: dict[str, torch.optim.Optimizer] = {
         "muon": _create_muon_optimizer(
-            module,
-            muon_parameters,
+            plan.muon_params,
             muon,
-            lr_scale_rules=lr_scale_rules,
+            lr_scales=plan.lr_scales,
         ),
     }
-    if adamw_parameters:
-        optimizers["adamw"] = create_adamw_optimizer(
-            module,
+    non_muon_params = plan.non_muon_params
+    if non_muon_params:
+        optimizers["adamw"] = create_adamw_optimizer_from_plan(
+            plan,
             adamw,
-            requires_grad_only=requires_grad_only,
-            selected_params=adamw_parameters,
-            excluded_modules=excluded_modules,
-            lr_scale_rules=lr_scale_rules,
+            include_param_ids={id(parameter) for parameter in non_muon_params},
         )
 
     return CompositeOptimizer(optimizers)
@@ -75,34 +70,19 @@ def split_muon_params(
     to Muon when every owner is Muon-eligible.
     """
 
-    validate_module(module)
-    excluded_module_ids = _excluded_module_ids(module, excluded_modules)
-
-    def is_muon(
-        child_module: nn.Module,
-        parameter_name: str,
-        parameter: nn.Parameter,
-    ) -> bool:
-        return is_muon_parameter_for_module(
-            child_module,
-            parameter_name,
-            parameter,
-            excluded_module_ids=excluded_module_ids,
-        )
-
-    return split_parameters_by_predicate(
+    plan = build_parameter_plan(
         module,
-        is_muon,
         requires_grad_only=requires_grad_only,
+        excluded_modules=excluded_modules,
     )
+    return list(plan.muon_params), list(plan.non_muon_params)
 
 
 def _create_muon_optimizer(
-    module: nn.Module,
-    parameters: list[nn.Parameter],
+    parameters: Collection[nn.Parameter],
     options: MuonOptions,
     *,
-    lr_scale_rules: LRScaleRules = (),
+    lr_scales: Mapping[int, float],
 ) -> torch.optim.Optimizer:
     muon_cls = getattr(torch.optim, "Muon", None)
     if muon_cls is None:
@@ -118,10 +98,9 @@ def _create_muon_optimizer(
     optimizer_options.setdefault("adjust_lr_fn", DEFAULT_MUON_ADJUST_LR_FN)
 
     param_groups = make_scaled_param_groups(
-        module,
         ((parameters, {}),),
         base_lr=lr,
-        lr_scale_rules=lr_scale_rules,
+        lr_scales=lr_scales,
     )
     return muon_cls(
         param_groups,

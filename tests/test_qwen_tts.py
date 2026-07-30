@@ -77,6 +77,22 @@ class QwenTTSConfigTest(unittest.TestCase):
     def test_default_model_is_customvoice(self):
         self.assertIn("CustomVoice", QwenCustomVoiceTTSConfig().model)
 
+    def test_config_hash_is_stable_for_nested_mapping_order(self):
+        first = QwenCustomVoiceTTS(
+            model=object(),
+            config=QwenCustomVoiceTTSConfig(
+                load_kwargs={"nested": {"left": 1, "right": 2}},
+            ),
+        )
+        second = QwenCustomVoiceTTS(
+            model=object(),
+            config=QwenCustomVoiceTTSConfig(
+                load_kwargs={"nested": {"right": 2, "left": 1}},
+            ),
+        )
+
+        self.assertEqual(first.config_hash(), second.config_hash())
+
 
 class FakeQwen3TTSModel:
     loaded = None

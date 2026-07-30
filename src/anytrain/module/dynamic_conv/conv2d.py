@@ -5,12 +5,20 @@ from einops import rearrange
 from torch import Size, Tensor, nn
 from torch.nn import functional as F
 
-from .conv1d import (
-    _expand_expert_weights,
-    _mix_expert_bias,
-    _mix_expert_weights,
-    _validate_channels,
-    _validate_expert_weights,
+from ._expert import (
+    expand_expert_weights as _expand_expert_weights,
+)
+from ._expert import (
+    mix_expert_bias as _mix_expert_bias,
+)
+from ._expert import (
+    mix_expert_weights as _mix_expert_weights,
+)
+from ._expert import (
+    validate_channels as _validate_channels,
+)
+from ._expert import (
+    validate_expert_weights as _validate_expert_weights,
 )
 from .segment import PaddingMode
 from .shape import (

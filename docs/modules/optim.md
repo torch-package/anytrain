@@ -11,7 +11,6 @@
 ```text
 src/anytrain/optim/
   __init__.py
-  _llm_config.py
   _params.py
   adamw.py
   compose.py
@@ -23,11 +22,6 @@ src/anytrain/optim/
   rules.py
   scheduler/
     __init__.py
-    _shape.py
-    compose.py
-    curve.py
-    presets.py
-    types.py
 ```
 
 当前公开导出：
@@ -45,7 +39,6 @@ src/anytrain/optim/
 - `split_muon_params`
 - `create_scheduler`
 - `create_llm_optimizer`
-- `create_llm_lightning_optimizers`
 
 高级对象和 options 类型保留在子模块：
 
@@ -54,8 +47,8 @@ src/anytrain/optim/
 - `anytrain.optim.muon`: `create_muon_adamw_optimizer`
 - `anytrain.optim.lora_muon`: `LoRAFactorPair`、`LoRAMuon`
 - `anytrain.optim.peft`: `lora_factor_pairs`、`create_lora_muon_optimizer`
-- `anytrain.optim.scheduler`: `CurveShape`、`Phase`、`Schedule`、`PhaseLike`、`make_scheduler_config`、`make_named_scheduler_config`、`create_scheduler_from_config`
-- `anytrain.optim.llm`: `OptimizationConfig`、`create_optimizer_from_config`、`create_lightning_optimizers_from_config`
+- `anytrain.optim.scheduler`: `create_scheduler`
+- `anytrain.optim.llm`: `create_optimizer`
 
 `anytrain` 的最低依赖是 `torch>=2.4`。Muon 是条件能力：`muon_available()` 在当前
 PyTorch 提供 `torch.optim.Muon` 时返回 `True`。旧版 PyTorch 仍可使用 AdamW、scheduler、
@@ -63,8 +56,9 @@ PyTorch 提供 `torch.optim.Muon` 时返回 `True`。旧版 PyTorch 仍可使用
 
 AdamW / Muon 的高级入口接收 typed dict options，不再提供 dataclass config，也不重复校验
 torch 原生参数。`anytrain` 只校验自己定义的边界：参数分组、排除 module、lr scale rules、
-composite optimizer 参数互斥和 scheduler DSL。`betas`、`eps`、`momentum`、`adjust_lr_fn` 等
-optimizer 参数由对应的 torch optimizer 暴露错误。
+composite optimizer 参数互斥和命名 scheduler 参数。`betas`、`eps`、`momentum`、`adjust_lr_fn` 等
+optimizer 参数由对应的 torch optimizer 暴露错误。scheduler 只保留命名 preset，不提供独立
+phase 配置层。
 
 ## LR Scale Rules
 
@@ -236,57 +230,9 @@ create_scheduler(
 - `warmup_cosine`: 线性 warmup 后做 cosine decay。
 - `wsd`: warmup + stable + cosine decay。
 
-如果需要完整 phase DSL，继续用 `anytrain.optim.scheduler` 子模块。每个 `Phase` 表示一个连续 phase：
-
-```python
-Phase(
-    shape="linear",          # 也可以用 CurveShape.LINEAR
-    duration_steps=1000,    # -1 表示无限尾段，只能用于最后一个 constant phase
-    start_lr_ratio=0.0,     # None 表示接上一个 phase 的 end_lr_ratio
-    end_lr_ratio=1.0,
-)
-```
-
-`shape` 会规范化为 `CurveShape`，可选值是 `CONSTANT`、`LINEAR`、`COSINE`。
-内部实现拆成三层：`curve` 定义单段曲线，`compose` 负责把 phase 串成 step-level lambda，
-`presets` 把命名 schedule 转成 phase 列表。`Phase` / `Schedule` 是对外领域名。
-
-多个 phase 通过 `Schedule(phases=(...))` 串起来。旧的 warmup + cosine 可以写成：
-
-```python
-Schedule(
-    phases=(
-        Phase("linear", duration_steps=1000, start_lr_ratio=0.0, end_lr_ratio=1.0),
-        Phase("cosine", duration_steps=99000, end_lr_ratio=0.1),
-    )
-)
-```
-
-WSD 可以写成：
-
-```python
-Schedule(
-    phases=(
-        Phase("linear", duration_steps=1000, start_lr_ratio=0.0, end_lr_ratio=1.0),
-        Phase("constant", duration_steps=90000, end_lr_ratio=1.0),
-        Phase("cosine", duration_steps=10000, end_lr_ratio=0.1),
-    )
-)
-```
-
-`create_scheduler_from_config(optimizer, config)` 返回 `torch.optim.lr_scheduler.LambdaLR`。所有 phase 都由自己的 `duration_steps` 定义长度；有限 phase 全部结束后会保持最后一个 `end_lr_ratio`。
-
-`duration_steps=-1` 是无限尾段。它会让后续 phase 不可达，因此只能出现在最后一个 phase，并且只支持 `constant`。
-
-如果只需要默认 ratio，可以用简便接口：
-
-```python
-make_scheduler_config(
-    ("linear", 1000),
-    ("constant", 90000),
-    ("cosine", 10000),
-)
-```
+`warmup_cosine` 要求 `total_steps > warmup_steps`。`wsd` 要求显式提供
+`stable_steps` 和 `decay_steps`；如果同时给出 `total_steps`，它必须等于三段步数之和。
+三个 preset 都返回 step-level `LambdaLR`，训练预算之外保持最终学习率比例。
 
 ## CompositeOptimizer
 
@@ -316,42 +262,27 @@ optimizer = create_llm_optimizer(
 
 LLM 预设下 AdamW 默认 `weight_decay=0.01`，Muon 默认 `weight_decay=0.0`。Muon 和 AdamW fallback
 共用同一套 `lr`，顶层 `weight_decay` override 只作用于 AdamW options。需要局部调整学习率时使用
-`lr_scale_rules`；需要控制 Muon 专属超参或 Muon weight decay 时，直接使用 `anytrain.optim.muon` 或
-`OptimizationConfig(optimizer_options={"muon": ..., "adamw": ...})`。
+`lr_scale_rules`；需要控制 Muon 专属超参或 Muon weight decay 时，直接使用
+`create_muon_adamw_optimizer()`。
 
-`create_llm_lightning_optimizers()` 直接返回 Lightning `configure_optimizers()` 可用的 dict：
+Lightning 返回结构由下游显式组装：
 
 ```python
-return create_llm_lightning_optimizers(
-    self.model,
+optimizer = create_llm_optimizer(
+    model,
     preset="sft",
+)
+scheduler = create_scheduler(
+    optimizer,
     schedule="warmup_cosine",
     warmup_steps=1000,
     total_steps=100000,
 )
+return {
+    "optimizer": optimizer,
+    "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+}
 ```
-
-如果要保留配置对象装配，可以直接用 `anytrain.optim.llm` 子模块：
-
-```python
-config = OptimizationConfig.from_preset(
-    "pretrain",
-    optimizer="muon",
-)
-optimizer = create_optimizer_from_config(model, config)
-```
-
-子模块里的 `from_preset()` 仍然支持 phase 列表：
-
-```python
-config = OptimizationConfig.from_preset(
-    "pretrain",
-    optimizer="muon",
-    scheduler=[("linear", 1000), ("cosine", 10000)],
-)
-```
-
-高级构造还可以用 `create_optimizer_from_config()` 和 `create_lightning_optimizers_from_config()`，它们保留了完整的 config 对象边界。
 
 ## 边界
 

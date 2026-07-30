@@ -6,8 +6,6 @@ the single stable text-to-waveform path used by MOSS-TTS v1.5.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -26,9 +24,10 @@ from anytrain.tts import (
     TTSOutput,
     validate_text,
 )
+from anytrain.tts._common import config_hash, hashable_mapping, positive_int, validate_mapping
 
 from ._deps import load_transformers_auto_model_class, load_transformers_auto_processor_class
-from ._output import processor_output, processor_outputs
+from ._output import processor_outputs
 
 DEFAULT_MODEL = "OpenMOSS-Team/MOSS-TTS-v1.5"
 DEFAULT_CODEC_MODEL = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
@@ -86,8 +85,8 @@ class MossTTSConfig:
             raise TypeError("sample_rate must be an integer.")
         if self.sample_rate <= 0:
             raise ValueError("sample_rate must be positive.")
-        _validate_kwargs(self.load_kwargs, "load_kwargs")
-        _validate_kwargs(self.runtime_kwargs, "runtime_kwargs")
+        validate_mapping(self.load_kwargs, "load_kwargs")
+        validate_mapping(self.runtime_kwargs, "runtime_kwargs")
 
     def options(self) -> TTSOptions:
         return TTSOptions(
@@ -104,8 +103,8 @@ class MossTTSConfig:
             "language": self.language,
             "revision": self.revision,
             "trust_remote_code": self.trust_remote_code,
-            "load_kwargs": _hashable_mapping(self.load_kwargs),
-            "runtime_kwargs": _hashable_mapping(self.runtime_kwargs),
+            "load_kwargs": hashable_mapping(self.load_kwargs),
+            "runtime_kwargs": hashable_mapping(self.runtime_kwargs),
         }
 
 
@@ -209,8 +208,7 @@ class MossTTS:
         return self.config.sample_rate
 
     def config_hash(self) -> str:
-        encoded = json.dumps(self.config.hash_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return config_hash(self.config.hash_dict())
 
     @overload
     def synthesize(
@@ -261,14 +259,15 @@ class MossTTS:
             options,
             [None if reference_audio_path is None else _audio_reference(reference_audio_path)],
         )
-        return processor_output(
+        return processor_outputs(
             decoded,
+            expected_count=1,
             sample_rate=_processor_sample_rate(
                 self.processor,
                 options.sample_rate or self.sample_rate,
             ),
             backend=DEFAULT_MODEL,
-        )
+        )[0]
 
     def _synthesize_batch(
         self,
@@ -454,7 +453,7 @@ def _processor_generation_kwargs(options: TTSOptions) -> dict[str, object]:
 
     max_new_tokens = _option_or_extra(options.max_new_tokens, options.extra, "max_new_tokens")
     if max_new_tokens is not None:
-        kwargs["max_new_tokens"] = _positive_int(max_new_tokens, "max_new_tokens")
+        kwargs["max_new_tokens"] = positive_int(max_new_tokens, "max_new_tokens")
 
     temperature = _option_or_extra(options.temperature, options.extra, "temperature")
     if temperature is not None:
@@ -547,27 +546,11 @@ def _validate_v15_options(options: TTSOptions) -> None:
 
 
 def _validate_runtime_kwargs(value: Mapping[str, object], name: str) -> None:
-    _validate_kwargs(value, name)
+    validate_mapping(value, name)
     unsupported = set(value) - set(MossRuntimeKwargs.__annotations__)
     if unsupported:
         names = ", ".join(sorted(unsupported))
         raise TypeError(f"unsupported MOSS-TTS v1.5 runtime options: {names}.")
-
-
-def _validate_kwargs(value: Mapping[str, object], name: str) -> None:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping.")
-    for key in value:
-        if not isinstance(key, str) or not key:
-            raise ValueError(f"{name} keys must be non-empty strings.")
-
-
-def _positive_int(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
-    return value
 
 
 def _positive_float(value: object, name: str) -> float:
@@ -584,25 +567,6 @@ def _top_p(value: object) -> float:
     if resolved > 1:
         raise ValueError("top_p must be in (0, 1].")
     return resolved
-
-
-def _hashable_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    return {key: _hashable_value(item) for key, item in sorted(value.items())}
-
-
-def _hashable_value(value: object) -> object:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {
-            str(key): _hashable_value(item)
-            for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-        }
-    if isinstance(value, (tuple, list)):
-        return [_hashable_value(item) for item in value]
-    return str(value)
 
 
 def _device(device: str | torch.device | None) -> torch.device:

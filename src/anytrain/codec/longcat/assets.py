@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from ._cache import cache_dir as _cache_dir
+from .._cache import hf_cache_dir, hf_file
 
 DEFAULT_HF_REPO_ID = "meituan-longcat/LongCat-Audio-Codec"
 
@@ -16,25 +16,59 @@ LongCatDecoderName = Literal[
     "24k_4codebooks",
 ]
 
+DEFAULT_DECODERS: tuple[LongCatDecoderName, ...] = (
+    "16k_4codebooks",
+    "24k_2codebooks",
+    "24k_4codebooks",
+)
+
+
+@dataclass(frozen=True)
+class LongCatDecoderSpec:
+    config_key: str
+    checkpoint_filename: str
+    config_stem: str
+    sample_rate: int
+    codebooks: int
+
+
+DECODER_SPECS: dict[LongCatDecoderName, LongCatDecoderSpec] = {
+    "16k_4codebooks": LongCatDecoderSpec(
+        config_key="decoder_16k_4codebooks",
+        checkpoint_filename="LongCatAudioCodec_decoder_16k_4codebooks.pt",
+        config_stem="LongCatAudioCodec_decoder_16k_4codebooks",
+        sample_rate=16_000,
+        codebooks=4,
+    ),
+    "24k_2codebooks": LongCatDecoderSpec(
+        config_key="decoder_24k_2codebooks",
+        checkpoint_filename="LongCatAudioCodec_decoder_24k_2codebooks.pt",
+        config_stem="LongCatAudioCodec_decoder_24k_2codebooks",
+        sample_rate=24_000,
+        codebooks=2,
+    ),
+    "24k_4codebooks": LongCatDecoderSpec(
+        config_key="decoder_24k_4codebooks",
+        checkpoint_filename="LongCatAudioCodec_decoder_24k_4codebooks.pt",
+        config_stem="LongCatAudioCodec_decoder_24k_4codebooks",
+        sample_rate=24_000,
+        codebooks=4,
+    ),
+}
+
 CHECKPOINT_FILENAMES = {
     "encoder": "LongCatAudioCodec_encoder.pt",
     "encoder_cmvn": "LongCatAudioCodec_encoder_cmvn.npy",
-    "decoder_16k_4codebooks": "LongCatAudioCodec_decoder_16k_4codebooks.pt",
-    "decoder_24k_2codebooks": "LongCatAudioCodec_decoder_24k_2codebooks.pt",
-    "decoder_24k_4codebooks": "LongCatAudioCodec_decoder_24k_4codebooks.pt",
+    **{spec.config_key: spec.checkpoint_filename for spec in DECODER_SPECS.values()},
 }
 
 CONFIG_STEMS = {
     "encoder": "LongCatAudioCodec_encoder",
-    "decoder_16k_4codebooks": "LongCatAudioCodec_decoder_16k_4codebooks",
-    "decoder_24k_2codebooks": "LongCatAudioCodec_decoder_24k_2codebooks",
-    "decoder_24k_4codebooks": "LongCatAudioCodec_decoder_24k_4codebooks",
+    **{spec.config_key: spec.config_stem for spec in DECODER_SPECS.values()},
 }
 
 DECODER_CONFIG_KEYS: dict[LongCatDecoderName, str] = {
-    "16k_4codebooks": "decoder_16k_4codebooks",
-    "24k_2codebooks": "decoder_24k_2codebooks",
-    "24k_4codebooks": "decoder_24k_4codebooks",
+    name: spec.config_key for name, spec in DECODER_SPECS.items()
 }
 
 
@@ -66,13 +100,13 @@ class LongCatAssets:
 def ensure_longcat_assets(
     cache_dir: str | os.PathLike[str] | None = None,
     *,
-    decoders: Sequence[LongCatDecoderName] = tuple(DECODER_CONFIG_KEYS),
+    decoders: Sequence[LongCatDecoderName] = DEFAULT_DECODERS,
     repo_id: str = DEFAULT_HF_REPO_ID,
     local_files_only: bool = False,
     force_download: bool = False,
 ) -> LongCatAssets:
     decoder_names = _validate_decoders(decoders)
-    root = _cache_dir(cache_dir)
+    root = hf_cache_dir("longcat-audio-codec", cache_dir)
     ckpt_dir = root / "ckpts"
     config_dir = root / "configs"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -80,11 +114,12 @@ def ensure_longcat_assets(
 
     checkpoint_keys = _required_checkpoint_keys(decoder_names)
     checkpoints = {
-        name: _ensure_checkpoint(
+        name: hf_file(
+            component="LongCat checkpoint download",
             repo_id=repo_id,
             cache_dir=root,
-            ckpt_dir=ckpt_dir,
-            filename=CHECKPOINT_FILENAMES[name],
+            filename=f"ckpts/{CHECKPOINT_FILENAMES[name]}",
+            target=ckpt_dir / CHECKPOINT_FILENAMES[name],
             local_files_only=local_files_only,
             force_download=force_download,
         )
@@ -104,7 +139,7 @@ def write_longcat_configs(
     config_dir: str | os.PathLike[str],
     checkpoints: Mapping[str, Path],
     *,
-    decoders: Sequence[LongCatDecoderName] = tuple(DECODER_CONFIG_KEYS),
+    decoders: Sequence[LongCatDecoderName] = DEFAULT_DECODERS,
 ) -> LongCatConfigPaths:
     config_root = Path(config_dir)
     config_root.mkdir(parents=True, exist_ok=True)
@@ -145,36 +180,6 @@ def _validate_decoders(decoders: Sequence[LongCatDecoderName]) -> tuple[LongCatD
     return tuple(dict.fromkeys(decoders))
 
 
-def _ensure_checkpoint(
-    *,
-    repo_id: str,
-    cache_dir: Path,
-    ckpt_dir: Path,
-    filename: str,
-    local_files_only: bool,
-    force_download: bool,
-) -> Path:
-    target = ckpt_dir / filename
-    if target.exists() and not force_download:
-        return target
-
-    hf_hub_download = _require_huggingface_hub()
-    downloaded = Path(
-        hf_hub_download(
-            repo_id=repo_id,
-            filename=f"ckpts/{filename}",
-            local_dir=str(cache_dir),
-            local_files_only=local_files_only,
-            force_download=force_download,
-        )
-    )
-    if not target.exists():
-        raise FileNotFoundError(
-            f"Expected Hugging Face download to create {target}, but got {downloaded}."
-        )
-    return target
-
-
 def _read_default_config(stem: str) -> dict[str, object]:
     try:
         from longcat_audio_codec import default_config_path
@@ -199,18 +204,6 @@ def _write_yaml(path: Path, data: Mapping[str, object]) -> None:
     with tmp.open("w") as f:
         yaml.safe_dump(data, f, sort_keys=False)
     os.replace(tmp, path)
-
-
-def _require_huggingface_hub():
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise ImportError(
-            'LongCat checkpoint download requires `huggingface-hub`. Install it with `python -m pip install "huggingface-hub>=0.23"`.'
-        ) from exc
-    return hf_hub_download
-
-
 def _require_yaml():
     try:
         import yaml

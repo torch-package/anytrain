@@ -32,7 +32,10 @@ class UniCodecAssetsTest(unittest.TestCase):
                 return str(path)
 
             with (
-                patch.object(unicodec_assets, "_require_huggingface_hub", return_value=fake_download),
+                patch(
+                    "anytrain.codec._cache.require_hf_function",
+                    return_value=fake_download,
+                ),
                 patch.object(unicodec_assets, "_default_config_path", return_value=config),
             ):
                 assets = ensure_unicodec_assets(cache_dir=root)
@@ -51,9 +54,8 @@ class UniCodecAssetsTest(unittest.TestCase):
             config.write_text("model: {}")
 
             with (
-                patch.object(
-                    unicodec_assets,
-                    "_require_huggingface_hub",
+                patch(
+                    "anytrain.codec._cache.require_hf_function",
                     side_effect=AssertionError("unexpected download"),
                 ),
                 patch.object(unicodec_assets, "_default_config_path", return_value=config),

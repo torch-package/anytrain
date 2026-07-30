@@ -1,12 +1,37 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from anytrain._buffer import register_buffer
+
+
+def resolve_device(device: str | torch.device | None) -> torch.device:
+    if device is not None:
+        return torch.device(device)
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def integer_tensor(value: Any, name: str) -> Tensor:
+    if not isinstance(value, Tensor):
+        raise TypeError(f"{name} must be a Tensor.")
+    if value.dtype == torch.bool or torch.is_floating_point(value) or torch.is_complex(value):
+        raise TypeError(f"{name} must contain integer ids.")
+    return value
+
+
+def validate_frame_codes(value: Any, codebook_sizes: Sequence[int]) -> Tensor:
+    codes = integer_tensor(value, "codes")
+    if codes.dim() != 3:
+        raise ValueError("codes must have shape [batch, time, codebook].")
+    if codes.shape[-1] != len(codebook_sizes):
+        raise ValueError(
+            f"codes must contain {len(codebook_sizes)} aligned codebooks."
+        )
+    return codes
 
 
 class DeviceModule(nn.Module):

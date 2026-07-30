@@ -9,7 +9,7 @@ import torch
 from torch import Tensor, nn
 
 from .._audio import resample
-from .._module import DeviceModule
+from .._module import DeviceModule, integer_tensor, resolve_device
 from ..protocol import AcousticLayout, SemanticAcousticCodes
 from .assets import BiCodecAssets, ensure_bicodec_assets
 
@@ -124,7 +124,7 @@ class BiCodec(DeviceModule):
             if not root.exists():
                 raise FileNotFoundError(f"BiCodec model directory does not exist: {root}.")
 
-        resolved_device = _device(device)
+        resolved_device = resolve_device(device)
         config = _load_config(root / "config.yaml")
 
         model = model_cls.load_from_checkpoint(root / "BiCodec").to(resolved_device)
@@ -281,33 +281,13 @@ class BiCodec(DeviceModule):
         return _audio_tensor(audio)
 
     def _detokenize(self, semantic: Tensor, acoustic_tokens: Tensor) -> Tensor:
-        audio = self.model.detokenize(
-            semantic.to(self.device),
-            acoustic_tokens.to(self.device),
-        )
-        if not isinstance(audio, Tensor):
-            raise TypeError("BiCodec detokenize must return a Tensor.")
-        if audio.dim() == 2:
-            audio = audio.unsqueeze(1)
-        if audio.dim() != 3:
-            raise ValueError("BiCodec detokenize must return audio shape [batch, channels, time].")
-        return audio
-
-    @torch.no_grad()
-    def reconstruct(
-        self,
-        audio: Tensor,
-        sample_rate: int,
-        *,
-        ref_audio: Tensor | None = None,
-        ref_sample_rate: int | None = None,
-    ) -> Tensor:
-        return self.detokenize(
-            self.tokenize(
-                audio,
-                sample_rate,
-                ref_audio=ref_audio,
-                ref_sample_rate=ref_sample_rate,
+        detokenize = getattr(self.model, "detokenize", None)
+        if not callable(detokenize):
+            raise TypeError("BiCodec model must provide detokenize().")
+        return _audio_tensor(
+            detokenize(
+                semantic.to(self.device),
+                acoustic_tokens.to(self.device),
             )
         )
 
@@ -341,7 +321,7 @@ class BiCodec(DeviceModule):
             raise ValueError("semantic and acoustic codes must align on batch.")
 
     def _validate_acoustic_codes(self, acoustic_codes: Tensor) -> Tensor:
-        acoustic = _integer_tensor(acoustic_codes, "acoustic codes")
+        acoustic = integer_tensor(acoustic_codes, "acoustic codes")
         if acoustic.dim() != 3:
             raise ValueError("acoustic codes must have shape [batch, slot, codebook].")
         if acoustic.size(-1) != len(self.acoustic_codebook_sizes):
@@ -394,16 +374,8 @@ def _ref_segment_length(config: dict[str, Any]) -> int | None:
     return max(hop, length // hop * hop)
 
 
-def _integer_tensor(value: Any, name: str) -> Tensor:
-    if not isinstance(value, Tensor):
-        raise TypeError(f"{name} must be a Tensor.")
-    if value.dtype == torch.bool or torch.is_floating_point(value) or torch.is_complex(value):
-        raise TypeError(f"{name} must contain integer ids.")
-    return value
-
-
 def _semantic_codes(value: Any) -> Tensor:
-    codes = _integer_tensor(value, "semantic codes")
+    codes = integer_tensor(value, "semantic codes")
     if codes.dim() != 3:
         raise ValueError("semantic codes must have shape [batch, time, codebook].")
     if codes.size(-1) != 1:
@@ -426,14 +398,14 @@ def _audio_tensor(value: Any) -> Tensor:
 
 
 def _semantic_tokens(value: Any) -> Tensor:
-    tokens = _integer_tensor(value, "semantic tokens")
+    tokens = integer_tensor(value, "semantic tokens")
     if tokens.dim() != 2:
         raise ValueError("semantic tokens must have shape [batch, time].")
     return tokens.contiguous()
 
 
 def _acoustic_tokens(value: Any) -> Tensor:
-    tokens = _integer_tensor(value, "acoustic tokens")
+    tokens = integer_tensor(value, "acoustic tokens")
     if tokens.dim() != 3:
         raise ValueError("acoustic tokens must have shape [batch, codebook, slot].")
     return tokens.contiguous()
@@ -494,12 +466,6 @@ def _quantizer_codebook(quantizer: Any, *, device: torch.device) -> Tensor:
     if not torch.is_floating_point(values) or torch.is_complex(values):
         raise TypeError("BiCodec semantic codebook must be floating point.")
     return values[0].transpose(0, 1).contiguous()
-
-
-def _device(device: str | torch.device | None) -> torch.device:
-    if device is not None:
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _load_bicodec_model() -> Any:

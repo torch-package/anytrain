@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal, TypedDict
 from urllib.request import urlopen
 
-from ._cache import cache_dir as _cache_dir
+from .._cache import anytrain_cache_dir
 
 ModelType = Literal["16khz", "24khz", "44khz"]
 ModelBitrate = Literal["8kbps", "16kbps"]
@@ -64,7 +64,7 @@ def ensure_dac_assets(
     force_download: bool = False,
 ) -> DACAssets:
     resolved_tag, url = _model(model_type, model_bitrate, tag)
-    root = _cache_dir(cache_dir)
+    root = anytrain_cache_dir("dac", cache_dir)
     root.mkdir(parents=True, exist_ok=True)
     checkpoint = root / f"weights_{model_type}_{model_bitrate}_{resolved_tag}.pth"
 

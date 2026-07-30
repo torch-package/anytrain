@@ -7,10 +7,7 @@ from torch import nn
 
 from ._validation import (
     MetricDict,
-    MetricValue,
     validate_metric_dict,
-    validate_metric_name,
-    validate_metric_value,
 )
 
 
@@ -38,9 +35,3 @@ class EvaluatorABC(nn.Module, ABC):
 
     def _validate_metric_dict(self, metrics: object) -> MetricDict:
         return validate_metric_dict(metrics, separator=self.metric_key_separator)
-
-    def _validate_metric_value(self, value: object, *, name: str) -> MetricValue:
-        return validate_metric_value(value, name=name)
-
-    def _validate_metric_name(self, name: object) -> str:
-        return validate_metric_name(name, separator=self.metric_key_separator)

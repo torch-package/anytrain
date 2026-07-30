@@ -8,7 +8,7 @@ import torch
 from torch import Tensor, nn
 
 from .._audio import model_frame_rate, resample
-from .._module import DeviceModule
+from .._module import DeviceModule, resolve_device, validate_frame_codes
 from .assets import (
     DEFAULT_MODEL_BITRATE,
     DEFAULT_MODEL_TYPE,
@@ -72,7 +72,7 @@ class DAC(DeviceModule):
             local_files_only=local_files_only,
             force_download=force_download,
         )
-        resolved_device = _device(device)
+        resolved_device = resolve_device(device)
         model = _load_checkpoint(assets["checkpoint"], resolved_device)
         return cls(
             model=model,
@@ -94,7 +94,7 @@ class DAC(DeviceModule):
         if not path.is_file():
             raise FileNotFoundError(f"DAC checkpoint does not exist: {path}.")
 
-        resolved_device = _device(device)
+        resolved_device = resolve_device(device)
         model = _load_checkpoint(path, resolved_device)
         return cls(
             model=model,
@@ -117,7 +117,7 @@ class DAC(DeviceModule):
         audio = self.model.preprocess(audio, self.sample_rate)
         features, codes, *_ = self.model.encode(audio, n_quantizers=self.n_quantizers)
         codes = codes.transpose(1, 2).contiguous()
-        self._validate_codes(codes)
+        validate_frame_codes(codes, self.codebook_sizes)
         return features.transpose(1, 2), codes
 
     @torch.no_grad()
@@ -126,7 +126,7 @@ class DAC(DeviceModule):
 
     @torch.no_grad()
     def codes_to_features(self, codes: Tensor) -> Tensor:
-        self._validate_codes(codes)
+        validate_frame_codes(codes, self.codebook_sizes)
         backend_codes = codes.transpose(1, 2).contiguous().to(self.device)
         features, _, _ = self.model.quantizer.from_codes(backend_codes)
         return features.transpose(1, 2)
@@ -139,35 +139,12 @@ class DAC(DeviceModule):
             raise TypeError("DAC features must be floating point tensors.")
         return self.model.decode(features.transpose(1, 2).to(self.device))
 
-    @torch.no_grad()
-    def reconstruct(self, audio: Tensor, sample_rate: int) -> Tensor:
-        return self.decode(self.encode(audio, sample_rate))
-
-    def _validate_codes(self, codes: Tensor) -> None:
-        if codes.dim() != 3:
-            raise ValueError("codes must have shape [batch, time, codebook].")
-        if codes.shape[-1] != len(self.codebook_sizes):
-            raise ValueError(
-                f"codes must contain {len(self.codebook_sizes)} aligned codebooks."
-            )
-        if codes.dtype == torch.bool or torch.is_floating_point(codes) or torch.is_complex(codes):
-            raise TypeError("codes must contain integer ids.")
-
-
 def _load_checkpoint(checkpoint: Path, device: torch.device) -> nn.Module:
     model_cls = _load_dac_model()
     model = model_cls.load(checkpoint)
     model = model.to(device)
     model.eval()
     return model
-
-
-def _device(device: str | torch.device | None) -> torch.device:
-    if device is not None:
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 def _load_dac_model() -> Any:
     try:
         import dac

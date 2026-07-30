@@ -10,8 +10,8 @@ from torch import Tensor
 from anytrain._compat import StrEnum
 
 from ..balancer import FixedWeightLossBalancer, LossBalancerABC
-from ..group import LossGroup
 from ..spectral import MultiScaleMelLoss, MultiScaleSTFTLoss, SpectralTransformCache
+from ..spectral._group import SpectralLossGroup
 from ..temporal import SDRLoss
 
 DAC_MEL_N_FFT_LIST = (2048, 1024, 512, 256, 128, 64, 32)
@@ -41,7 +41,7 @@ class CodecLossPreset(StrEnum):
     DYNACODEC = "dynacodec"
 
 
-class CodecLoss(LossGroup):
+class CodecLoss(SpectralLossGroup):
     def forward(
         self,
         input: Tensor,

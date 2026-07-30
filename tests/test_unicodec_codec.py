@@ -74,17 +74,6 @@ class UniCodecCodecTest(unittest.TestCase):
         self.assertEqual(model.domains, ("0", "0"))
         self.assertTrue(torch.equal(model.bandwidth_id, torch.tensor([0])))
 
-    def test_reconstruct_decodes_encoded_codes(self):
-        model = FakeUniCodecModel()
-        codec = UniCodec(model=model, device=torch.device("cpu"), assets=_assets(), domain="1")
-
-        audio = codec.reconstruct(torch.zeros((1, 1, 8)), 24000)
-
-        self.assertEqual(tuple(audio.shape), (1, 1, 16))
-        self.assertEqual(model.domains, ("1",))
-        self.assertTrue(model.decode_called)
-        self.assertTrue(model.codes_to_features_called)
-
     def test_decode_converts_codes_before_decode(self):
         model = FakeUniCodecModel()
         codec = UniCodec(

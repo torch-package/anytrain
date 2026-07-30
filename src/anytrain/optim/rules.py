@@ -30,21 +30,6 @@ _NORMALIZATION_MODULE_TYPES: Final[tuple[type[nn.Module], ...]] = (
 )
 
 
-def _excluded_module_ids(
-    module: nn.Module,
-    excluded_modules: ExcludedModules,
-) -> frozenset[int]:
-    validate_excluded_modules(excluded_modules)
-
-    module_ids = {id(child_module) for child_module in module.modules()}
-    excluded_module_ids: set[int] = set()
-    for index, excluded_module in enumerate(excluded_modules):
-        if id(excluded_module) not in module_ids:
-            raise ValueError(f"excluded_modules[{index}] must belong to `module`.")
-        excluded_module_ids.update(id(child_module) for child_module in excluded_module.modules())
-    return frozenset(excluded_module_ids)
-
-
 def validate_excluded_modules(excluded_modules: ExcludedModules) -> None:
     if not isinstance(excluded_modules, tuple):
         raise TypeError("excluded_modules must be a tuple of nn.Module instances.")

@@ -1,4 +1,3 @@
-from ._cache import ANYTRAIN_HOME_ENV, DEFAULT_DAC_HOME
 from .assets import (
     DEFAULT_MODEL_BITRATE,
     DEFAULT_MODEL_TYPE,
@@ -12,10 +11,8 @@ from .assets import (
 from .codec import DAC, NUM_CHANNELS
 
 __all__ = [
-    "ANYTRAIN_HOME_ENV",
     "DAC",
     "DACAssets",
-    "DEFAULT_DAC_HOME",
     "DEFAULT_MODEL_BITRATE",
     "DEFAULT_MODEL_TYPE",
     "LATEST_TAGS",

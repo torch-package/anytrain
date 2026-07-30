@@ -8,13 +8,6 @@ from torch import Tensor
 from anytrain.tts import TTSOutput, waveform_duration
 
 
-def processor_output(value: object, *, sample_rate: int, backend: str) -> TTSOutput:
-    if isinstance(value, TTSOutput):
-        return value
-    message = first_processor_message(value)
-    return processor_message(message, sample_rate=sample_rate, backend=backend)
-
-
 def processor_outputs(
     value: object,
     *,
@@ -58,14 +51,6 @@ def processor_message(message: object, *, sample_rate: int, backend: str) -> TTS
         },
         sample_rate=sample_rate,
     )
-
-
-def first_processor_message(value: object) -> object:
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        if len(value) == 0:
-            raise ValueError("processor decode returned no messages.")
-        return value[0]
-    return value
 
 
 def first_processor_audio(message: object) -> Tensor:

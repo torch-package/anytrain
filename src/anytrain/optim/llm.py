@@ -1,82 +1,33 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TypedDict, cast
+from enum import auto
 
 import torch
 from torch import nn
 
-from ._llm_config import (
-    SchedulerInput,
-    is_muon_adamw_options,
-    make_optimizer_options,
-    make_scheduler_config_from_input,
-)
+from anytrain._compat import StrEnum
+
 from .adamw import create_adamw_optimizer
 from .muon import create_muon_adamw_optimizer
-from .options import AdamWOptions, OptimizerOptions
-from .rules import (
-    ExcludedModules,
-    LRScaleRules,
-    validate_excluded_modules,
+from .options import (
+    AdamWOptions,
+    MuonOptions,
 )
-from .scheduler import (
-    Schedule,
-    create_scheduler,
-    create_scheduler_from_config,
-)
+from .rules import ExcludedModules, LRScaleRules
+
+DEFAULT_ADAMW_WEIGHT_DECAY = 0.01
+DEFAULT_MUON_WEIGHT_DECAY = 0.0
 
 
-class LRSchedulerConfig(TypedDict):
-    scheduler: torch.optim.lr_scheduler.LambdaLR
-    interval: str
+class _OptimizationPreset(StrEnum):
+    PRETRAIN = auto()
+    CPT = auto()
+    SFT = auto()
 
 
-class LightningOptimizerConfig(TypedDict):
-    optimizer: torch.optim.Optimizer
-    lr_scheduler: LRSchedulerConfig
-
-
-@dataclass(frozen=True)
-class OptimizationConfig:
-    optimizer_options: OptimizerOptions
-    scheduler: Schedule = field(default_factory=Schedule)
-    excluded_modules: ExcludedModules = ()
-    lr_scale_rules: LRScaleRules = ()
-
-    def __post_init__(self) -> None:
-        _validate_scheduler_config(self.scheduler)
-        validate_excluded_modules(self.excluded_modules)
-
-    @classmethod
-    def from_preset(
-        cls,
-        preset: str = "pretrain",
-        *,
-        optimizer: str = "adamw",
-        lr: float | None = None,
-        weight_decay: float | None = None,
-        betas: tuple[float, float] | None = None,
-        eps: float | None = None,
-        fused: bool | None = None,
-        scheduler: SchedulerInput | None = None,
-        excluded_modules: ExcludedModules = (),
-        lr_scale_rules: LRScaleRules = (),
-    ) -> OptimizationConfig:
-        return cls(
-            optimizer_options=make_optimizer_options(
-                preset,
-                optimizer=optimizer,
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas,
-                eps=eps,
-                fused=fused,
-            ),
-            scheduler=make_scheduler_config_from_input(scheduler),
-            excluded_modules=excluded_modules,
-            lr_scale_rules=lr_scale_rules,
-        )
+class _OptimizerOption(StrEnum):
+    ADAMW = auto()
+    MUON = auto()
 
 
 def create_optimizer(
@@ -92,121 +43,82 @@ def create_optimizer(
     excluded_modules: ExcludedModules = (),
     lr_scale_rules: LRScaleRules = (),
 ) -> torch.optim.Optimizer:
-    return create_optimizer_from_config(
-        module,
-        OptimizationConfig.from_preset(
-            preset,
-            optimizer=optimizer,
-            lr=lr,
-            weight_decay=weight_decay,
-            betas=betas,
-            eps=eps,
-            fused=fused,
-            excluded_modules=excluded_modules,
-            lr_scale_rules=lr_scale_rules,
-        ),
-    )
-
-
-def create_optimizer_from_config(
-    module: nn.Module,
-    config: OptimizationConfig,
-) -> torch.optim.Optimizer:
-    optimizer_options = config.optimizer_options
-    if is_muon_adamw_options(optimizer_options):
-        return create_muon_adamw_optimizer(
-            module,
-            muon=optimizer_options["muon"],
-            adamw=optimizer_options["adamw"],
-            excluded_modules=config.excluded_modules,
-            lr_scale_rules=config.lr_scale_rules,
-        )
-
-    adamw_options = cast(AdamWOptions, optimizer_options)
-    return create_adamw_optimizer(
-        module,
-        adamw_options,
-        excluded_modules=config.excluded_modules,
-        lr_scale_rules=config.lr_scale_rules,
-    )
-
-
-def create_lightning_optimizers(
-    module: nn.Module,
-    *,
-    preset: str = "pretrain",
-    optimizer: str = "adamw",
-    lr: float | None = None,
-    weight_decay: float | None = None,
-    betas: tuple[float, float] | None = None,
-    eps: float | None = None,
-    fused: bool | None = None,
-    schedule: str = "constant",
-    warmup_steps: int = 0,
-    total_steps: int | None = None,
-    stable_steps: int | None = None,
-    decay_steps: int | None = None,
-    min_lr_ratio: float = 0.1,
-    excluded_modules: ExcludedModules = (),
-    lr_scale_rules: LRScaleRules = (),
-) -> LightningOptimizerConfig:
-    optimizer_instance = create_optimizer(
-        module,
-        preset=preset,
-        optimizer=optimizer,
+    preset_option = _preset(preset)
+    optimizer_option = _optimizer(optimizer)
+    adamw = _adamw_options(
+        preset_option,
         lr=lr,
         weight_decay=weight_decay,
         betas=betas,
         eps=eps,
         fused=fused,
+    )
+    if optimizer_option is _OptimizerOption.ADAMW:
+        return create_adamw_optimizer(
+            module,
+            adamw,
+            excluded_modules=excluded_modules,
+            lr_scale_rules=lr_scale_rules,
+        )
+
+    muon: MuonOptions = {
+        "lr": adamw["lr"],
+        "weight_decay": DEFAULT_MUON_WEIGHT_DECAY,
+    }
+    return create_muon_adamw_optimizer(
+        module,
+        muon=muon,
+        adamw=adamw,
         excluded_modules=excluded_modules,
         lr_scale_rules=lr_scale_rules,
     )
-    scheduler = create_scheduler(
-        optimizer_instance,
-        schedule=schedule,
-        warmup_steps=warmup_steps,
-        total_steps=total_steps,
-        stable_steps=stable_steps,
-        decay_steps=decay_steps,
-        min_lr_ratio=min_lr_ratio,
-    )
+
+
+def _preset(value: str) -> _OptimizationPreset:
+    if not isinstance(value, str):
+        raise TypeError("preset must be a string.")
+    try:
+        return _OptimizationPreset(value)
+    except ValueError as error:
+        raise ValueError("preset must be pretrain, cpt, or sft.") from error
+
+
+def _optimizer(value: str) -> _OptimizerOption:
+    if not isinstance(value, str):
+        raise TypeError("optimizer must be a string.")
+    try:
+        return _OptimizerOption(value)
+    except ValueError as error:
+        raise ValueError("optimizer must be adamw or muon.") from error
+
+
+def _adamw_options(
+    preset: _OptimizationPreset,
+    *,
+    lr: float | None,
+    weight_decay: float | None,
+    betas: tuple[float, float] | None,
+    eps: float | None,
+    fused: bool | None,
+) -> AdamWOptions:
+    if preset is _OptimizationPreset.PRETRAIN:
+        default_lr = 3e-4
+        default_betas = (0.9, 0.95)
+    elif preset is _OptimizationPreset.CPT:
+        default_lr = 5e-5
+        default_betas = (0.9, 0.95)
+    elif preset is _OptimizationPreset.SFT:
+        default_lr = 2e-5
+        default_betas = (0.9, 0.999)
+    else:
+        raise ValueError("preset must be pretrain, cpt, or sft.")
     return {
-        "optimizer": optimizer_instance,
-        "lr_scheduler": {
-            "scheduler": scheduler,
-            "interval": "step",
-        },
+        "lr": default_lr if lr is None else lr,
+        "weight_decay": DEFAULT_ADAMW_WEIGHT_DECAY if weight_decay is None else weight_decay,
+        "betas": default_betas if betas is None else betas,
+        "eps": 1e-8 if eps is None else eps,
+        "fused": fused,
     }
 
 
-def create_lightning_optimizers_from_config(
-    module: nn.Module,
-    config: OptimizationConfig,
-) -> LightningOptimizerConfig:
-    optimizer = create_optimizer_from_config(module, config)
-    scheduler = create_scheduler_from_config(optimizer, config.scheduler)
-    return {
-        "optimizer": optimizer,
-        "lr_scheduler": {
-            "scheduler": scheduler,
-            "interval": "step",
-        },
-    }
-
-
-def _validate_scheduler_config(config: Schedule) -> None:
-    if isinstance(config, Schedule):
-        return
-    raise TypeError("scheduler must be a Schedule.")
-
-
-__all__ = [
-    "LightningOptimizerConfig",
-    "LRSchedulerConfig",
-    "OptimizationConfig",
-    "create_lightning_optimizers",
-    "create_lightning_optimizers_from_config",
-    "create_optimizer",
-    "create_optimizer_from_config",
-]
+__all__ = ["create_optimizer"]

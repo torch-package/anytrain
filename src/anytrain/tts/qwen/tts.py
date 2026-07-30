@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +12,7 @@ from torch import Tensor
 from typing_extensions import Unpack
 
 from anytrain.tts import TTSOptions, TTSOutput, validate_text, waveform_duration
+from anytrain.tts._common import config_hash, hashable_mapping, positive_int, validate_mapping
 
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 DEFAULT_SAMPLE_RATE = 24000
@@ -40,13 +39,13 @@ class QwenCustomVoiceTTSConfig:
     def __post_init__(self) -> None:
         if not self.model:
             raise ValueError("model must be non-empty.")
-        _positive_int("sample_rate", self.sample_rate)
+        positive_int(self.sample_rate, "sample_rate")
         if not isinstance(self.language, str) or not self.language:
             raise ValueError("language must be a non-empty string.")
         if self.speaker is not None and not self.speaker:
             raise ValueError("speaker must be non-empty when set.")
-        _validate_mapping(self.load_kwargs, "load_kwargs")
-        _validate_mapping(self.runtime_kwargs, "runtime_kwargs")
+        validate_mapping(self.load_kwargs, "load_kwargs")
+        validate_mapping(self.runtime_kwargs, "runtime_kwargs")
 
     def options(self) -> TTSOptions:
         kwargs: dict[str, object] = {
@@ -65,8 +64,8 @@ class QwenCustomVoiceTTSConfig:
             "language": self.language,
             "speaker": self.speaker,
             "instruct": self.instruct,
-            "load_kwargs": _hashable_mapping(self.load_kwargs),
-            "runtime_kwargs": _hashable_mapping(self.runtime_kwargs),
+            "load_kwargs": hashable_mapping(self.load_kwargs),
+            "runtime_kwargs": hashable_mapping(self.runtime_kwargs),
         }
 
 
@@ -120,8 +119,7 @@ class QwenCustomVoiceTTS:
         return self.config.sample_rate
 
     def config_hash(self) -> str:
-        encoded = json.dumps(self.config.hash_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return config_hash(self.config.hash_dict())
 
     def supported_speakers(self) -> tuple[str, ...]:
         getter = getattr(self.model, "get_supported_speakers", None)
@@ -309,7 +307,7 @@ def _generated_parts(
 ) -> tuple[object, int]:
     if isinstance(generated, tuple) and len(generated) == 2:
         waveforms, sample_rate = generated
-        _positive_int("sample_rate", sample_rate)
+        positive_int(sample_rate, "sample_rate")
         return waveforms, int(sample_rate)
     return generated, default_sample_rate
 
@@ -343,22 +341,3 @@ def _waveform(value: object) -> Tensor:
     if not torch.isfinite(waveform).all():
         raise RuntimeError("Qwen3-TTS returned a non-finite waveform.")
     return waveform
-
-
-def _positive_int(name: str, value: object) -> None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
-
-
-def _validate_mapping(value: Mapping[str, object], name: str) -> None:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping.")
-    for key in value:
-        if not isinstance(key, str) or not key:
-            raise ValueError(f"{name} keys must be non-empty strings.")
-
-
-def _hashable_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    return {key: repr(value[key]) for key in sorted(value)}

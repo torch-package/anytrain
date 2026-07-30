@@ -8,7 +8,7 @@ from torch import Tensor, nn
 from anytrain._compat import strict_zip
 
 from ..balancer import LossBalancerABC
-from ..group import LossGroup
+from ._group import SpectralLossGroup
 from .single import LogMagnitudeLoss
 from .transform import MelSpectrogramTransform, SpectralTransformCache, STFTTransform
 
@@ -17,18 +17,8 @@ def _default_log_magnitude_losses() -> dict[str, nn.Module]:
     return {"log_magnitude": LogMagnitudeLoss()}
 
 
-class STFTLoss(LossGroup):
-    def __init__(
-        self,
-        *,
-        n_fft: int = 2048,
-        hop_length: int | None = None,
-        losses: Mapping[str, nn.Module] | None = None,
-        balancer: LossBalancerABC | None = None,
-        backend: str = "auto",
-    ) -> None:
-        super().__init__(losses or _default_log_magnitude_losses(), balancer=balancer)
-        self.transform = STFTTransform(n_fft=n_fft, hop_length=hop_length, backend=backend)
+class _TransformedLoss(SpectralLossGroup):
+    transform: STFTTransform | MelSpectrogramTransform
 
     def forward(self, input: Tensor, target: Tensor):
         return super().forward(self.transform(input), self.transform(target))
@@ -46,7 +36,29 @@ class STFTLoss(LossGroup):
         )
 
 
-class MelLoss(LossGroup):
+class _MultiScaleLoss(SpectralLossGroup):
+    @staticmethod
+    def _validate_scales(values: Sequence[int], label: str) -> tuple[int, ...]:
+        if not values:
+            raise ValueError(f"{label} must contain at least one scale.")
+        return tuple(int(value) for value in values)
+
+
+class STFTLoss(_TransformedLoss):
+    def __init__(
+        self,
+        *,
+        n_fft: int = 2048,
+        hop_length: int | None = None,
+        losses: Mapping[str, nn.Module] | None = None,
+        balancer: LossBalancerABC | None = None,
+        backend: str = "auto",
+    ) -> None:
+        super().__init__(losses or _default_log_magnitude_losses(), balancer=balancer)
+        self.transform = STFTTransform(n_fft=n_fft, hop_length=hop_length, backend=backend)
+
+
+class MelLoss(_TransformedLoss):
     def __init__(
         self,
         *,
@@ -69,23 +81,8 @@ class MelLoss(LossGroup):
             backend=backend,
         )
 
-    def forward(self, input: Tensor, target: Tensor):
-        return super().forward(self.transform(input), self.transform(target))
 
-    def _forward_with_spectral_cache(
-        self,
-        input: Tensor,
-        target: Tensor,
-        *,
-        spectral_cache: SpectralTransformCache,
-    ):
-        return super().forward(
-            self.transform(input, cache=spectral_cache),
-            self.transform(target, cache=spectral_cache),
-        )
-
-
-class MultiScaleSTFTLoss(LossGroup):
+class MultiScaleSTFTLoss(_MultiScaleLoss):
     def __init__(
         self,
         *,
@@ -101,21 +98,8 @@ class MultiScaleSTFTLoss(LossGroup):
         }
         super().__init__(losses, balancer=balancer)
 
-    def _validate_scales(self, values: Sequence[int], label: str) -> tuple[int, ...]:
-        if not values:
-            raise ValueError(f"{label} must contain at least one scale.")
-        return tuple(int(value) for value in values)
 
-    def _forward_with_spectral_cache(
-        self,
-        *args: Any,
-        spectral_cache: SpectralTransformCache,
-        **kwargs: Any,
-    ):
-        return self(*args, _spectral_cache=spectral_cache, **kwargs)
-
-
-class MultiScaleMelLoss(LossGroup):
+class MultiScaleMelLoss(_MultiScaleLoss):
     def __init__(
         self,
         *,
@@ -145,16 +129,3 @@ class MultiScaleMelLoss(LossGroup):
             for n_fft, n_mels in strict_zip(fft_sizes, mel_bins)
         }
         super().__init__(losses, balancer=balancer)
-
-    def _validate_scales(self, values: Sequence[int], label: str) -> tuple[int, ...]:
-        if not values:
-            raise ValueError(f"{label} must contain at least one scale.")
-        return tuple(int(value) for value in values)
-
-    def _forward_with_spectral_cache(
-        self,
-        *args: Any,
-        spectral_cache: SpectralTransformCache,
-        **kwargs: Any,
-    ):
-        return self(*args, _spectral_cache=spectral_cache, **kwargs)

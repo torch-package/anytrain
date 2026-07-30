@@ -1,5 +1,6 @@
 from . import weighted
-from .abc import EvaluatorABC, MetricDict, MetricValue
+from ._validation import MetricDict, MetricValue
+from .abc import EvaluatorABC
 from .group import EvaluatorGroup
 
 __all__ = [

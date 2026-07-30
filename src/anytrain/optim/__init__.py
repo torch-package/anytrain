@@ -1,6 +1,5 @@
 from .adamw import create_adamw_optimizer, split_adamw_decay_params
 from .compose import CompositeOptimizer
-from .llm import create_lightning_optimizers as create_llm_lightning_optimizers
 from .llm import create_optimizer as create_llm_optimizer
 from .lora_muon import LoRAFactorPair, LoRAMuon
 from .muon import (
@@ -25,7 +24,6 @@ __all__ = [
     "LoRAFactorPair",
     "LoRAMuon",
     "create_adamw_optimizer",
-    "create_llm_lightning_optimizers",
     "create_llm_optimizer",
     "create_muon_adamw_optimizer",
     "create_scheduler",

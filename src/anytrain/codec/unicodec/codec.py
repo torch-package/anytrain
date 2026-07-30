@@ -8,7 +8,7 @@ from torch import Tensor, nn
 from typing_extensions import TypeAlias
 
 from .._audio import model_frame_rate, resample
-from .._module import DeviceModule
+from .._module import DeviceModule, resolve_device, validate_frame_codes
 from .assets import UniCodecAssets, ensure_unicodec_assets
 
 Domain: TypeAlias = Union[str, int]
@@ -71,7 +71,7 @@ class UniCodec(DeviceModule):
 
         assets = ensure_unicodec_assets(**kwargs)
         model_cls = _load_unicodec_model()
-        resolved_device = _device(device)
+        resolved_device = resolve_device(device)
         model = model_cls.from_pretrained0802(
             str(assets["config"]),
             str(assets["checkpoint"]),
@@ -114,7 +114,7 @@ class UniCodec(DeviceModule):
             bandwidth_id=cond,
         )
         codes = codes.permute(1, 2, 0).contiguous()
-        self._validate_codes(codes)
+        validate_frame_codes(codes, self.codebook_sizes)
         return features.transpose(1, 2), codes
 
     @torch.no_grad()
@@ -138,27 +138,9 @@ class UniCodec(DeviceModule):
 
     @torch.no_grad()
     def codes_to_features(self, codes: Tensor) -> Tensor:
-        self._validate_codes(codes)
+        validate_frame_codes(codes, self.codebook_sizes)
         backend_codes = codes.permute(2, 0, 1).contiguous().to(self.device)
         return self.model.codes_to_features(backend_codes).transpose(1, 2)
-
-    @torch.no_grad()
-    def reconstruct(
-        self,
-        audio: Tensor,
-        sample_rate: int,
-    ) -> Tensor:
-        return self.decode(self.encode(audio, sample_rate))
-
-    def _validate_codes(self, codes: Tensor) -> None:
-        if codes.dim() != 3:
-            raise ValueError("codes must have shape [batch, time, codebook].")
-        if codes.shape[-1] != len(self.codebook_sizes):
-            raise ValueError(
-                f"codes must contain {len(self.codebook_sizes)} aligned codebooks."
-            )
-        if codes.dtype == torch.bool or torch.is_floating_point(codes) or torch.is_complex(codes):
-            raise TypeError("codes must contain integer ids.")
 
 def _domain(domain: Domain) -> str:
     value = str(domain)
@@ -178,12 +160,6 @@ def _codebook_sizes(model: nn.Module) -> tuple[int, ...]:
     num_codebooks = int(getattr(quantizer, "n_q", 1))
     codebook_size = int(getattr(quantizer, "bins", DEFAULT_CODEBOOK_SIZE))
     return (codebook_size,) * num_codebooks
-
-
-def _device(device: str | torch.device | None) -> torch.device:
-    if device is not None:
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _load_unicodec_model() -> Any:

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
-from ._cache import cache_dir as _cache_dir
+from .._cache import hf_cache_dir, hf_snapshot
 
 DEFAULT_HF_REPO_ID = "SparkAudio/Spark-TTS-0.5B"
 SNAPSHOT_PATTERNS = (
@@ -26,18 +26,16 @@ def ensure_bicodec_assets(
     local_files_only: bool = False,
     force_download: bool = False,
 ) -> BiCodecAssets:
-    root = _cache_dir(cache_dir)
+    root = hf_cache_dir("bicodec", cache_dir)
     root.mkdir(parents=True, exist_ok=True)
 
-    snapshot_download = _require_huggingface_hub()
-    model_dir = Path(
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(root),
-            allow_patterns=SNAPSHOT_PATTERNS,
-            local_files_only=local_files_only,
-            force_download=force_download,
-        )
+    model_dir = hf_snapshot(
+        component="BiCodec checkpoint download",
+        repo_id=repo_id,
+        cache_dir=root,
+        allow_patterns=SNAPSHOT_PATTERNS,
+        local_files_only=local_files_only,
+        force_download=force_download,
     )
     _validate_model_dir(model_dir)
     return {
@@ -57,14 +55,3 @@ def _validate_model_dir(model_dir: Path) -> None:
     if missing:
         formatted = ", ".join(str(path) for path in missing)
         raise FileNotFoundError(f"BiCodec model directory is incomplete: {formatted}.")
-
-
-def _require_huggingface_hub():
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:
-        raise ImportError(
-            "BiCodec checkpoint download requires huggingface-hub. "
-            'Install it with `python -m pip install "huggingface-hub>=0.23"`.'
-        ) from exc
-    return snapshot_download

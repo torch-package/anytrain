@@ -30,7 +30,7 @@ class BiCodecAssetsTest(unittest.TestCase):
                 return str(root)
 
             with patch(
-                "anytrain.codec.bicodec.assets._require_huggingface_hub",
+                "anytrain.codec._cache.require_hf_function",
                 return_value=snapshot_download,
             ):
                 assets = ensure_bicodec_assets(
@@ -56,7 +56,7 @@ class BiCodecAssetsTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec.bicodec.assets._require_huggingface_hub",
+                    "anytrain.codec._cache.require_hf_function",
                     return_value=snapshot_download,
                 ),
                 self.assertRaisesRegex(FileNotFoundError, "incomplete"),

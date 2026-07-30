@@ -10,7 +10,7 @@ from torch import Tensor, nn
 from typing_extensions import TypeAlias
 
 from .._audio import model_frame_rate, resample
-from .._module import DeviceModule
+from .._module import DeviceModule, resolve_device, validate_frame_codes
 
 SupportedVersion = Literal["speech-16k", "speech-16k-base"]
 PosthocBottleneckPreset = Literal[
@@ -75,7 +75,7 @@ class StableCodec(DeviceModule):
         normalize: bool = True,
     ) -> StableCodec:
         model_cls = _load_stable_codec_model()
-        resolved_device = _device(device)
+        resolved_device = resolve_device(device)
         model = model_cls(
             pretrained_model=pretrained_model or f"stabilityai/stable-codec-{version}",
             device=resolved_device,
@@ -98,7 +98,7 @@ class StableCodec(DeviceModule):
         normalize: bool = True,
     ) -> StableCodec:
         model_cls = _load_stable_codec_model()
-        resolved_device = _device(device)
+        resolved_device = resolve_device(device)
         model = model_cls(
             model_config_path=str(model_config_path),
             ckpt_path=None if ckpt_path is None else str(ckpt_path),
@@ -141,7 +141,7 @@ class StableCodec(DeviceModule):
             normalize=self.normalize,
         )
         tokens = _codes(tokens, posthoc_bottleneck=self.posthoc_bottleneck)
-        self._validate_codes(tokens)
+        validate_frame_codes(tokens, self.codebook_sizes)
         return latents, tokens
 
     @torch.no_grad()
@@ -149,7 +149,7 @@ class StableCodec(DeviceModule):
         self,
         codes: Tensor,
     ) -> Tensor:
-        self._validate_codes(codes)
+        validate_frame_codes(codes, self.codebook_sizes)
         backend_tokens: Tensor | list[Tensor]
         if self.posthoc_bottleneck:
             backend_tokens = list(codes.to(self.device).split(1, dim=-1))
@@ -160,35 +160,10 @@ class StableCodec(DeviceModule):
             posthoc_bottleneck=self.posthoc_bottleneck,
         )
 
-    @torch.no_grad()
-    def reconstruct(
-        self,
-        audio: Tensor,
-        sample_rate: int,
-    ) -> Tensor:
-        return self.decode(self.encode(audio, sample_rate))
-
     def set_posthoc_bottleneck(self, stages: PosthocBottleneck) -> None:
         self.model.set_posthoc_bottleneck(stages)
         self.posthoc_bottleneck = True
         self.codebook_sizes = _posthoc_codebook_sizes(stages)
-
-    def _validate_codes(self, codes: Tensor) -> None:
-        if codes.dim() != 3:
-            raise ValueError("codes must have shape [batch, time, codebook].")
-        if codes.shape[-1] != len(self.codebook_sizes):
-            raise ValueError(
-                f"codes must contain {len(self.codebook_sizes)} aligned codebooks."
-            )
-        if codes.dtype == torch.bool or torch.is_floating_point(codes) or torch.is_complex(codes):
-            raise TypeError("codes must contain integer ids.")
-
-
-def _device(device: str | torch.device | None) -> torch.device:
-    if device is not None:
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 def _load_stable_codec_model() -> Any:
     try:

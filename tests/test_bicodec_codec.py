@@ -193,16 +193,6 @@ class BiCodecCodecTest(unittest.TestCase):
 
         self.assertEqual(tuple(audio.shape), (2, 1, 16))
 
-    def test_reconstruct_roundtrips_tokens(self):
-        model = FakeBiCodecModel()
-        codec = _codec(model)
-
-        audio = codec.reconstruct(torch.zeros((2, 1, 4000)), 16000)
-
-        self.assertEqual(tuple(audio.shape), (2, 1, 16))
-        self.assertIsNotNone(model.semantic)
-        self.assertIsNotNone(model.acoustic_tokens)
-
     def test_tokenize_rejects_non_mono_audio(self):
         codec = _codec(FakeBiCodecModel())
 

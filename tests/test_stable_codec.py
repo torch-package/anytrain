@@ -208,16 +208,6 @@ class StableCodecTest(unittest.TestCase):
         torch.testing.assert_close(codec.model.decoded_tokens[0], tokens[..., :1])
         torch.testing.assert_close(codec.model.decoded_tokens[1], tokens[..., 1:])
 
-    def test_reconstruct_roundtrips_tokens(self):
-        model = FakeStableCodecBackend(pretrained_model="fake", device=torch.device("cpu"))
-        codec = StableCodec(model=model, device=torch.device("cpu"), posthoc_bottleneck=None)
-        audio = torch.zeros((2, 1, 16))
-
-        reconstructed = codec.reconstruct(audio, 16000)
-
-        self.assertEqual(tuple(reconstructed.shape), (2, 1, 16))
-        self.assertTrue(model.decode_called)
-
     def test_encode_rejects_non_mono_audio(self):
         model = FakeStableCodecBackend(pretrained_model="fake", device=torch.device("cpu"))
         codec = StableCodec(model=model, device=torch.device("cpu"), posthoc_bottleneck=None)

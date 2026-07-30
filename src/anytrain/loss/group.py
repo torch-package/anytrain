@@ -1,23 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, cast
 
 import torch
 from torch import nn
 
 from .abc import LossABC, LossDetails
 from .balancer import LossBalancerABC, MeanLossBalancer
-
-
-@runtime_checkable
-class _SpectralCacheAware(Protocol):
-    def _forward_with_spectral_cache(
-        self,
-        *args: Any,
-        spectral_cache: Any,
-        **kwargs: Any,
-    ) -> Any: ...
 
 
 class LossGroup(LossABC):
@@ -32,7 +22,6 @@ class LossGroup(LossABC):
         self.balancer = self._validate_balancer(balancer)
 
     def compute_loss(self, *args: Any, **kwargs: Any) -> tuple[torch.Tensor, LossDetails]:
-        spectral_cache = kwargs.pop("_spectral_cache", None)
         loss_values: dict[str, torch.Tensor] = {}
         details: LossDetails = {}
         for name, module in self.losses.items():
@@ -40,7 +29,6 @@ class LossGroup(LossABC):
                 self._call_loss(
                     module,
                     *args,
-                    spectral_cache=spectral_cache,
                     **kwargs,
                 )
             )
@@ -70,15 +58,8 @@ class LossGroup(LossABC):
         self,
         module: nn.Module,
         *args: Any,
-        spectral_cache: Any,
         **kwargs: Any,
     ) -> Any:
-        if spectral_cache is not None and isinstance(module, _SpectralCacheAware):
-            return module._forward_with_spectral_cache(
-                *args,
-                spectral_cache=spectral_cache,
-                **kwargs,
-            )
         return module(*args, **kwargs)
 
     def _validate_losses(self, losses: Mapping[str, nn.Module]) -> dict[str, nn.Module]:
@@ -109,16 +90,10 @@ class LossGroup(LossABC):
         return name
 
     def _split_loss_result(self, result: object) -> tuple[torch.Tensor, LossDetails]:
-        if isinstance(result, torch.Tensor):
-            return self._validate_loss_tensor(result), {}
-
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise TypeError("loss result must be a scalar tensor or (scalar tensor, details).")
-        loss, details = result
-        return self._validate_loss_tensor(loss), self._validate_nested_loss_details(
-            details,
-            detach=True,
-        )
+        validated = self._validate_loss_result(result)
+        if isinstance(validated, torch.Tensor):
+            return validated, {}
+        return validated
 
     def _add_detail(self, details: LossDetails, name: str, value: object) -> None:
         name = self._validate_detail_name(name)

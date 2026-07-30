@@ -1,17 +1,41 @@
-"""Shared parameter traversal helpers for optimizer group construction."""
+"""Shared parameter planning helpers for optimizer group construction."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 
 from torch import nn
 
-from .rules import LRScaleRule, LRScaleRules
+from .rules import (
+    ExcludedModules,
+    LRScaleRule,
+    LRScaleRules,
+    is_embedding_module,
+    is_muon_parameter_for_module,
+    is_normalization_module,
+    validate_excluded_modules,
+)
 
-ParameterPredicate = Callable[[nn.Module, str, nn.Parameter], bool]
 _LR_SCALE_RULE_KEYS = frozenset({"name", "lr_scale"})
 _DEFAULT_LR_SCALE = 1.0
+
+
+@dataclass(frozen=True)
+class ParameterPlan:
+    """One traversal's result for all optimizer parameter groups."""
+
+    all_params: tuple[nn.Parameter, ...]
+    muon_params: tuple[nn.Parameter, ...]
+    adamw_decay_params: tuple[nn.Parameter, ...]
+    adamw_no_decay_params: tuple[nn.Parameter, ...]
+    lr_scales: dict[int, float]
+
+    @property
+    def non_muon_params(self) -> tuple[nn.Parameter, ...]:
+        muon_ids = {id(parameter) for parameter in self.muon_params}
+        return tuple(parameter for parameter in self.all_params if id(parameter) not in muon_ids)
 
 
 def validate_module(module: nn.Module) -> None:
@@ -19,83 +43,33 @@ def validate_module(module: nn.Module) -> None:
         raise TypeError("`module` must be an instance of torch.nn.Module.")
 
 
-def split_parameters_by_predicate(
+def build_parameter_plan(
     module: nn.Module,
-    predicate: ParameterPredicate,
     *,
     requires_grad_only: bool = True,
     selected_params: Collection[nn.Parameter] | None = None,
-) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    excluded_modules: ExcludedModules = (),
+    decay_selected_params: bool = True,
+    lr_scale_rules: LRScaleRules = (),
+) -> ParameterPlan:
+    """Resolve Muon, AdamW, and LR-scale groups in one module traversal."""
     validate_module(module)
+    if not isinstance(decay_selected_params, bool):
+        raise TypeError("decay_selected_params must be a bool.")
+
+    named_modules = tuple(module.named_modules())
     selected_param_ids = _selected_param_ids(module, selected_params)
-    entries_by_id: dict[int, tuple[nn.Parameter, bool]] = {}
-
-    for child_module in module.modules():
-        for parameter_name, parameter in child_module.named_parameters(recurse=False):
-            if requires_grad_only and not parameter.requires_grad:
-                continue
-            if selected_param_ids is not None and id(parameter) not in selected_param_ids:
-                continue
-
-            matches = predicate(child_module, parameter_name, parameter)
-            parameter_id = id(parameter)
-            previous_entry = entries_by_id.get(parameter_id)
-            if previous_entry is None:
-                entries_by_id[parameter_id] = (parameter, matches)
-            else:
-                entries_by_id[parameter_id] = (parameter, previous_entry[1] and matches)
-
-    matched_params: list[nn.Parameter] = []
-    other_params: list[nn.Parameter] = []
-    for parameter, matches in entries_by_id.values():
-        if matches:
-            matched_params.append(parameter)
-        else:
-            other_params.append(parameter)
-    return matched_params, other_params
-
-
-def make_scaled_param_groups(
-    module: nn.Module,
-    groups: Sequence[tuple[Collection[nn.Parameter], Mapping[str, object]]],
-    *,
-    base_lr: float,
-    lr_scale_rules: LRScaleRules = (),
-) -> list[dict[str, object]]:
-    lr_scales = _parameter_lr_scales(module, lr_scale_rules)
-    param_groups: list[dict[str, object]] = []
-
-    for params, options in groups:
-        params_by_scale: dict[float, list[nn.Parameter]] = {}
-        for parameter in params:
-            lr_scale = lr_scales.get(id(parameter), _DEFAULT_LR_SCALE)
-            params_by_scale.setdefault(lr_scale, []).append(parameter)
-
-        for lr_scale, scaled_params in params_by_scale.items():
-            group = dict(options)
-            group["params"] = scaled_params
-            group["lr"] = base_lr * lr_scale
-            param_groups.append(group)
-
-    return param_groups
-
-
-def _parameter_lr_scales(
-    module: nn.Module,
-    lr_scale_rules: LRScaleRules = (),
-) -> dict[int, float]:
-    validate_module(module)
-    rules = _lr_scale_rules(module, lr_scale_rules)
-    if not rules:
-        return {}
-
+    excluded_module_ids = _excluded_module_ids(named_modules, excluded_modules)
+    rules = _lr_scale_rules(
+        {module_name for module_name, _ in named_modules},
+        lr_scale_rules,
+    )
+    entries_by_id: dict[int, tuple[nn.Parameter, bool, bool]] = {}
     lr_scale_by_parameter_id: dict[int, tuple[int, float, str]] = {}
-    for module_name, child_module in module.named_modules():
-        matches = _matching_lr_scale_rules(module_name, rules)
-        if not matches:
-            continue
 
-        for parameter in child_module.parameters(recurse=False):
+    for module_name, child_module in named_modules:
+        matches = _matching_lr_scale_rules(module_name, rules)
+        for parameter_name, parameter in child_module.named_parameters(recurse=False):
             parameter_id = id(parameter)
             for rule_name, lr_scale in matches:
                 specificity = _module_name_specificity(rule_name)
@@ -112,10 +86,81 @@ def _parameter_lr_scales(
                         f"{previous[2]!r} and {rule_name!r}."
                     )
 
-    return {
-        parameter_id: lr_scale
-        for parameter_id, (_, lr_scale, _) in lr_scale_by_parameter_id.items()
-    }
+            if requires_grad_only and not parameter.requires_grad:
+                continue
+            if selected_param_ids is not None and parameter_id not in selected_param_ids:
+                continue
+
+            muon = is_muon_parameter_for_module(
+                child_module,
+                parameter_name,
+                parameter,
+                excluded_module_ids=excluded_module_ids,
+            )
+            decay = (
+                decay_selected_params
+                and id(child_module) not in excluded_module_ids
+                and not is_embedding_module(child_module)
+                and not is_normalization_module(child_module)
+                and parameter_name == "weight"
+                and parameter.ndim >= 2
+            )
+            previous_entry = entries_by_id.get(parameter_id)
+            if previous_entry is None:
+                entries_by_id[parameter_id] = (parameter, muon, decay)
+            else:
+                entries_by_id[parameter_id] = (
+                    parameter,
+                    previous_entry[1] and muon,
+                    previous_entry[2] and decay,
+                )
+
+    all_params: list[nn.Parameter] = []
+    muon_params: list[nn.Parameter] = []
+    adamw_decay_params: list[nn.Parameter] = []
+    adamw_no_decay_params: list[nn.Parameter] = []
+    for parameter, is_muon, should_decay in entries_by_id.values():
+        all_params.append(parameter)
+        if is_muon:
+            muon_params.append(parameter)
+        if should_decay:
+            adamw_decay_params.append(parameter)
+        else:
+            adamw_no_decay_params.append(parameter)
+
+    return ParameterPlan(
+        all_params=tuple(all_params),
+        muon_params=tuple(muon_params),
+        adamw_decay_params=tuple(adamw_decay_params),
+        adamw_no_decay_params=tuple(adamw_no_decay_params),
+        lr_scales={
+            parameter_id: lr_scale
+            for parameter_id, (_, lr_scale, _) in lr_scale_by_parameter_id.items()
+        },
+    )
+
+
+def make_scaled_param_groups(
+    groups: Sequence[tuple[Collection[nn.Parameter], Mapping[str, object]]],
+    *,
+    base_lr: float,
+    lr_scales: Mapping[int, float],
+) -> list[dict[str, object]]:
+    param_groups: list[dict[str, object]] = []
+
+    for params, options in groups:
+        params_by_scale: dict[float, list[nn.Parameter]] = {}
+        for parameter in params:
+            lr_scale = lr_scales.get(id(parameter), _DEFAULT_LR_SCALE)
+            params_by_scale.setdefault(lr_scale, []).append(parameter)
+
+        for lr_scale, scaled_params in params_by_scale.items():
+            group = dict(options)
+            group["params"] = scaled_params
+            group["lr"] = base_lr * lr_scale
+            param_groups.append(group)
+
+    return param_groups
 
 
 def _selected_param_ids(
@@ -138,14 +183,29 @@ def _selected_param_ids(
     return selected_param_ids
 
 
+def _excluded_module_ids(
+    named_modules: tuple[tuple[str, nn.Module], ...],
+    excluded_modules: ExcludedModules,
+) -> frozenset[int]:
+    validate_excluded_modules(excluded_modules)
+    module_ids = {id(child_module) for _, child_module in named_modules}
+    excluded_module_ids: set[int] = set()
+    for index, excluded_module in enumerate(excluded_modules):
+        if id(excluded_module) not in module_ids:
+            raise ValueError(f"excluded_modules[{index}] must belong to `module`.")
+        excluded_module_ids.update(
+            id(child_module) for child_module in excluded_module.modules()
+        )
+    return frozenset(excluded_module_ids)
+
+
 def _lr_scale_rules(
-    module: nn.Module,
+    module_names: set[str],
     lr_scale_rules: LRScaleRules,
 ) -> tuple[tuple[str, float], ...]:
     if isinstance(lr_scale_rules, (str, bytes)) or not isinstance(lr_scale_rules, Sequence):
         raise TypeError("lr_scale_rules must be a sequence of LRScaleRule mappings.")
 
-    module_names = set(dict(module.named_modules()))
     lr_scale_by_name: dict[str, float] = {}
     for index, rule in enumerate(lr_scale_rules):
         name, lr_scale = _parse_lr_scale_rule(rule, index=index)
