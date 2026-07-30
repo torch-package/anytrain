@@ -298,6 +298,20 @@ logger backend 不再由 `anytrain.lightning` 自动创建；需要自定义 log
 
 ## 调试能力
 
+`LossSummaryCallback` 从 mapping 形式的 training outputs 收集 total loss 和命名 `LossItem`。
+batch hook 只保留 detached device scalar，不在每个 microbatch 上转成 Python float；每个指标保存最早和
+最近各 `window_capacity` 个值以及完整 observation count，因此内存不会随训练步数增长。默认
+`window_capacity=20`；`report()` 默认使用配置的 capacity。已经超出保留范围的显式窗口会明确报错。
+
+分布式训练在所有 rank 都执行的 `on_train_end()` 中先校验 metric 名称集合、window capacity 和
+observation count 一致，再归约 first/last 窗口。单进程、外部启动的 DDP 和 Lightning subprocess DDP 可以在
+`Trainer.fit()` 返回后调用 `report()`；global rank 0 得到的是跨 rank 均值，而不是 rank-local 结果。
+如果 fit loop 完全跳过且没有 observation，`on_fit_end()` 只确认空报告，不会在 Lightning teardown 后
+发起 distributed collective。
+`ddp_spawn` / `ddp_fork` 的启动进程不会由 Lightning 恢复 callback 实例状态，使用这些 launcher 时应在
+worker callback hook 调用父类同步后消费 `report()`；启动进程读取会明确报错。`report()` 在训练结束同步
+前同样不可用。`values` 仅保留为有界、按需转到 host 的兼容只读视图，不应用作完整训练历史。
+
 `DebugCallback` 在调用方显式加入 callback 列表时启用。全部初始参数在 train start 检查一次；每次
 backward 后只重复检查可训练参数与现有梯度，因此冻结参数不会反复扫描。正常路径按 device/dtype 用 foreach norm 聚合后再做一次
 主机判定，只有发现异常时才逐 tensor 定位。

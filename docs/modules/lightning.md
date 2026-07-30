@@ -126,6 +126,15 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
 
+`LossSummaryCallback` 在 batch hook 中仅保存 detached device scalar。每个指标的状态固定为前后各
+`window_capacity` 个值和完整 observation count；默认 capacity 为 20，不随训练长度增长。训练结束时
+所有 rank 先校验 metric schema、window capacity 和 observation count 一致，再共同归约窗口。
+`report()` 默认使用配置的 capacity。没有 observation 的空 fit 只在 `on_fit_end()` 确认空报告，不会在
+teardown 后发起 collective。Lightning 的 `ddp_spawn` / `ddp_fork` 不会把 worker callback 状态恢复到启动进程，因此这些
+launcher 需要在 worker hook 调用父类同步后消费报告；启动进程读取会明确报错。单进程、外部 DDP 和
+subprocess DDP 可在 `fit()` 返回后读取。`report()` 在训练结束同步前不可用；`values` 是有界的
+host-materialized 兼容视图，不代表完整训练历史。
+
 Python 入口示例：
 
 ```python

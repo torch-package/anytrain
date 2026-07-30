@@ -19,7 +19,8 @@ LightningModule 侧 logging helper 是 core。
 core 提供：
 
 - `LightningLogMixin`：prefixed dict、audio 和 figure logging helper。
-- `LossSummaryCallback`：从 training outputs 中汇总 total loss 和命名 `LossItem` 的窗口均值。
+- `LossSummaryCallback`：用有界 device 窗口汇总 training outputs 中的 total loss 和命名
+  `LossItem`，并在训练结束时归约跨 rank 窗口均值。
 - `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
 - `GradientLoggerCallback` / `GradientNormLoggerCallback`：记录命名 `LossItem` 对指定参数的梯度关系，或记录全局梯度范数。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。

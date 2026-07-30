@@ -44,6 +44,88 @@ class _CheckpointTrainer:
         self.saved_paths.append((path, weights_only))
 
 
+def _loss_summary_ddp_worker(
+    rank: int,
+    world_size: int,
+    init_method: str,
+    output_dir: str,
+) -> None:
+    import json
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    import torch
+    from lightning.pytorch.strategies import DDPStrategy
+
+    from anytrain.lightning import LossSummaryCallback
+    from anytrain.loss import LossItem
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=init_method,
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=30),
+    )
+    try:
+        trainer = SimpleNamespace(world_size=world_size, strategy=DDPStrategy())
+        module = SimpleNamespace(device=torch.device("cpu"))
+
+        def callback(
+            count: int,
+            *,
+            include_token: bool = False,
+            window_capacity: int = 2,
+        ):
+            result = LossSummaryCallback(window_capacity=window_capacity)
+            for index in range(count):
+                outputs = {"loss": torch.tensor(float(index + 1 + 2 * rank))}
+                if include_token:
+                    outputs["token"] = LossItem(torch.tensor(float(index + 1)))
+                result.on_train_batch_end(
+                    SimpleNamespace(),
+                    SimpleNamespace(),
+                    outputs,
+                    None,
+                    index,
+                )
+            return result
+
+        payload = {}
+        equal = callback(3)
+        equal.on_train_end(trainer, module)
+        payload["equal"] = {"report": equal.report()}
+
+        uneven = callback(3 - rank)
+        try:
+            uneven.on_train_end(trainer, module)
+        except RuntimeError as exc:
+            payload["uneven"] = {"error": str(exc)}
+        else:
+            payload["uneven"] = {"report": uneven.report()}
+
+        missing = callback(1, include_token=rank == 0)
+        try:
+            missing.on_train_end(trainer, module)
+        except RuntimeError as exc:
+            payload["missing"] = {"error": str(exc)}
+        else:
+            payload["missing"] = {"report": missing.report()}
+
+        capacity = callback(1, window_capacity=rank + 2)
+        try:
+            capacity.on_train_end(trainer, module)
+        except RuntimeError as exc:
+            payload["capacity"] = {"error": str(exc)}
+        else:
+            payload["capacity"] = {"report": capacity.report()}
+
+        path = Path(output_dir) / f"rank-{rank}.json"
+        path.write_text(json.dumps(payload))
+    finally:
+        torch.distributed.destroy_process_group()
+
+
 class LightningTest(unittest.TestCase):
     def test_debug_callback_reports_first_gradient_after_backward(self):
         import torch
@@ -156,7 +238,7 @@ class LightningTest(unittest.TestCase):
 
         callback = LossSummaryCallback()
         outputs = {
-            "loss": torch.tensor(2.0),
+            "loss": torch.tensor(2.0, requires_grad=True),
             "token": LossItem(torch.tensor([1.0, 3.0])),
             "ignored": object(),
         }
@@ -170,6 +252,10 @@ class LightningTest(unittest.TestCase):
         )
 
         self.assertEqual(callback.values, {"loss": [2.0], "token": [2.0]})
+        self.assertFalse(callback._values["loss"].first[0].requires_grad)
+        with self.assertRaisesRegex(RuntimeError, "training-end synchronization"):
+            callback.report()
+        callback.on_train_end(SimpleNamespace(), SimpleNamespace())
         self.assertEqual(callback.report(window=1)["token"]["last_mean"], 2.0)
 
     def test_loss_summary_callback_uses_injected_item_order(self):
@@ -194,6 +280,253 @@ class LightningTest(unittest.TestCase):
         )
 
         self.assertEqual(list(callback.values), ["loss", "flow", "token"])
+
+    def test_loss_summary_callback_keeps_bounded_device_windows(self):
+        import torch
+
+        from anytrain.lightning import LossSummaryCallback
+
+        callback = LossSummaryCallback(window_capacity=2)
+        for value in range(5):
+            callback.on_train_batch_end(
+                SimpleNamespace(),
+                SimpleNamespace(),
+                {"loss": torch.tensor(float(value + 1))},
+                None,
+                value,
+            )
+
+        values = callback._values["loss"]
+        self.assertEqual(values.steps, 5)
+        self.assertEqual(len(values.first), 2)
+        self.assertEqual(len(values.last), 2)
+        self.assertEqual(callback.values["loss"], [1.0, 2.0, 4.0, 5.0])
+        callback.on_train_end(SimpleNamespace(), SimpleNamespace())
+        self.assertEqual(callback.report()["loss"]["window"], 2)
+        self.assertEqual(callback.report(window=2)["loss"]["first_mean"], 1.5)
+        self.assertEqual(callback.report(window=2)["loss"]["last_mean"], 4.5)
+        with self.assertRaisesRegex(ValueError, "retained loss summary capacity"):
+            callback.report(window=3)
+
+    def test_loss_summary_callback_does_not_materialize_batch_values(self):
+        import torch
+
+        from anytrain.lightning import LossSummaryCallback
+
+        class DeviceOnlyTensor(torch.Tensor):
+            @staticmethod
+            def __new__(cls, value):
+                return torch.Tensor._make_subclass(cls, torch.tensor(value), False)
+
+            def __float__(self):
+                raise AssertionError("batch hook converted a tensor to float")
+
+            def item(self):
+                raise AssertionError("batch hook materialized a tensor item")
+
+            def cpu(self, *args, **kwargs):
+                raise AssertionError("batch hook copied a tensor to the host")
+
+        callback = LossSummaryCallback()
+        callback.on_train_batch_end(
+            SimpleNamespace(),
+            SimpleNamespace(),
+            {"loss": DeviceOnlyTensor(2.0)},
+            None,
+            0,
+        )
+
+        self.assertIsInstance(callback._values["loss"].first[0], DeviceOnlyTensor)
+
+    def test_loss_summary_callback_reduces_windows_at_train_end(self):
+        import torch
+
+        from anytrain.lightning import LossSummaryCallback
+
+        class Strategy:
+            def __init__(self):
+                self.operations = []
+
+            def reduce(self, value, *, reduce_op):
+                self.operations.append(reduce_op)
+                if reduce_op == "mean":
+                    return value + 1
+                return value
+
+        callback = LossSummaryCallback(window_capacity=2)
+        for value in (1.0, 2.0, 3.0):
+            callback.on_train_batch_end(
+                SimpleNamespace(),
+                SimpleNamespace(),
+                {"loss": torch.tensor(value)},
+                None,
+                0,
+            )
+        strategy = Strategy()
+        trainer = SimpleNamespace(world_size=2, strategy=strategy)
+
+        callback.on_train_end(trainer, SimpleNamespace())
+
+        summary = callback.report(window=2)["loss"]
+        self.assertEqual(summary["steps"], 3)
+        self.assertEqual(summary["first"], 2.0)
+        self.assertEqual(summary["last"], 4.0)
+        self.assertEqual(summary["first_mean"], 2.5)
+        self.assertEqual(summary["last_mean"], 3.5)
+        operations = ["min", "max", "min", "max", "mean", "mean"]
+        self.assertEqual(strategy.operations, operations)
+
+        callback.on_fit_end(trainer, SimpleNamespace())
+        self.assertEqual(strategy.operations, operations)
+
+    def test_loss_summary_callback_rejects_uneven_distributed_counts(self):
+        import torch
+
+        from anytrain.lightning import LossSummaryCallback
+
+        class Strategy:
+            def reduce(self, value, *, reduce_op):
+                if value.ndim != 0:
+                    return value
+                if reduce_op == "min":
+                    return value
+                if reduce_op == "max":
+                    return value + 1
+                return value
+
+        callback = LossSummaryCallback()
+        callback.on_train_batch_end(
+            SimpleNamespace(),
+            SimpleNamespace(),
+            {"loss": torch.tensor(1.0)},
+            None,
+            0,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "different observation counts"):
+            callback.on_train_end(
+                SimpleNamespace(world_size=2, strategy=Strategy()),
+                SimpleNamespace(),
+            )
+
+    def test_loss_summary_callback_validates_real_gloo_ranks(self):
+        import json
+        from tempfile import TemporaryDirectory
+
+        import torch
+
+        if not (
+            torch.distributed.is_available()
+            and torch.distributed.is_gloo_available()
+        ):
+            self.skipTest("Gloo distributed backend is unavailable")
+
+        with TemporaryDirectory() as tmp_dir:
+            init_method = (Path(tmp_dir) / "init").as_uri()
+            torch.multiprocessing.spawn(
+                _loss_summary_ddp_worker,
+                args=(2, init_method, tmp_dir),
+                nprocs=2,
+                join=True,
+            )
+            payloads = [
+                json.loads((Path(tmp_dir) / f"rank-{rank}.json").read_text())
+                for rank in range(2)
+            ]
+
+        self.assertEqual(payloads[0], payloads[1])
+        report = payloads[0]["equal"]["report"]
+        self.assertEqual(report["loss"]["steps"], 3)
+        self.assertEqual(report["loss"]["first_mean"], 2.5)
+        self.assertEqual(report["loss"]["last_mean"], 3.5)
+        self.assertIn("different observation counts", payloads[0]["uneven"]["error"])
+        self.assertIn("metric names differ", payloads[0]["missing"]["error"])
+        self.assertIn("window capacity is inconsistent", payloads[0]["capacity"]["error"])
+
+    def test_loss_summary_callback_runs_through_trainer_lifecycle(self):
+        import torch
+        from lightning import pytorch as pl
+        from torch.utils.data import DataLoader
+
+        from anytrain.lightning import LossSummaryCallback
+
+        class Module(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                loss = (self.weight - batch).square().mean()
+                return {"loss": loss}
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.1)
+
+        callback = LossSummaryCallback(window_capacity=1)
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            devices=1,
+            max_steps=2,
+            callbacks=[callback],
+            logger=False,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            enable_progress_bar=False,
+        )
+
+        trainer.fit(Module(), train_dataloaders=DataLoader(torch.ones(2), batch_size=1))
+
+        summary = callback.report()["loss"]
+        self.assertEqual(summary["steps"], 2)
+        self.assertEqual(summary["window"], 1)
+
+    def test_loss_summary_callback_finishes_empty_fit_without_collective(self):
+        import torch
+        from lightning import pytorch as pl
+        from torch.utils.data import DataLoader
+
+        from anytrain.lightning import LossSummaryCallback
+
+        class Module(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                return {"loss": (self.weight - batch).square().mean()}
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.1)
+
+        callback = LossSummaryCallback()
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            devices=1,
+            max_epochs=0,
+            callbacks=[callback],
+            logger=False,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            enable_progress_bar=False,
+        )
+
+        trainer.fit(Module(), train_dataloaders=DataLoader(torch.ones(1), batch_size=1))
+
+        self.assertEqual(callback.report(), {})
+
+        class Strategy:
+            def reduce(self, value, *, reduce_op):
+                del value, reduce_op
+                raise AssertionError("on_fit_end must not start a collective")
+
+        callback = LossSummaryCallback()
+        callback.on_fit_end(
+            SimpleNamespace(world_size=2, strategy=Strategy()),
+            SimpleNamespace(device=torch.device("cpu")),
+        )
+        self.assertEqual(callback.report(), {})
 
     def test_loss_item_logger_callback_groups_loss_items_by_label(self):
         import torch
