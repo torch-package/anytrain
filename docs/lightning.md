@@ -324,12 +324,14 @@ backward 后只重复检查可训练参数与现有梯度，因此冻结参数�
 - `perf/hardware_peak_flops`，默认按设备型号和 compute dtype 查表，必要时由 job 覆盖。
 - `perf/step_time`、`perf/step_time_window` 和 `perf/mfu`。
 
-代表性输入、训练 step FLOPs 口径，以及 samples/tokens/frames 等数据量日志属于下游任务语义，不由 callback 猜测。
-动态窗口按 `sum(flops) / sum(time) / peak_flops` 计算；梯度累积按 optimizer `global_step`
-形成 measurement。DDP provider 返回 local-rank FLOPs，callback 统一聚合 rank 工作量、最慢 rank
-时间和各 rank 峰值算力。`sync_distributed=True` 时，每个 batch timer 启动前先 barrier，使上一
-batch 的 rank-local callback 工作不会错开下一步计时起点；barrier 自身不计入 step time。完整输入
-协议和边界见 [`docs/modules/perf.md`](modules/perf.md)。
+代表性输入、训练 step FLOPs 口径属于下游任务语义，不由 callback 猜测。有效 audio 秒 / token
+数等数据量通过 `DataThroughputCallback` + `DataUnitsProvider` 显式提供；padding 与
+`{unit}_realtime` 由 valid/padded 同单位计算。动态窗口按 `sum(flops) / sum(time) / peak_flops`
+计算；梯度累积按 optimizer `global_step` 形成 measurement。DDP provider 返回 local-rank FLOPs，
+callback 统一聚合 rank 工作量、最慢 rank 时间和各 rank 峰值算力。`sync_distributed=True` 时，
+每个 batch timer 启动前先 barrier，使上一 batch 的 rank-local callback 工作不会错开下一步计时
+起点；barrier 自身不计入 step time。完整输入协议和边界见
+[`docs/modules/perf.md`](modules/perf.md)。
 
 如果参数或梯度中出现 NaN 或 Inf，它会打印第一个异常项的 name、index、value、shape、dtype、device 并直接抛错，避免继续写坏 checkpoint 或污染日志。
 
