@@ -295,11 +295,11 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
         loss = None
         if self.training:
+            projected = torch.cat([projected_a, projected_b], dim=-1)
+            vectors = torch.cat([vectors_a, vectors_b], dim=-1)
             loss = QuantizationLoss(
-                commitment=F.mse_loss(projected_a, vectors_a.detach())
-                + F.mse_loss(projected_b, vectors_b.detach()),
-                codebook=F.mse_loss(vectors_a, projected_a.detach())
-                + F.mse_loss(vectors_b, projected_b.detach()),
+                commitment=F.mse_loss(projected, vectors.detach()),
+                codebook=F.mse_loss(vectors, projected.detach()),
             )
 
         straight_a = projected_a + (vectors_a - projected_a).detach()

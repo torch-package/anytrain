@@ -6,7 +6,7 @@ from torch import Tensor, nn
 from ._deps import DiscretePathSample, MixtureDiscreteProbPath, PolynomialConvexScheduler
 from ._runtime import require_batch, require_pair
 from .sampler import DiscreteEulerSampler
-from .source import UniformTokenSource
+from .source import MaskTokenSource, UniformTokenSource
 from .time import DEFAULT_TIME_EPS, UniformTimeSampler
 from .types import FlowSampleOutput, ModelCaller, Source, TimeSampler, default_call_model
 
@@ -30,6 +30,13 @@ class DiscreteFlowRuntime:
             MixtureDiscreteProbPath(PolynomialConvexScheduler(n=2.0)) if path is None else path
         )
         self.source = UniformTokenSource(vocab_size) if source is None else source
+        if isinstance(self.source, MaskTokenSource) and self.source.mask_id >= vocab_size:
+            raise ValueError(
+                "MaskTokenSource.mask_id must be in [0, vocab_size) because the wrapped "
+                f"Facebook discrete backends gather/one-hot over vocab_size={vocab_size}; "
+                f"got mask_id={self.source.mask_id}. Include the mask token in vocab_size "
+                "(for example vocab_size=1025 with mask_id=1024)."
+            )
         self.time_sampler = (
             UniformTimeSampler(t_max=1.0 - DEFAULT_TIME_EPS)
             if time_sampler is None

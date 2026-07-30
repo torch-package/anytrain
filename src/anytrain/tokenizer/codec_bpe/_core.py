@@ -93,7 +93,13 @@ class CoreBPE:
 
         base_ids: list[int] = []
         for token_id in token_ids:
-            base_ids.extend(self.tokens[token_id])
+            try:
+                base_ids.extend(self.tokens[token_id])
+            except KeyError as exc:
+                raise ValueError(
+                    f"unknown CodecBPE token id {token_id}; "
+                    f"known ids are in [{min(self.tokens)}, {max(self.tokens)}]."
+                ) from exc
         return base_ids
 
     def token_lengths(self) -> dict[int, int]:

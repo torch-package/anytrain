@@ -129,21 +129,31 @@ class ModelCheckpoint(LightningModelCheckpoint):
         target = self._target_path(filepath)
         local = self._local_checkpoint_path(target)
 
+        # DDP/strategy collectives may require every rank to enter save_checkpoint,
+        # but only global zero typically materializes a regular file.
         trainer.save_checkpoint(str(local), self.save_weights_only)
+        self._last_global_step_saved = trainer.global_step
+        if not trainer.is_global_zero:
+            self._last_checkpoint_saved = filepath
+            return
+
         if not local.is_file():
             raise RuntimeError(
                 "async_save requires trainer.save_checkpoint() to produce a regular file; "
                 "use async_save=False for directory-based or sharded checkpoints."
             )
-        self._last_global_step_saved = trainer.global_step
-        self._last_checkpoint_saved = filepath
+        # Expose the local temp path until the async copy finishes so immediate
+        # readers see an existing file; finalize to the target path on completion.
+        self._last_checkpoint_saved = str(local)
 
-        if trainer.is_global_zero:
-            callbacks = tuple(
-                lambda logger=logger: logger.after_save_checkpoint(proxy(self))
-                for logger in trainer.loggers
-            )
-            self._submit_async_copy(local, target, callbacks=callbacks)
+        def finalize_checkpoint_path() -> None:
+            self._last_checkpoint_saved = filepath
+
+        callbacks = (finalize_checkpoint_path,) + tuple(
+            lambda logger=logger: logger.after_save_checkpoint(proxy(self))
+            for logger in trainer.loggers
+        )
+        self._submit_async_copy(local, target, callbacks=callbacks)
 
     def _remove_checkpoint(self, trainer: pl.Trainer, filepath: str) -> None:
         if not self.async_save:

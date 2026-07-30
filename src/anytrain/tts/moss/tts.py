@@ -120,7 +120,7 @@ class MossTTS:
 
     def __post_init__(self) -> None:
         self.device = torch.device(self.device)
-        if isinstance(self.model, nn.Module):
+        if isinstance(self.model, nn.Module) and "device_map" not in self.config.load_kwargs:
             self.model = self.model.to(self.device)
         _move_processor(self.processor, self.device)
 
@@ -205,7 +205,7 @@ class MossTTS:
 
     @property
     def sample_rate(self) -> int:
-        return self.config.sample_rate
+        return _processor_sample_rate(self.processor, self.config.sample_rate)
 
     def config_hash(self) -> str:
         return config_hash(self.config.hash_dict())

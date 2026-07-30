@@ -21,6 +21,7 @@ from .assets import (
 DEFAULT_DECODER: LongCatDecoderName = "16k_4codebooks"
 SEMANTIC_CODEBOOK_SIZE = 8192
 ACOUSTIC_FACTOR_CODEBOOK_SIZE = 90
+NUM_CHANNELS = 1
 
 
 class LongCat(DeviceModule):
@@ -155,6 +156,8 @@ class LongCat(DeviceModule):
         audio: Tensor,
         sample_rate: int,
     ) -> SemanticAcousticCodes:
+        if audio.dim() != 3 or audio.size(1) != NUM_CHANNELS:
+            raise ValueError("LongCat tokenize expects mono audio shape [batch, 1, time].")
         backend_codes = self.encoder(
             audio.to(self.device),
             sample_rate,

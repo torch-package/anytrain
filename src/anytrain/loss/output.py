@@ -15,6 +15,10 @@ class LossItem:
     details: dict[str, Tensor] | None = None
 
     def mean(self, mask: Tensor) -> LossItem:
+        if mask.shape != self.loss.shape:
+            raise ValueError("loss mask must align with loss rows.")
+        if not bool(mask.any()):
+            raise ValueError("loss mask must select at least one row.")
         loss = self.loss[mask].mean()
 
         details = self.details

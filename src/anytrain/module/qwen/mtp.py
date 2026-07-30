@@ -226,6 +226,7 @@ class QwenMTPCodebookPredictor(nn.Module):
             decoder_input = condition_hidden[:, frame] + self.first_bos + self._embedding(0, previous_first)
             state_output = self.temporal(
                 inputs_embeds=decoder_input[:, None],
+                attention_mask=frame_mask[:, : frame + 1].to(dtype=torch.long),
                 past_key_values=past_key_values,
                 use_cache=True,
                 return_dict=True,

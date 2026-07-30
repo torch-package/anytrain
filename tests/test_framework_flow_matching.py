@@ -91,6 +91,52 @@ class FlowMatchingComponentTest(unittest.TestCase):
         self.assertTrue((t >= 0.2).all())
         self.assertTrue((t <= 0.3).all())
 
+    def test_discrete_runtime_rejects_mask_id_outside_vocab(self):
+        from anytrain.framework.flow_matching import DiscreteFlowRuntime, MaskTokenSource
+
+        with self.assertRaisesRegex(ValueError, "mask_id must be in"):
+            DiscreteFlowRuntime(vocab_size=8, source=MaskTokenSource(mask_id=8))
+
+    def test_flow_matching_install_hint_mentions_extra(self):
+        from anytrain.framework.flow_matching._deps import INSTALL_HINT
+
+        self.assertRegex(INSTALL_HINT, r"anytrain\[flow\]")
+
+    def test_discrete_mask_token_objective_and_sample(self):
+        from anytrain.framework.flow_matching import (
+            DiscreteFlowRuntime,
+            DiscreteGeneralizedKLObjective,
+            MaskTokenSource,
+        )
+
+        class ToyTokenFlow(nn.Module):
+            def __init__(self, vocab_size: int):
+                super().__init__()
+                self.embedding = nn.Embedding(vocab_size, 8)
+                self.head = nn.Linear(8, vocab_size)
+
+            def forward(self, x_t, t, condition=None):
+                del condition
+                scale = t.view(t.shape[0], *([1] * (x_t.ndim - 1)), 1)
+                return self.head(self.embedding(x_t.long()) + scale)
+
+        vocab_size = 8
+        mask_id = 7
+        model = ToyTokenFlow(vocab_size)
+        runtime = DiscreteFlowRuntime(
+            vocab_size,
+            source=MaskTokenSource(mask_id=mask_id),
+        )
+        objective = DiscreteGeneralizedKLObjective(runtime)
+        x_1 = torch.randint(0, mask_id, (4, 5))
+
+        loss = objective(model, x_1)
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+
+        output = runtime.sample(model, runtime.source_like(x_1))
+        self.assertEqual(output.final.shape, x_1.shape)
+
     def test_default_time_sampler_is_uniform(self):
         from anytrain.framework.flow_matching import (
             ContinuousFlowRuntime,

@@ -30,7 +30,6 @@ core 提供：
 optional backend：
 
 - wandb。
-- mlflow。
 - 其他第三方 logger。
 
 第三方 backend 是 optional；logger backend 由下游或 Lightning 原生配置负责创建。

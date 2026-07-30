@@ -17,8 +17,8 @@ def processor_outputs(
 ) -> list[TTSOutput]:
     messages = processor_messages(value, expected_count=expected_count)
     return [
-        processor_message(message, sample_rate=sample_rate, backend=backend)
-        for message in messages
+        processor_message(message, sample_rate=sample_rate, backend=backend, index=index)
+        for index, message in enumerate(messages)
     ]
 
 
@@ -39,7 +39,16 @@ def processor_messages(value: object, *, expected_count: int) -> list[object]:
     return list(value)
 
 
-def processor_message(message: object, *, sample_rate: int, backend: str) -> TTSOutput:
+def processor_message(
+    message: object,
+    *,
+    sample_rate: int,
+    backend: str,
+    index: int | None = None,
+) -> TTSOutput:
+    if message is None:
+        where = "" if index is None else f" at batch index {index}"
+        raise RuntimeError(f"processor decode returned empty output{where}.")
     if isinstance(message, TTSOutput):
         return message
     audio = first_processor_audio(message)

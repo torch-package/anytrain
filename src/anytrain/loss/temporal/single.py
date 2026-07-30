@@ -9,12 +9,17 @@ from ..abc import LossABC
 def _sum_channels_and_time(signal: Tensor) -> Tensor:
     if signal.ndim < 2:
         raise ValueError("audio tensors must include a time dimension.")
+    if signal.ndim == 2:
+        # Mono layout [batch, time].
+        return signal.square().sum(dim=-1)
     return signal.square().sum(dim=(-2, -1))
 
 
 def global_sdr(estimate: Tensor, reference: Tensor, *, eps: float = 1e-8) -> Tensor:
     if estimate.shape != reference.shape:
         raise ValueError("estimate and reference must have the same shape.")
+    if estimate.ndim < 2:
+        raise ValueError("estimate and reference must include batch and time dimensions.")
 
     error = estimate - reference
     numerator = _sum_channels_and_time(reference) + eps
@@ -32,14 +37,23 @@ def scale_invariant_signal(
 ) -> Tensor:
     if estimate.shape != reference.shape:
         raise ValueError("estimate and reference must have the same shape.")
+    if estimate.ndim < 2:
+        raise ValueError("estimate and reference must include batch and time dimensions.")
 
-    reference_energy = (reference * reference).sum(dim=(-2, -1))
-    estimate_energy = (estimate * estimate).sum(dim=(-2, -1))
-    projection = (estimate * reference).sum(dim=(-2, -1))
+    if estimate.ndim == 2:
+        reduce_dims: tuple[int, ...] = (-1,)
+    else:
+        reduce_dims = (-2, -1)
+
+    reference_energy = (reference * reference).sum(dim=reduce_dims)
+    estimate_energy = (estimate * estimate).sum(dim=reduce_dims)
+    projection = (estimate * reference).sum(dim=reduce_dims)
     scale = projection / (reference_energy + eps)
     fallback = torch.full_like(scale, fallback_scale)
     scale = torch.where(estimate_energy < min_energy, fallback, scale)
-    return scale[..., None, None] * reference
+    while scale.ndim < estimate.ndim:
+        scale = scale.unsqueeze(-1)
+    return scale * reference
 
 
 def si_snr(estimate: Tensor, reference: Tensor, *, eps: float = 1e-8) -> Tensor:

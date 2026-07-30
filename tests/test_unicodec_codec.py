@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
@@ -155,6 +156,9 @@ class FakeUniCodecModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
+        self.feature_extractor = SimpleNamespace(
+            encodec=SimpleNamespace(quantizer=SimpleNamespace(n_q=1, bins=16384))
+        )
         self.domains: tuple[str, ...] | None = None
         self.bandwidth_id: torch.Tensor | None = None
         self.decode_called = False

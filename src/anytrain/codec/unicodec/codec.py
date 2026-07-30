@@ -129,6 +129,10 @@ class UniCodec(DeviceModule):
         self,
         features: Tensor,
     ) -> Tensor:
+        if features.dim() != 3:
+            raise ValueError("UniCodec features must have shape [batch, time, dim].")
+        if not torch.is_floating_point(features) or torch.is_complex(features):
+            raise TypeError("UniCodec features must be floating point tensors.")
         cond = _bandwidth_id(self.bandwidth_id, self.device)
         audio = self.model.decode(
             features.transpose(1, 2).to(self.device),
@@ -157,8 +161,14 @@ def _codebook_sizes(model: nn.Module) -> tuple[int, ...]:
     feature_extractor = getattr(model, "feature_extractor", None)
     encodec = getattr(feature_extractor, "encodec", None)
     quantizer = getattr(encodec, "quantizer", None)
-    num_codebooks = int(getattr(quantizer, "n_q", 1))
-    codebook_size = int(getattr(quantizer, "bins", DEFAULT_CODEBOOK_SIZE))
+    if quantizer is None:
+        raise TypeError("UniCodec model is missing feature_extractor.encodec.quantizer.")
+    if not hasattr(quantizer, "n_q") or not hasattr(quantizer, "bins"):
+        raise TypeError("UniCodec quantizer must expose n_q and bins.")
+    num_codebooks = int(quantizer.n_q)
+    codebook_size = int(quantizer.bins)
+    if num_codebooks <= 0 or codebook_size <= 0:
+        raise ValueError("UniCodec quantizer n_q and bins must be positive.")
     return (codebook_size,) * num_codebooks
 
 

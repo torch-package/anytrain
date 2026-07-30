@@ -559,7 +559,7 @@ class LightningTest(unittest.TestCase):
         self.assertEqual(
             module.log_calls,
             [
-                ("token/loss/asr", 3.0),
+                ("token/loss/asr", 4.0),
                 ("token/tokens/asr", 4.0),
                 ("token/loss/mt", 3.0),
                 ("token/tokens/mt", 4.0),
@@ -913,6 +913,58 @@ class LightningTest(unittest.TestCase):
                 self.assertEqual(trainer.saved_paths[0][0].suffix, ".ckpt")
                 self.assertFalse(trainer.saved_paths[0][1])
                 self.assertEqual(callback._last_checkpoint_saved, str(target))
+        finally:
+            callback._close_async_storage()
+
+    def test_model_checkpoint_async_save_skips_file_check_on_non_zero_rank(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class RankNonZeroTrainer(_CheckpointTrainer):
+            def __init__(self):
+                super().__init__(payload=b"ignored")
+                self.is_global_zero = False
+
+            def save_checkpoint(self, filepath, weights_only):
+                # Mimic DDP: non-zero ranks enter the collective but do not write.
+                self.saved_paths.append((Path(filepath), weights_only))
+
+        callback = ModelCheckpoint(async_save=True)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                target = Path(tmp_dir) / "nfs" / "model.ckpt"
+                trainer = RankNonZeroTrainer()
+
+                callback._save_checkpoint(trainer, str(target))
+                callback.wait_async_saves()
+
+                self.assertEqual(callback._last_checkpoint_saved, str(target))
+                self.assertFalse(target.exists())
+                self.assertFalse(trainer.saved_paths[0][0].exists())
+        finally:
+            callback._close_async_storage()
+
+    def test_model_checkpoint_async_save_exposes_local_path_until_copy_finishes(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = ModelCheckpoint(async_save=True)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                target = Path(tmp_dir) / "nfs" / "model.ckpt"
+                trainer = _CheckpointTrainer(payload=b"saved")
+
+                callback._save_checkpoint(trainer, str(target))
+                local = Path(callback._last_checkpoint_saved)
+                self.assertTrue(local.is_file())
+                self.assertNotEqual(local, target)
+                self.assertFalse(target.exists())
+
+                callback.wait_async_saves()
+                self.assertEqual(callback._last_checkpoint_saved, str(target))
+                self.assertTrue(target.is_file())
         finally:
             callback._close_async_storage()
 

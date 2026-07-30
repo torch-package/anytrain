@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-INSTALL_HINT = "Install the optional flow dependencies with `python -m pip install flow_matching`."
+INSTALL_HINT = (
+    "Install the optional flow dependencies with `python -m pip install 'anytrain[flow]'`."
+)
 
 try:
     from flow_matching.loss import MixturePathGeneralizedKL

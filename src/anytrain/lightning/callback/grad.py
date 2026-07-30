@@ -31,6 +31,7 @@ class GradientLoggerCallback(pl.Callback):
         self.parameter_name = parameter_name
         self.every_n_steps = every_n_steps
         self.eps = eps
+        self._last_logged_step: int | None = None
 
     def on_before_backward(
         self,
@@ -49,9 +50,15 @@ class GradientLoggerCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> bool:
         del pl_module
-        if self.every_n_steps is None:
-            return True
-        return int(trainer.global_step) % self.every_n_steps == 0
+        step = int(trainer.global_step)
+        if self.every_n_steps is not None and step % self.every_n_steps != 0:
+            return False
+        # Under grad accumulation, global_step is flat across microbatches.
+        # Log once per optimizer step window to avoid repeated autograd.grad.
+        if self._last_logged_step == step:
+            return False
+        self._last_logged_step = step
+        return True
 
     def log_gradients(
         self,

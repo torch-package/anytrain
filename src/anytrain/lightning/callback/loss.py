@@ -10,7 +10,7 @@ import torch
 from lightning import pytorch as pl
 from torch import Tensor
 
-from anytrain.loss import LossItem, iter_loss_items
+from anytrain.loss import LossItem, iter_loss_items, loss_item_mean
 from anytrain.stats import TimeBucketedMean, time_bucketed_mean
 
 from .. import experiment
@@ -85,7 +85,7 @@ class LossSummaryCallback(pl.Callback):
             return
         self._append(self.loss_key, _tensor(outputs, self.loss_key))
         for name, item in self._loss_items(outputs):
-            self._append(name, item.loss)
+            self._append(name, _item_summary_value(item))
 
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._synchronize(trainer, pl_module)
@@ -235,17 +235,24 @@ class LossItemLoggerCallback(pl.Callback):
                 device=item.loss.device,
                 dtype=torch.bool,
             )
-            mean_item = item.mean(mask)
+            if not bool(mask.any()):
+                continue
+            subset = LossItem(
+                item.loss[mask],
+                None
+                if item.details is None
+                else {key: value[mask] for key, value in item.details.items()},
+            )
             pl_module.log(
                 self._tag(objective=objective, key="loss", label=label),
-                mean_item.loss,
+                _item_summary_value(subset),
             )
-            if mean_item.details is None:
+            if subset.details is None:
                 continue
-            for key, scalar in mean_item.details.items():
+            for key, scalar in subset.details.items():
                 pl_module.log(
                     self._tag(objective=objective, key=key, label=label),
-                    scalar,
+                    scalar.mean(),
                 )
 
     def _tag(self, *, objective: str, key: str, label: object) -> str:
@@ -382,6 +389,15 @@ class LossTimeBucketLoggerCallback(pl.Callback):
             lower=float(lower),
             upper=float(upper),
         )
+
+
+def _item_summary_value(item: LossItem) -> Tensor:
+    details = item.details
+    if details is not None:
+        for unit in ("frames", "tokens", "samples"):
+            if unit in details:
+                return loss_item_mean(item, unit=unit).detach().float()
+    return item.loss.detach().float().mean()
 
 
 def _available_loss_items(

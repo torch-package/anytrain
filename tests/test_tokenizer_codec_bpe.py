@@ -571,7 +571,7 @@ class BPETest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "token_ids"):
             bpe.decode([])
-        with self.assertRaises(KeyError):
+        with self.assertRaisesRegex(ValueError, "unknown CodecBPE token id"):
             bpe.decode([bpe.vocab_size])
 
     def test_eval_reports_expected_compression(self):

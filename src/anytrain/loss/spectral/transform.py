@@ -163,6 +163,12 @@ class SpectralTransformCache:
         return spectrum
 
 
+def _default_hop_length(*, n_fft: int, win_length: int) -> int:
+    # Keep torch and torchaudio backends numerically aligned when hop is omitted.
+    del n_fft
+    return win_length // 4
+
+
 class STFTTransform(nn.Module):
     window_tensor: Tensor
 
@@ -179,8 +185,12 @@ class STFTTransform(nn.Module):
     ) -> None:
         super().__init__()
         self.n_fft = n_fft
-        self.hop_length = hop_length
         self.win_length = win_length or n_fft
+        self.hop_length = (
+            hop_length
+            if hop_length is not None
+            else _default_hop_length(n_fft=n_fft, win_length=self.win_length)
+        )
         self.window = window
         self.center = center
         self.normalized = normalized
@@ -190,8 +200,8 @@ class STFTTransform(nn.Module):
             spectrogram_cls = _require_torchaudio_spectrogram()
             self.transform = spectrogram_cls(
                 n_fft=n_fft,
-                hop_length=hop_length,
-                win_length=win_length,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
                 window_fn=self._get_window_fn(window),
                 power=None,
                 center=center,
@@ -221,9 +231,7 @@ class STFTTransform(nn.Module):
         return (
             self.backend,
             self.n_fft,
-            self.hop_length
-            if self.hop_length is not None
-            else (self.win_length // 2 if self.backend == "torchaudio" else self.n_fft // 4),
+            self.hop_length,
             self.win_length,
             self.window,
             self.center,
@@ -309,6 +317,12 @@ class MelSpectrogramTransform(nn.Module):
         self.mel_scale = mel_scale
         self.transform: nn.Module | None = None
         self.stft: STFTTransform | None = None
+        resolved_win_length = win_length or n_fft
+        resolved_hop_length = (
+            hop_length
+            if hop_length is not None
+            else _default_hop_length(n_fft=n_fft, win_length=resolved_win_length)
+        )
         f_max = f_max or sample_rate / 2
         if self.backend == "torchaudio":
             mel_spectrogram_cls = _require_torchaudio_mel_spectrogram()
@@ -316,8 +330,8 @@ class MelSpectrogramTransform(nn.Module):
                 sample_rate=sample_rate,
                 n_fft=n_fft,
                 n_mels=n_mels,
-                hop_length=hop_length,
-                win_length=win_length,
+                hop_length=resolved_hop_length,
+                win_length=resolved_win_length,
                 f_min=f_min,
                 f_max=f_max,
                 power=power,
@@ -326,21 +340,27 @@ class MelSpectrogramTransform(nn.Module):
         else:
             self.stft = STFTTransform(
                 n_fft=n_fft,
-                hop_length=hop_length,
-                win_length=win_length,
+                hop_length=resolved_hop_length,
+                win_length=resolved_win_length,
                 backend="torch",
             )
+            mel_filter = self._create_mel_filter(
+                sample_rate=sample_rate,
+                n_fft=n_fft,
+                n_mels=n_mels,
+                f_min=f_min,
+                f_max=f_max,
+                mel_scale=mel_scale,
+            )
+            if n_mels > n_fft // 2 + 1:
+                raise ValueError(
+                    f"n_mels={n_mels} exceeds available FFT bins ({n_fft // 2 + 1}) "
+                    f"for n_fft={n_fft}; reduce n_mels or increase n_fft."
+                )
             register_buffer(
                 self,
                 "mel_filter",
-                self._create_mel_filter(
-                    sample_rate=sample_rate,
-                    n_fft=n_fft,
-                    n_mels=n_mels,
-                    f_min=f_min,
-                    f_max=f_max,
-                    mel_scale=mel_scale,
-                ),
+                mel_filter,
             )
 
     def forward(

@@ -492,7 +492,12 @@ def _load_config(path: Path) -> dict[str, Any]:
     config = load_config(str(path))
     try:
         from omegaconf import DictConfig, OmegaConf
-    except ImportError:
+    except ImportError as exc:
+        if not isinstance(config, dict):
+            raise ImportError(
+                "BiCodec config loading requires omegaconf to convert OmegaConf objects. "
+                'Install it with `python -m pip install "omegaconf"`.'
+            ) from exc
         DictConfig = None
         OmegaConf = None
     if DictConfig is not None and isinstance(config, DictConfig):

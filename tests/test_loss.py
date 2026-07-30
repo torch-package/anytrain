@@ -31,7 +31,7 @@ from anytrain.loss.spectral import (
     STFTTransform,
 )
 from anytrain.loss.task import CodecLoss, CodecLossPreset
-from anytrain.loss.temporal import SDRLoss
+from anytrain.loss.temporal import SDRLoss, global_sdr
 
 
 class DetailLoss(LossABC):
@@ -444,6 +444,17 @@ class LossTest(unittest.TestCase):
 
         self.assertLess(float(loss), 0.0)
 
+    def test_sdr_loss_handles_mono_batch_time_layout(self):
+        reference = torch.randn(4, 32)
+        estimate = reference + 0.1 * torch.randn(4, 32)
+
+        score = global_sdr(estimate, reference)
+        loss = SDRLoss(scale_invariant=False)(estimate, reference)
+
+        self.assertEqual(tuple(score.shape), (4,))
+        self.assertEqual(loss.ndim, 0)
+        self.assertAlmostEqual(float(loss), float(-score.mean()), places=5)
+
     def test_spectral_single_losses(self):
         estimate = torch.randn(2, 8, 4, dtype=torch.complex64)
         reference = estimate + 0.1 * torch.randn(2, 8, 4, dtype=torch.complex64)
@@ -471,6 +482,7 @@ class LossTest(unittest.TestCase):
         torch_mel = MelSpectrogramTransform(
             sample_rate=16000,
             n_fft=16,
+            n_mels=4,
             backend="torch",
         )
 
@@ -479,13 +491,14 @@ class LossTest(unittest.TestCase):
         self.assertEqual(torch_stft.backend, "torch")
         self.assertEqual(torch_mel.backend, "torch")
 
-    def test_stft_cache_key_uses_backend_default_hop_length(self):
+    def test_stft_cache_key_uses_shared_default_hop_length(self):
         torch_stft = STFTTransform(n_fft=64, backend="torch")
         auto_stft = STFTTransform(n_fft=64)
 
+        self.assertEqual(torch_stft.hop_length, 16)
+        self.assertEqual(auto_stft.hop_length, 16)
         self.assertEqual(torch_stft.cache_key[2], 16)
-        expected_auto_hop = 32 if auto_stft.backend == "torchaudio" else 16
-        self.assertEqual(auto_stft.cache_key[2], expected_auto_hop)
+        self.assertEqual(auto_stft.cache_key[2], 16)
 
     def test_mel_transform_supports_mel_scale(self):
         htk_mel = MelSpectrogramTransform(

@@ -102,7 +102,7 @@ class Source(Protocol):
 - `UniformTokenSource(vocab_size: int)`
 - `MaskTokenSource(mask_id: int)`
 
-连续 source 返回和 `x_1` 同 shape/device/dtype 的 tensor。离散 source 返回 `torch.long` token tensor；mask source 的 `mask_id` 必须显式传入，不静默假设等于 `vocab_size`。
+连续 source 返回和 `x_1` 同 shape/device/dtype 的 tensor。离散 source 返回 `torch.long` token tensor；mask source 的 `mask_id` 必须显式传入，且必须落在 `[0, vocab_size)`（与 Facebook discrete backend 的 gather/one_hot 一致）。
 连续 runtime 也要求显式传入的 `x_0` 与 `x_1` device/dtype 一致，并在进入 path
 前把采样时间转换到 `x_1.dtype`，避免插值结果被默认 float32 静默提升。
 
@@ -217,7 +217,7 @@ continuous_x_0 = continuous.source_like(x_1)
 continuous_sample = continuous.sample(model, continuous_x_0, condition=condition)
 
 discrete = DiscreteFlowRuntime(
-    vocab_size=1024,
+    vocab_size=1025,
     source=MaskTokenSource(mask_id=1024),
 )
 discrete_objective = DiscreteGeneralizedKLObjective(discrete)
@@ -326,7 +326,10 @@ from anytrain.framework.flow_matching import (
 
 ### 离散 mask token 语义
 
-mask token 是输入状态的一部分，不一定属于目标 vocabulary。`MaskTokenSource` 显式接收 `mask_id`，`DiscreteFlowRuntime` 显式接收 `vocab_size`，避免把 `mask_id == vocab_size` 写成隐式规则。
+Facebook discrete backend 对 `x_t` 做 `gather` / `one_hot`，因此 `MaskTokenSource.mask_id`
+必须落在 `[0, vocab_size)`。mask 若是额外吸收态，应把 `vocab_size` 扩到包含该 id（例如
+`vocab_size=1025`、`mask_id=1024`），并由模型输出对应维度的 logits。`DiscreteFlowRuntime`
+在构造时拒绝越界 `mask_id`。
 
 ### 额外日志需求
 

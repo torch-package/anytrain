@@ -110,7 +110,8 @@ class MossTTSAdapterTest(unittest.TestCase):
 
         self.assertEqual(tts.config.model, "OpenMOSS-Team/MOSS-TTS-v1.5")
         self.assertEqual(tts.config.codec_model, "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano")
-        self.assertEqual(tts.sample_rate, 16000)
+        self.assertEqual(tts.config.sample_rate, 16000)
+        self.assertEqual(tts.sample_rate, 24000)
         self.assertEqual(tts.config.runtime_kwargs, {"do_sample": False})
         self.assertEqual(tts.model_loaded_from, "transformers")
         self.assertEqual(
@@ -319,6 +320,17 @@ class MossTTSAdapterTest(unittest.TestCase):
 
         self.assertEqual(first.config_hash(), second.config_hash())
         self.assertNotEqual(first.config_hash(), changed.config_hash())
+
+    def test_processor_outputs_reject_none_message(self):
+        from anytrain.tts.moss._output import processor_outputs
+
+        with self.assertRaisesRegex(RuntimeError, "empty output at batch index 1"):
+            processor_outputs(
+                [FakeProcessorMessage(torch.arange(3, dtype=torch.float32)), None],
+                expected_count=2,
+                sample_rate=24000,
+                backend="moss",
+            )
 
 
 class FakeMossModel:

@@ -101,6 +101,10 @@ class _MSD(nn.Module):
             raise ValueError("sample rate must be positive.")
         self.sample_rate = sample_rate
         self.source_sample_rate = source_sample_rate
+        if dim % 4 != 0:
+            raise ValueError(
+                f"msd_dim must be divisible by 4 for DAC MSD group schedule, got {dim}."
+            )
         self.convs = nn.ModuleList(
             [
                 _conv1d(in_channels, dim, kernel_size=15, padding=7),
@@ -121,7 +125,13 @@ class _MSD(nn.Module):
 
     def forward(self, x: Tensor) -> list[Tensor]:
         if self.sample_rate != self.source_sample_rate:
-            from torchaudio.functional import resample
+            try:
+                from torchaudio.functional import resample
+            except ImportError as exc:
+                raise ImportError(
+                    "DAC MSD resampling requires torchaudio. "
+                    "Install audio dependencies with `python -m pip install 'anytrain[audio]'`."
+                ) from exc
 
             x = resample(x, self.source_sample_rate, self.sample_rate)
         return _forward_stack(x, self.convs, self.post)

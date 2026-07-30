@@ -273,8 +273,10 @@ class AdaptiveDirichletTempering(nn.Module):
         temperature = self._temperature_for_forward(force_unit=in_warmup)
         temperature = temperature.view(*([1] * (logits.ndim - 1)), -1)
         if self.training and self.config.use_gumbel_softmax:
-            return tensor_temperature_gumbel_softmax(logits, temperature=temperature, dim=-1)
-        return (logits / temperature).softmax(dim=-1)
+            weights = tensor_temperature_gumbel_softmax(logits, temperature=temperature, dim=-1)
+        else:
+            weights = (logits / temperature).softmax(dim=-1)
+        return weights.to(dtype=logits.dtype)
 
     def _initial_expert_means(
         self,
