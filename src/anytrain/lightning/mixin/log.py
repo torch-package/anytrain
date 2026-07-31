@@ -7,6 +7,8 @@ import torch
 from lightning import pytorch as pl
 from lightning.pytorch.loggers import TensorBoardLogger
 
+from .. import _capability
+
 RankLogMode = Literal["zero", "all"]
 
 
@@ -50,11 +52,11 @@ class LightningLogMixin:
         trainer = module.trainer
         _require_tag(tag)
         normalized_rank_mode = _validate_rank_mode(rank_mode)
-        if normalized_rank_mode == "zero" and not trainer.is_global_zero:
+        if normalized_rank_mode == "zero" and not _capability.is_global_zero(trainer):
             return
 
         _log_audio_to_loggers(
-            trainer.loggers,
+            _capability.loggers(trainer),
             _ranked_tag(tag, trainer=trainer, rank_mode=normalized_rank_mode),
             audio,
             step=module.global_step if step is None else step,
@@ -73,11 +75,11 @@ class LightningLogMixin:
         trainer = module.trainer
         _require_tag(tag)
         normalized_rank_mode = _validate_rank_mode(rank_mode)
-        if normalized_rank_mode == "zero" and not trainer.is_global_zero:
+        if normalized_rank_mode == "zero" and not _capability.is_global_zero(trainer):
             return
 
         _log_figure_to_loggers(
-            trainer.loggers,
+            _capability.loggers(trainer),
             _ranked_tag(tag, trainer=trainer, rank_mode=normalized_rank_mode),
             figure,
             step=module.global_step if step is None else step,
@@ -138,9 +140,9 @@ def _validate_rank_mode(rank_mode: str) -> RankLogMode:
 
 
 def _ranked_tag(tag: str, *, trainer: pl.Trainer, rank_mode: RankLogMode) -> str:
-    if rank_mode == "zero" or trainer.world_size <= 1:
+    if rank_mode == "zero" or not _capability.is_distributed(trainer):
         return tag
-    return f"rank={trainer.global_rank}/{tag}"
+    return f"rank={_capability.global_rank(trainer)}/{tag}"
 
 
 def _require_tag(tag: str) -> None:

@@ -11,6 +11,7 @@ from lightning.pytorch.callbacks import Callback
 from torch import Tensor
 
 from ..evaluator.weighted import Metric, reduce
+from . import _capability
 
 
 def log(
@@ -78,7 +79,7 @@ class History(Callback):
                     f"validation completed without {self.prefix}* callback metrics."
                 )
             return
-        record = Record(step=trainer.global_step, metrics=metrics)
+        record = Record(step=_capability.global_step(trainer), metrics=metrics)
         values = self.sanity if trainer.sanity_checking else self.interval
         _append(values, record)
 

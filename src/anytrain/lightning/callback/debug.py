@@ -9,6 +9,8 @@ from typing import Literal
 import torch
 from lightning import pytorch as pl
 
+from .. import _capability
+
 _Kind = Literal["loss", "parameter", "gradient"]
 _NamedTensor = tuple[str, _Kind, torch.Tensor]
 
@@ -147,8 +149,8 @@ def _format_issue(
 ) -> str:
     return (
         f"Non-finite {issue.kind} detected {where} "
-        f"(epoch={trainer.current_epoch}, global_step={trainer.global_step}, "
-        f"rank={trainer.global_rank}). "
+        f"(epoch={trainer.current_epoch}, global_step={_capability.global_step(trainer)}, "
+        f"rank={_capability.global_rank(trainer)}). "
         f"name={issue.name!r}, index={issue.index}, value={issue.value}, "
         f"shape={issue.shape}, dtype={issue.dtype}, device={issue.device}."
     )

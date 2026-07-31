@@ -11,6 +11,8 @@ from torch import Tensor
 
 from anytrain.loss import LossItem
 
+from .. import _capability
+
 
 class LossOutputProvider(Protocol):
     def current_loss_outputs(self) -> Mapping[str, Any]: ...
@@ -110,7 +112,7 @@ class GradientProbeLoggerCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> bool:
         del pl_module
-        step = int(trainer.global_step)
+        step = _capability.global_step(trainer)
         if self.every_n_steps is not None and step % self.every_n_steps != 0:
             return False
         # Under grad accumulation, global_step is flat across microbatches.

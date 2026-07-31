@@ -16,6 +16,8 @@ from weakref import proxy
 from lightning import pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint as LightningModelCheckpoint
 
+from .. import _capability
+
 
 class ModelCheckpoint(LightningModelCheckpoint):
     def __init__(
@@ -132,8 +134,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
         # DDP/strategy collectives may require every rank to enter save_checkpoint,
         # but only global zero typically materializes a regular file.
         trainer.save_checkpoint(str(local), self.save_weights_only)
-        self._last_global_step_saved = trainer.global_step
-        if not trainer.is_global_zero:
+        self._last_global_step_saved = _capability.global_step(trainer)
+        if not _capability.is_global_zero(trainer):
             self._last_checkpoint_saved = filepath
             return
 
@@ -151,7 +153,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
 
         callbacks = (finalize_checkpoint_path,) + tuple(
             lambda logger=logger: logger.after_save_checkpoint(proxy(self))
-            for logger in trainer.loggers
+            for logger in _capability.loggers(trainer)
         )
         self._submit_async_copy(local, target, callbacks=callbacks)
 
@@ -161,7 +163,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
             return
 
         self._raise_async_error()
-        if trainer.is_global_zero:
+        if _capability.is_global_zero(trainer):
             target = self._target_path(filepath)
             self._submit_async_remove(target)
 
@@ -264,8 +266,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
 
     @staticmethod
     def _validate_async_strategy(trainer: pl.Trainer) -> None:
-        strategy = getattr(trainer, "strategy", None)
-        strategy_name = type(strategy).__name__.lower()
+        strategy_name = _capability.strategy_name(trainer).lower()
         if "fsdp" in strategy_name or "deepspeed" in strategy_name:
             raise RuntimeError(
                 "async_save is not supported with FSDP or DeepSpeed strategies; "

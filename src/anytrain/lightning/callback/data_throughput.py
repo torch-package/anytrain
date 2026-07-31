@@ -15,6 +15,8 @@ from anytrain.lightning.perf.data import (
     units_realtime,
 )
 
+from .. import _capability
+
 
 @dataclass(frozen=True)
 class DataUnits:
@@ -138,7 +140,7 @@ class DataThroughputCallback(pl.Callback):
             _Measurement(elapsed=step_time, valid=units.valid, padded=units.padded)
         )
 
-        global_step = int(trainer.global_step)
+        global_step = _capability.global_step(trainer)
         if global_step < self.warmup_steps:
             return
         if global_step % self.log_every_n_steps != 0:

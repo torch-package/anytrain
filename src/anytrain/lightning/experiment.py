@@ -5,6 +5,8 @@ from typing import Protocol, cast
 from lightning import Trainer
 from torch import Tensor
 
+from . import _capability
+
 
 class Text(Protocol):
     def add_text(self, tag: str, text: str, global_step: int) -> object: ...
@@ -58,15 +60,7 @@ def histogram(trainer: Trainer) -> Histogram | None:
 
 
 def _experiment(trainer: Trainer) -> object | None:
-    logger = getattr(trainer, "logger", None)
-    if logger is not None:
-        experiment = getattr(logger, "experiment", None)
-        if experiment is not None:
-            return experiment
-    loggers = getattr(trainer, "loggers", None)
-    if loggers:
-        return getattr(loggers[0], "experiment", None)
-    return None
+    return _capability.logger_experiment(trainer)
 
 
 __all__ = [

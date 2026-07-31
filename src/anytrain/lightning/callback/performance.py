@@ -17,6 +17,8 @@ from anytrain.lightning.perf import (
     model_flops_utilization,
 )
 
+from .. import _capability
+
 if TYPE_CHECKING:
     from torch.utils.flop_counter import FlopCounterMode
 
@@ -114,7 +116,7 @@ class PerformanceCallback(pl.Callback):
         self._measurements: deque[_Measurement] = deque(maxlen=measure_window_steps)
 
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._reset(global_step=int(trainer.global_step))
+        self._reset(global_step=_capability.global_step(trainer))
         _reset_peak_memory(pl_module)
         self.hardware = _infer_hardware(
             trainer=trainer,
@@ -156,7 +158,7 @@ class PerformanceCallback(pl.Callback):
         if self._step_started_at is not None:
             raise RuntimeError("A training batch started before the previous batch ended.")
         if self._last_global_step is None:
-            self._last_global_step = int(trainer.global_step)
+            self._last_global_step = _capability.global_step(trainer)
         _sync_distributed(trainer, self.sync_distributed)
         _sync_cuda(self.sync_cuda)
         if self.profile_flops:
@@ -196,7 +198,7 @@ class PerformanceCallback(pl.Callback):
                 "model_flops_per_batch result",
             )
 
-        global_step = int(trainer.global_step)
+        global_step = _capability.global_step(trainer)
         if self._last_global_step is None:
             self._last_global_step = global_step
             return
@@ -262,7 +264,7 @@ class PerformanceCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> None:
         del pl_module
-        self._discard_pending(global_step=int(trainer.global_step))
+        self._discard_pending(global_step=_capability.global_step(trainer))
 
     def on_exception(
         self,
@@ -271,7 +273,7 @@ class PerformanceCallback(pl.Callback):
         exception: BaseException,
     ) -> None:
         del pl_module, exception
-        self._discard_pending(global_step=int(trainer.global_step))
+        self._discard_pending(global_step=_capability.global_step(trainer))
 
     def _reset(self, *, global_step: int) -> None:
         self._discard_pending(global_step=global_step)
@@ -312,7 +314,7 @@ def _totals(
 ) -> _Totals:
     window_time = math.fsum(item.elapsed for item in measurements)
     window_flops = _window_flops(measurements)
-    world_size = int(getattr(trainer, "world_size", 1))
+    world_size = _capability.world_size(trainer)
     if world_size <= 1:
         return _Totals(
             current_time=current.elapsed,
@@ -322,10 +324,6 @@ def _totals(
             hardware_peak_flops=hardware_peak_flops,
             world_size=1,
         )
-
-    strategy = getattr(trainer, "strategy", None)
-    if strategy is None:
-        raise RuntimeError("Distributed performance measurement requires trainer.strategy.")
 
     device = _device(pl_module)
     summed = torch.tensor(
@@ -345,8 +343,19 @@ def _totals(
         dtype=torch.float64,
         device=device,
     )
-    summed = strategy.reduce(summed, reduce_op="sum")
-    maximum = strategy.reduce(maximum, reduce_op="max")
+    reduce_error = "Distributed performance measurement requires trainer.strategy.reduce."
+    summed = _capability.strategy_reduce(
+        trainer,
+        summed,
+        reduce_op="sum",
+        error=reduce_error,
+    )
+    maximum = _capability.strategy_reduce(
+        trainer,
+        maximum,
+        reduce_op="max",
+        error=reduce_error,
+    )
     sum_values = summed.detach().cpu().tolist()
     max_values = maximum.detach().cpu().tolist()
 
@@ -416,13 +425,12 @@ def _sync_cuda(sync_cuda: bool) -> None:
 
 
 def _sync_distributed(trainer: pl.Trainer, enabled: bool) -> None:
-    if not enabled or int(getattr(trainer, "world_size", 1)) <= 1:
+    if not enabled or not _capability.is_distributed(trainer):
         return
-    strategy = getattr(trainer, "strategy", None)
-    barrier = getattr(strategy, "barrier", None)
-    if not callable(barrier):
-        raise RuntimeError("distributed performance measurement requires strategy.barrier.")
-    barrier()
+    _capability.strategy_barrier(
+        trainer,
+        error="distributed performance measurement requires strategy.barrier.",
+    )
 
 
 def _reset_peak_memory(pl_module: pl.LightningModule) -> None:
@@ -446,11 +454,13 @@ def _memory_metrics(
         dtype=torch.float64,
         device=device,
     )
-    if int(getattr(trainer, "world_size", 1)) > 1:
-        strategy = getattr(trainer, "strategy", None)
-        if strategy is None:
-            raise RuntimeError("distributed memory measurement requires trainer.strategy.")
-        values = strategy.reduce(values, reduce_op="max")
+    if _capability.is_distributed(trainer):
+        values = _capability.strategy_reduce(
+            trainer,
+            values,
+            reduce_op="max",
+            error="distributed memory measurement requires trainer.strategy.reduce.",
+        )
     allocated, reserved = values.detach().cpu().tolist()
     return {
         "perf/gpu_peak_memory_allocated_bytes": float(allocated),
@@ -499,10 +509,7 @@ def _flop_counter() -> FlopCounterMode:
 
 
 def _log_metadata(trainer: pl.Trainer, metadata: dict[str, str | float]) -> None:
-    for logger in trainer.loggers:
-        log_hyperparams = getattr(logger, "log_hyperparams", None)
-        if log_hyperparams is not None:
-            log_hyperparams(metadata)
+    _capability.log_hyperparams(trainer, metadata)
 
 
 def _flops(value: float, name: str) -> float:

@@ -4,7 +4,7 @@ import hashlib
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import torch
 from lightning import pytorch as pl
@@ -13,7 +13,7 @@ from torch import Tensor
 from anytrain.loss import LossItem, iter_loss_items, loss_item_mean
 from anytrain.stats import TimeBucketedMean, time_bucketed_mean
 
-from .. import experiment
+from .. import _capability, experiment
 
 LossItemsFn = Callable[[Mapping[str, Any]], Iterable[tuple[str, LossItem]]]
 LossItemLabelsFn = Callable[[str, Any], Sequence[object]]
@@ -132,15 +132,10 @@ class LossSummaryCallback(pl.Callback):
     ) -> None:
         if self._synchronized:
             return
-        world_size = int(getattr(trainer, "world_size", 1))
+        world_size = _capability.world_size(trainer)
         if world_size <= 1:
             self._synchronized = True
             return
-
-        strategy = getattr(trainer, "strategy", None)
-        reduce = getattr(strategy, "reduce", None)
-        if not callable(reduce):
-            raise RuntimeError("Distributed loss summary requires trainer.strategy.reduce.")
 
         names = tuple(sorted(self._values))
         schema = _schema(
@@ -148,8 +143,19 @@ class LossSummaryCallback(pl.Callback):
             window_capacity=self.window_capacity,
             device=_summary_device(self._values, pl_module),
         )
-        minimum_schema = cast(Tensor, reduce(schema.clone(), reduce_op="min"))
-        maximum_schema = cast(Tensor, reduce(schema.clone(), reduce_op="max"))
+        reduce_error = "Distributed loss summary requires trainer.strategy.reduce."
+        minimum_schema = _capability.strategy_reduce(
+            trainer,
+            schema.clone(),
+            reduce_op="min",
+            error=reduce_error,
+        )
+        maximum_schema = _capability.strategy_reduce(
+            trainer,
+            schema.clone(),
+            reduce_op="max",
+            error=reduce_error,
+        )
         if not torch.equal(minimum_schema, maximum_schema):
             raise RuntimeError(
                 "Loss summary metric names differ across ranks, or window capacity is inconsistent."
@@ -164,14 +170,24 @@ class LossSummaryCallback(pl.Callback):
                 dtype=torch.int64,
                 device=values.first[0].device,
             )
-            minimum = cast(Tensor, reduce(local_count.clone(), reduce_op="min"))
-            maximum = cast(Tensor, reduce(local_count.clone(), reduce_op="max"))
+            minimum = _capability.strategy_reduce(
+                trainer,
+                local_count.clone(),
+                reduce_op="min",
+                error=reduce_error,
+            )
+            maximum = _capability.strategy_reduce(
+                trainer,
+                local_count.clone(),
+                reduce_op="max",
+                error=reduce_error,
+            )
             if _tensor_int(minimum) != _tensor_int(maximum):
                 raise RuntimeError(
                     f"Loss summary metric {name!r} has different observation counts across ranks."
                 )
-            values.first = _reduced_window(values.first, values.capacity, reduce)
-            values.last = _reduced_window(values.last, values.capacity, reduce)
+            values.first = _reduced_window(trainer, values.first, values.capacity)
+            values.last = _reduced_window(trainer, values.last, values.capacity)
 
         self._synchronized = True
 
@@ -333,12 +349,12 @@ class LossTimeBucketLoggerCallback(pl.Callback):
         del pl_module, batch
         if self.every_n_steps is None:
             return True
-        return int(trainer.global_step) % self.every_n_steps == 0
+        return _capability.global_step(trainer) % self.every_n_steps == 0
 
     def _log_histogram(self, trainer: pl.Trainer, values: Tensor) -> None:
         if self.histogram_tag is None:
             return
-        if not _is_global_zero(trainer):
+        if not _capability.is_global_zero(trainer):
             return
         writer = experiment.histogram(trainer)
         if writer is None:
@@ -346,7 +362,7 @@ class LossTimeBucketLoggerCallback(pl.Callback):
         writer.add_histogram(
             self.histogram_tag,
             values.detach().float().cpu(),
-            int(trainer.global_step),
+            _capability.global_step(trainer),
         )
 
     def _log_bucket_loss(
@@ -367,7 +383,7 @@ class LossTimeBucketLoggerCallback(pl.Callback):
             t_max=self.t_max,
         )
         bucketed = _sync_bucketed(trainer, bucketed)
-        if not _is_global_zero(trainer):
+        if not _capability.is_global_zero(trainer):
             return
 
         mean = bucketed.mean.detach().cpu()
@@ -379,7 +395,7 @@ class LossTimeBucketLoggerCallback(pl.Callback):
             writer.add_scalar(
                 self._bucket_tag(edges[index], edges[index + 1]),
                 float(mean[index]),
-                int(trainer.global_step),
+                _capability.global_step(trainer),
             )
 
     def _bucket_tag(self, lower: Tensor, upper: Tensor) -> str:
@@ -499,11 +515,16 @@ def _summary_device(
 
 
 def _reduced_window(
+    trainer: pl.Trainer,
     values: Sequence[Tensor],
     capacity: int,
-    reduce: Callable[..., object],
 ) -> deque[Tensor]:
-    reduced = cast(Tensor, reduce(torch.stack(tuple(values)), reduce_op="mean"))
+    reduced = _capability.strategy_reduce(
+        trainer,
+        torch.stack(tuple(values)),
+        reduce_op="mean",
+        error="Distributed loss summary requires trainer.strategy.reduce.",
+    )
     return deque((value.detach() for value in reduced.unbind(0)), maxlen=capacity)
 
 
@@ -523,19 +544,15 @@ def _tensor(outputs: Mapping[str, Any], name: str) -> Tensor:
 
 
 def _sync_bucketed(trainer: pl.Trainer, bucketed: TimeBucketedMean) -> TimeBucketedMean:
-    strategy = getattr(trainer, "strategy", None)
-    reduce = getattr(strategy, "reduce", None)
-    if not callable(reduce):
+    total = _capability.strategy_reduce_or_none(trainer, bucketed.total, reduce_op="sum")
+    count = _capability.strategy_reduce_or_none(trainer, bucketed.count, reduce_op="sum")
+    if total is None or count is None:
         return bucketed
     return TimeBucketedMean(
         edges=bucketed.edges,
-        total=cast(Tensor, reduce(bucketed.total, reduce_op="sum")),
-        count=cast(Tensor, reduce(bucketed.count, reduce_op="sum")),
+        total=total,
+        count=count,
     )
-
-
-def _is_global_zero(trainer: pl.Trainer) -> bool:
-    return bool(getattr(trainer, "is_global_zero", True))
 
 
 def _positive_int(value: int, name: str) -> None:
