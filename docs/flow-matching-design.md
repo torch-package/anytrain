@@ -229,6 +229,22 @@ discrete_sample = discrete.sample(model, discrete_x_0, condition=condition)
 
 runtime 不继承或替代下游 `LightningModule`。下游需要 mask 或其它 reduction 时，可以直接使用 `runtime.training_sample()` 实现任务 objective。
 
+## Flow-GRPO stochastic step
+
+RectifiedFlowSDE 提供 Flow-GRPO 风格的 reverse denoising Gaussian transition：
+下游 sampler 在已获得 velocity 后调用 step_with_log_prob(x_t, t, next_t, velocity)，
+得到 next_x、transition mean、std 和每条样本的 log-prob。它适合在线 RL rollout
+或 PPO/GRPO update 阶段重算 log-prob，不负责 prompt、reward、pipeline patch 或
+LightningModule 训练循环。
+
+时间约定为 0 < next_t < t < 1，即从更 noisy 的 latent 向更 clean 的 latent 走一步。
+默认 log_prob_reduction="mean" 对 latent 维求均值，贴近 Flow-GRPO 官方实现的高维
+latent 稳定训练做法；需要严格联合 Gaussian log-prob 时可显式使用 "sum"。
+
+论文引用：Liu et al., “Flow-GRPO: Training Flow Matching Models via Online RL”,
+arXiv:2505.05470。该 helper 对应论文中 ODE-to-SDE transition、transition
+log-prob 和等方差 Gaussian KL 的可复用张量计算。
+
 ## 依赖策略
 
 `flow_matching` 作为 optional framework 依赖，不进入默认安装。建议在 `pyproject.toml` 增加：

@@ -1,3 +1,4 @@
+import math
 import sys
 import unittest
 from importlib import import_module, util
@@ -352,6 +353,130 @@ class FlowMatchingComponentTest(unittest.TestCase):
             )
         with self.assertRaisesRegex(TypeError, "x_0"):
             runtime.sample(nn.Identity(), torch.randn(2, 3))
+
+    def test_gaussian_log_prob_reduces_over_non_batch_axes(self):
+        from anytrain.framework.flow_matching import gaussian_log_prob
+
+        value = torch.tensor([[[0.0, 1.0], [2.0, 3.0]], [[1.0, 1.5], [2.5, 4.0]]])
+        mean = torch.zeros_like(value)
+        std = torch.full_like(value, 2.0)
+
+        elementwise = (
+            -0.5 * ((value - mean) / std).square()
+            - torch.log(std)
+            - 0.5 * value.new_tensor(math.log(2.0 * math.pi))
+        )
+
+        torch.testing.assert_close(
+            gaussian_log_prob(value, mean, std, reduction="mean"),
+            elementwise.mean(dim=(1, 2)),
+        )
+        torch.testing.assert_close(
+            gaussian_log_prob(value, mean, std, reduction="sum"),
+            elementwise.sum(dim=(1, 2)),
+        )
+
+    def test_gaussian_kl_from_means_handles_equal_variance(self):
+        from anytrain.framework.flow_matching import gaussian_kl_from_means
+
+        policy_mean = torch.tensor([[[0.0, 2.0]], [[3.0, 4.0]]], requires_grad=True)
+        reference_mean = torch.tensor([[[0.0, 0.0]], [[1.0, 4.0]]])
+        std = torch.full_like(policy_mean, 2.0)
+
+        kl = gaussian_kl_from_means(policy_mean, reference_mean, std, reduction="mean")
+        expected = ((policy_mean - reference_mean).square() / (2.0 * std.square())).mean(
+            dim=(1, 2)
+        )
+
+        torch.testing.assert_close(kl, expected)
+        torch.testing.assert_close(
+            gaussian_kl_from_means(reference_mean, reference_mean, std),
+            torch.zeros(2),
+        )
+        kl.sum().backward()
+        self.assertIsNotNone(policy_mean.grad)
+
+    def test_rectified_flow_sde_step_matches_fixed_next_x_log_prob_and_kl(self):
+        from anytrain.framework.flow_matching import (
+            RectifiedFlowSDE,
+            gaussian_kl_from_means,
+            gaussian_log_prob,
+        )
+
+        sde = RectifiedFlowSDE(noise_level=0.7, log_prob_reduction="mean")
+        x_t = torch.tensor([[1.0, -1.0], [0.5, 0.25]])
+        velocity = torch.tensor([[0.2, -0.1], [0.0, 0.3]], requires_grad=True)
+        t = torch.tensor([0.8, 0.6])
+        next_t = torch.tensor([0.7, 0.4])
+        next_x = torch.tensor([[0.95, -1.05], [0.55, 0.2]])
+
+        transition = sde.step_with_log_prob(
+            x_t,
+            t,
+            next_t,
+            velocity,
+            next_x=next_x,
+        )
+
+        self.assertEqual(transition.next_x.shape, x_t.shape)
+        self.assertEqual(transition.mean.shape, x_t.shape)
+        self.assertEqual(transition.step_std.shape, (2, 1))
+        self.assertEqual(transition.log_prob.shape, (2,))
+        torch.testing.assert_close(transition.next_x, next_x)
+        torch.testing.assert_close(
+            transition.log_prob,
+            gaussian_log_prob(
+                next_x,
+                transition.mean,
+                transition.step_std,
+                reduction="mean",
+            ),
+        )
+        kl = gaussian_kl_from_means(
+            transition.mean,
+            transition.mean.detach(),
+            transition.step_std,
+            reduction="mean",
+        )
+        self.assertEqual(kl.shape, (2,))
+        torch.testing.assert_close(kl, torch.zeros(2))
+        transition.log_prob.sum().backward()
+        self.assertIsNotNone(velocity.grad)
+
+    def test_rectified_flow_sde_requires_reverse_time(self):
+        from anytrain.framework.flow_matching import RectifiedFlowSDE
+
+        sde = RectifiedFlowSDE()
+        x_t = torch.zeros(2, 3)
+
+        with self.assertRaisesRegex(ValueError, "strictly less"):
+            sde.step_with_log_prob(
+                x_t,
+                torch.tensor([0.5, 0.5]),
+                torch.tensor([0.4, 0.6]),
+                torch.zeros_like(x_t),
+            )
+
+    def test_rectified_flow_sde_detaches_next_x_but_keeps_velocity_gradient(self):
+        from anytrain.framework.flow_matching import RectifiedFlowSDE
+
+        sde = RectifiedFlowSDE()
+        x_t = torch.tensor([[1.0, -1.0]], requires_grad=True)
+        velocity = torch.tensor([[0.2, -0.1]], requires_grad=True)
+        next_x = torch.tensor([[0.9, -1.1]], requires_grad=True)
+
+        transition = sde.step_with_log_prob(
+            x_t,
+            torch.tensor([0.8]),
+            torch.tensor([0.6]),
+            velocity,
+            next_x=next_x,
+        )
+
+        transition.log_prob.sum().backward()
+
+        self.assertIsNotNone(velocity.grad)
+        self.assertIsNone(next_x.grad)
 
 
 if __name__ == "__main__":

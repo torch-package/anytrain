@@ -17,6 +17,7 @@ anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate�
 根 public API：
 
     from anytrain.framework.rl import (
+        ContinuousGRPOLoss,
         DPOLoss,
         GRPOLoss,
         gather_token_logps,
@@ -108,6 +109,31 @@ details：
 - clip_fraction
 - token_count
 - candidate_count
+
+## Continuous / Flow-GRPO
+
+`ContinuousGRPOLoss` 面向 Flow-GRPO 风格的连续 latent transition 训练：下游已完成
+group rollout、reward 打分，并能提供每个 denoising / flow step 的 Gaussian log-prob。
+它不负责采样、reward model、prompt schema 或重新 forward 模型，只接收 tensor：
+
+    loss_fn = ContinuousGRPOLoss(clip_range=1e-4, adv_clip_max=5.0)
+
+    loss, details = loss_fn(
+        policy_step_logps=policy_logps,
+        old_step_logps=old_logps,
+        rewards=rewards,
+        step_mask=step_mask,
+        kl_values=kl_values,
+        group_mask=group_mask,
+    )
+
+这里 `policy_step_logps` / `old_step_logps` / `step_mask` 形状为 `[batch, group, steps]`，
+`rewards` 形状为 `[batch, group]`。默认 `trajectory_mean` 先按有效 step 聚合每条轨迹，
+再在有效候选间平均；`step_mean` 则直接按所有有效 step 平均。
+
+论文引用：Liu et al., “Flow-GRPO: Training Flow Matching Models via Online RL”,
+arXiv:2505.05470。SDE transition log-prob 和 KL helper 放在
+`anytrain.framework.flow_matching`，RL loss 只消费 log-prob / KL tensor。
 
 ## 离线数据边界
 

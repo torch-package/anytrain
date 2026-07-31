@@ -6,6 +6,7 @@ import torch
 from torch.nn import functional as F
 
 from anytrain.framework.rl import (
+    ContinuousGRPOLoss,
     DPOLoss,
     GRPOLoss,
     gather_token_logps,
@@ -200,6 +201,87 @@ class GRPOLossTest(unittest.TestCase):
                 old_token_logps=torch.zeros(1, 2, 1),
                 rewards=torch.tensor([[1.0, 2.0]]),
                 response_mask=torch.tensor([[[True], [False]]]),
+                group_mask=torch.tensor([[True, True]]),
+            )
+
+
+class ContinuousGRPOLossTest(unittest.TestCase):
+    def test_continuous_grpo_uses_step_logps_and_clipping(self):
+        old = torch.zeros(1, 2, 2)
+        policy = torch.log(torch.tensor([[[0.8, 0.8], [1.5, 1.5]]]))
+        rewards = torch.tensor([[1.0, 3.0]])
+        mask = torch.ones(1, 2, 2, dtype=torch.bool)
+        loss_fn = ContinuousGRPOLoss(clip_range=0.2)
+
+        loss, details = loss_fn(
+            policy_step_logps=policy,
+            old_step_logps=old,
+            rewards=rewards,
+            step_mask=mask,
+        )
+
+        torch.testing.assert_close(loss, torch.tensor((0.8 - 1.2) / 2))
+        torch.testing.assert_close(details["pg_loss"], loss.detach())
+        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
+        torch.testing.assert_close(details["step_count"], torch.tensor(4.0))
+
+    def test_continuous_grpo_adds_external_kl_values(self):
+        policy = torch.zeros(1, 2, 1)
+        old = torch.zeros_like(policy)
+        rewards = torch.tensor([[1.0, 3.0]])
+        step_mask = torch.ones_like(policy, dtype=torch.bool)
+        kl_values = torch.full_like(policy, 0.25)
+
+        loss, details = ContinuousGRPOLoss(kl_beta=0.5)(
+            policy_step_logps=policy,
+            old_step_logps=old,
+            rewards=rewards,
+            step_mask=step_mask,
+            kl_values=kl_values,
+        )
+
+        torch.testing.assert_close(details["kl_loss"], torch.tensor(0.25))
+        torch.testing.assert_close(loss, details["pg_loss"] + 0.5 * details["kl_loss"])
+
+    def test_continuous_grpo_keeps_gradients_on_policy_only(self):
+        policy = torch.zeros(1, 2, 1, requires_grad=True)
+        old = torch.zeros(1, 2, 1, requires_grad=True)
+        rewards = torch.tensor([[1.0, 3.0]], requires_grad=True)
+        kl_values = torch.ones(1, 2, 1, requires_grad=True)
+        step_mask = torch.ones(1, 2, 1, dtype=torch.bool)
+
+        loss, details = ContinuousGRPOLoss(kl_beta=0.1)(
+            policy_step_logps=policy,
+            old_step_logps=old,
+            rewards=rewards,
+            step_mask=step_mask,
+            kl_values=kl_values,
+        )
+        loss.backward()
+
+        self.assertIsNotNone(policy.grad)
+        self.assertIsNone(old.grad)
+        self.assertIsNone(rewards.grad)
+        self.assertIsNone(kl_values.grad)
+        self.assertFalse(details["pg_loss"].requires_grad)
+
+    def test_continuous_grpo_requires_kl_when_weight_is_positive(self):
+        with self.assertRaisesRegex(ValueError, "kl_values"):
+            ContinuousGRPOLoss(kl_beta=0.1)(
+                policy_step_logps=torch.zeros(1, 2, 1),
+                old_step_logps=torch.zeros(1, 2, 1),
+                rewards=torch.tensor([[1.0, 2.0]]),
+                step_mask=torch.ones(1, 2, 1, dtype=torch.bool),
+            )
+
+    def test_continuous_grpo_rejects_group_mask_without_steps(self):
+        with self.assertRaisesRegex(ValueError, "no rollout steps"):
+            ContinuousGRPOLoss()(
+                policy_step_logps=torch.zeros(1, 2, 1),
+                old_step_logps=torch.zeros(1, 2, 1),
+                rewards=torch.tensor([[1.0, 2.0]]),
+                step_mask=torch.tensor([[[True], [False]]]),
                 group_mask=torch.tensor([[True, True]]),
             )
 

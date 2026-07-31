@@ -10,6 +10,13 @@ from .objective import (
 )
 from .sampler import DiscreteEulerSampler, ODESampler
 from .source import GaussianSource, MaskTokenSource, UniformSource, UniformTokenSource
+from .stochastic import (
+    LogProbReduction,
+    RectifiedFlowSDE,
+    RectifiedFlowSDETransition,
+    gaussian_kl_from_means,
+    gaussian_log_prob,
+)
 from .time import DEFAULT_TIME_EPS, LogitNormalTimeSampler, UniformTimeSampler
 from .types import (
     ContinuousTrainingSample,
@@ -33,17 +40,22 @@ __all__ = [
     "FlowSampleOutput",
     "FlowLossFn",
     "GaussianSource",
+    "LogProbReduction",
     "MaskTokenSource",
     "ModelCaller",
     "ModelExtras",
     "ODESampler",
     "LogitNormalTimeSampler",
+    "RectifiedFlowSDE",
+    "RectifiedFlowSDETransition",
     "Source",
     "TimeSampler",
     "UniformSource",
     "UniformTimeSampler",
     "UniformTokenSource",
     "default_call_model",
+    "gaussian_kl_from_means",
+    "gaussian_log_prob",
     "masked_mse_velocity_loss",
     "mse_velocity_loss",
 ]
