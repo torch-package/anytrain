@@ -9,8 +9,10 @@ from anytrain.framework.rl import (
     ContinuousGRPOLoss,
     DPOLoss,
     GRPOLoss,
+    NeighborGRPOLoss,
     gather_token_logps,
     group_relative_advantages,
+    neighbor_logps_from_distances,
     sequence_logps,
 )
 
@@ -46,6 +48,25 @@ class LogProbTest(unittest.TestCase):
     def test_gather_rejects_out_of_vocab_token(self):
         with self.assertRaisesRegex(ValueError, "vocabulary"):
             gather_token_logps(torch.zeros(2, 3), torch.tensor([0, 3]))
+
+    def test_neighbor_logps_from_distances_uses_distance_softmax(self):
+        distances = torch.tensor([[[[0.0, 1.0, 4.0]]]])
+        mask = torch.tensor([[[[True, True, False]]]])
+
+        logps = neighbor_logps_from_distances(distances, mask, temperature=2.0)
+
+        expected = F.log_softmax(
+            torch.tensor([[[[-0.0, -0.5, float("-inf")]]]]),
+            dim=-1,
+        )
+        torch.testing.assert_close(logps, expected)
+
+    def test_neighbor_logps_reject_empty_distribution(self):
+        with self.assertRaisesRegex(ValueError, "at least one candidate"):
+            neighbor_logps_from_distances(
+                torch.zeros(1, 1, 1, 2),
+                torch.zeros(1, 1, 1, 2, dtype=torch.bool),
+            )
 
 
 class DPOLossTest(unittest.TestCase):
@@ -282,6 +303,108 @@ class ContinuousGRPOLossTest(unittest.TestCase):
                 old_step_logps=torch.zeros(1, 2, 1),
                 rewards=torch.tensor([[1.0, 2.0]]),
                 step_mask=torch.tensor([[[True], [False]]]),
+                group_mask=torch.tensor([[True, True]]),
+            )
+
+
+class NeighborGRPOLossTest(unittest.TestCase):
+    def test_neighbor_grpo_uses_surrogate_logps_and_clipping(self):
+        old = torch.zeros(1, 1, 1, 2)
+        policy = torch.log(torch.tensor([[[[0.8, 1.5]]]]))
+        rewards = torch.tensor([[1.0, 3.0]])
+        mask = torch.ones_like(policy, dtype=torch.bool)
+        loss_fn = NeighborGRPOLoss(clip_range=0.2)
+
+        loss, details = loss_fn(
+            policy_neighbor_logps=policy,
+            old_neighbor_logps=old,
+            rewards=rewards,
+            neighbor_mask=mask,
+        )
+
+        torch.testing.assert_close(loss, torch.tensor((0.8 - 1.2) / 2))
+        torch.testing.assert_close(details["pg_loss"], loss.detach())
+        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(details["neighbor_count"], torch.tensor(2.0))
+        torch.testing.assert_close(details["anchor_step_count"], torch.tensor(1.0))
+        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
+
+    def test_neighbor_grpo_adds_external_kl_values(self):
+        policy = torch.zeros(1, 1, 1, 2)
+        old = torch.zeros_like(policy)
+        rewards = torch.tensor([[1.0, 3.0]])
+        neighbor_mask = torch.ones_like(policy, dtype=torch.bool)
+        kl_values = torch.full_like(policy, 0.25)
+
+        loss, details = NeighborGRPOLoss(kl_beta=0.5)(
+            policy_neighbor_logps=policy,
+            old_neighbor_logps=old,
+            rewards=rewards,
+            neighbor_mask=neighbor_mask,
+            kl_values=kl_values,
+        )
+
+        torch.testing.assert_close(details["kl_loss"], torch.tensor(0.25))
+        torch.testing.assert_close(loss, details["pg_loss"] + 0.5 * details["kl_loss"])
+
+    def test_neighbor_grpo_keeps_gradients_on_policy_only(self):
+        policy = torch.zeros(1, 1, 1, 2, requires_grad=True)
+        old = torch.zeros(1, 1, 1, 2, requires_grad=True)
+        rewards = torch.tensor([[1.0, 3.0]], requires_grad=True)
+        kl_values = torch.ones(1, 1, 1, 2, requires_grad=True)
+        neighbor_mask = torch.ones(1, 1, 1, 2, dtype=torch.bool)
+
+        loss, details = NeighborGRPOLoss(kl_beta=0.1)(
+            policy_neighbor_logps=policy,
+            old_neighbor_logps=old,
+            rewards=rewards,
+            neighbor_mask=neighbor_mask,
+            kl_values=kl_values,
+        )
+        loss.backward()
+
+        self.assertIsNotNone(policy.grad)
+        self.assertIsNone(old.grad)
+        self.assertIsNone(rewards.grad)
+        self.assertIsNone(kl_values.grad)
+        self.assertFalse(details["pg_loss"].requires_grad)
+
+    def test_neighbor_grpo_supports_quasi_norm_advantages(self):
+        policy = torch.zeros(1, 1, 1, 3)
+        old = torch.zeros_like(policy)
+        rewards = torch.tensor([[1.0, 3.0, 7.0]])
+        neighbor_mask = torch.ones_like(policy, dtype=torch.bool)
+
+        _, details = NeighborGRPOLoss(advantage_norm_p=1.0)(
+            policy_neighbor_logps=policy,
+            old_neighbor_logps=old,
+            rewards=rewards,
+            neighbor_mask=neighbor_mask,
+        )
+
+        torch.testing.assert_close(
+            details["advantage_mean"],
+            torch.tensor(0.0),
+            atol=1e-6,
+            rtol=0,
+        )
+
+    def test_neighbor_grpo_requires_kl_when_weight_is_positive(self):
+        with self.assertRaisesRegex(ValueError, "kl_values"):
+            NeighborGRPOLoss(kl_beta=0.1)(
+                policy_neighbor_logps=torch.zeros(1, 1, 1, 2),
+                old_neighbor_logps=torch.zeros(1, 1, 1, 2),
+                rewards=torch.tensor([[1.0, 2.0]]),
+                neighbor_mask=torch.ones(1, 1, 1, 2, dtype=torch.bool),
+            )
+
+    def test_neighbor_grpo_rejects_group_mask_without_comparisons(self):
+        with self.assertRaisesRegex(ValueError, "no neighbor comparisons"):
+            NeighborGRPOLoss()(
+                policy_neighbor_logps=torch.zeros(1, 1, 1, 2),
+                old_neighbor_logps=torch.zeros(1, 1, 1, 2),
+                rewards=torch.tensor([[1.0, 2.0]]),
+                neighbor_mask=torch.tensor([[[[True, False]]]]),
                 group_mask=torch.tensor([[True, True]]),
             )
 

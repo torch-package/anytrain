@@ -20,8 +20,10 @@ anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate�
         ContinuousGRPOLoss,
         DPOLoss,
         GRPOLoss,
+        NeighborGRPOLoss,
         gather_token_logps,
         group_relative_advantages,
+        neighbor_logps_from_distances,
         sequence_logps,
     )
 
@@ -135,6 +137,51 @@ group rollout、reward 打分，并能提供每个 denoising / flow step 的 Gau
 arXiv:2505.05470。SDE transition log-prob 和 KL helper 放在
 `anytrain.framework.flow_matching`，RL loss 只消费 log-prob / KL tensor。
 
+## Neighbor / Symmetric Flow-GRPO
+
+`NeighborGRPOLoss` 面向 Neighbor GRPO 风格的 deterministic flow / diffusion
+训练：下游已经为同一 prompt 生成一组 candidate trajectories，并在若干 anchor timestep
+上构造“anchor 选择哪个 candidate neighbor”的 surrogate log-prob。它不负责 anchor
+sampling、ODE sampler、reward model、trajectory cache 或重新 forward 模型，只接收 tensor：
+
+    loss_fn = NeighborGRPOLoss(clip_range=0.2, advantage_norm_p=1.0)
+
+    loss, details = loss_fn(
+        policy_neighbor_logps=policy_logps,
+        old_neighbor_logps=old_logps,
+        rewards=rewards,
+        neighbor_mask=neighbor_mask,
+        kl_values=kl_values,
+        group_mask=group_mask,
+        anchor_mask=anchor_mask,
+    )
+
+这里 `policy_neighbor_logps` / `old_neighbor_logps` / `neighbor_mask` 形状为
+`[batch, anchors, steps, group]`，`rewards` 形状为 `[batch, group]`。最后一维的
+`group` 对应同一 prompt 下的候选轨迹；`anchors` 和 `steps` 由下游 symmetric anchor
+sampling 或其它策略决定。可选 `anchor_mask` 形状为 `[batch, anchors]`，用于过滤无效
+或未采样的 anchor。
+
+公式：
+
+    advantage = group_relative(reward, norm_p=advantage_norm_p)
+    ratio     = exp(policy_neighbor_logp - old_neighbor_logp)
+    pg_loss   = -min(ratio * advantage, clipped_ratio * advantage)
+    total     = pg_loss + kl_beta * kl
+
+`neighbor_logps_from_distances(distances, mask, temperature=...)` 提供最小公共 helper：
+它把非负 neighbor distance 转成 `log_softmax(-distance / temperature)`。下游可以用当前
+policy 的 anchor / candidate latent 距离生成 `policy_neighbor_logps`，用 rollout 时保存的
+旧距离或旧 logits 生成 `old_neighbor_logps`。
+
+与 `ContinuousGRPOLoss` 的边界区别：
+
+- `ContinuousGRPOLoss` 消费 SDE Gaussian transition log-prob，形状为 `[batch, group, steps]`。
+- `NeighborGRPOLoss` 消费 distance-softmax surrogate log-prob，形状为
+  `[batch, anchors, steps, group]`。
+- 二者共享 group-relative reward、PPO-style clipping、mask reduction 和 optional KL 思路，
+  但 policy 概念不同，因此保持为两个平级 objective。
+
 ## 离线数据边界
 
 离线生成建议由下游项目实现。以 speech-to-speech 为例，下游已有 generation request/result
@@ -160,6 +207,12 @@ arXiv:2505.05470。SDE transition log-prob 和 KL helper 放在
 - 把 task-specific reward 映射到 rewards。
 - 生成 response_mask 和可选 group_mask。
 
+如果使用 Neighbor GRPO，下游还应完成：
+
+- 为同一 prompt 生成 grouped candidate trajectories。
+- 采样 symmetric anchors / timesteps，并构造 neighbor distance 或 surrogate logits。
+- 保存或重算 old_neighbor_logps，并生成 neighbor_mask。
+
 ## 非目标
 
 第一版不做：
@@ -180,4 +233,5 @@ arXiv:2505.05470。SDE transition log-prob 和 KL helper 放在
 - gather_token_logps 和 sequence_logps 的 shape / mask 行为。
 - DPO reference-free、with-reference、梯度边界和错误路径。
 - GRPO group advantage、clip、KL、mask、梯度边界和错误路径。
+- Continuous / Neighbor GRPO 的 log-prob 语义、mask、KL、advantage 和梯度边界。
 - anytrain.framework 根包保持空导出。

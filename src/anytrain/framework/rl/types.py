@@ -8,6 +8,7 @@ from typing_extensions import NotRequired
 TokenReduction = Literal["token_mean", "sequence_mean"]
 SequenceReduction = Literal["sum", "mean"]
 StepReduction = Literal["step_mean", "trajectory_mean"]
+NeighborReduction = Literal["neighbor_mean", "anchor_step_mean"]
 
 
 class RolloutBatch(TypedDict):
@@ -21,4 +22,10 @@ class RolloutBatch(TypedDict):
     group_mask: NotRequired[Tensor | None]
 
 
-__all__ = ["RolloutBatch", "SequenceReduction", "StepReduction", "TokenReduction"]
+__all__ = [
+    "NeighborReduction",
+    "RolloutBatch",
+    "SequenceReduction",
+    "StepReduction",
+    "TokenReduction",
+]

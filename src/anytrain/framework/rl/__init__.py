@@ -5,12 +5,21 @@ from .continuous_grpo import ContinuousGRPOLoss
 from .dpo import DPOLoss
 from .grpo import GRPOLoss
 from .logprob import gather_token_logps, masked_mean, sequence_logps
-from .types import RolloutBatch, SequenceReduction, StepReduction, TokenReduction
+from .neighbor_grpo import NeighborGRPOLoss, neighbor_logps_from_distances
+from .types import (
+    NeighborReduction,
+    RolloutBatch,
+    SequenceReduction,
+    StepReduction,
+    TokenReduction,
+)
 
 __all__ = [
     "ContinuousGRPOLoss",
     "DPOLoss",
     "GRPOLoss",
+    "NeighborGRPOLoss",
+    "NeighborReduction",
     "RolloutBatch",
     "SequenceReduction",
     "StepReduction",
@@ -18,5 +27,6 @@ __all__ = [
     "gather_token_logps",
     "group_relative_advantages",
     "masked_mean",
+    "neighbor_logps_from_distances",
     "sequence_logps",
 ]
