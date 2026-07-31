@@ -54,15 +54,21 @@ class _TorchAudioSpectrogramModule(Protocol):
 
 TorchAudioMelSpectrogram: _MelSpectrogramFactory | None
 TorchAudioSpectrogram: _SpectrogramFactory | None
+_TORCHAUDIO_IMPORT_ERROR: Exception | None = None
 try:
     from torchaudio.transforms import MelSpectrogram as _TorchAudioMelSpectrogram
     from torchaudio.transforms import Spectrogram as _TorchAudioSpectrogram
-except ImportError:  # pragma: no cover - depends on optional local environment
+except (ImportError, OSError) as exc:  # pragma: no cover - depends on optional local environment
     TorchAudioMelSpectrogram = None
     TorchAudioSpectrogram = None
+    _TORCHAUDIO_IMPORT_ERROR = exc
 else:
     TorchAudioMelSpectrogram = _TorchAudioMelSpectrogram
     TorchAudioSpectrogram = _TorchAudioSpectrogram
+
+
+def _torchaudio_required_error() -> ImportError:
+    return ImportError("torchaudio is required for backend='torchaudio'.")
 
 
 def _backend(backend: str, torchaudio_cls: object | None) -> str:
@@ -70,7 +76,7 @@ def _backend(backend: str, torchaudio_cls: object | None) -> str:
         raise ValueError("backend must be 'auto', 'torchaudio', or 'torch'.")
     if backend == "torchaudio":
         if torchaudio_cls is None:
-            raise ImportError("torchaudio is required for backend='torchaudio'.")
+            raise _torchaudio_required_error() from _TORCHAUDIO_IMPORT_ERROR
         return "torchaudio"
     if backend == "auto":
         return "torchaudio" if torchaudio_cls is not None else "torch"
@@ -79,13 +85,13 @@ def _backend(backend: str, torchaudio_cls: object | None) -> str:
 
 def _require_torchaudio_spectrogram() -> _SpectrogramFactory:
     if TorchAudioSpectrogram is None:
-        raise ImportError("torchaudio is required for backend='torchaudio'.")
+        raise _torchaudio_required_error() from _TORCHAUDIO_IMPORT_ERROR
     return TorchAudioSpectrogram
 
 
 def _require_torchaudio_mel_spectrogram() -> _MelSpectrogramFactory:
     if TorchAudioMelSpectrogram is None:
-        raise ImportError("torchaudio is required for backend='torchaudio'.")
+        raise _torchaudio_required_error() from _TORCHAUDIO_IMPORT_ERROR
     return TorchAudioMelSpectrogram
 
 

@@ -1,3 +1,5 @@
+import importlib
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -490,6 +492,43 @@ class LossTest(unittest.TestCase):
         self.assertIn(auto_mel.backend, {"torchaudio", "torch"})
         self.assertEqual(torch_stft.backend, "torch")
         self.assertEqual(torch_mel.backend, "torch")
+
+    def test_spectral_auto_backend_falls_back_when_torchaudio_binary_fails(self):
+        module_name = "anytrain.loss.spectral.transform"
+        spectral_package = sys.modules["anytrain.loss.spectral"]
+        original_module = sys.modules.pop(module_name, None)
+        original_package_transform = getattr(spectral_package, "transform", None)
+        real_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "torchaudio.transforms" or name.startswith("torchaudio.transforms."):
+                raise OSError("simulated libtorchaudio load failure")
+            return real_import(name, globals, locals, fromlist, level)
+
+        try:
+            with patch("builtins.__import__", side_effect=fake_import):
+                transform = importlib.import_module(module_name)
+
+            self.assertEqual(transform.STFTTransform(n_fft=16, backend="auto").backend, "torch")
+            self.assertEqual(
+                transform.MelSpectrogramTransform(
+                    sample_rate=16000,
+                    n_fft=16,
+                    n_mels=8,
+                    backend="auto",
+                ).backend,
+                "torch",
+            )
+            with self.assertRaises(ImportError) as caught:
+                transform.STFTTransform(n_fft=16, backend="torchaudio")
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+        finally:
+            sys.modules.pop(module_name, None)
+            if original_module is not None:
+                sys.modules[module_name] = original_module
+                spectral_package.transform = original_module
+            elif original_package_transform is not None:
+                spectral_package.transform = original_package_transform
 
     def test_stft_cache_key_uses_shared_default_hop_length(self):
         torch_stft = STFTTransform(n_fft=64, backend="torch")

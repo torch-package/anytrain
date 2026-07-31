@@ -16,7 +16,7 @@ from anytrain.lightning.perf.data import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class DataUnits:
     """Homogeneous valid/padded counts for one train batch.
 
@@ -45,7 +45,7 @@ class DataUnitsProvider(Protocol):
     ) -> DataUnits: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _Measurement:
     elapsed: float
     valid: float
