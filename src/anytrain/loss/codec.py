@@ -9,10 +9,13 @@ from torch import Tensor
 
 from anytrain._compat import StrEnum
 
-from ..balancer import FixedWeightLossBalancer, LossBalancerABC
-from ..spectral import MultiScaleMelLoss, MultiScaleSTFTLoss, SpectralTransformCache
-from ..spectral._group import SpectralLossGroup
-from ..temporal import SDRLoss
+from .abc import LossDetails, LossResult
+from .balancer import FixedWeightLossBalancer, LossBalancerABC
+from .spectral import MultiScaleMelLoss, MultiScaleSTFTLoss, SpectralTransformCache
+from .spectral._group import SpectralLossGroup
+from .temporal import SDRLoss
+
+__all__ = ["CodecLoss", "CodecLossPreset"]
 
 DAC_MEL_N_FFT_LIST = (2048, 1024, 512, 256, 128, 64, 32)
 DAC_MEL_N_MELS_LIST = (320, 160, 80, 40, 20, 10, 5)
@@ -48,7 +51,7 @@ class CodecLoss(SpectralLossGroup):
         target: Tensor,
         *,
         lengths: Tensor | Sequence[int] | None = None,
-    ):
+    ) -> LossResult:
         spectral_cache = SpectralTransformCache()
         if lengths is None:
             return super().forward(input, target, _spectral_cache=spectral_cache)
@@ -132,7 +135,7 @@ class CodecLoss(SpectralLossGroup):
         *,
         lengths: Tensor | Sequence[int],
         spectral_cache: SpectralTransformCache,
-    ):
+    ) -> LossResult:
         _validate_audio_pair(input, target)
         length_values = _validate_lengths(lengths, batch_size=input.size(0), max_length=input.size(-1))
         total = input.new_zeros(())
@@ -140,10 +143,12 @@ class CodecLoss(SpectralLossGroup):
         for sample_length, batch_indices in _group_length_indices(length_values):
             group_input = input[batch_indices, ..., :sample_length]
             group_target = target[batch_indices, ..., :sample_length]
-            group_total, group_details = super().forward(
-                group_input,
-                group_target,
-                _spectral_cache=spectral_cache,
+            group_total, group_details = self._split_loss_result(
+                super().forward(
+                    group_input,
+                    group_target,
+                    _spectral_cache=spectral_cache,
+                )
             )
             weight = input.new_tensor(float(len(batch_indices)))
             total = total + group_total * weight
@@ -152,7 +157,7 @@ class CodecLoss(SpectralLossGroup):
                 detail_sums[name] = detail_sums.get(name, input.new_zeros(())) + value_tensor * weight
 
         divisor = input.new_tensor(float(len(length_values)))
-        details = {name: value / divisor for name, value in detail_sums.items()}
+        details: LossDetails = {name: value / divisor for name, value in detail_sums.items()}
         return total / divisor, details
 
 

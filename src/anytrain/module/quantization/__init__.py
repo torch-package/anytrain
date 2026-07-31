@@ -3,7 +3,7 @@ from .embedding import EmbeddingVectorQuantizer, VQConfig
 from .finite_scalar import DEFAULT_FSQ_LEVELS, FiniteScalarQuantizer, FSQConfig, default_fsq_levels
 from .grouped import GroupedVectorQuantizer, GVQConfig
 from .output import QuantizationLoss, QuantizeOutput
-from .protocol import QuantizerProtocol
+from .protocol import QuantizerProtocol, ResidualQuantizerProtocol
 from .residual import ResidualVectorQuantizer, RVQConfig
 from .types import QuantizerType
 
@@ -20,6 +20,7 @@ __all__ = [
     "QuantizeOutput",
     "QuantizerProtocol",
     "QuantizerType",
+    "ResidualQuantizerProtocol",
     "RVQConfig",
     "ResidualVectorQuantizer",
     "VQConfig",

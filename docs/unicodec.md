@@ -80,7 +80,9 @@ audio_from_features = codec.decode_features(features)
 ```
 
 `audio` 使用统一的 `[batch, 1, time]` 单声道 waveform；输入不为 24 kHz 时 wrapper 会
-重采样。`codes` 是 `[batch, frame, 1]`，`codebook_sizes == (16384,)`。
+通过公共 codec 重采样 helper 重采样，该路径需要安装 `audio` extra 中的 `torchaudio`。
+输入已经是 24 kHz 时不需要 `torchaudio`。`codes` 是 `[batch, frame, 1]`，
+`codebook_sizes == (16384,)`。
 
 `domain` 在构造 codec 时固定，直接沿用
 UniCodec 上游约定：`"0"` 表示 speech，`"1"` 表示 music，`"2"` 表示 general

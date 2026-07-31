@@ -13,7 +13,6 @@ dependencies = [
     "lightning>=2.0",
     "einops>=0.7",
     "typing-extensions>=4.12",
-    "tqdm>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -25,15 +24,16 @@ bicodec = [
     "safetensors>=0.5",
     "soundfile>=0.12",
     "soxr>=0.5",
+    "spark-tts @ git+https://github.com/rookiejune/Spark-TTS.git@cf5302b0da797aeffc18af172de4dda0bb6ab718",
     "torchaudio>=2.5",
     "transformers>=4.46",
 ]
 chat = ["openai>=1.0", "requests>=2.31", "zai-sdk>=0.2.3"]
 dac = ["descript-audio-codec>=1.0"]
 logger = ["wandb>=0.16"]
-module = ["transformers"]
+module = ["transformers>=4.51.0"]
 peft = ["peft>=0.17.1,<0.21"]
-tokenizer = ["tokenizers>=0.20"]
+tokenizer = ["tokenizers>=0.20", "tqdm>=4.0"]
 text = ["jiwer>=4.0", "sacrebleu>=2.0"]
 speech = [
     "jiwer>=4.0",
@@ -46,6 +46,7 @@ flow = ["flow_matching"]
 longcat = [
     "huggingface-hub>=0.23",
     "longcat-audio-codec @ git+https://github.com/rookiejune/LongCat-Audio-Codec.git",
+    "PyYAML>=6.0",
 ]
 moss-tts = ["torchaudio>=2.0", "transformers"]
 qwen-tts = [

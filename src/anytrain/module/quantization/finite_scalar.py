@@ -18,7 +18,7 @@ from .projection import make_projection
 DEFAULT_FSQ_LEVELS: tuple[int, ...] = (9, 7, 7, 7, 7, 3)
 
 
-@dataclass
+@dataclass(frozen=True)
 class FSQConfig:
     input_dim: int
     levels: tuple[int, ...] = DEFAULT_FSQ_LEVELS
@@ -40,7 +40,7 @@ class FSQConfig:
         for level in levels:
             if level < 2:
                 raise ValueError(f"each FSQ level must be >= 2, got {level}.")
-        self.levels = tuple(int(level) for level in levels)
+        object.__setattr__(self, "levels", tuple(int(level) for level in levels))
         even_levels = tuple(level for level in self.levels if level % 2 == 0)
         if even_levels:
             warnings.warn(

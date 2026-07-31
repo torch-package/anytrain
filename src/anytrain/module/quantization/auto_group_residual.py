@@ -13,7 +13,7 @@ from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
 
 
-@dataclass
+@dataclass(frozen=True)
 class AGRVQConfig:
     input_dim: int
     num_codebooks: int
@@ -35,8 +35,7 @@ class AGRVQConfig:
             raise ValueError(f"codebook_size must be positive, got {self.codebook_size}.")
         if self.codebook_dim <= 0:
             raise ValueError(f"codebook_dim must be positive, got {self.codebook_dim}.")
-        if self.dropout is not None and not 0 <= self.dropout <= 1:
-            raise ValueError(f"dropout must be in [0, 1], got {self.dropout}.")
+        _checks.dropout(self.dropout)
 
     @classmethod
     def from_kwargs(
@@ -75,6 +74,7 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         self.codebook_size = config.codebook_size * config.codebook_size
         self.group_codebook_dim = config.codebook_dim
         self.codebook_dim = 2 * config.codebook_dim
+        self.dropout = config.dropout
         self.quantizers = nn.ModuleList(
             [
                 _AutoGroupVectorQuantizer(
@@ -115,7 +115,7 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             input_dim=self.input_dim,
             codebook_dim=self.codebook_dim,
             training=self.training,
-            dropout=self.config.dropout,
+            dropout=self.dropout,
             sample_mask=self._sample_active_mask,
         )
 
@@ -207,8 +207,13 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             active_count,
             device,
             training=self.training,
-            dropout=self.config.dropout,
+            dropout=self.dropout,
         )
+
+    def set_dropout(self, dropout: float | None) -> AutoGroupResidualVectorQuantizer:
+        _checks.dropout(dropout)
+        self.dropout = dropout
+        return self
 
     def _active_codebooks(self, num_active_codebooks: int | None) -> int:
         if num_active_codebooks is None:

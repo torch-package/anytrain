@@ -11,7 +11,7 @@ from anytrain._buffer import register_buffer
 DirichletStrategy = Literal["std", "var", "range"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class ADTConfig:
     num_experts: int
     dispersion_strategy: DirichletStrategy = "std"
@@ -27,6 +27,7 @@ class ADTConfig:
     sync_distributed_stats: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "stat_ema_decays", tuple(self.stat_ema_decays))
         if self.num_experts <= 0:
             raise ValueError(f"num_experts must be positive, got {self.num_experts}.")
         if self.temperature_groups <= 0:

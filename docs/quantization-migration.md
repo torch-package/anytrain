@@ -189,7 +189,7 @@ FSQ 推荐尽量使用 odd `levels`，这样每个 scalar grid 都能严格以 0
 
 deepaudio 当前实现类叫 `VectorQuantizer`，容易和 protocol 名称混在一起。迁移后：
 
-- protocol 叫 `QuantizerProtocol`。
+- 单 codebook protocol 叫 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。
 - embedding table + nearest-neighbor 实现叫 `EmbeddingVectorQuantizer`。
 - `VQConfig` 保留，表示向量量化的常用配置缩写。
 

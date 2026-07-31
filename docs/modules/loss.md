@@ -24,9 +24,9 @@ src/anytrain/loss/
     single.py
     transform.py
     group.py
+  codec.py
   task/
-    __init__.py
-    codec.py
+    __init__.py  # compatibility re-export
 ```
 
 当前公开导出：
@@ -58,8 +58,8 @@ src/anytrain/loss/
 - `anytrain.loss.spectral.MultiScaleMelLoss`
 - `anytrain.loss.spectral.STFTTransform`
 - `anytrain.loss.spectral.MelSpectrogramTransform`
-- `anytrain.loss.task.CodecLoss`
-- `anytrain.loss.task.CodecLossPreset`
+- `anytrain.loss.codec.CodecLoss`
+- `anytrain.loss.codec.CodecLossPreset`
 
 ## Loss 协议
 
@@ -161,9 +161,10 @@ mel 路径使用相同的原始 `Spectrogram` 和已有 `MelScale`，与未缓�
 
 Mel 变换还支持 `mel_scale="htk" | "slaney"`，默认保持 torchaudio/deepaudio 的 `"htk"`。
 
-## Task Loss
+## Codec Loss
 
-`anytrain.loss.task` 放任务级 preset 组合，但不解释 batch 或训练 step。
+`anytrain.loss.codec` 放 codec reconstruction preset 组合，但不解释 batch 或训练 step。
+下游应直接从 `anytrain.loss.codec` 导入；不提供 `anytrain.loss.task` 这类 task 级快捷别名。
 
 当前提供 `CodecLoss.from_preset(...)`：
 
@@ -173,7 +174,7 @@ Mel 变换还支持 `mel_scale="htk" | "slaney"`，默认保持 torchaudio/deepa
 示例：
 
 ```python
-from anytrain.loss.task import CodecLoss
+from anytrain.loss.codec import CodecLoss
 
 loss_fn = CodecLoss.from_preset("dynacodec")
 ```
@@ -195,7 +196,8 @@ loss, details = loss_fn(reconstruction, target, lengths=batch.lengths)
 
 当前 core 已有最小可用实现，但还没有：
 
-- `TaskLoss` plain-config 友好组合容器。
+- plain-config 友好的 loss 组合/工厂，用于按配置装配 `LossABC` / `LossGroup`
+  和 balancer。
 - deviation 等更多 balancer 策略。
 
 这些属于后续演进，不应在下游文档里假设已经存在。
@@ -213,9 +215,10 @@ loss, details = loss_fn(reconstruction, target, lengths=batch.lengths)
 
 当前覆盖：
 
-- `LossGroup` 的 total 和 monitor key。
+- `LossGroup` 的 total 和 detail key。
 - `FixedWeightLossBalancer` 的固定权重组合。
 - `SDRLoss`、spectral single loss、STFT/Mel 和 multi-scale spectral loss 的 smoke test。
 - `CodecLoss` DAC / DynaCodec preset 结构、length-aware 裁剪和错误 preset 路径。
 
-后续扩展 `TaskLoss` 时，应增加嵌套 details flatten、权重 device 迁移、checkpoint round-trip 和错误路径测试。
+后续扩展 plain-config 装配 helper 时，应增加嵌套 details flatten、权重 device
+迁移、checkpoint round-trip 和错误路径测试。

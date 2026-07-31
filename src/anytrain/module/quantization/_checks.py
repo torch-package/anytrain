@@ -99,3 +99,8 @@ def active_indices(
             f"got {active_count}."
         )
     indices(values, codebook_size, allow_inactive=allow_inactive)
+
+
+def dropout(value: float | None) -> None:
+    if value is not None and not 0 <= value <= 1:
+        raise ValueError(f"dropout must be in [0, 1], got {value}.")

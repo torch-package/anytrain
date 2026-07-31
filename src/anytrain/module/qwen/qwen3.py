@@ -205,7 +205,7 @@ def require_qwen3_class(name: str) -> Any:
     except AttributeError as exc:
         raise ImportError(
             "Installed transformers does not expose "
-            f"{name}. Install a transformers version with Qwen3 support."
+            f"{name}. Install anytrain[module], which requires transformers>=4.51.0."
         ) from exc
 
 
@@ -252,6 +252,6 @@ def _merge_config_kwargs(config_overrides: Mapping[str, Any], **kwargs: Any) -> 
 
 def _missing_transformers_error() -> ImportError:
     return ImportError(
-        "Qwen3 modules reuse Hugging Face transformers. Install `transformers` "
-        "with `python -m pip install transformers`."
+        "Qwen3 modules reuse Hugging Face transformers>=4.51.0. Install the module "
+        "extra with python -m pip install 'anytrain[module]'."
     )

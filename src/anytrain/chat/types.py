@@ -13,9 +13,27 @@ class ModelType(StrEnum):
     OPENROUTER = auto()
 
 
+class ChatTextPart(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class ChatImageUrl(TypedDict):
+    url: str
+
+
+class ChatImageUrlPart(TypedDict):
+    type: Literal["image_url"]
+    image_url: ChatImageUrl
+
+
+ChatContentPart = ChatTextPart | ChatImageUrlPart
+ChatContent = str | list[ChatContentPart]
+
+
 class ChatMessage(TypedDict):
     role: Literal["system", "user", "assistant"]
-    content: str
+    content: ChatContent
 
 
 class ImageOutput(NamedTuple):

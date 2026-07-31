@@ -348,8 +348,8 @@ def _qwen3_model(
         )
     except ImportError as exc:
         raise ImportError(
-            "QwenMTPCodebookPredictor requires transformers with Qwen3Model; "
-            "install it with `python -m pip install transformers`."
+            "QwenMTPCodebookPredictor requires transformers>=4.51.0 with Qwen3Model; "
+            "install anytrain[module]."
         ) from exc
 
 

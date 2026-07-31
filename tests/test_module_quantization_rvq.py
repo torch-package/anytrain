@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import FrozenInstanceError
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -206,7 +207,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
         self.assertTrue(mask.all())
 
-        quantizer.config.dropout = 1.0
+        quantizer.set_dropout(1.0)
         torch.manual_seed(0)
         mask = quantizer._sample_active_mask(64, 4, torch.device("cpu"))
         active_counts = mask.sum(dim=-1)
@@ -214,6 +215,18 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((active_counts >= 1).all())
         self.assertTrue((active_counts <= 4).all())
         self.assertTrue((active_counts < 4).any())
+
+    def test_config_is_frozen_and_dropout_has_explicit_setter(self):
+        config = RVQConfig.from_kwargs(input_dim=4, num_codebooks=2, codebook_size=8)
+        quantizer = ResidualVectorQuantizer(config)
+
+        with self.assertRaises(FrozenInstanceError):
+            config.dropout = 1.0
+        returned = quantizer.set_dropout(0.5)
+
+        self.assertIs(returned, quantizer)
+        self.assertEqual(quantizer.dropout, 0.5)
+        self.assertIsNone(quantizer.config.dropout)
 
     def test_dropout_has_no_effect_with_one_active_codebook(self):
         quantizer = ResidualVectorQuantizer(

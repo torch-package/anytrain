@@ -21,6 +21,7 @@ from anytrain.loss import (
     combine_loss_outputs,
     iter_loss_items,
 )
+from anytrain.loss.codec import CodecLoss, CodecLossPreset
 from anytrain.loss.spectral import (
     CompressedSpectrogramLoss,
     LogMagnitudeLoss,
@@ -32,7 +33,6 @@ from anytrain.loss.spectral import (
     STFTLoss,
     STFTTransform,
 )
-from anytrain.loss.task import CodecLoss, CodecLossPreset
 from anytrain.loss.temporal import SDRLoss, global_sdr
 
 
@@ -667,6 +667,10 @@ class LossTest(unittest.TestCase):
         self.assertEqual(set(dac_loss.losses), {"multi_mel"})
         self.assertEqual(set(dynacodec_loss.losses), {"si_sdr", "multi_mel", "multi_stft"})
         self.assertIn("si_sdr", dynacodec_loss.balancer.loss_names)
+
+    def test_codec_loss_task_import_is_not_provided(self):
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("anytrain.loss.task.codec")
 
     def test_codec_loss_preset_allows_nested_loss_details(self):
         estimate = torch.randn(1, 1, 4096, requires_grad=True)

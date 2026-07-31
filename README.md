@@ -119,7 +119,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.module` | 少量稳定的 task-agnostic `torch.nn.Module` 积木，例如 ADT 和 DiT。 |
 | `anytrain.module.dynamic_conv` | 动态卷积和 router 组件。 |
 | `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
-| `anytrain.module.qwen` | Qwen3 复用 helper 和 MTP codebook predictor。 |
+| `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
 | `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
 | `anytrain.tokenizer` | 依赖 `tokenizer` extra 的 codec frame BPE。 |
 | `anytrain.codec` | codec protocol、structured semantic-acoustic units、feature helper 和 lazy capability registry；具体 backend 从 `anytrain.codec.*` 子模块导入。 |

@@ -73,7 +73,8 @@ loss = loss_fn(prediction, target)
 
 规划接口：
 
-- `TaskLoss`：面向用户配置的组合容器，不绑定具体任务语义。
+- plain-config loss 装配 helper：按配置创建 `LossABC` / `LossGroup` 和 balancer，
+  但不新增 `task` 命名空间，也不解释 batch 或训练 step。
 
 optional loss：
 
@@ -142,7 +143,7 @@ dynamic conv、quantization、Qwen 和 idspace 从各自子模块显式导入。
 - Adaptive Dirichlet Tempering，用于 MoE/router logits 的自适应温度缩放。
 - `anytrain.module.dynamic_conv`：1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel。
 - `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer。
-- `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 MTP codebook predictor。
+- `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 experimental MTP codebook predictor。
 
 `anytrain.module.idspace` 也是 core 组件，维护 local/global token id 映射和 block embedding
 路由，不把 tokenizer 或任务 special-token 语义塞进 tokenizer 或任务层。

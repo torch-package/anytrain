@@ -1,8 +1,11 @@
 import asyncio
+import base64
 import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import anytrain.chat as chat_api
@@ -220,6 +223,30 @@ class ChatTest(unittest.TestCase):
             ),
         )
 
+    def test_openrouter_resolve_models_keeps_text_image_input_models(self):
+        catalog = [
+            _chat_model("openai/text-only", prompt=0.00000015, completion=0.0000006),
+            _chat_model(
+                "openai/vision",
+                prompt=0.0000002,
+                completion=0.0000008,
+                inputs=("text", "image"),
+            ),
+        ]
+        config = chat_api.ChatConfig(
+            base_url="https://openrouter.ai/api/v1",
+            model="",
+            api_key="secret",
+            models=(),
+            allowlist=("openai/vision",),
+            candidate_limit=5,
+        )
+        with patch.dict(sys.modules, {"requests": _models_requests(catalog)}):
+            resolved = resolve_models(config)
+
+        self.assertEqual(resolved.models, ("openai/vision",))
+        self.assertEqual(resolved.model, "openai/vision")
+
     def test_missing_env_fails_explicitly(self):
         with (
             patch.dict(os.environ, {}, clear=True),
@@ -293,6 +320,31 @@ class ChatTest(unittest.TestCase):
                 "extra_body": {"thinking": {"type": "enabled"}},
             },
         )
+
+    def test_deepseek_chat_rejects_image_inputs(self):
+        class FakeCompletions:
+            def create(self, **kwargs):
+                raise AssertionError("DeepSeek should reject image inputs before request")
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"openai": fake_openai}),
+        ):
+            client = Chat("deepseek")
+            with self.assertRaises(NotImplementedError):
+                client("describe this", images=["https://example.test/cat.png"])
 
     def test_chat_logs_request_lifecycle_with_elapsed_and_finish_reason(self):
         class FakeCompletions:
@@ -576,6 +628,162 @@ class ChatTest(unittest.TestCase):
             },
         )
 
+    def test_glm_chat_passes_image_url_content_parts(self):
+        calls = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice])
+
+        class FakeZhipuAiClient:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
+        env = {
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"zai": fake_zai}),
+        ):
+            response = Chat("glm")("describe this", images=["https://example.test/cat.png"])
+
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            calls[0]["messages"],
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/cat.png"},
+                        },
+                    ],
+                }
+            ],
+        )
+
+    def test_glm_async_call_and_acall_pass_image_url_content_parts(self):
+        create_messages = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                create_messages.append(kwargs["messages"])
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message, finish_reason="stop")
+                return types.SimpleNamespace(choices=[choice], model=kwargs["model"])
+
+        class FakeZhipuAiClient:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        async def run_client():
+            client = Chat("glm")
+            self.assertEqual(
+                await client.async_call("first", images=["https://example.test/one.png"]),
+                "done",
+            )
+            self.assertEqual(
+                await client.acall("second", images=["data:image/png;base64,abc"], refresh=True),
+                "done",
+            )
+
+        fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
+        env = {
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"zai": fake_zai}),
+        ):
+            asyncio.run(run_client())
+
+        self.assertEqual(
+            create_messages,
+            [
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "first"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.test/one.png"},
+                            },
+                        ],
+                    }
+                ],
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "second"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,abc"},
+                            },
+                        ],
+                    }
+                ],
+            ],
+        )
+
+    def test_local_image_input_is_converted_to_data_url(self):
+        calls = []
+        image_bytes = b"\x89PNG\r\n\x1a\n"
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice])
+
+        class FakeZhipuAiClient:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
+        env = {
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "pixel.png"
+            image_path.write_bytes(image_bytes)
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.dict(sys.modules, {"zai": fake_zai}),
+            ):
+                response = Chat("glm")("describe this", images=[image_path])
+
+        expected_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            calls[0]["messages"][0]["content"],
+            [
+                {"type": "text", "text": "describe this"},
+                {"type": "image_url", "image_url": {"url": expected_url}},
+            ],
+        )
+
     def test_glm_reuses_context_until_refresh(self):
         create_messages = []
 
@@ -699,6 +907,8 @@ class ChatTest(unittest.TestCase):
             client = Chat("glm")
             with self.assertRaisesRegex(ValueError, "prompt"):
                 client("")
+            with self.assertRaisesRegex(ValueError, "images"):
+                client("hello", images=[])
 
     def test_glm_image_generation_uses_sync_http_api(self):
         calls = []
@@ -876,6 +1086,67 @@ class ChatTest(unittest.TestCase):
         )
         self.assertTrue(
             any("openrouter using model=openai/gpt-4o-mini" in message for message in logs.output)
+        )
+
+    def test_openrouter_chat_passes_image_url_content_parts(self):
+        calls = []
+        catalog = [
+            _chat_model(
+                "openai/vision",
+                prompt=0.00000015,
+                completion=0.0000006,
+                inputs=("text", "image"),
+            )
+        ]
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice], model="openai/vision")
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: "openai/vision",
+            OPENROUTER_API_KEY_ENV: "secret",
+            OPENROUTER_CANDIDATE_LIMIT_ENV: "1",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(
+                sys.modules,
+                {"openai": fake_openai, "requests": _models_requests(catalog)},
+            ),
+        ):
+            response = Chat("openrouter")("describe this", images=["data:image/png;base64,abc"])
+
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            calls[0],
+            {
+                "model": "openai/vision",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe this"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,abc"},
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
         )
 
     def test_openrouter_backend_passes_fallback_models(self):

@@ -6,10 +6,10 @@ Spark-TTS 源码，也不在 import `anytrain.codec` 时导入 `sparktts`；只�
 
 ## 安装
 
-`rookiejune/Spark-TTS` fork 提供标准 Python package metadata。直接安装固定 commit；该命令会同时
-安装 `sparktts` 和 BiCodec runtime 依赖：
+`bicodec` extra 会安装固定 commit 的 `rookiejune/Spark-TTS` fork；该 fork 提供标准
+Python package metadata，并同时安装 `sparktts` 和 BiCodec runtime 依赖：
 
-    python -m pip install "spark-tts @ git+https://github.com/rookiejune/Spark-TTS.git@cf5302b0da797aeffc18af172de4dda0bb6ab718"
+    python -m pip install "anytrain[bicodec]"
 
 安装不需要手动 clone 或设置 `PYTHONPATH`。fork 的 package metadata 不包含 Gradio Web UI；
 BiCodec runtime 不依赖该 UI。

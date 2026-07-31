@@ -21,8 +21,8 @@
 子包显式导出其它组件：
 
 - `anytrain.module.dynamic_conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
-- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`QuantizerType`、`QuantizeOutput` 和 `QuantizationLoss`。
-- `anytrain.module.qwen`：Qwen3 builder、resolver、`QwenMTPCodebookPredictor` 和 `top_p_filter`。
+- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput` 和 `QuantizationLoss`。
+- `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
 
 `anytrain.module.dynamic_conv` 还公开 `eca_kernel_size`，用于按 channel 数计算 router 的 odd
@@ -54,9 +54,9 @@ transformer block，也不要求下游维护一份庞大的项目级 config：
   `Qwen3Config`。
 - 如果下游确实要构建完整 HF model，可以显式调用 `make_qwen3_config()` 或
   `build_qwen3_model()`；普通 codec 组合应优先依赖更窄的 builder。
-- 缺少 `transformers` 或版本不含 Qwen3 时，builder 会抛出明确的 `ImportError`。
+- 缺少 `transformers>=4.51.0` 或版本不含 Qwen3 时，builder 会抛出明确的 `ImportError`。
 
-`anytrain.module.qwen.mtp` 提供 `QwenMTPCodebookPredictor`，用于复用 Qwen3 组件组合
+`anytrain.module.qwen.mtp` 提供 experimental `QwenMTPCodebookPredictor`，用于复用 Qwen3 组件组合
 “跨 frame temporal AR + frame 内 codebook MTP”的离散码本预测器：
 
 - 输入是外部上游已经准备好的 `[batch, frame, condition_dim]` condition，不负责语义/声学
@@ -108,6 +108,7 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
   偶数，推理可用 `num_active_codebooks` 截断 stage 数，训练 dropout 用 `indices == -1` 和
   `active_codebook_mask == False` 标记未启用 stage。
 - 量化输出统一为 `QuantizeOutput`，离散整数用 `indices`，连续 codebook 空间向量用 `codebook_vectors`。
+- 单 codebook quantizer 实现 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。
 - RVQ dropout 下 inactive codebook 使用 `indices == -1` 和 `active_codebook_mask == False` 标记，不能只靠 `codebook_vectors` 判断有效性。
 
 迁移设计见 [`docs/quantization-migration.md`](../quantization-migration.md)。第一版不迁入 audio codec、model zoo 或 deepaudio 的 projector/MoE 体系。
@@ -122,9 +123,9 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
 `anytrain.module` 后续如有额外三方依赖，使用 `module` extra 管理：
 
 ```bash
-python -m pip install transformers
+python -m pip install "anytrain[module]"
 ```
 
 当前 Qwen3 复用层和 `QwenMTPCodebookPredictor` 需要 `module` extra 中的
-`transformers`。ADT、Dynamic Conv 和 quantization 不需要 optional 依赖；
+`transformers>=4.51.0`。ADT、Dynamic Conv 和 quantization 不需要 optional 依赖；
 `import anytrain` 和 `import anytrain.module` 不会主动导入 `transformers`。

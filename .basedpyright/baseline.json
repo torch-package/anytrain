@@ -442,24 +442,6 @@
                 }
             }
         ],
-        "./src/anytrain/loss/task/codec.py": [
-            {
-                "code": "reportIncompatibleMethodOverride",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 15,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 45,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/anytrain/module/dit.py": [
             {
                 "code": "reportPossiblyUnboundVariable",

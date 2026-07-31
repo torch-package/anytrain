@@ -15,13 +15,14 @@ python -m pip install -e ../LongCat-Audio-Codec
 fork 推送后，下游可以直接安装 anytrain extra：
 
 ```bash
-python -m pip install "longcat-audio-codec @ git+https://github.com/rookiejune/LongCat-Audio-Codec.git" "huggingface-hub>=0.23"
+python -m pip install "anytrain[longcat]"
 ```
 
 `longcat` extra 依赖：
 
 - `longcat-audio-codec @ git+https://github.com/rookiejune/LongCat-Audio-Codec.git`
 - `huggingface-hub`
+- `PyYAML`
 
 ## 缓存路径
 

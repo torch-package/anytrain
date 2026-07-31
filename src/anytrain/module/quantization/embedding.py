@@ -14,7 +14,7 @@ from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
 
 
-@dataclass
+@dataclass(frozen=True)
 class VQConfig:
     input_dim: int
     codebook_size: int
@@ -33,7 +33,7 @@ class VQConfig:
         if self.codebook_size <= 0:
             raise ValueError(f"codebook_size must be positive, got {self.codebook_size}.")
         if self.codebook_dim is None:
-            self.codebook_dim = self.input_dim
+            object.__setattr__(self, "codebook_dim", self.input_dim)
         if self.codebook_dim <= 0:
             raise ValueError(f"codebook_dim must be positive, got {self.codebook_dim}.")
         if not 0 <= self.decay < 1:

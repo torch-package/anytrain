@@ -11,16 +11,16 @@ from .embedding import EmbeddingVectorQuantizer, VQConfig
 from .output import QuantizeOutput
 
 
-@dataclass
+@dataclass(frozen=True)
 class RVQConfig:
-    vq_configs: list[VQConfig]
+    vq_configs: list[VQConfig] | tuple[VQConfig, ...]
     dropout: float | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "vq_configs", tuple(self.vq_configs))
         if not self.vq_configs:
             raise ValueError("vq_configs must contain at least one VQConfig.")
-        if self.dropout is not None and not 0 <= self.dropout <= 1:
-            raise ValueError(f"dropout must be in [0, 1], got {self.dropout}.")
+        _checks.dropout(self.dropout)
 
         first = self.vq_configs[0]
         for config in self.vq_configs:
@@ -54,7 +54,7 @@ class RVQConfig:
         if num_codebooks <= 0:
             raise ValueError(f"num_codebooks must be positive, got {num_codebooks}.")
         return cls(
-            vq_configs=[
+            vq_configs=tuple(
                 VQConfig(
                     input_dim=input_dim,
                     codebook_size=codebook_size,
@@ -68,7 +68,7 @@ class RVQConfig:
                     projection_bias=projection_bias,
                 )
                 for _ in range(num_codebooks)
-            ],
+            ),
             dropout=dropout,
         )
 
@@ -88,6 +88,7 @@ class ResidualVectorQuantizer(nn.Module):
         self.input_dim = config.vq_configs[0].input_dim
         self.codebook_dim = codebook_dim
         self.codebook_size = config.vq_configs[0].codebook_size
+        self.dropout = config.dropout
         self.quantizers = nn.ModuleList(
             [EmbeddingVectorQuantizer(vq_config) for vq_config in config.vq_configs]
         )
@@ -118,7 +119,7 @@ class ResidualVectorQuantizer(nn.Module):
             input_dim=self.input_dim,
             codebook_dim=self.codebook_dim,
             training=self.training,
-            dropout=self.config.dropout,
+            dropout=self.dropout,
             sample_mask=self._sample_active_mask,
             on_inactive=self._on_inactive_quantizer,
         )
@@ -201,8 +202,13 @@ class ResidualVectorQuantizer(nn.Module):
             active_count,
             device,
             training=self.training,
-            dropout=self.config.dropout,
+            dropout=self.dropout,
         )
+
+    def set_dropout(self, dropout: float | None) -> ResidualVectorQuantizer:
+        _checks.dropout(dropout)
+        self.dropout = dropout
+        return self
 
     @staticmethod
     def _on_inactive_quantizer(quantizer: nn.Module) -> None:
