@@ -18,9 +18,12 @@ anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate�
 
     from anytrain.framework.rl import (
         ContinuousGRPOLoss,
+        ContinuousRolloutBatch,
         DPOLoss,
         GRPOLoss,
         NeighborGRPOLoss,
+        NeighborRolloutBatch,
+        RolloutBatch,
         gather_token_logps,
         group_relative_advantages,
         neighbor_logps_from_distances,
@@ -29,6 +32,22 @@ anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate�
 
 anytrain.framework.__init__ 不默认导出 RL 子模块，用户需要显式导入
 anytrain.framework.rl。
+
+## Rollout tensor contracts
+
+`RolloutBatch`、`ContinuousRolloutBatch` 和 `NeighborRolloutBatch` 只描述进入 loss
+前的 tensor 字段，不描述下游项目的 rollout record、reward source、JSONL schema 或
+collate 结果。它们用于给 adapter 的返回值加类型边界，而不是要求下游 batch 直接继承
+anytrain 的数据结构。
+
+- `RolloutBatch` 对应 token/logit GRPO：`policy_token_logps`、`old_token_logps`、
+  `rewards`、`response_mask`，以及可选 `ref_token_logps`、`group_mask`。
+- `ContinuousRolloutBatch` 对应连续 latent transition GRPO：
+  `policy_step_logps`、`old_step_logps`、`rewards`、`step_mask`，以及可选
+  `kl_values`、`group_mask`。
+- `NeighborRolloutBatch` 对应 neighbor/symmetric flow GRPO：
+  `policy_neighbor_logps`、`old_neighbor_logps`、`rewards`、`neighbor_mask`，
+  以及可选 `kl_values`、`group_mask`、`anchor_mask`。
 
 ## Log-prob helpers
 
@@ -212,6 +231,54 @@ policy 的 anchor / candidate latent 距离生成 `policy_neighbor_logps`，用 
 - 为同一 prompt 生成 grouped candidate trajectories。
 - 采样 symmetric anchors / timesteps，并构造 neighbor distance 或 surrogate logits。
 - 保存或重算 old_neighbor_logps，并生成 neighbor_mask。
+
+## semantic-acoustic-codec / s2s 适配边界
+
+强化学习能力按依赖方向分成三层：
+
+```text
+anytrain.framework.rl
+  -> semantic-acoustic-codec.rl
+      -> s2s.rl
+```
+
+`anytrain.framework.rl` 只保留 tensor-level objective 和最小 typed contract，不出现
+semantic code、acoustic code、source speech、ASR、speaker 或任务 prompt 字段。
+
+`semantic-acoustic-codec.rl` 拥有 semantic/acoustic codec rollout source。它可以定义
+SAC 自己的 request、candidate、reward components 和 adapter，例如：
+
+```python
+class SACRLAdapter:
+    def rollout(self, source_batch) -> list[SACCandidate]: ...
+    def score(self, candidates) -> SACRewardBatch: ...
+    def to_grpo_batch(self, candidates, rewards) -> RolloutBatch: ...
+    def to_continuous_grpo_batch(
+        self,
+        candidates,
+        rewards,
+    ) -> ContinuousRolloutBatch: ...
+    def to_neighbor_grpo_batch(self, candidates, rewards) -> NeighborRolloutBatch: ...
+```
+
+SAC adapter 可以知道 structured codec 的 semantic ids、acoustic ids/features、decode
+audio、decode_ok、old log-prob / old distance、codec metadata 和 codec-specific reward。
+它最终只把这些领域对象降维成 `anytrain.framework.rl` 的 tensor batch。
+
+`s2s.rl` 依赖 SAC adapter，但拥有 s2s source 和 task reward。它可以在 SAC candidate
+之上定义 source speech、generation request/result、target text/semantic intent、ASR
+结果、speaker preservation、translation/semantic correctness 等字段，例如：
+
+```python
+class S2SRLAdapter:
+    def __init__(self, sac_adapter: SACRLAdapter): ...
+    def rollout(self, requests) -> list[S2SGenerationResult]: ...
+    def score(self, results) -> S2SRewardBatch: ...
+    def to_grpo_batch(self, results, rewards) -> RolloutBatch: ...
+```
+
+因此 s2s 可以复用 SAC 的 codec substrate 和 candidate construction，但 SAC 不理解 s2s
+任务语义；二者也都不把领域 schema 上推到 anytrain。
 
 ## 非目标
 

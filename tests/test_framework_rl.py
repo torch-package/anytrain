@@ -7,9 +7,12 @@ from torch.nn import functional as F
 
 from anytrain.framework.rl import (
     ContinuousGRPOLoss,
+    ContinuousRolloutBatch,
     DPOLoss,
     GRPOLoss,
     NeighborGRPOLoss,
+    NeighborRolloutBatch,
+    RolloutBatch,
     gather_token_logps,
     group_relative_advantages,
     neighbor_logps_from_distances,
@@ -23,6 +26,38 @@ class RLImportTest(unittest.TestCase):
 
         self.assertEqual(framework.__all__, [])
         self.assertFalse(hasattr(framework, "DPOLoss"))
+
+    def test_rollout_batch_types_are_public(self):
+        rl = import_module("anytrain.framework.rl")
+
+        self.assertIs(rl.RolloutBatch, RolloutBatch)
+        self.assertIs(rl.ContinuousRolloutBatch, ContinuousRolloutBatch)
+        self.assertIs(rl.NeighborRolloutBatch, NeighborRolloutBatch)
+        self.assertIn("ContinuousRolloutBatch", rl.__all__)
+        self.assertIn("NeighborRolloutBatch", rl.__all__)
+
+    def test_rollout_batch_type_contracts(self):
+        self.assertEqual(
+            RolloutBatch.__required_keys__,
+            {"policy_token_logps", "old_token_logps", "rewards", "response_mask"},
+        )
+        self.assertEqual(RolloutBatch.__optional_keys__, {"ref_token_logps", "group_mask"})
+        self.assertEqual(
+            ContinuousRolloutBatch.__required_keys__,
+            {"policy_step_logps", "old_step_logps", "rewards", "step_mask"},
+        )
+        self.assertEqual(
+            ContinuousRolloutBatch.__optional_keys__,
+            {"kl_values", "group_mask"},
+        )
+        self.assertEqual(
+            NeighborRolloutBatch.__required_keys__,
+            {"policy_neighbor_logps", "old_neighbor_logps", "rewards", "neighbor_mask"},
+        )
+        self.assertEqual(
+            NeighborRolloutBatch.__optional_keys__,
+            {"kl_values", "group_mask", "anchor_mask"},
+        )
 
 
 class LogProbTest(unittest.TestCase):

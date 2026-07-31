@@ -7,6 +7,8 @@ from .grpo import GRPOLoss
 from .logprob import gather_token_logps, masked_mean, sequence_logps
 from .neighbor_grpo import NeighborGRPOLoss, neighbor_logps_from_distances
 from .types import (
+    ContinuousRolloutBatch,
+    NeighborRolloutBatch,
     NeighborReduction,
     RolloutBatch,
     SequenceReduction,
@@ -16,9 +18,11 @@ from .types import (
 
 __all__ = [
     "ContinuousGRPOLoss",
+    "ContinuousRolloutBatch",
     "DPOLoss",
     "GRPOLoss",
     "NeighborGRPOLoss",
+    "NeighborRolloutBatch",
     "NeighborReduction",
     "RolloutBatch",
     "SequenceReduction",
