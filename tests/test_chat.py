@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import types
@@ -293,6 +294,55 @@ class ChatTest(unittest.TestCase):
             },
         )
 
+    def test_chat_logs_request_lifecycle_with_elapsed_and_finish_reason(self):
+        class FakeCompletions:
+            def create(self, **kwargs):
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message, finish_reason="stop")
+                return types.SimpleNamespace(choices=[choice], model=kwargs["model"])
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"openai": fake_openai}),
+            self.assertLogs("anytrain.chat", level="INFO") as logs,
+        ):
+            response = Chat("deepseek")("hello")
+
+        self.assertEqual(response, "done")
+        self.assertTrue(
+            any(
+                "chat request started provider=DeepSeek model=deepseek-v4-pro messages=2"
+                in message
+                for message in logs.output
+            )
+        )
+        self.assertTrue(
+            any(
+                "chat request stopped provider=DeepSeek model=deepseek-v4-pro "
+                "used_model=deepseek-v4-pro finish_reason=stop elapsed_s="
+                in message
+                for message in logs.output
+            )
+        )
+        output = "\n".join(logs.output)
+        self.assertIn("started_at=", output)
+        self.assertIn("stopped_at=", output)
+        self.assertNotIn("secret", output)
+        self.assertNotIn("hello", output)
+        self.assertNotIn("done", output)
+
     def test_deepseek_reuses_openai_client(self):
         client_init_count = 0
         create_messages = []
@@ -329,6 +379,78 @@ class ChatTest(unittest.TestCase):
         self.assertEqual(client_init_count, 1)
         self.assertEqual(
             create_messages,
+            [
+                [
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "user", "content": "first"},
+                ],
+                [
+                    {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "first"},
+                    {"role": "user", "content": "second"},
+                ],
+            ],
+        )
+
+    def test_deepseek_async_call_uses_async_openai_client(self):
+        sync_init = []
+        async_init = []
+        async_calls = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                raise AssertionError("sync client should not handle async_call")
+
+        class FakeAsyncCompletions:
+            async def create(self, **kwargs):
+                async_calls.append(kwargs)
+                content = kwargs["messages"][-1]["content"]
+                message = types.SimpleNamespace(content=content)
+                choice = types.SimpleNamespace(message=message, finish_reason="stop")
+                return types.SimpleNamespace(choices=[choice], model=kwargs["model"])
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                sync_init.append({"api_key": api_key, "base_url": base_url})
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        class FakeAsyncOpenAI:
+            def __init__(self, *, api_key, base_url):
+                async_init.append({"api_key": api_key, "base_url": base_url})
+                self.chat = types.SimpleNamespace(
+                    completions=FakeAsyncCompletions(),
+                )
+
+        async def run_client():
+            client = Chat("deepseek")
+            self.assertEqual(await client.async_call("first"), "first")
+            self.assertEqual(await client.acall("second"), "second")
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI, AsyncOpenAI=FakeAsyncOpenAI)
+        env = {
+            DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
+            DEEPSEEK_MODEL_ENV: "deepseek-v4-pro",
+            DEEPSEEK_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"openai": fake_openai}),
+        ):
+            asyncio.run(run_client())
+
+        self.assertEqual(
+            sync_init,
+            [{"api_key": "secret", "base_url": "https://example.test/deepseek"}],
+        )
+        self.assertEqual(
+            async_init,
+            [{"api_key": "secret", "base_url": "https://example.test/deepseek"}],
+        )
+        self.assertEqual(
+            [call["messages"] for call in async_calls],
             [
                 [
                     {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
@@ -495,6 +617,52 @@ class ChatTest(unittest.TestCase):
                     {"role": "user", "content": "second"},
                 ],
                 [{"role": "user", "content": "third"}],
+            ],
+        )
+
+    def test_glm_async_call_uses_sync_client_thread_fallback(self):
+        create_messages = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                create_messages.append(kwargs["messages"])
+                content = kwargs["messages"][-1]["content"]
+                message = types.SimpleNamespace(content=content)
+                choice = types.SimpleNamespace(message=message, finish_reason="stop")
+                return types.SimpleNamespace(choices=[choice], model=kwargs["model"])
+
+        class FakeZhipuAiClient:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        async def run_client():
+            client = Chat("glm")
+            self.assertEqual(await client.async_call("first"), "first")
+            self.assertEqual(await client.acall("second"), "second")
+
+        fake_zai = types.SimpleNamespace(ZhipuAiClient=FakeZhipuAiClient)
+        env = {
+            GLM_BASE_URL_ENV: "https://example.test/api/paas/v4",
+            GLM_MODEL_ENV: "glm-5.2",
+            GLM_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"zai": fake_zai}),
+        ):
+            asyncio.run(run_client())
+
+        self.assertEqual(
+            create_messages,
+            [
+                [{"role": "user", "content": "first"}],
+                [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "first"},
+                    {"role": "user", "content": "second"},
+                ],
             ],
         )
 
@@ -780,6 +948,88 @@ class ChatTest(unittest.TestCase):
         self.assertTrue(
             any(
                 "openrouter using model=google/gemini-flash-1.5" in message
+                for message in logs.output
+            )
+        )
+
+    def test_openrouter_async_call_passes_fallback_models(self):
+        calls = []
+        catalog = [
+            _chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006),
+            _chat_model("meta-llama/llama-3.2-3b-instruct:free", prompt=0, completion=0),
+            _chat_model("google/gemini-flash-1.5", prompt=0.000000075, completion=0.0000003),
+        ]
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                raise AssertionError("sync client should not handle async_call")
+
+        class FakeAsyncCompletions:
+            async def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message, finish_reason="stop")
+                return types.SimpleNamespace(
+                    choices=[choice],
+                    model="google/gemini-flash-1.5",
+                )
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        class FakeAsyncOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=FakeAsyncCompletions(),
+                )
+
+        async def run_client():
+            client = Chat("openrouter")
+            return await client.async_call("hello")
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI, AsyncOpenAI=FakeAsyncOpenAI)
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://openrouter.ai/api/v1",
+            OPENROUTER_MODELS_ENV: (
+                "openai/gpt-4o-mini,meta-llama/llama-3.2-3b-instruct:free,"
+                "google/gemini-flash-1.5"
+            ),
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(
+                sys.modules,
+                {"openai": fake_openai, "requests": _models_requests(catalog)},
+            ),
+            self.assertLogs("anytrain.chat", level="INFO") as logs,
+        ):
+            response = asyncio.run(run_client())
+
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "model": "meta-llama/llama-3.2-3b-instruct:free",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": False,
+                    "extra_body": {
+                        "models": [
+                            "google/gemini-flash-1.5",
+                            "openai/gpt-4o-mini",
+                        ]
+                    },
+                }
+            ],
+        )
+        self.assertTrue(
+            any(
+                "openrouter using model=google/gemini-flash-1.5 finish_reason=stop"
+                in message
                 for message in logs.output
             )
         )

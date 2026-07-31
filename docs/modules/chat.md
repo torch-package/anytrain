@@ -34,6 +34,19 @@ client("start a new summary")
 client("ignore previous context", refresh=True)
 ```
 
+异步调用保留同样的有状态上下文语义：
+
+```python
+client = await chat.Chat.async_create("deepseek")
+response = await client.async_call("summarize this training curve")
+response = await client.acall("compare it with the previous answer")
+```
+
+`async_call()` 和 `acall()` 会复用同一个异步 provider client；OpenAI-compatible provider
+使用 SDK 的 async client，GLM 当前通过线程回退包住同步 SDK 调用。`async_image()` 同样提供
+线程回退的异步图片入口。因为 `Chat` 实例持有会话上下文，同一实例内的异步文本请求会串行执行，
+避免并发更新消息历史。
+
 ## 当前实现
 
 当前模块实现稳定外部契约、实例内消息上下文、环境变量解析、DeepSeek OpenAI-compatible SDK 调用、GLM SDK 调用、OpenRouter OpenAI-compatible SDK 调用和 GLM 图片生成调用。缺少对应 optional 依赖时会明确抛出 `ImportError`，避免静默 fallback。
@@ -67,6 +80,14 @@ DeepSeek / GLM 变量缺失或为空时，`Chat(...)` 会直接抛出 `ValueErro
 4. 取前 `OPENROUTER_CANDIDATE_LIMIT` 个作为候选；请求时主模型用第一个，其余最多 3 个放入 `extra_body.models`
 
 若设置了 `OPENROUTER_MODELS`，只在该白名单内做上述实时排序；白名单中不存在于 catalog 的 id 会直接报错。选型结果与每次成功响应使用的 `model` 都会通过 `logging.getLogger("anytrain.chat")` 打 INFO。
+
+文本请求会通过 `logging.getLogger("anytrain.chat")` 记录请求生命周期：
+
+- `chat request started`：provider、主模型、发送时的消息条数和 `started_at`。
+- `chat request stopped`：provider、主模型、provider 返回的实际模型、`finish_reason`、`elapsed_s`、`stopped_at` 和响应字符数。
+- `chat request failed` / `chat request cancelled`：provider、主模型、停止前 `elapsed_s` 和 `stopped_at`；普通异常会带 `exc_info=True`。
+
+日志不会记录 prompt 内容、响应正文或 API key；Python logging formatter 仍可负责输出具体墙钟时间。
 
 ## Optional Extra
 
