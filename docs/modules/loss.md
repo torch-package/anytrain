@@ -25,8 +25,6 @@ src/anytrain/loss/
     transform.py
     group.py
   codec.py
-  task/
-    __init__.py  # compatibility re-export
 ```
 
 当前公开导出：

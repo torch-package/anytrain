@@ -27,30 +27,28 @@ Do not use this file for experiment logs, benchmark results, private paths, remo
 
 | ID | Type | Area | Problem | Risk | Priority | Status | Next Action | Notes |
 |---|---|---|---|---|---|---|---|---|
-| R001 | Interface Debt | `anytrain.codec` registry | Codec capabilities and default loaders are hardcoded in one registry module with explicit `if name == ...` branches. | Every new codec or capability requires editing shared registry internals and risks inconsistent capability/loader updates. | P1 | pending | Introduce a small registration descriptor so capability metadata and loaders are declared once per codec wrapper. | Evidence: `src/anytrain/codec/registry.py`. |
+| R001 | Interface Debt | `anytrain.codec` registry | Codec capabilities and default loaders now live in per-wrapper descriptors; the central registry only indexes entries and enforces public errors. | New codec wrappers still need an `_registry.py` descriptor, but no shared loader branch needs to change. | P1 | resolved | Keep new codec registration descriptor-driven. | Evidence: `src/anytrain/codec/_registry.py`; `src/anytrain/codec/*/_registry.py`; `src/anytrain/codec/registry.py`. |
 | R002 | Boundary Debt | Speech ASR evaluator | `WhisperASREvaluator` backend code embeds openai-whisper loading, short-batch decode optimization, option coercion, fallback logic, and text extraction in one evaluator path. | Upstream whisper API changes or new ASR backends will force edits in a large evaluator module instead of isolated backend adapters. | P2 | pending | Split the whisper backend into a stable transcriber interface plus private optimization adapter; keep evaluator composition thin. | Evidence: `src/anytrain/evaluator/speech/asr.py`. |
 | R003 | Implementation Debt | Buffer compatibility shim | `anytrain._buffer.register_buffer` exists to bridge PyTorch versions and is imported by reusable modules, even though the preferred modern shape is direct `nn.Buffer` assignment. | Once the minimum Torch version moves past 2.5, the helper will keep legacy API shape alive and encourage new call sites to copy it. | P2 | pending | After the project raises the minimum Torch version, replace helper usage with direct `nn.Buffer` assignment and delete the shim. | Evidence: `pyproject.toml` currently allows `torch>=2.4`; `_buffer.py`; `codec/_module.py`; `loss/spectral/transform.py`. |
-| R004 | Boundary Debt | Public package root | `anytrain.__init__` exports nothing while public module docs describe stable submodule boundaries elsewhere. | Users must know deep import paths from docs; adding root-level conveniences later may become ad hoc. | P3 | pending | Decide whether the empty root is intentional long-term or document it as a strict non-export contract with import examples. | Evidence: `src/anytrain/__init__.py` has empty `__all__`; `docs/modules/package-root.md` / `docs/architecture.md` own the boundary narrative. |
+| R004 | Boundary Debt | Public package root | The empty root package is documented as an intentional strict non-export contract with submodule import examples. | Future root exports should be treated as an explicit API change rather than an ad hoc convenience. | P3 | resolved | Keep `anytrain.__all__ == []` unless package-root policy changes deliberately. | Evidence: `src/anytrain/__init__.py`; `docs/modules/package-root.md`; `README.md`. |
 | R005 | Boundary Debt | Lightning callback protocols | Lightning callbacks repeatedly probe `trainer`, `strategy`, logger, and module capabilities with `getattr` instead of a small local protocol layer. | Callback behavior is flexible but hard to reason about, and missing capabilities can degrade silently in new Trainer/strategy combinations. | P2 | pending | Centralize Trainer/logger/strategy capability accessors with explicit fallback semantics and focused tests for DDP and no-logger cases. | Evidence: repeated probes in `lightning/callback/loss.py`, `lightning/callback/performance.py`, `lightning/experiment.py`, and `lightning/callback/grad.py`. |
 
 ## Item Notes
 
 ### R001 Codec registry should be data-driven
 
-Current behavior works: callers can ask for capabilities or default frame/semantic-acoustic loaders by name. The design problem is that capability declaration and loader dispatch are separate hardcoded branches. The target contract should define one descriptor per codec wrapper, including name, capabilities, optional dependency extra, and loader callable.
+Resolved: callers still ask for capabilities or default frame/semantic-acoustic loaders by name, but capability declaration and lazy loader dispatch now live in one `CodecEntry` descriptor per codec wrapper.
 
-Smallest safe path:
+Current policy:
 
-1. Add tests that current `capabilities()`, `load_frame()`, and `load_semantic_acoustic()` error messages remain stable.
-2. Introduce an internal `CodecEntry` descriptor and rewrite the existing names without changing the public API.
-3. Move each codec-specific import into its descriptor loader.
-4. Document how new wrappers register capabilities.
+1. Add `src/anytrain/codec/<name>/_registry.py`.
+2. Export one `ENTRY = CodecEntry(...)` with `name`, `capabilities`, and matching lazy loader callables.
+3. Import the entry in `src/anytrain/codec/registry.py` and add it to `_ENTRIES`.
+4. Keep codec-specific optional imports inside descriptor loader functions.
 
-Acceptance:
+Verification:
 
-- `python -m ruff check src examples`
-- `python -m basedpyright`
-- `python -m pytest`
+- Focused codec registry tests should continue to cover capabilities, lazy loaders, and stable public errors.
 
 ### R002 Whisper ASR backend needs a thinner evaluator boundary
 
@@ -88,20 +86,17 @@ Acceptance:
 
 ### R004 Make the empty root package a deliberate contract
 
-Current behavior is intentionally minimal: `anytrain.__all__` is empty and users import from stable submodules. The design problem is discoverability. The target contract should either keep the root empty as a strict policy or expose only a tiny set of stable package-level names.
+Resolved: `anytrain.__all__` remains empty by policy, and users import from stable submodules. Discoverability lives in `docs/modules/package-root.md` and README examples rather than root-level aliases.
 
-Smallest safe path:
+Current policy:
 
-1. Confirm the intended package-root policy in `docs/modules/package-root.md`.
-2. If root stays empty, add a short README example that imports from `anytrain.lightning`, `anytrain.loss`, and `anytrain.optim`.
-3. If root gains exports, add import regression tests and keep optional-heavy modules out.
-4. Avoid one-off root exports for downstream convenience.
+1. Keep `anytrain.__all__ == []`.
+2. Import from explicit submodules such as `anytrain.lightning`, `anytrain.loss`, and `anytrain.optim`.
+3. Treat any future package-root export as a deliberate public API change with regression tests.
 
-Acceptance:
+Verification:
 
-- `python -m ruff check src examples`
-- `python -m basedpyright`
-- `python -m pytest`
+- Package-root docs and README continue to show explicit submodule imports.
 
 ### R005 Centralize Lightning capability probing
 
@@ -154,4 +149,3 @@ Define the desired public interface, module boundary, or invariant.
 
 - List the exact lint, type, test, smoke, or training command that proves the change.
 ```
-
