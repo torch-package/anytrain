@@ -34,8 +34,10 @@ src/anytrain/lightning/
 - `LightningLogMixin`
 - `ModelCheckpoint`
 - `DebugCallback`
-- `GradientLoggerCallback`
-- `GradientNormLoggerCallback`
+- `GradientProbeLoggerCallback`
+- `GradientProbe`
+- `GradientTarget`
+- `GradientComparison`
 - `LossItemLoggerCallback`
 - `LossSummaryCallback`
 - `LossTimeBucketLoggerCallback`

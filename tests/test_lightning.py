@@ -669,41 +669,6 @@ class LightningTest(unittest.TestCase):
 
         experiment.add_histogram.assert_not_called()
 
-    def test_gradient_norm_logger_respects_step_interval(self):
-        import torch
-
-        from anytrain.lightning import GradientNormLoggerCallback
-
-        class Logger:
-            def __init__(self):
-                self.log_calls = []
-
-            def log(self, name, value, **kwargs):
-                self.log_calls.append((name, float(value), kwargs))
-
-        weight = torch.nn.Parameter(torch.zeros(2))
-        bias = torch.nn.Parameter(torch.zeros(1))
-        weight.grad = torch.tensor([3.0, 4.0])
-        bias.grad = torch.tensor([12.0])
-        logger = Logger()
-        module = SimpleNamespace(
-            parameters=lambda: iter((weight, bias)),
-            log=logger.log,
-        )
-        trainer = SimpleNamespace(global_step=1)
-        callback = GradientNormLoggerCallback(every_n_steps=2)
-        optimizer = torch.optim.SGD([weight], lr=0.1)
-
-        callback.on_before_optimizer_step(trainer, module, optimizer)
-
-        self.assertEqual(logger.log_calls, [])
-
-        trainer.global_step = 2
-        callback.on_before_optimizer_step(trainer, module, optimizer)
-
-        self.assertEqual(logger.log_calls[0][0], "train/grad_norm")
-        self.assertEqual(logger.log_calls[0][1], 13.0)
-
     def test_gradient_probe_logger_compares_loss_item_gradients(self):
         import math
 

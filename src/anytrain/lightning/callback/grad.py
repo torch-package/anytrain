@@ -196,62 +196,6 @@ class GradientProbeLoggerCallback(pl.Callback):
                 )
 
 
-class GradientNormLoggerCallback(pl.Callback):
-    def __init__(
-        self,
-        tag: str = "train/grad_norm",
-        every_n_steps: int | None = 100,
-    ) -> None:
-        super().__init__()
-        if every_n_steps is not None:
-            _positive_int(every_n_steps, "every_n_steps")
-        self.tag = tag
-        self.every_n_steps = every_n_steps
-
-    def on_before_optimizer_step(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        optimizer: torch.optim.Optimizer,
-    ) -> None:
-        del optimizer
-        if not self.should_run(trainer, pl_module):
-            return
-        self.on_log_attempt(trainer, pl_module)
-        self.log_grad_norm(pl_module)
-
-    def should_run(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-    ) -> bool:
-        del pl_module
-        if self.every_n_steps is None:
-            return True
-        return int(trainer.global_step) % self.every_n_steps == 0
-
-    def on_log_attempt(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-    ) -> None:
-        del trainer, pl_module
-
-    def log_grad_norm(self, pl_module: pl.LightningModule) -> None:
-        gradients = [
-            parameter.grad.detach().norm(2)
-            for parameter in pl_module.parameters()
-            if parameter.grad is not None
-        ]
-        if gradients:
-            pl_module.log(
-                self.tag,
-                torch.stack(gradients).norm(2),
-                on_step=True,
-                sync_dist=True,
-            )
-
-
 def loss_value(outputs: Mapping[str, Any], name: str) -> Tensor:
     value = outputs.get(name)
     if not isinstance(value, LossItem):
@@ -438,7 +382,6 @@ def _positive_int(value: int, name: str) -> None:
 __all__ = [
     "GradientComparison",
     "GradientLossGroupProvider",
-    "GradientNormLoggerCallback",
     "GradientProbe",
     "GradientProbeLoggerCallback",
     "GradientTarget",

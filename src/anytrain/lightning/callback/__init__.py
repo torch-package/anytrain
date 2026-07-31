@@ -4,7 +4,6 @@ from .debug import DebugCallback
 from .grad import (
     GradientComparison,
     GradientLossGroupProvider,
-    GradientNormLoggerCallback,
     GradientProbe,
     GradientProbeLoggerCallback,
     GradientTarget,
@@ -28,7 +27,6 @@ __all__ = [
     "FlopsProvider",
     "GradientComparison",
     "GradientLossGroupProvider",
-    "GradientNormLoggerCallback",
     "GradientProbe",
     "GradientProbeLoggerCallback",
     "GradientTarget",

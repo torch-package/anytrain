@@ -22,7 +22,7 @@ core 提供：
 - `LossSummaryCallback`：用有界 device 窗口汇总 training outputs 中的 total loss 和命名
   `LossItem`，并在训练结束时归约跨 rank 窗口均值。
 - `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
-- `GradientLoggerCallback` / `GradientNormLoggerCallback`：记录命名 `LossItem` 对指定参数的梯度关系，或记录全局梯度范数。
+- `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
