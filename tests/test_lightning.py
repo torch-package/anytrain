@@ -704,12 +704,16 @@ class LightningTest(unittest.TestCase):
         self.assertEqual(logger.log_calls[0][0], "train/grad_norm")
         self.assertEqual(logger.log_calls[0][1], 13.0)
 
-    def test_gradient_logger_compares_loss_item_gradients(self):
+    def test_gradient_probe_logger_compares_loss_item_gradients(self):
         import math
 
         import torch
 
-        from anytrain.lightning import GradientLoggerCallback
+        from anytrain.lightning import (
+            GradientComparison,
+            GradientProbeLoggerCallback,
+            GradientTarget,
+        )
         from anytrain.loss import LossItem
 
         class Module(torch.nn.Module):
@@ -729,7 +733,16 @@ class LightningTest(unittest.TestCase):
 
         module = Module()
         trainer = SimpleNamespace(global_step=1)
-        callback = GradientLoggerCallback(("token", "flow"), "weight", every_n_steps=2)
+        callback = GradientProbeLoggerCallback(
+            (
+                GradientComparison(
+                    GradientTarget("token"),
+                    GradientTarget("flow"),
+                ),
+            ),
+            {"parameter": ("weight",)},
+            every_n_steps=2,
+        )
 
         callback.on_before_backward(trainer, module, torch.tensor(0.0))
         self.assertEqual(module.log_calls, [])
@@ -738,10 +751,112 @@ class LightningTest(unittest.TestCase):
         callback.on_before_backward(trainer, module, torch.tensor(0.0))
 
         values = {name: value for name, value, _ in module.log_calls}
-        self.assertAlmostEqual(values["grad/token_flow/norm/token"], 4.0)
-        self.assertAlmostEqual(values["grad/token_flow/norm/flow"], 36.0)
-        self.assertAlmostEqual(values["grad/token_flow/log_ratio"], math.log(4.0 / 36.0))
-        self.assertAlmostEqual(values["grad/token_flow/cosine"], 1.0)
+        prefix = "grad/token@batch__flow@batch/parameter"
+        self.assertAlmostEqual(values[f"{prefix}/norm/token@batch"], 4.0)
+        self.assertAlmostEqual(values[f"{prefix}/norm/flow@batch"], 36.0)
+        self.assertAlmostEqual(values[f"{prefix}/log_ratio"], math.log(4.0 / 36.0))
+        self.assertAlmostEqual(values[f"{prefix}/cosine"], 1.0)
+
+    def test_gradient_probe_logger_compares_parameter_groups(self):
+        import torch
+
+        from anytrain.lightning import (
+            GradientComparison,
+            GradientProbeLoggerCallback,
+            GradientTarget,
+        )
+        from anytrain.loss import LossItem
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attn = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+                self.ffn = torch.nn.Parameter(torch.tensor([3.0]))
+                self.log_calls = []
+
+            def current_loss_outputs(self):
+                total = self.attn.sum() + self.ffn.sum()
+                return {
+                    "token": LossItem(total.square()),
+                    "flow": LossItem((2 * total).square()),
+                }
+
+            def log(self, name, value, **kwargs):
+                self.log_calls.append((name, float(value), kwargs))
+
+        module = Module()
+        trainer = SimpleNamespace(global_step=2)
+        callback = GradientProbeLoggerCallback(
+            (
+                GradientComparison(
+                    GradientTarget("token"),
+                    GradientTarget("flow"),
+                ),
+            ),
+            {"block": ("attn", "ffn")},
+            every_n_steps=2,
+        )
+
+        callback.on_before_backward(trainer, module, torch.tensor(0.0))
+
+        values = {name: value for name, value, _ in module.log_calls}
+        self.assertAlmostEqual(
+            values["grad/token@batch__flow@batch/block/cosine"],
+            1.0,
+            places=6,
+        )
+        self.assertIn("grad/token@batch__flow@batch/block/norm/token@batch", values)
+        self.assertIn("grad/token@batch__flow@batch/block/norm/flow@batch", values)
+
+    def test_gradient_probe_logger_compares_source_groups(self):
+        import torch
+
+        from anytrain.lightning import (
+            GradientComparison,
+            GradientProbeLoggerCallback,
+            GradientTarget,
+        )
+        from anytrain.loss import LossItem
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor([2.0, 1.0]))
+                self.log_calls = []
+
+            def current_gradient_loss_groups(self):
+                return {
+                    "tts": {"token": LossItem(self.weight.sum().square())},
+                    "mt": {
+                        "token": LossItem(
+                            (self.weight[0] - self.weight[1]).square()
+                        )
+                    },
+                }
+
+            def log(self, name, value, **kwargs):
+                self.log_calls.append((name, float(value), kwargs))
+
+        module = Module()
+        trainer = SimpleNamespace(global_step=1)
+        callback = GradientProbeLoggerCallback(
+            comparisons=(
+                GradientComparison(
+                    GradientTarget("token", "tts"),
+                    GradientTarget("token", "mt"),
+                ),
+            ),
+            probes={"layer0_attn": ("weight",)},
+            every_n_steps=1,
+        )
+
+        callback.on_before_backward(trainer, module, torch.tensor(0.0))
+
+        values = {name: value for name, value, _ in module.log_calls}
+        self.assertAlmostEqual(
+            values["grad/token@tts__token@mt/layer0_attn/cosine"],
+            0.0,
+        )
 
     def test_lightning_log_mixin_logs_prefixed_dict(self):
         from anytrain.lightning import LightningLogMixin

@@ -3,8 +3,12 @@ from .callback.checkpoint import ModelCheckpoint
 from .callback.data_throughput import DataThroughputCallback, DataUnits, DataUnitsProvider
 from .callback.debug import DebugCallback
 from .callback.grad import (
-    GradientLoggerCallback,
+    GradientComparison,
+    GradientLossGroupProvider,
     GradientNormLoggerCallback,
+    GradientProbe,
+    GradientProbeLoggerCallback,
+    GradientTarget,
     LossOutputProvider,
 )
 from .callback.loss import (
@@ -24,8 +28,12 @@ __all__ = [
     "DataUnitsProvider",
     "DebugCallback",
     "FlopsProvider",
-    "GradientLoggerCallback",
+    "GradientComparison",
+    "GradientLossGroupProvider",
     "GradientNormLoggerCallback",
+    "GradientProbe",
+    "GradientProbeLoggerCallback",
+    "GradientTarget",
     "LossItemLabelsFn",
     "LossItemLoggerCallback",
     "LossItemsFn",
