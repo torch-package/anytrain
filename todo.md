@@ -4,15 +4,17 @@
 
 ## Loss
 
-- 实现 `TaskLoss`：plain-config 友好的组合容器，不绑定具体任务语义。
+- 实现 plain-config 友好的 loss 组合/工厂：只负责按配置装配 `LossABC` / `LossGroup`
+  和 balancer，不引入 `task` 命名空间，也不解释 batch 或训练 step。
 - 增加更多 balancer 策略，例如 deviation。
 - 只有在依赖和复用需求明确后，再加入 `loss.text` / `loss.speech`。
 
 ## Evaluator
 
-- 根据下游真实使用情况决定是否增加常用 stateful evaluator，例如 MAE、MSE、accuracy。
-- 增加 `evaluator.metrics`：torchmetrics-backed 通用分类/回归 evaluator，放 optional 子模块而不是 core。
-- 增加 `evaluator.audio`：codec、speech 或 audio quality evaluator。
+- 有明确下游复用需求时，再增加 `evaluator.metrics`：torchmetrics-backed 通用分类/回归
+  evaluator，放 optional 子模块而不是 core。
+- 有具体 codec/speech acceptance 复用需求时，再增加 `evaluator.audio`；不要只为单个实验把
+  UTMOS、ASR 或 audio quality wrapper 提前放进 core。
 
 ## Module
 
@@ -26,8 +28,8 @@
 
 ## Framework
 
-- 后续新增 framework 子模块时，需要明确依赖 extra 和最小测试。
-- masked autoencoder 等训练范式只有在跨项目复用明确后再迁入。
+- 后续新增 framework 子模块时，需要明确依赖 extra、最小测试和至少一个下游复用方。
+- masked autoencoder 等训练范式只有在跨项目复用明确后再迁入；没有 owner 前不作为 active todo。
 - `framework.gan` 后续根据真实复用需求补 manual optimization helper。
 - framework 不替用户写完整 `pl_module`，只提供训练逻辑可复用组件。
 
