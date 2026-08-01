@@ -5,9 +5,9 @@ import torch
 
 from anytrain.module.dirichlet_tempering import (
     ADT,
+    AdaptiveDirichletTempering,
     ADTConfig,
     ADTStats,
-    AdaptiveDirichletTempering,
     adt_stats_metrics,
     ema_update,
 )
@@ -272,19 +272,21 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
 
         diagnostics = adt.diagnostics()
 
-        self.assertEqual(
-            set(diagnostics),
-            {
-                "effective_experts",
-                "expert_means",
-                "expert_utilization",
-                "expert_vars",
-                "alpha",
-                "temperature",
-            },
-        )
+        expected = {"effective_experts"}
+        for expert_index in range(4):
+            expected.update(
+                {
+                    f"expert_{expert_index}/usage",
+                    f"expert_{expert_index}/variance",
+                    f"expert_{expert_index}/alpha",
+                    f"expert_{expert_index}/temperature",
+                }
+            )
+
+        self.assertEqual(set(diagnostics), expected)
         for value in diagnostics.values():
             self.assertIsInstance(value, torch.Tensor)
+            self.assertEqual(value.ndim, 0)
             self.assertTrue(torch.isfinite(value).all())
 
         self.assertTrue(torch.allclose(adt.expert_utilization, adt.expert_means))
@@ -316,9 +318,24 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
 
         self.assertEqual(
             set(usage),
-            {"effective_experts", "expert_means", "expert_utilization"},
+            {
+                "effective_experts",
+                "expert_0/usage",
+                "expert_1/usage",
+                "expert_2/usage",
+            },
         )
-        self.assertEqual(set(variance_and_temperature), {"expert_vars", "temperature"})
+        self.assertEqual(
+            set(variance_and_temperature),
+            {
+                "expert_0/variance",
+                "expert_1/variance",
+                "expert_2/variance",
+                "expert_0/temperature",
+                "expert_1/temperature",
+                "expert_2/temperature",
+            },
+        )
         with self.assertRaisesRegex(ValueError, "unknown ADT metrics"):
             adt_stats_metrics(stats, metrics=("loss",))
 

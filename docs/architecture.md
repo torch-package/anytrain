@@ -38,11 +38,11 @@
 - `anytrain.evaluator`：通用 evaluator 接口和组合器。
 - `anytrain.optim`：optimizer、scheduler 和 LLM/Muon helper。
 - `anytrain.module`：少量稳定的 task-agnostic `torch.nn.Module` 积木。
-- `anytrain.module.dynamic_conv`、`anytrain.module.quantization`、`anytrain.module.qwen`：显式子模块组件入口。
+- `anytrain.module.dynamic_conv`、`anytrain.module.moe`、`anytrain.module.quantization`、`anytrain.module.qwen`：显式子模块组件入口。
 - `anytrain.module.idspace`：local/global token id 映射和 block embedding 路由。
 
 Lightning、Torch 和 einops 是 core 依赖。`module` 顶层只导出少量稳定组件；dynamic conv、
-quantization、Qwen 和 idspace 从子模块显式导入。只有 Qwen3 builder 需要 `module` extra。Muon 是否可用取决于当前
+MoE、quantization、Qwen 和 idspace 从子模块显式导入。只有 Qwen3 builder 需要 `module` extra。Muon 是否可用取决于当前
 PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 
 ### Optional General

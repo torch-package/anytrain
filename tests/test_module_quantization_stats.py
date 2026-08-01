@@ -62,6 +62,18 @@ class QuantizationStatsTest(unittest.TestCase):
             torch.tensor([1.0, 0.75, 0.25]),
         )
 
+    def test_codebook_usage_treats_negative_one_as_inactive_without_mask(self):
+        usage = codebook_usage(
+            torch.tensor([[0, -1], [1, 2]]),
+            codebook_size=3,
+            num_codebooks=2,
+        )
+
+        self.assertEqual(usage.counts.tolist(), [[1.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        self.assertEqual(usage.active_count.tolist(), [2.0, 1.0])
+        self.assertEqual(usage.total_count.tolist(), [2.0, 2.0])
+        torch.testing.assert_close(usage.active_ratio, torch.tensor([1.0, 0.5]))
+
     def test_quantization_usage_reads_output_mask(self):
         output = QuantizeOutput(
             quantized_latents=torch.empty(2, 3),

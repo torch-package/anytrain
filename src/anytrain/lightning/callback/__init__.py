@@ -1,6 +1,11 @@
 from .checkpoint import ModelCheckpoint
 from .data_throughput import DataThroughputCallback, DataUnits, DataUnitsProvider
 from .debug import DebugCallback
+from .dirichlet_tempering import (
+    ADTStatsLoggerCallback,
+    ADTStatsMonitor,
+    ADTStatsMonitorsFn,
+)
 from .grad import (
     GradientComparison,
     GradientLossGroupProvider,
@@ -28,6 +33,9 @@ __all__ = [
     "DataThroughputCallback",
     "DataUnits",
     "DataUnitsProvider",
+    "ADTStatsLoggerCallback",
+    "ADTStatsMonitor",
+    "ADTStatsMonitorsFn",
     "DebugCallback",
     "FlopsProvider",
     "GradientComparison",

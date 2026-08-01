@@ -208,7 +208,7 @@ def _flatten_indices(
     _validate_index_inputs(indices, codebook_size=codebook_size, num_codebooks=num_codebooks)
     flat_indices = _reshape_indices(indices, num_codebooks=num_codebooks)
     if active_codebook_mask is None:
-        active_mask = torch.ones_like(flat_indices, dtype=torch.bool)
+        active_mask = flat_indices >= 0
     else:
         if active_codebook_mask.shape != indices.shape:
             raise ValueError(

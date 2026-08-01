@@ -24,6 +24,7 @@ core 提供：
 - `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
 - `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
+- `ADTStatsLoggerCallback`：按下游显式声明的 `AdaptiveDirichletTempering` / `ADTStats` monitor 记录 router utilization、variance、alpha 和 temperature。
 - `QuantizationLoggerCallback`：按下游显式声明的 `QuantizeOutput` 记录量化 loss、code usage、perplexity、dead code 和 active codebook 比例。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
@@ -125,7 +126,7 @@ optim 不提供魔法 LightningModule 基类。下游在自己的 `configure_opt
 ## Module
 
 `module` 是 core 组件，提供 task-agnostic 的 `torch.nn.Module` 积木。顶层只导出少量稳定组件；
-dynamic conv、quantization、Qwen 和 idspace 从各自子模块显式导入。
+dynamic conv、MoE、quantization、Qwen 和 idspace 从各自子模块显式导入。
 
 适合放入：
 
@@ -143,6 +144,7 @@ dynamic conv、quantization、Qwen 和 idspace 从各自子模块显式导入。
 
 - Adaptive Dirichlet Tempering，用于 MoE/router logits 的自适应温度缩放。
 - `anytrain.module.dynamic_conv`：1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel。
+- `anytrain.module.moe`：token-choice sparse MoE 的 router、local dispatch、layer 和 metrics；expert 模块由下游显式传入。
 - `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer，以及不依赖 Lightning 的 usage/perplexity 统计 helper。
 - `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 experimental MTP codebook predictor。
 

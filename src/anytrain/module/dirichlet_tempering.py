@@ -131,19 +131,14 @@ def adt_stats_metrics(
     enabled = _adt_metric_groups(metrics)
     values: dict[str, Tensor] = {}
     if "usage" in enabled:
-        values.update(
-            {
-                "effective_experts": stats.effective_experts,
-                "expert_means": stats.expert_means,
-                "expert_utilization": stats.expert_utilization,
-            }
-        )
+        values["effective_experts"] = stats.effective_experts
+        values.update(_per_expert_metrics(stats.expert_utilization, "usage"))
     if "variance" in enabled:
-        values["expert_vars"] = stats.expert_vars
+        values.update(_per_expert_metrics(stats.expert_vars, "variance"))
     if "alpha" in enabled:
-        values["alpha"] = stats.alpha
+        values.update(_per_expert_metrics(stats.alpha, "alpha"))
     if "temperature" in enabled:
-        values["temperature"] = stats.temperature
+        values.update(_per_expert_metrics(stats.temperature, "temperature"))
     return values
 
 
@@ -640,3 +635,9 @@ def _adt_metric_groups(values: Iterable[str]) -> set[str]:
     if unknown:
         raise ValueError(f"unknown ADT metrics: {sorted(unknown)!r}.")
     return result
+
+
+def _per_expert_metrics(values: Tensor, name: str) -> dict[str, Tensor]:
+    if values.ndim != 1:
+        raise ValueError(f"ADT stat {name} must be a 1D tensor, got shape {tuple(values.shape)}.")
+    return {f"expert_{expert_index}/{name}": value for expert_index, value in enumerate(values)}

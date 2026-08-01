@@ -49,8 +49,9 @@ load-balancing loss、不假设 batch schema，也不直接做 Lightning logging
 公开统计优先使用命名清楚的属性：`expert_utilization` 表示每个 expert 的运行期平均 router 概率，
 `effective_experts` 表示 utilization 分布的 entropy perplexity，`temperature` 表示当前应用到 logits 的
 per-expert 温度。`stats()` 返回纯 `ADTStats` 对象；`adt_stats_metrics()` 负责把 usage、variance、
-alpha 和 temperature 展平成稳定相对 metric key。`diagnostics()` 为兼容旧调用保留，等价于
-`adt_stats_metrics(adt.stats())`，返回这些张量以及 `expert_means`、`expert_vars` 和 `alpha`。
+alpha 和 temperature 展平成 scalar relative metric key，例如 `effective_experts`、
+`expert_0/usage`、`expert_0/variance`、`expert_0/alpha` 和 `expert_0/temperature`。
+`diagnostics()` 为兼容旧调用保留，等价于 `adt_stats_metrics(adt.stats())`。
 `ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
 
 Dynamic Conv 用于按样本或按分段动态组合 expert convolution kernel。它保持 task-agnostic：

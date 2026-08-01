@@ -44,6 +44,8 @@ src/anytrain/lightning/
 - `LossTimeBucketLoggerCallback`
 - `FlopsProvider`
 - `PerformanceCallback`
+- `ADTStatsLoggerCallback`
+- `ADTStatsMonitor`
 - `QuantizationLoggerCallback`
 - `QuantizationMonitor`
 - `RankLogMode`
@@ -130,6 +132,12 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
+
+`ADTStatsLoggerCallback` 只消费下游显式返回的 `ADTStatsMonitor` mapping；monitor 绑定
+`AdaptiveDirichletTempering` 或快照 `ADTStats`，callback 不扫描 `pl_module`，不解释 batch，也不额外
+触发 router forward。它把 `adt_stats_metrics()` 生成的 scalar relative keys 加上 `tag/name`
+前缀后记录，例如 `adt/router/expert_0/usage` 和 `adt/router/effective_experts`。DDP 下 callback
+不做额外 collective；如果需要全局 router stats，应在 ADT 本身启用 `sync_distributed_stats=True`。
 
 `QuantizationLoggerCallback` 只消费下游显式返回的 `QuantizationMonitor` mapping；monitor 绑定
 `QuantizeOutput` 和对应 quantizer 或 `codebook_size` / `num_codebooks`。callback 不扫描
