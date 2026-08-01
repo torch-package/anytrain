@@ -23,13 +23,13 @@
 子包显式导出其它组件：
 
 - `anytrain.module.routing`：`DenseExpertWeights`、`SparseExpertRouting`、专家数/top-k 校验、dense/sparse route 校验和 mask broadcast helper。
-- `anytrain.module.dynamic_conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
+- `anytrain.module.moe.conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`；旧 `anytrain.module.dynamic_conv` 仅保留兼容 re-export。
 - `anytrain.module.moe`：`TopKRouter`、`LinearTopKRouter`、`TokenChoiceMoE`、`MoELayer`、`RouterOutput`、`MoEOutput`、`load_balance_loss`、`router_z_loss`、`expert_usage` 和 `effective_experts`。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
 
-`anytrain.module.dynamic_conv` 还公开 `eca_kernel_size`，用于按 channel 数计算 router 的 odd
+`anytrain.module.moe.conv` 还公开 `eca_kernel_size`，用于按 channel 数计算 router 的 odd
 kernel size。
 
 ADT 用于 MoE/router logits 的自适应温度缩放和专家利用率统计，适合跨 audio、vision、text 等项目复用。
@@ -55,7 +55,7 @@ alpha 和 temperature 展平成 scalar relative metric key，例如 `effective_e
 `diagnostics()` 为兼容旧调用保留，等价于 `adt_stats_metrics(adt.stats())`。
 `ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
 
-Dynamic Conv 用于按样本或按分段动态组合 expert convolution kernel。它保持 task-agnostic：
+`anytrain.module.moe.conv` 用于按样本或按分段动态组合 expert convolution kernel。它是 MoE 家族里的 convolutional dense-mixture expert 层，并保持 task-agnostic：
 
 - 核心卷积只接收外部 `router`，或通过 `forward_manually(x, expert_weights)` 显式传入权重。
 - 默认 `ADTRouter1d` 只依赖 torch 原生层和 `AdaptiveDirichletTempering`。
@@ -64,7 +64,7 @@ Dynamic Conv 用于按样本或按分段动态组合 expert convolution kernel�
   需求明确后再补。
 - router 输出被视作 expert 权重，不在 `DynamicConv1d` 内猜测 logits/softmax 语义。
 
-Dynamic Conv 和 MoE 共享的抽象只放在 `anytrain.module.routing`：dense expert weights、sparse expert routing、专家数/top-k 校验和 mask broadcast。Dynamic Conv 继续负责 dense kernel mixing；MoE 继续负责 sparse token dispatch、combine 和 MoE 专属 routing metrics，避免把两者包成隐藏执行框架。设计见 [`anytrain.module.routing`](routing.md)。
+MoE conv 和 sparse MoE 共享的抽象只放在 `anytrain.module.routing`：dense expert weights、sparse expert routing、专家数/top-k 校验和 mask broadcast。`anytrain.module.moe.conv` 继续负责 dense kernel mixing；`anytrain.module.moe` 继续负责 sparse token dispatch、combine 和 MoE 专属 routing metrics，避免把两者包成隐藏执行框架。设计见 [`anytrain.module.routing`](routing.md)。
 
 `anytrain.module.moe` 提供 token-choice sparse MoE 的薄组件层，设计见 [`anytrain.module.moe`](moe.md)。它只负责 feature-last token 的 top-k routing、local expert dispatch、combine 和通用 router metrics：
 
@@ -164,5 +164,5 @@ python -m pip install "anytrain[module]"
 ```
 
 当前 Qwen3 复用层和 `QwenMTPCodebookPredictor` 需要 `module` extra 中的
-`transformers>=4.51.0`。ADT、Dynamic Conv 和 quantization 不需要 optional 依赖；
+`transformers>=4.51.0`。ADT、MoE conv 和 quantization 不需要 optional 依赖；
 `import anytrain` 和 `import anytrain.module` 不会主动导入 `transformers`。

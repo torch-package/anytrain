@@ -12,6 +12,7 @@ The subpackage exports:
 
 - `TopKRouter` / `LinearTopKRouter`: feature-last linear router from `(..., input_dim)` hidden states to top-k expert assignments.
 - `TokenChoiceMoE` / `MoELayer`: wrapper that runs selected local `nn.Module` experts and combines weighted outputs.
+- `anytrain.module.moe.conv`: convolutional dense-mixture MoE layers (`DynamicConv1d`, `DynamicConv2d`, and `DynamicConvTranspose1d`).
 - `RouterOutput`: MoE-compatible subclass of `anytrain.module.routing.SparseExpertRouting`, carrying router logits, probabilities, selected expert indices, selected combine weights, and optional token mask.
 - `MoEOutput`: combined hidden states, routing output, per-expert assignment counts, and dropped-token mask.
 - `dispatch_to_experts()` / `sparse_dispatch()`: standalone dispatch/combine helper for manually supplied `SparseExpertRouting` / `RouterOutput`.
@@ -21,7 +22,7 @@ The subpackage exports:
 
 ## Tensor Contract
 
-MoE shares only the routing data contract with Dynamic Conv via `anytrain.module.routing`; expert execution remains MoE-specific sparse dispatch.
+Sparse MoE and MoE conv share only the routing data contract via `anytrain.module.routing`; expert execution remains subdomain-specific.
 
 - Hidden states are feature-last: `(..., input_dim)`.
 - Router logits and probabilities are shaped `(..., num_experts)`.
