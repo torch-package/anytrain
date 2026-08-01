@@ -38,6 +38,7 @@
 - `anytrain.evaluator`：通用 evaluator 接口和组合器。
 - `anytrain.optim`：optimizer、scheduler 和 LLM/Muon helper。
 - `anytrain.module`：少量稳定的 task-agnostic `torch.nn.Module` 积木。
+- `anytrain.module.routing`：Dynamic Conv 和 MoE 共享的专家路由表示、校验和 mask 语义。
 - `anytrain.module.dynamic_conv`、`anytrain.module.moe`、`anytrain.module.quantization`、`anytrain.module.qwen`：显式子模块组件入口。
 - `anytrain.module.idspace`：local/global token id 映射和 block embedding 路由。
 
@@ -139,7 +140,7 @@ class MyPLModule(pl.LightningModule):
 
 ### `module`
 
-提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；dynamic conv、quantization、Qwen 和 idspace 从对应子模块导入。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
+提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；routing、dynamic conv、MoE、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.routing` 只抽专家路由表示、校验和 mask 语义；dynamic conv 的 kernel mixing 与 MoE 的 sparse token dispatch 仍留在各自子模块。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
 
 ### `module.idspace` / `tokenizer`
 
@@ -170,6 +171,7 @@ src/anytrain/
   evaluator/
   optim/
   module/
+    routing.py
     dynamic_conv/
     idspace/
     quantization/

@@ -7,6 +7,7 @@ from einops import rearrange
 from torch import Size, Tensor, nn
 from torch.nn import functional as F
 
+from ..routing import DenseExpertWeights
 from ._expert import (
     expand_expert_weights as _expand_expert_weights,
 )
@@ -147,8 +148,8 @@ class DynamicConv1d(nn.Module):
         output = self.apply_conv(x, expert_weights)
         return self.postprocess(output, cache)
 
-    def forward_manually(self, x: Tensor, expert_weights: Tensor) -> Tensor:
-        _validate_expert_weights(expert_weights, num_experts=self.num_experts)
+    def forward_manually(self, x: Tensor, expert_weights: Tensor | DenseExpertWeights) -> Tensor:
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         x, cache = self.preprocess(x)
         expert_weights = _expand_expert_weights(
             expert_weights,
@@ -164,7 +165,7 @@ class DynamicConv1d(nn.Module):
         if router is None:
             raise ValueError("router must be provided when calling DynamicConv1d.forward().")
         expert_weights = router(x)
-        _validate_expert_weights(expert_weights, num_experts=self.num_experts)
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         return expert_weights.reshape(-1, self.num_experts)
 
     def preprocess(self, x: Tensor) -> tuple[Tensor, PreprocessCache]:
@@ -242,9 +243,13 @@ class DynamicConv1d(nn.Module):
             output_size=output_size,
         )
 
-    def apply_conv(self, x: Tensor, expert_weights: Tensor) -> Tensor:
-        expert_weights = _expand_expert_weights(expert_weights, batch_size=x.size(0))
-        weight = _mix_expert_weights(expert_weights, self.weight)
+    def apply_conv(self, x: Tensor, expert_weights: Tensor | DenseExpertWeights) -> Tensor:
+        expert_weight_tensor: Tensor = _validate_expert_weights(
+            expert_weights,
+            num_experts=self.num_experts,
+        )
+        expert_weight_tensor = _expand_expert_weights(expert_weight_tensor, batch_size=x.size(0))
+        weight = _mix_expert_weights(expert_weight_tensor, self.weight)
         x = rearrange(x, "b c t -> 1 (b c) t")
         weight = rearrange(weight, "b o c k -> (b o) c k")
 
@@ -260,12 +265,12 @@ class DynamicConv1d(nn.Module):
             stride=scalar_1d(self.stride, name="stride"),
             padding=conv_padding,
             dilation=scalar_1d(self.dilation, name="dilation"),
-            groups=expert_weights.size(0) * self.groups,
+            groups=expert_weight_tensor.size(0) * self.groups,
         )
-        output = rearrange(output, "1 (b o) t -> b o t", b=expert_weights.size(0))
+        output = rearrange(output, "1 (b o) t -> b o t", b=expert_weight_tensor.size(0))
 
         if self.bias is not None:
-            bias = _mix_expert_bias(expert_weights, self.bias)
+            bias = _mix_expert_bias(expert_weight_tensor, self.bias)
             output = output + bias[..., None]
         return output
 
@@ -399,8 +404,8 @@ class DynamicConvTranspose1d(nn.Module):
         output = self.postprocess(output, cache)
         return self.apply_bias(output, expert_weights, cache)
 
-    def forward_manually(self, x: Tensor, expert_weights: Tensor) -> Tensor:
-        _validate_expert_weights(expert_weights, num_experts=self.num_experts)
+    def forward_manually(self, x: Tensor, expert_weights: Tensor | DenseExpertWeights) -> Tensor:
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         x, cache = self.preprocess(x)
         expert_weights = _expand_expert_weights(
             expert_weights,
@@ -419,7 +424,7 @@ class DynamicConvTranspose1d(nn.Module):
                 "router must be provided when calling DynamicConvTranspose1d.forward()."
             )
         expert_weights = router(x)
-        _validate_expert_weights(expert_weights, num_experts=self.num_experts)
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         return expert_weights.reshape(-1, self.num_experts)
 
     def preprocess(self, x: Tensor) -> tuple[Tensor, PreprocessCache]:
@@ -448,9 +453,13 @@ class DynamicConvTranspose1d(nn.Module):
             output_size=output_size,
         )
 
-    def apply_conv(self, x: Tensor, expert_weights: Tensor) -> Tensor:
-        expert_weights = _expand_expert_weights(expert_weights, batch_size=x.size(0))
-        weight = _mix_expert_weights(expert_weights, self.weight)
+    def apply_conv(self, x: Tensor, expert_weights: Tensor | DenseExpertWeights) -> Tensor:
+        expert_weight_tensor: Tensor = _validate_expert_weights(
+            expert_weights,
+            num_experts=self.num_experts,
+        )
+        expert_weight_tensor = _expand_expert_weights(expert_weight_tensor, batch_size=x.size(0))
+        weight = _mix_expert_weights(expert_weight_tensor, self.weight)
         x = rearrange(x, "b c t -> 1 (b c) t")
         weight = rearrange(weight, "b i o k -> (b i) o k")
 
@@ -462,9 +471,9 @@ class DynamicConvTranspose1d(nn.Module):
             padding=0,
             output_padding=0,
             dilation=scalar_1d(self.dilation, name="dilation"),
-            groups=expert_weights.size(0) * self.groups,
+            groups=expert_weight_tensor.size(0) * self.groups,
         )
-        output = rearrange(output, "1 (b o) t -> b o t", b=expert_weights.size(0))
+        output = rearrange(output, "1 (b o) t -> b o t", b=expert_weight_tensor.size(0))
 
         return output
 
@@ -490,10 +499,16 @@ class DynamicConvTranspose1d(nn.Module):
         )
         return trim_1d(folded, cache.output_size[0])
 
-    def apply_bias(self, output: Tensor, expert_weights: Tensor, cache: PreprocessCache) -> Tensor:
+    def apply_bias(
+        self,
+        output: Tensor,
+        expert_weights: Tensor | DenseExpertWeights,
+        cache: PreprocessCache,
+    ) -> Tensor:
         if self.bias is None:
             return output
 
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         num_segments = cache.num_segments[0]
         expert_weights = _expand_expert_weights(
             expert_weights,

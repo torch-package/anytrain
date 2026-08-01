@@ -5,6 +5,7 @@ from einops import rearrange
 from torch import Size, Tensor, nn
 from torch.nn import functional as F
 
+from ..routing import DenseExpertWeights
 from ._expert import (
     expand_expert_weights as _expand_expert_weights,
 )
@@ -126,8 +127,8 @@ class DynamicConv2d(nn.Module):
         expert_weights = self.compute_expert_weights(x)
         return self.apply_conv(x, expert_weights)
 
-    def forward_manually(self, x: Tensor, expert_weights: Tensor) -> Tensor:
-        _validate_expert_weights(expert_weights, num_experts=self.num_experts)
+    def forward_manually(self, x: Tensor, expert_weights: Tensor | DenseExpertWeights) -> Tensor:
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         _validate_input_2d(x, channels=self.in_channels, name="DynamicConv2d")
         return self.apply_conv(x, expert_weights)
 
@@ -136,12 +137,16 @@ class DynamicConv2d(nn.Module):
         if router is None:
             raise ValueError("router must be provided when calling DynamicConv2d.forward().")
         expert_weights = router(x)
-        _validate_expert_weights(expert_weights, num_experts=self.num_experts)
+        expert_weights = _validate_expert_weights(expert_weights, num_experts=self.num_experts)
         return expert_weights.reshape(-1, self.num_experts)
 
-    def apply_conv(self, x: Tensor, expert_weights: Tensor) -> Tensor:
-        expert_weights = _expand_expert_weights(expert_weights, batch_size=x.size(0))
-        weight = _mix_expert_weights(expert_weights, self.weight)
+    def apply_conv(self, x: Tensor, expert_weights: Tensor | DenseExpertWeights) -> Tensor:
+        expert_weight_tensor: Tensor = _validate_expert_weights(
+            expert_weights,
+            num_experts=self.num_experts,
+        )
+        expert_weight_tensor = _expand_expert_weights(expert_weight_tensor, batch_size=x.size(0))
+        weight = _mix_expert_weights(expert_weight_tensor, self.weight)
         x = rearrange(x, "b c h w -> 1 (b c) h w")
         weight = rearrange(weight, "b o c kh kw -> (b o) c kh kw")
 
@@ -152,12 +157,12 @@ class DynamicConv2d(nn.Module):
             stride=pair_2d(self.stride, name="stride"),
             padding=pair_2d(self.padding, name="padding"),
             dilation=pair_2d(self.dilation, name="dilation"),
-            groups=expert_weights.size(0) * self.groups,
+            groups=expert_weight_tensor.size(0) * self.groups,
         )
-        output = rearrange(output, "1 (b o) h w -> b o h w", b=expert_weights.size(0))
+        output = rearrange(output, "1 (b o) h w -> b o h w", b=expert_weight_tensor.size(0))
 
         if self.bias is not None:
-            bias = _mix_expert_bias(expert_weights, self.bias)
+            bias = _mix_expert_bias(expert_weight_tensor, self.bias)
             output = output + bias[..., None, None]
         return output
 

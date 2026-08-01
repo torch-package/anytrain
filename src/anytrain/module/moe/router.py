@@ -5,6 +5,7 @@ import inspect
 import torch
 from torch import Tensor, nn
 
+from ..routing import broadcast_routing_mask, validate_num_experts, validate_top_k
 from .types import RouterOutput
 
 
@@ -31,15 +32,8 @@ class TopKRouter(nn.Module):
         super().__init__()
         if input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {input_dim}.")
-        if num_experts <= 0:
-            raise ValueError(f"num_experts must be positive, got {num_experts}.")
-        if top_k <= 0:
-            raise ValueError(f"top_k must be positive, got {top_k}.")
-        if top_k > num_experts:
-            raise ValueError(
-                f"top_k must be <= num_experts: got top_k={top_k}, "
-                f"num_experts={num_experts}."
-            )
+        validate_num_experts(num_experts)
+        validate_top_k(top_k, num_experts=num_experts)
         if eps <= 0:
             raise ValueError(f"eps must be positive, got {eps}.")
 
@@ -63,10 +57,11 @@ class TopKRouter(nn.Module):
         logits = self.proj(hidden_states)
         broadcast_mask = None
         if mask is not None:
-            broadcast_mask = _broadcast_mask(
+            broadcast_mask = broadcast_routing_mask(
                 mask,
                 leading_shape=hidden_states.shape[:-1],
                 device=hidden_states.device,
+                leading_name="hidden_states.shape[:-1]",
             )
 
         probabilities = self._gate_logits(
@@ -140,22 +135,6 @@ def _module_accepts_keyword(module: nn.Module | None, keyword: str) -> bool:
         parameter.kind == inspect.Parameter.VAR_KEYWORD or name == keyword
         for name, parameter in signature.parameters.items()
     )
-
-
-def _broadcast_mask(mask: Tensor, *, leading_shape: torch.Size, device: torch.device) -> Tensor:
-    if mask.dtype != torch.bool:
-        raise TypeError(f"mask must be a bool tensor, got dtype={mask.dtype}.")
-    if mask.device != device:
-        raise ValueError(
-            f"mask must be on the same device as hidden_states: got {mask.device} and {device}."
-        )
-    try:
-        return torch.broadcast_to(mask, leading_shape)
-    except RuntimeError as exc:
-        raise ValueError(
-            "mask must be broadcastable to hidden_states.shape[:-1]: "
-            f"got mask shape {tuple(mask.shape)}, leading shape {tuple(leading_shape)}."
-        ) from exc
 
 
 LinearTopKRouter = TopKRouter

@@ -12,14 +12,16 @@ The subpackage exports:
 
 - `TopKRouter` / `LinearTopKRouter`: feature-last linear router from `(..., input_dim)` hidden states to top-k expert assignments.
 - `TokenChoiceMoE` / `MoELayer`: wrapper that runs selected local `nn.Module` experts and combines weighted outputs.
-- `RouterOutput`: router logits, probabilities, selected expert indices, selected combine weights, and optional token mask.
+- `RouterOutput`: MoE-compatible subclass of `anytrain.module.routing.SparseExpertRouting`, carrying router logits, probabilities, selected expert indices, selected combine weights, and optional token mask.
 - `MoEOutput`: combined hidden states, routing output, per-expert assignment counts, and dropped-token mask.
-- `dispatch_to_experts()` / `sparse_dispatch()`: standalone dispatch/combine helper for manually supplied `RouterOutput`.
+- `dispatch_to_experts()` / `sparse_dispatch()`: standalone dispatch/combine helper for manually supplied `SparseExpertRouting` / `RouterOutput`.
 - `load_balance_loss()`, `router_z_loss()`, `expert_usage()`, and `effective_experts()`: pure metric/loss helpers for downstream code to weight and log explicitly.
 
 `anytrain.module` does not re-export these names at the package top level. Users should import from `anytrain.module.moe` explicitly.
 
 ## Tensor Contract
+
+MoE shares only the routing data contract with Dynamic Conv via `anytrain.module.routing`; expert execution remains MoE-specific sparse dispatch.
 
 - Hidden states are feature-last: `(..., input_dim)`.
 - Router logits and probabilities are shaped `(..., num_experts)`.
@@ -27,6 +29,7 @@ The subpackage exports:
 - `mask`, when provided, must be boolean and broadcastable to the leading token shape.
 - Masked tokens keep logits/probabilities for diagnostics, but their selected weights are zeroed, they are not dispatched, and they do not contribute to routing metrics.
 - `tokens_per_expert` counts active top-k assignments, not unique tokens, so its sum is `active_tokens * top_k` when all active weights are nonzero.
+- `TokenChoiceMoE.forward_manually()` accepts any `SparseExpertRouting`; `RouterOutput` remains the public MoE convenience class for backward-compatible imports.
 
 ## ADT Integration
 

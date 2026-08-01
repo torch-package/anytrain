@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from ..routing import (
+    DenseExpertWeights,
+    validate_dense_expert_weights,
+    validate_num_experts,
+)
+
 
 def validate_channels(
     *,
@@ -17,8 +23,7 @@ def validate_channels(
         raise ValueError(f"out_channels must be positive, got {out_channels}.")
     if groups <= 0:
         raise ValueError(f"groups must be positive, got {groups}.")
-    if num_experts <= 0:
-        raise ValueError(f"num_experts must be positive, got {num_experts}.")
+    validate_num_experts(num_experts)
     if in_channels % groups != 0:
         raise ValueError(
             f"in_channels must be divisible by groups: got {in_channels} and {groups}."
@@ -29,14 +34,12 @@ def validate_channels(
         )
 
 
-def validate_expert_weights(expert_weights: Tensor, *, num_experts: int) -> None:
-    if expert_weights.ndim != 2:
-        raise ValueError(f"expert_weights must be 2D, got shape {tuple(expert_weights.shape)}.")
-    if expert_weights.size(1) != num_experts:
-        raise ValueError(
-            "expert_weights last dimension must match num_experts: "
-            f"got {expert_weights.size(1)}, expected {num_experts}."
-        )
+def validate_expert_weights(
+    expert_weights: Tensor | DenseExpertWeights,
+    *,
+    num_experts: int,
+) -> Tensor:
+    return validate_dense_expert_weights(expert_weights, num_experts=num_experts, ndim=2)
 
 
 def expand_expert_weights(

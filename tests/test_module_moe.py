@@ -19,6 +19,7 @@ from anytrain.module.moe import (
     load_balance_loss,
     router_z_loss,
 )
+from anytrain.module.routing import SparseExpertRouting
 
 
 class ScaleExpert(nn.Module):
@@ -31,11 +32,16 @@ class ScaleExpert(nn.Module):
 
 
 class FixedRouter(nn.Module):
-    def __init__(self, output: RouterOutput) -> None:
+    def __init__(self, output: SparseExpertRouting) -> None:
         super().__init__()
         self.output = output
 
-    def forward(self, hidden_states: torch.Tensor, *, mask: torch.Tensor | None = None) -> RouterOutput:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        mask: torch.Tensor | None = None,
+    ) -> SparseExpertRouting:
         if mask is not None:
             return RouterOutput(
                 logits=self.output.logits,
@@ -68,6 +74,8 @@ class TopKRouterTest(unittest.TestCase):
         self.assertEqual(output.probabilities.shape, (1, 2, 3))
         self.assertEqual(output.indices.shape, (1, 2, 2))
         self.assertEqual(output.weights.shape, (1, 2, 2))
+        self.assertIsInstance(output, SparseExpertRouting)
+        self.assertTrue(torch.equal(output.dense_weights.weights, output.probabilities))
         self.assertTrue(torch.equal(output.indices[0, 0], torch.tensor([0, 1])))
         self.assertTrue(torch.allclose(output.weights.sum(dim=-1), torch.ones(1, 2)))
         self.assertTrue(torch.allclose(output.probabilities.sum(dim=-1), torch.ones(1, 2)))
@@ -181,6 +189,24 @@ class TokenChoiceMoETest(unittest.TestCase):
 
         self.assertEqual(output.hidden_states.shape, (2, 5))
         self.assertTrue(torch.equal(output.tokens_per_expert.cpu(), torch.tensor([2, 0, 0])))
+
+    def test_forward_manually_accepts_sparse_expert_routing_base(self):
+        hidden = torch.ones(2, 2)
+        routing = SparseExpertRouting(
+            logits=torch.zeros(2, 2),
+            probabilities=torch.full((2, 2), 0.5),
+            indices=torch.tensor([[0], [1]]),
+            weights=torch.ones(2, 1),
+        )
+        moe = TokenChoiceMoE(
+            router=FixedRouter(routing),
+            experts=[ScaleExpert(2.0), ScaleExpert(3.0)],
+        )
+
+        output = moe.forward_manually(hidden, routing)
+
+        self.assertTrue(torch.equal(output.hidden_states, torch.tensor([[2.0, 2.0], [3.0, 3.0]])))
+        self.assertIs(output.routing, routing)
 
     def test_forward_propagates_gradients_to_router_and_experts(self):
         torch.manual_seed(0)

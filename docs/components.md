@@ -143,6 +143,7 @@ dynamic conv、MoE、quantization、Qwen 和 idspace 从各自子模块显式导
 当前提供：
 
 - Adaptive Dirichlet Tempering，用于 MoE/router logits 的自适应温度缩放。
+- `anytrain.module.routing`：Dynamic Conv 和 MoE 共享的 dense/sparse expert routing 表示、校验和 mask broadcast helper；不执行 expert，也不持有 task schema。
 - `anytrain.module.dynamic_conv`：1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel。
 - `anytrain.module.moe`：token-choice sparse MoE 的 router、local dispatch、layer 和 metrics；expert 模块由下游显式传入。
 - `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer，以及不依赖 Lightning 的 usage/perplexity 统计 helper。

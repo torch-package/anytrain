@@ -5,8 +5,9 @@ from typing import Any
 
 from torch import Tensor, nn
 
+from ..routing import SparseExpertRouting
 from .dispatch import dispatch_to_experts
-from .types import MoEOutput, RouterOutput
+from .types import MoEOutput
 
 
 class TokenChoiceMoE(nn.Module):
@@ -34,11 +35,11 @@ class TokenChoiceMoE(nn.Module):
         **router_kwargs: Any,
     ) -> MoEOutput:
         routing = self.router(hidden_states, mask=mask, **router_kwargs)
-        if not isinstance(routing, RouterOutput):
-            raise TypeError("router must return a RouterOutput.")
+        if not isinstance(routing, SparseExpertRouting):
+            raise TypeError("router must return a SparseExpertRouting.")
         return self.forward_manually(hidden_states, routing)
 
-    def forward_manually(self, hidden_states: Tensor, routing: RouterOutput) -> MoEOutput:
+    def forward_manually(self, hidden_states: Tensor, routing: SparseExpertRouting) -> MoEOutput:
         hidden, tokens_per_expert = dispatch_to_experts(hidden_states, routing, self.experts)
         return MoEOutput(
             hidden_states=hidden,

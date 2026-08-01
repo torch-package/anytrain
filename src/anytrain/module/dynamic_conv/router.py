@@ -7,6 +7,7 @@ import torch
 from torch import Tensor, nn
 
 from ..dirichlet_tempering import ADT
+from ..routing import validate_num_experts
 
 ActivationName = Literal["gelu", "identity", "relu", "silu"]
 NormName = Literal["batch", "group", "identity"]
@@ -71,8 +72,7 @@ class ADTRouter1d(nn.Module):
         super().__init__()
         if channels <= 0:
             raise ValueError(f"channels must be positive, got {channels}.")
-        if num_experts <= 0:
-            raise ValueError(f"num_experts must be positive, got {num_experts}.")
+        validate_num_experts(num_experts)
         if dropout is not None and not 0 <= dropout < 1:
             raise ValueError(f"dropout must be in [0, 1), got {dropout}.")
 
@@ -146,8 +146,7 @@ class ADTRouter2d(nn.Module):
         super().__init__()
         if channels <= 0:
             raise ValueError(f"channels must be positive, got {channels}.")
-        if num_experts <= 0:
-            raise ValueError(f"num_experts must be positive, got {num_experts}.")
+        validate_num_experts(num_experts)
         if dropout is not None and not 0 <= dropout < 1:
             raise ValueError(f"dropout must be in [0, 1), got {dropout}.")
 

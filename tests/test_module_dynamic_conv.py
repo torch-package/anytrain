@@ -17,6 +17,7 @@ from anytrain.module.dynamic_conv.shape import (
     infer_padding_2d,
     validate_dynamic_conv1d_args,
 )
+from anytrain.module.routing import DenseExpertWeights
 
 
 class SimpleRouter(nn.Module):
@@ -172,6 +173,16 @@ class DynamicConv1dTest(unittest.TestCase):
         conv = DynamicConv1d(16, 32, kernel_size=3, num_experts=4, router=None)
         x = torch.randn(2, 16, 24)
         expert_weights = torch.tensor([[0.7, 0.1, 0.1, 0.1]])
+
+        y = conv.forward_manually(x, expert_weights)
+
+        self.assertEqual(y.shape, (2, 32, 24))
+        self.assertTrue(torch.isfinite(y).all())
+
+    def test_forward_manually_accepts_dense_expert_weights_object(self):
+        conv = DynamicConv1d(16, 32, kernel_size=3, num_experts=4, router=None)
+        x = torch.randn(2, 16, 24)
+        expert_weights = DenseExpertWeights(torch.tensor([[0.7, 0.1, 0.1, 0.1]]))
 
         y = conv.forward_manually(x, expert_weights)
 
