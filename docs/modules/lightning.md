@@ -18,11 +18,13 @@ src/anytrain/lightning/
   callback/
     __init__.py
     checkpoint.py
+    dirichlet_tempering.py
     debug.py
     grad.py
     loss.py
     performance.py
     quantization.py
+    sparse_moe.py
   mixin/
     __init__.py
     log.py
@@ -48,6 +50,8 @@ src/anytrain/lightning/
 - `ADTStatsMonitor`
 - `QuantizationLoggerCallback`
 - `QuantizationMonitor`
+- `SparseMoELoggerCallback`
+- `SparseMoEMonitor`
 - `RankLogMode`
 - `prefixed_log_dict`
 
@@ -146,6 +150,15 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 归约，再计算 perplexity、dead code ratio 和 active ratio，避免平均各 rank 比例。histogram 默认关闭，
 开启后只由 global rank 0 写入本地观测到的 index 分布。
 
+`SparseMoELoggerCallback` 只消费下游显式返回的 `SparseMoEMonitor` mapping；monitor 绑定
+`MoEOutput` 或 `SparseExpertRouting`，可选携带 `SparseMoELossOutput`。callback 不扫描
+`pl_module`，不解释 batch，也不为了日志额外 forward router 或 expert。它把
+`sparse_moe_routing_metrics()` 和 `sparse_moe_loss_metrics()` 生成的 scalar relative keys 加上
+`tag/name` 前缀后记录，例如 `moe/router/effective_experts`、`moe/router/expert_0/usage`、
+`moe/router/dropped/ratio` 和 `moe/router/loss/total`。loss logs 只在 monitor 显式提供
+`SparseMoELossOutput` 时记录。DDP 下 callback 不做额外 collective；需要全局 sparse MoE 统计时，
+下游应先在任务层聚合 routing outputs 或 metrics。
+
 `LossSummaryCallback` 在 batch hook 中仅保存 detached device scalar。每个指标的状态固定为前后各
 `window_capacity` 个值和完整 observation count；默认 capacity 为 20，不随训练长度增长。训练结束时
 所有 rank 先校验 metric schema、window capacity 和 observation count 一致，再共同归约窗口。
@@ -198,6 +211,7 @@ trainer = pl.Trainer(
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
 - `ModelCheckpoint` 的原生接口兼容、异步复制、同步 opt-out 和删除排队。
+- ADT、quantization 和 sparse MoE callback 的显式 monitor contract、日志 cadence 和 root export。
 - callback 可直接传入 Lightning `Trainer`。
 
 后续新增 logger backend 或 callback 时，需要补充与 Lightning logger backend 的集成测试，并确保没有引入 optional 依赖到 core import。

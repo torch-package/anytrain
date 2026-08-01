@@ -12,12 +12,19 @@ from anytrain.module.moe import (
     MoELayer,
     MoEOutput,
     RouterOutput,
+    SparseMoELoss,
     TokenChoiceMoE,
     TopKRouter,
+    dropped_token_ratio,
     effective_experts,
+    expert_probability_mean,
     expert_usage,
     load_balance_loss,
     router_z_loss,
+    sparse_moe_aux_loss,
+    sparse_moe_loss_metrics,
+    sparse_moe_routing_metrics,
+    tokens_per_expert,
 )
 from anytrain.module.moe.routing import SparseExpertRouting
 
@@ -297,6 +304,100 @@ class MoEMetricsTest(unittest.TestCase):
         self.assertTrue(torch.equal(effective_experts(routing), torch.tensor(0.0)))
         self.assertTrue(torch.equal(load_balance_loss(routing), torch.tensor(0.0)))
         self.assertTrue(torch.equal(router_z_loss(routing), torch.tensor(0.0)))
+
+    def test_routing_metrics_include_loggable_scalars(self):
+        routing = RouterOutput(
+            logits=torch.tensor([[2.0, 0.0], [0.0, 2.0], [1.0, 1.0]]),
+            probabilities=torch.tensor([[0.8, 0.2], [0.2, 0.8], [0.5, 0.5]]),
+            indices=torch.tensor([[0], [1], [0]]),
+            weights=torch.ones(3, 1),
+            mask=torch.tensor([True, True, False]),
+        )
+
+        metrics = sparse_moe_routing_metrics(routing)
+
+        self.assertTrue(torch.equal(tokens_per_expert(routing), torch.tensor([1, 1])))
+        torch.testing.assert_close(expert_probability_mean(routing), torch.tensor([0.5, 0.5]))
+        torch.testing.assert_close(metrics["expert_0/usage"], torch.tensor(0.5))
+        torch.testing.assert_close(metrics["expert_1/probability"], torch.tensor(0.5))
+        torch.testing.assert_close(metrics["tokens/total"], torch.tensor(2.0))
+        torch.testing.assert_close(metrics["dropped/ratio"], torch.tensor(0.0))
+        self.assertIn("effective_experts", metrics)
+
+    def test_dropped_ratio_respects_active_mask(self):
+        routing = RouterOutput(
+            logits=torch.zeros(3, 2),
+            probabilities=torch.full((3, 2), 0.5),
+            indices=torch.zeros(3, 1, dtype=torch.long),
+            weights=torch.tensor([[1.0], [0.0], [0.0]]),
+            mask=torch.tensor([True, True, False]),
+        )
+
+        torch.testing.assert_close(dropped_token_ratio(routing), torch.tensor(0.5))
+
+
+class SparseMoELossTest(unittest.TestCase):
+    def test_aux_loss_combines_weighted_components(self):
+        routing = RouterOutput(
+            logits=torch.tensor([[2.0, 0.0], [0.0, 2.0]]),
+            probabilities=torch.tensor([[0.8, 0.2], [0.2, 0.8]]),
+            indices=torch.tensor([[0], [1]]),
+            weights=torch.ones(2, 1),
+        )
+
+        output = sparse_moe_aux_loss(
+            routing,
+            load_balance_weight=0.1,
+            router_z_weight=0.01,
+        )
+
+        expected = output.load_balance * 0.1 + output.router_z * 0.01
+        torch.testing.assert_close(output.total, expected)
+        metrics = sparse_moe_loss_metrics(output)
+        self.assertEqual(set(metrics), {
+            "loss/total",
+            "loss/load_balance",
+            "loss/router_z",
+            "loss/weighted_load_balance",
+            "loss/weighted_router_z",
+        })
+
+    def test_sparse_moe_loss_module_returns_scalar_by_default(self):
+        routing = RouterOutput(
+            logits=torch.randn(2, 3),
+            probabilities=torch.randn(2, 3).softmax(dim=-1),
+            indices=torch.zeros(2, 1, dtype=torch.long),
+            weights=torch.ones(2, 1),
+        )
+        loss_fn = SparseMoELoss(load_balance_weight=0.2, router_z_weight=0.01)
+
+        loss = loss_fn(routing)
+
+        self.assertEqual(loss.ndim, 0)
+
+    def test_sparse_moe_loss_module_can_return_details(self):
+        routing = RouterOutput(
+            logits=torch.randn(2, 3),
+            probabilities=torch.randn(2, 3).softmax(dim=-1),
+            indices=torch.zeros(2, 1, dtype=torch.long),
+            weights=torch.ones(2, 1),
+        )
+        loss_fn = SparseMoELoss(
+            load_balance_weight=0.2,
+            router_z_weight=0.01,
+            return_details=True,
+        )
+
+        loss, details = loss_fn(routing)
+
+        self.assertEqual(loss.ndim, 0)
+        self.assertIn("load_balance", details)
+        self.assertIn("router_z", details)
+        self.assertFalse(details["load_balance"].requires_grad)
+
+    def test_sparse_moe_loss_rejects_negative_weights(self):
+        with self.assertRaisesRegex(ValueError, "load_balance_weight"):
+            SparseMoELoss(load_balance_weight=-1.0)
 
 
 if __name__ == "__main__":

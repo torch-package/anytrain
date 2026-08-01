@@ -28,6 +28,11 @@ from .quantization import (
     QuantizationMonitor,
     QuantizationMonitorsFn,
 )
+from .sparse_moe import (
+    SparseMoELoggerCallback,
+    SparseMoEMonitor,
+    SparseMoEMonitorsFn,
+)
 
 __all__ = [
     "DataThroughputCallback",
@@ -54,5 +59,8 @@ __all__ = [
     "QuantizationLoggerCallback",
     "QuantizationMonitor",
     "QuantizationMonitorsFn",
+    "SparseMoELoggerCallback",
+    "SparseMoEMonitor",
+    "SparseMoEMonitorsFn",
     "window_summary",
 ]

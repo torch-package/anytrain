@@ -24,7 +24,7 @@
 
 - `anytrain.module.moe.routing`：`DenseExpertWeights`、`SparseExpertRouting`、专家数/top-k 校验、dense/sparse route 校验和 mask broadcast helper。
 - `anytrain.module.moe.conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
-- `anytrain.module.moe`：`TopKRouter`、`LinearTopKRouter`、`TokenChoiceMoE`、`MoELayer`、`RouterOutput`、`MoEOutput`、`load_balance_loss`、`router_z_loss`、`expert_usage` 和 `effective_experts`。
+- `anytrain.module.moe`：`TopKRouter`、`LinearTopKRouter`、`TokenChoiceMoE`、`MoELayer`、`RouterOutput`、`MoEOutput`、`SparseMoELoss`、`sparse_moe_aux_loss`、`load_balance_loss`、`router_z_loss`、`expert_usage`、`effective_experts` 和 sparse MoE routing/loss metrics。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
@@ -70,9 +70,9 @@ MoE conv 和 sparse MoE 共享的抽象只放在 `anytrain.module.moe.routing`�
 
 - `TopKRouter` 把 `(..., input_dim)` hidden states 投影成 `(..., num_experts)` logits，可选复用 `AdaptiveDirichletTempering` 或其它 gate module 做概率校准。
 - `TokenChoiceMoE` / `MoELayer` 接收外部 `nn.Module` experts，不提供 ExpertRegistry、Transformer-MoE block、训练入口或 batch schema。
-- `RouterOutput` / `MoEOutput` 明确暴露 logits、probabilities、indices、weights、mask 和 `tokens_per_expert`，方便下游 LightningModule 自己记录和组合 loss。
+- `RouterOutput` / `MoEOutput` 明确暴露 logits、probabilities、indices、weights、mask、`tokens_per_expert` 和 dropped-token mask，方便下游 LightningModule 自己记录和组合 loss。
 - `RouterOutput` 是 `anytrain.module.moe.routing.SparseExpertRouting` 的 MoE 兼容子类；自定义 router 也可以直接返回通用 sparse routing 对象。
-- `load_balance_loss()`、`router_z_loss()`、`expert_usage()` 和 `effective_experts()` 是纯函数；MoE forward 不自动修改训练目标或日志行为。
+- `load_balance_loss()`、`router_z_loss()`、`sparse_moe_aux_loss()`、`SparseMoELoss`、`expert_usage()`、`effective_experts()` 和 `sparse_moe_routing_metrics()` 是显式 helper；MoE forward 不自动修改训练目标或日志行为。
 
 `anytrain.module.qwen.qwen3` 是 Hugging Face Qwen3 的薄复用层，不重新实现
 transformer block，也不要求下游维护一份庞大的项目级 config：

@@ -29,6 +29,11 @@ from .callback.quantization import (
     QuantizationMonitor,
     QuantizationMonitorsFn,
 )
+from .callback.sparse_moe import (
+    SparseMoELoggerCallback,
+    SparseMoEMonitor,
+    SparseMoEMonitorsFn,
+)
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
 
 __all__ = [
@@ -58,6 +63,9 @@ __all__ = [
     "QuantizationMonitor",
     "QuantizationMonitorsFn",
     "RankLogMode",
+    "SparseMoELoggerCallback",
+    "SparseMoEMonitor",
+    "SparseMoEMonitorsFn",
     "experiment",
     "prefixed_log_dict",
     "window_summary",
