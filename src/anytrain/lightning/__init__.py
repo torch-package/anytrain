@@ -7,6 +7,7 @@ from .callback.dirichlet_tempering import (
     ADTStatsMonitor,
     ADTStatsMonitorsFn,
 )
+from .callback.ema import EMACallback, ParameterEMA, find_ema_callback
 from .callback.grad import (
     GradientComparison,
     GradientLossGroupProvider,
@@ -44,7 +45,10 @@ __all__ = [
     "ADTStatsMonitor",
     "ADTStatsMonitorsFn",
     "DebugCallback",
+    "EMACallback",
     "FlopsProvider",
+    "ParameterEMA",
+    "find_ema_callback",
     "GradientComparison",
     "GradientLossGroupProvider",
     "GradientProbe",

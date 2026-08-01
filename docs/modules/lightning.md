@@ -20,6 +20,7 @@ src/anytrain/lightning/
     checkpoint.py
     dirichlet_tempering.py
     debug.py
+    ema.py
     grad.py
     loss.py
     performance.py
@@ -37,6 +38,9 @@ src/anytrain/lightning/
 - `LightningLogMixin`
 - `ModelCheckpoint`
 - `DebugCallback`
+- `EMACallback`
+- `ParameterEMA`
+- `find_ema_callback`
 - `GradientProbeLoggerCallback`
 - `GradientProbe`
 - `GradientTarget`
@@ -126,6 +130,12 @@ if writer is not None:
 `on_after_backward()` 只重复检查可训练参数与已有梯度。正常路径在设备端聚合 finite 状态，只做少量主机
 同步；遇到 NaN 或 Inf 时才定位并打印第一个异常参数或梯度的 name、index、value、shape、dtype、
 device，然后直接抛错。正式运行不需要时仍可从 callback 列表移除。
+
+`EMACallback` 维护可训练浮点参数的 float32 指数滑动平均。它在 `trainer.global_step` 前进时更新
+shadow weights，并在 validation / test / predict 开始时把 EMA 权重 swap 进模块、结束时 restore。
+下游也可以通过 `find_ema_callback(trainer)` 与 `average_parameters(pl_module)` 在 sample / artifact
+导出等自定义 hook 里临时使用 EMA 权重。callback 把 EMA state 写入 Lightning checkpoint；它不解释
+batch schema，也不自动改写 `state_dict` 里的原始训练权重。
 
 `ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
 
