@@ -3,116 +3,68 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from torch import Tensor, nn
+from torch import Tensor
 
 from .metrics import load_balance_loss, router_z_loss
-from .routing import SparseExpertRouting
+from .routing import ExpertRouting
 from .types import MoEOutput
 
 
 @dataclass(frozen=True)
-class SparseMoELossOutput:
-    """Explicit sparse-MoE auxiliary loss components.
+class MoELossOutput:
+    """Explicit MoE auxiliary loss components.
 
-    ``total`` is the coefficient-weighted scalar that downstream training code
+    The total field is the coefficient-weighted scalar that downstream training code
     can add to its task objective. The unweighted and weighted component fields
     stay available for logging without re-running the router.
     """
 
     total: Tensor
-    load_balance: Tensor
-    router_z: Tensor
-    weighted_load_balance: Tensor
-    weighted_router_z: Tensor
+    balance_loss: Tensor
+    z_loss: Tensor
+    weighted_balance: Tensor
+    weighted_z: Tensor
 
     def details(self) -> dict[str, Tensor]:
         return {
-            "load_balance": self.load_balance.detach(),
-            "router_z": self.router_z.detach(),
-            "weighted_load_balance": self.weighted_load_balance.detach(),
-            "weighted_router_z": self.weighted_router_z.detach(),
+            "balance": self.balance_loss.detach(),
+            "z": self.z_loss.detach(),
+            "weighted_balance": self.weighted_balance.detach(),
+            "weighted_z": self.weighted_z.detach(),
             "total": self.total.detach(),
         }
 
 
-def sparse_moe_aux_loss(
-    source: SparseExpertRouting | MoEOutput,
+def moe_loss(
+    source: ExpertRouting | MoEOutput,
     *,
-    load_balance_weight: float = 1.0,
-    router_z_weight: float = 0.0,
-) -> SparseMoELossOutput:
-    """Compute sparse-MoE auxiliary losses without mutating model outputs."""
+    balance: float = 1.0,
+    z: float = 0.0,
+) -> MoELossOutput:
+    """Compute MoE auxiliary losses without mutating model outputs."""
 
-    _non_negative_float(load_balance_weight, "load_balance_weight")
-    _non_negative_float(router_z_weight, "router_z_weight")
+    _non_negative_float(balance, "balance")
+    _non_negative_float(z, "z")
     routing = _routing(source)
-    load_balance = load_balance_loss(routing)
-    z_loss = router_z_loss(routing)
-    weighted_load_balance = load_balance * load_balance_weight
-    weighted_router_z = z_loss * router_z_weight
-    return SparseMoELossOutput(
-        total=weighted_load_balance + weighted_router_z,
-        load_balance=load_balance,
-        router_z=z_loss,
-        weighted_load_balance=weighted_load_balance,
-        weighted_router_z=weighted_router_z,
+    balance_value = load_balance_loss(routing)
+    z_value = router_z_loss(routing)
+    weighted_balance = balance_value * balance
+    weighted_z = z_value * z
+    return MoELossOutput(
+        total=weighted_balance + weighted_z,
+        balance_loss=balance_value,
+        z_loss=z_value,
+        weighted_balance=weighted_balance,
+        weighted_z=weighted_z,
     )
 
 
-def sparse_moe_loss_metrics(
-    loss: SparseMoELossOutput,
-    *,
-    prefix: str = "loss",
-) -> dict[str, Tensor]:
-    prefix = prefix.strip("/")
-    if prefix:
-        prefix = f"{prefix}/"
-    return {
-        f"{prefix}total": loss.total.detach(),
-        f"{prefix}load_balance": loss.load_balance.detach(),
-        f"{prefix}router_z": loss.router_z.detach(),
-        f"{prefix}weighted_load_balance": loss.weighted_load_balance.detach(),
-        f"{prefix}weighted_router_z": loss.weighted_router_z.detach(),
-    }
-
-
-class SparseMoELoss(nn.Module):
-    """Small ``nn.Module`` wrapper for explicit sparse-MoE aux loss wiring."""
-
-    def __init__(
-        self,
-        *,
-        load_balance_weight: float = 1.0,
-        router_z_weight: float = 0.0,
-        return_details: bool = False,
-    ) -> None:
-        super().__init__()
-        _non_negative_float(load_balance_weight, "load_balance_weight")
-        _non_negative_float(router_z_weight, "router_z_weight")
-        self.load_balance_weight = float(load_balance_weight)
-        self.router_z_weight = float(router_z_weight)
-        self.return_details = return_details
-
-    def forward(
-        self,
-        source: SparseExpertRouting | MoEOutput,
-    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
-        loss = sparse_moe_aux_loss(
-            source,
-            load_balance_weight=self.load_balance_weight,
-            router_z_weight=self.router_z_weight,
-        )
-        if not self.return_details:
-            return loss.total
-        return loss.total, loss.details()
-
-
-def _routing(source: SparseExpertRouting | MoEOutput) -> SparseExpertRouting:
-    if isinstance(source, SparseExpertRouting):
+def _routing(source: ExpertRouting | MoEOutput) -> ExpertRouting:
+    if isinstance(source, ExpertRouting):
         return source
     if isinstance(source, MoEOutput):
         return source.routing
-    raise TypeError("source must be SparseExpertRouting or MoEOutput.")
+    raise TypeError("source must be ExpertRouting or MoEOutput.")
 
 
 def _non_negative_float(value: float, name: str) -> None:
@@ -123,8 +75,6 @@ def _non_negative_float(value: float, name: str) -> None:
 
 
 __all__ = [
-    "SparseMoELoss",
-    "SparseMoELossOutput",
-    "sparse_moe_aux_loss",
-    "sparse_moe_loss_metrics",
+    "MoELossOutput",
+    "moe_loss",
 ]

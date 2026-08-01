@@ -140,7 +140,7 @@ class MyPLModule(pl.LightningModule):
 
 ### `module`
 
-提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；MoE routing、sparse MoE、MoE conv、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.moe.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv.bank` 的 dense parameter-bank mixing 与 `anytrain.module.moe.sparse` 的 sparse module dispatch 是两种 executor。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
+提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；MoE routing、MoE conv、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.moe.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv.bank` 的 dense parameter-bank mixing 与 `anytrain.module.moe.sparse` 的 top-k module dispatch 是统一 MoE 的两种 executor。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
 
 ### `module.idspace` / `tokenizer`
 

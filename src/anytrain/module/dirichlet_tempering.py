@@ -125,21 +125,18 @@ class ADTStats:
 def adt_stats_metrics(
     stats: ADTStats,
     *,
-    metrics: Iterable[str] = ("usage", "variance", "alpha", "temperature"),
+    metrics: Iterable[str] = ("variance", "alpha", "temperature"),
 ) -> dict[str, Tensor]:
-    """Flatten ADT stats into compact, logging-friendly scalar summaries.
+    """Flatten ADT-only stats into compact scalar summaries.
 
-    Per-expert vectors are summarized as {group}_mean, {group}_std,
-    {group}_min and {group}_max so scalar dashboards stay stable as the
-    number of experts grows.  Use ADTStatsLoggerCallback(log_histograms=True)
-    to log the full per-expert distributions.
+    ADT-specific per-expert vectors are summarized as {group}_mean,
+    {group}_std, {group}_min and {group}_max so scalar dashboards stay stable as
+    the number of experts grows. Gate/routing utilization belongs to MoE/gate
+    logging, not ADT stats metrics.
     """
 
     enabled = _adt_metric_groups(metrics)
     values: dict[str, Tensor] = {}
-    if "usage" in enabled:
-        values["effective_experts"] = stats.effective_experts
-        values.update(_summary_metrics(stats.expert_utilization, "usage"))
     if "variance" in enabled:
         values.update(_summary_metrics(stats.expert_vars, "variance"))
     if "alpha" in enabled:
@@ -648,10 +645,10 @@ def ema_update(
 
 def _adt_metric_groups(values: Iterable[str]) -> set[str]:
     result = {value.strip() for value in values}
-    allowed = {"usage", "variance", "alpha", "temperature"}
+    allowed = {"variance", "alpha", "temperature"}
     unknown = result - allowed
     if unknown:
-        raise ValueError(f"unknown ADT metrics: {sorted(unknown)!r}.")
+        raise ValueError(f"unknown ADT-only metrics: {sorted(unknown)!r}.")
     return result
 
 

@@ -22,9 +22,9 @@
 
 子包显式导出其它组件：
 
-- `anytrain.module.moe.routing`：density-neutral `ExpertRouting`、校验和 mask helper；`SparseExpertRouting` / `DenseExpertWeights` 为别名或辅助视图。
+- `anytrain.module.moe.routing`：density-neutral `ExpertRouting`、校验和 mask helper；`DenseExpertWeights` 是 probability-tensor 辅助视图。
 - `anytrain.module.moe.conv`：`ConvRouter1d` / `ConvRouter2d`（只产 logits）、partitioner / shape helpers、`MultiScalePool1d`。
-- `anytrain.module.moe`：统一入口 `MoE(num_experts=..., expert=Expert, weight=(E,...), bias=..., grid=...)`；Expert 对象负责 `__call__` / `bias_kind` / `bind(grid,...)`；`Grid1d` 表达 1D segment intent，`NativeGrid` 表示不切分的 native-resolution 路径；`expand_param` 做 E 轴扩维；`expand_expert` 仅便利 stock `Linear/Conv*`，不是通用 Module→Expert 推断。另有 `CallableExpert`、`linear` / `Conv*Expert`、`LinearRouter`、`NativeGrid`、`MoEOutput`、`ExpertRouting`、sparse aux-loss / metrics helpers。
+- `anytrain.module.moe`：统一入口 `MoE(num_experts=..., expert=Expert, weight=(E,...), bias=..., grid=...)`；Expert 对象负责 `__call__` / `bias_kind` / `bind(grid,...)`；`Grid1d` 表达 1D segment intent，`NativeGrid` 表示不切分的 native-resolution 路径；`expand_param` 做 E 轴扩维；`expand_expert` 仅便利 stock `Linear/Conv*`，不是通用 Module→Expert 推断。另有 `CallableExpert`、`linear` / `Conv*Expert`、`LinearRouter`、`NativeGrid`、`MoEOutput`、`ExpertRouting`、MoE aux-loss / metrics helpers。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
@@ -52,18 +52,19 @@ load-balancing loss、不假设 batch schema，也不直接做 Lightning logging
 
 公开统计优先使用命名清楚的属性：`expert_utilization` 表示每个 expert 的运行期平均 router 概率，
 `effective_experts` 表示 utilization 分布的 entropy perplexity，`temperature` 表示当前应用到 logits 的
-per-expert 温度。`stats()` 返回纯 `ADTStats` 对象；`adt_stats_metrics()` 负责把 usage、variance、
-alpha 和 temperature 汇总成稳定数量的 scalar relative metric key，例如 `effective_experts`、
-`usage_mean`、`usage_std`、`temperature_min` 和 `temperature_max`。
-`diagnostics()` 直接返回同一套 scalar summary key，和 `ADTStatsLoggerCallback` 配套；需要结构化张量时使用
+per-expert 温度。`stats()` 返回纯 `ADTStats` 对象；`adt_stats_metrics()` 只把 ADT 独有的
+variance、alpha 和 temperature 汇总成稳定数量的 scalar metric key，例如 `variance_mean`、
+`alpha_std`、`temperature_min` 和 `temperature_max`。gate utilization / effective experts 必须由
+MoE/gate routing 日志输出，ADT stats metrics 不提供 usage logging 入口。
+`diagnostics()` 直接返回默认 ADT-only scalar summary key，和 `ADTStatsLoggerCallback` 配套；需要结构化张量时使用
 `stats()`，或者读取 ADT module 的只读 `monitor` property 获取当前 `ADTStats` snapshot。
-如果需要看完整 per-expert 分布，使用 `ADTStatsLoggerCallback(log_histograms=True)` 记录 usage、variance、
+如果需要看完整 ADT per-expert 分布，使用 `ADTStatsLoggerCallback(log_histograms=True)` 记录 variance、
 alpha 和 temperature 的 histogram，而不是为每个 expert 生成一条 scalar 曲线。
 默认使用 `ADTStatsLoggerCallback()` 即可：callback 会从 `pl_module.named_modules()` 自动发现所有
 `AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper 从 module path
-推断最短唯一日志名：单个 `encoder.router.gate` 记为 `adt/gate/usage_mean`，如果同时存在
+推断最短唯一日志名：单个 `encoder.router.gate` 记为 `adt/gate/temperature_mean`，如果同时存在
 `encoder.router.gate` 和 `decoder.router.gate`，则分别记为
-`adt/encoder.router.gate/usage_mean` 和 `adt/decoder.router.gate/usage_mean`；
+`adt/encoder.router.gate/temperature_mean` 和 `adt/decoder.router.gate/temperature_mean`；
 需要覆盖时再传显式 mapping key 或 `ADTStatsMonitor(name=...)`。
 `ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
 

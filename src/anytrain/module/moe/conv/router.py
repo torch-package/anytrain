@@ -6,7 +6,6 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
-from ...dirichlet_tempering import ADT
 from ..routing import validate_num_experts
 
 ActivationName = Literal["gelu", "identity", "relu", "silu"]
@@ -50,10 +49,11 @@ class MultiScalePool1d(nn.Module):
         return pooled.mean(dim=-1, keepdim=True)
 
 
-class ADTRouter1d(nn.Module):
+class ConvRouter1d(nn.Module):
+    """Channel/time pooled 1D conv router that returns expert logits."""
+
     dropout: nn.Module
     layer: nn.Sequential
-    gate: ADT
 
     def __init__(
         self,
@@ -67,7 +67,6 @@ class ADTRouter1d(nn.Module):
         norm_groups: int | None = None,
         weight_norm: bool = False,
         dropout: float | None = None,
-        **adt_kwargs,
     ) -> None:
         super().__init__()
         if channels <= 0:
@@ -111,24 +110,23 @@ class ADTRouter1d(nn.Module):
             pooling,
             conv_out,
         )
-        self.gate = ADT.from_kwargs(num_experts=num_experts, **adt_kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
         if x.ndim != 3:
-            raise ValueError(f"ADTRouter1d expects input shape (B, C, T), got {tuple(x.shape)}.")
+            raise ValueError(f"ConvRouter1d expects input shape (B, C, T), got {tuple(x.shape)}.")
         if x.size(1) != self.channels:
             raise ValueError(
-                "ADTRouter1d channel mismatch: "
+                "ConvRouter1d channel mismatch: "
                 f"got {x.size(1)}, expected {self.channels}."
             )
-        logits = self.layer(self.dropout(x)).squeeze(-1)
-        return self.gate(logits)
+        return self.layer(self.dropout(x)).squeeze(-1)
 
 
-class ADTRouter2d(nn.Module):
+class ConvRouter2d(nn.Module):
+    """Pooled 2D conv router that returns expert logits."""
+
     dropout: nn.Module
     layer: nn.Sequential
-    gate: ADT
 
     def __init__(
         self,
@@ -141,7 +139,6 @@ class ADTRouter2d(nn.Module):
         norm_groups: int | None = None,
         weight_norm: bool = False,
         dropout: float | None = None,
-        **adt_kwargs,
     ) -> None:
         super().__init__()
         if channels <= 0:
@@ -173,18 +170,16 @@ class ADTRouter2d(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             conv_out,
         )
-        self.gate = ADT.from_kwargs(num_experts=num_experts, **adt_kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
         if x.ndim != 4:
-            raise ValueError(f"ADTRouter2d expects input shape (B, C, H, W), got {tuple(x.shape)}.")
+            raise ValueError(f"ConvRouter2d expects input shape (B, C, H, W), got {tuple(x.shape)}.")
         if x.size(1) != self.channels:
             raise ValueError(
-                "ADTRouter2d channel mismatch: "
+                "ConvRouter2d channel mismatch: "
                 f"got {x.size(1)}, expected {self.channels}."
             )
-        logits = self.layer(self.dropout(x)).flatten(1)
-        return self.gate(logits)
+        return self.layer(self.dropout(x)).flatten(1)
 
 
 def build_activation(name: ActivationName) -> nn.Module:
@@ -236,3 +231,11 @@ def _group_count(channels: int, requested_groups: int | None) -> int:
     while channels % groups != 0:
         groups -= 1
     return groups
+
+
+__all__ = [
+    "ConvRouter1d",
+    "ConvRouter2d",
+    "MultiScalePool1d",
+    "eca_kernel_size",
+]

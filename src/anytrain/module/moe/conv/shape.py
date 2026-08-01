@@ -176,14 +176,14 @@ def validate_dynamic_conv1d_args(
     if stride_value == 1:
         if effective_kernel % 2 == 0:
             raise ValueError(
-                "DynamicConv1d with segment_size requires an odd effective kernel size "
-                f"when stride=1, got {effective_kernel}."
+                "Conv1dSegmentPartitioner with segment_size requires an odd effective "
+                f"kernel size when stride=1, got {effective_kernel}."
             )
         expected_padding = (effective_kernel - 1) // 2
         if padding_value != expected_padding:
             raise ValueError(
-                "DynamicConv1d with segment_size requires same padding when stride=1: "
-                f"got padding={padding_value}, expected={expected_padding}."
+                "Conv1dSegmentPartitioner with segment_size requires same padding when "
+                f"stride=1: got padding={padding_value}, expected={expected_padding}."
             )
         return
 
@@ -191,26 +191,26 @@ def validate_dynamic_conv1d_args(
         expected_kernel = 2 * stride_value
         if effective_kernel != expected_kernel:
             raise ValueError(
-                "DynamicConv1d with segment_size requires effective_kernel_size == "
-                f"2 * stride for even strides: got {effective_kernel}, "
-                f"expected={expected_kernel}."
+                "Conv1dSegmentPartitioner with segment_size requires "
+                f"effective_kernel_size == 2 * stride for even strides: got "
+                f"{effective_kernel}, expected={expected_kernel}."
             )
         expected_padding = stride_value // 2
         if padding_value != expected_padding:
             raise ValueError(
-                "DynamicConv1d with segment_size requires padding == stride // 2: "
-                f"got padding={padding_value}, expected={expected_padding}."
+                "Conv1dSegmentPartitioner with segment_size requires padding == "
+                f"stride // 2: got padding={padding_value}, expected={expected_padding}."
             )
         if segment % stride_value != 0:
             raise ValueError(
-                "DynamicConv1d with segment_size requires segment_size to be a multiple "
-                f"of stride: got segment_size={segment}, stride={stride_value}."
+                "Conv1dSegmentPartitioner with segment_size requires segment_size to be "
+                f"a multiple of stride: got segment_size={segment}, stride={stride_value}."
             )
         return
 
     raise ValueError(
-        "DynamicConv1d with segment_size only supports stride=1 or even stride: "
-        f"got stride={stride_value}."
+        "Conv1dSegmentPartitioner with segment_size only supports stride=1 or even "
+        f"stride: got stride={stride_value}."
     )
 
 

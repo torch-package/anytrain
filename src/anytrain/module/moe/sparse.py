@@ -7,12 +7,12 @@ from collections.abc import Sequence
 import torch
 from torch import Tensor, nn
 
-from .routing import SparseExpertRouting, flat_active_mask, validate_sparse_expert_routing
+from .routing import ExpertRouting, flat_active_mask, validate_sparse_expert_routing
 
 
 def sparse_dispatch(
     hidden_states: Tensor,
-    routing: SparseExpertRouting,
+    routing: ExpertRouting,
     experts: Sequence[nn.Module],
 ) -> tuple[Tensor, Tensor]:
     """Route feature-last tokens to local experts and combine their outputs."""
@@ -29,9 +29,10 @@ def sparse_dispatch(
         num_experts=len(experts),
         device=hidden_states.device,
     )
+    indices, weights, top_k = routing.require_topk()
     flat_hidden = hidden_states.reshape(-1, hidden_states.size(-1))
-    flat_indices = routing.indices.reshape(-1, routing.top_k)
-    flat_weights = routing.weights.reshape(-1, routing.top_k)
+    flat_indices = indices.reshape(-1, top_k)
+    flat_weights = weights.reshape(-1, top_k)
     active_mask = flat_active_mask(
         routing.mask,
         leading_shape=leading_shape,

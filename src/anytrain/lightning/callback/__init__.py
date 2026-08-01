@@ -23,16 +23,23 @@ from .loss import (
     LossTimeBucketLoggerCallback,
     window_summary,
 )
+from .parameter_policy import (
+    ModuleSelector,
+    ParameterPolicyCallback,
+    ParameterTrainability,
+    ParameterTrainabilitySummary,
+    apply_parameter_trainability,
+)
 from .performance import FlopsProvider, PerformanceCallback
 from .quantization import (
     QuantizationLoggerCallback,
     QuantizationMonitor,
     QuantizationMonitorsFn,
 )
-from .sparse_moe import (
-    SparseMoELoggerCallback,
-    SparseMoEMonitor,
-    SparseMoEMonitorsFn,
+from .moe import (
+    MoELoggerCallback,
+    MoEMonitor,
+    MoEMonitorsFn,
 )
 
 __all__ = [
@@ -58,13 +65,18 @@ __all__ = [
     "LossOutputProvider",
     "LossSummaryCallback",
     "LossTimeBucketLoggerCallback",
+    "ModuleSelector",
     "ModelCheckpoint",
+    "ParameterPolicyCallback",
+    "ParameterTrainability",
+    "ParameterTrainabilitySummary",
     "PerformanceCallback",
     "QuantizationLoggerCallback",
     "QuantizationMonitor",
     "QuantizationMonitorsFn",
-    "SparseMoELoggerCallback",
-    "SparseMoEMonitor",
-    "SparseMoEMonitorsFn",
+    "MoELoggerCallback",
+    "MoEMonitor",
+    "MoEMonitorsFn",
+    "apply_parameter_trainability",
     "window_summary",
 ]

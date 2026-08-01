@@ -24,16 +24,23 @@ from .callback.loss import (
     LossTimeBucketLoggerCallback,
     window_summary,
 )
+from .callback.parameter_policy import (
+    ModuleSelector,
+    ParameterPolicyCallback,
+    ParameterTrainability,
+    ParameterTrainabilitySummary,
+    apply_parameter_trainability,
+)
 from .callback.performance import FlopsProvider, PerformanceCallback
 from .callback.quantization import (
     QuantizationLoggerCallback,
     QuantizationMonitor,
     QuantizationMonitorsFn,
 )
-from .callback.sparse_moe import (
-    SparseMoELoggerCallback,
-    SparseMoEMonitor,
-    SparseMoEMonitorsFn,
+from .callback.moe import (
+    MoELoggerCallback,
+    MoEMonitor,
+    MoEMonitorsFn,
 )
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
 
@@ -61,15 +68,20 @@ __all__ = [
     "LossSummaryCallback",
     "LossTimeBucketLoggerCallback",
     "LightningLogMixin",
+    "ModuleSelector",
     "ModelCheckpoint",
+    "ParameterPolicyCallback",
+    "ParameterTrainability",
+    "ParameterTrainabilitySummary",
     "PerformanceCallback",
     "QuantizationLoggerCallback",
     "QuantizationMonitor",
     "QuantizationMonitorsFn",
     "RankLogMode",
-    "SparseMoELoggerCallback",
-    "SparseMoEMonitor",
-    "SparseMoEMonitorsFn",
+    "MoELoggerCallback",
+    "MoEMonitor",
+    "MoEMonitorsFn",
+    "apply_parameter_trainability",
     "experiment",
     "prefixed_log_dict",
     "window_summary",

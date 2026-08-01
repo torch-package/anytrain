@@ -1,43 +1,86 @@
-from .layer import MoELayer, TokenChoiceMoE
-from .loss import (
-    SparseMoELoss,
-    SparseMoELossOutput,
-    sparse_moe_aux_loss,
-    sparse_moe_loss_metrics,
+from .bank import ParamExpertBank
+from .expert import (
+    BoundExpert,
+    CallableExpert,
+    Conv1dExpert,
+    Conv2dExpert,
+    ConvTranspose1dExpert,
+    Expert,
+    ExpertFamily,
+    ExpertFn,
+    LinearExpert,
+    linear,
 )
+from .grid import Grid1d, Grid1dContext, NativeGrid
+from .layer import MoE
+from .loss import MoELossOutput, moe_loss
 from .metrics import (
     dropped_token_ratio,
     effective_experts,
     expert_probability_mean,
+    expert_route_weight_mean,
     expert_usage,
     load_balance_loss,
+    moe_routing_metrics,
     router_z_loss,
-    sparse_moe_routing_metrics,
     tokens_per_expert,
 )
-from .router import LinearTopKRouter, TopKRouter
+from .params import (
+    ExpertInit,
+    bank_weight_shape,
+    expand_expert,
+    expand_param,
+    expert_from_module,
+)
+from .partitioner import IdentityLayout, IdentityPartitioner
+from .router import LinearRouter
+from .routing import (
+    ExpertRouting,
+    expert_routing_from_weights,
+    materialize_routing,
+)
 from .sparse import dispatch_to_experts, sparse_dispatch
-from .types import MoEOutput, RouterOutput
+from .types import MoEOutput
 
 __all__ = [
-    "LinearTopKRouter",
-    "MoELayer",
+    "BoundExpert",
+    "CallableExpert",
+    "Conv1dExpert",
+    "Conv2dExpert",
+    "ConvTranspose1dExpert",
+    "Expert",
+    "ExpertFamily",
+    "ExpertFn",
+    "ExpertInit",
+    "ExpertRouting",
+    "Grid1d",
+    "Grid1dContext",
+    "IdentityLayout",
+    "IdentityPartitioner",
+    "LinearExpert",
+    "LinearRouter",
+    "MoE",
+    "MoELossOutput",
     "MoEOutput",
-    "RouterOutput",
-    "SparseMoELoss",
-    "SparseMoELossOutput",
-    "TokenChoiceMoE",
-    "TopKRouter",
+    "NativeGrid",
+    "ParamExpertBank",
+    "bank_weight_shape",
     "dispatch_to_experts",
     "dropped_token_ratio",
     "effective_experts",
+    "expand_expert",
+    "expand_param",
+    "expert_from_module",
     "expert_probability_mean",
+    "expert_route_weight_mean",
+    "expert_routing_from_weights",
     "expert_usage",
+    "linear",
     "load_balance_loss",
+    "materialize_routing",
+    "moe_loss",
+    "moe_routing_metrics",
     "router_z_loss",
-    "sparse_moe_aux_loss",
-    "sparse_moe_loss_metrics",
-    "sparse_moe_routing_metrics",
     "sparse_dispatch",
     "tokens_per_expert",
 ]

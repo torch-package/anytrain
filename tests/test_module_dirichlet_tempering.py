@@ -297,8 +297,8 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
 
         diagnostics = adt.diagnostics()
 
-        expected = {"effective_experts"}
-        for group in ("usage", "variance", "alpha", "temperature"):
+        expected = set()
+        for group in ("variance", "alpha", "temperature"):
             expected.update(
                 {
                     f"{group}_mean",
@@ -341,22 +341,11 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
     def test_stats_metrics_can_select_groups(self):
         stats = ADT(num_experts=3).stats()
 
-        usage = adt_stats_metrics(stats, metrics=("usage",))
         variance_and_temperature = adt_stats_metrics(
             stats,
             metrics=("variance", "temperature"),
         )
 
-        self.assertEqual(
-            set(usage),
-            {
-                "effective_experts",
-                "usage_mean",
-                "usage_std",
-                "usage_min",
-                "usage_max",
-            },
-        )
         self.assertEqual(
             set(variance_and_temperature),
             {
@@ -370,7 +359,9 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
                 "temperature_max",
             },
         )
-        with self.assertRaisesRegex(ValueError, "unknown ADT metrics"):
+        with self.assertRaisesRegex(ValueError, "unknown ADT-only metrics"):
+            adt_stats_metrics(stats, metrics=("usage",))
+        with self.assertRaisesRegex(ValueError, "unknown ADT-only metrics"):
             adt_stats_metrics(stats, metrics=("loss",))
 
     def test_stats_effective_experts_ignores_zero_utilization(self):

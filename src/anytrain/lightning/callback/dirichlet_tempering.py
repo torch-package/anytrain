@@ -49,7 +49,7 @@ class ADTStatsLoggerCallback(pl.Callback):
         self,
         monitors: ADTStatsMonitorsFn | None = None,
         *,
-        metrics: Iterable[str] = ("usage", "variance", "alpha", "temperature"),
+        metrics: Iterable[str] = ("variance", "alpha", "temperature"),
         every_n_steps: int | None = 100,
         tag: str = "adt",
         log_histograms: bool = False,
@@ -245,10 +245,10 @@ def _monitor_name(
 
 def _metrics(values: Iterable[str]) -> set[str]:
     result = {value.strip() for value in values}
-    allowed = {"usage", "variance", "alpha", "temperature"}
+    allowed = {"variance", "alpha", "temperature"}
     unknown = result - allowed
     if unknown:
-        raise ValueError(f"unknown ADT stats metrics: {sorted(unknown)!r}.")
+        raise ValueError(f"unknown ADT-only stats metrics: {sorted(unknown)!r}.")
     if not result:
         raise ValueError("metrics must contain at least one value.")
     return result

@@ -6,7 +6,7 @@ import torch
 
 from anytrain.module.moe.routing import (
     DenseExpertWeights,
-    SparseExpertRouting,
+    ExpertRouting,
     flat_active_mask,
     validate_dense_expert_weights,
     validate_sparse_expert_routing,
@@ -34,9 +34,9 @@ class DenseExpertWeightsTest(unittest.TestCase):
             validate_dense_expert_weights(torch.ones(2, 3, 4), num_experts=4, ndim=2)
 
 
-class SparseExpertRoutingTest(unittest.TestCase):
-    def test_sparse_routing_exposes_dense_weights_and_active_mask(self):
-        routing = SparseExpertRouting(
+class ExpertRoutingTest(unittest.TestCase):
+    def test_topk_routing_exposes_dense_weights_and_active_mask(self):
+        routing = ExpertRouting(
             logits=torch.zeros(1, 3, 2),
             probabilities=torch.full((1, 3, 2), 0.5),
             indices=torch.zeros(1, 3, 1, dtype=torch.long),
@@ -68,7 +68,7 @@ class SparseExpertRoutingTest(unittest.TestCase):
         )
 
     def test_validate_sparse_rejects_invalid_expert_id(self):
-        routing = SparseExpertRouting(
+        routing = ExpertRouting(
             logits=torch.zeros(2, 2),
             probabilities=torch.full((2, 2), 0.5),
             indices=torch.tensor([[0], [2]]),

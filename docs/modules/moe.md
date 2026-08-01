@@ -2,76 +2,265 @@
 
 ## Positioning
 
-`anytrain.module.moe` provides a thin, task-agnostic token-choice MoE component set for downstream LightningModules.
+`anytrain.module.moe` is the task-agnostic MoE component family for downstream
+LightningModules. The public model is a single `MoE` entry whose routing density
+is a runtime execution strategy:
 
-It deliberately stops at local sparse routing mechanics: it does not provide expert registries, model-zoo blocks, training entrypoints, batch-schema assumptions, expert parallel all-to-all, or hidden logging behavior.
+- `top_k=None` means dense mixture over all experts.
+- `top_k=K` means sparse top-k mixture over selected experts.
+- Dense and top-k execution return the same `MoEOutput` and can be switched at
+  runtime when the expert bank supports both paths.
+
+`num_experts` is the single public source of truth on `MoE`. The reliable
+construction contract is:
+
+1. an `Expert` object (`__call__` + `bias_kind` + `bind`),
+2. expert-major `weight` / `bias` Parameters already shaped `(E, ...)`,
+3. an optional thin `grid` descriptor.
+
+MoE calls `expert.bind(weight, bias, num_experts=..., grid=...)` to build the
+internal bank and partitioner. It does not accept a module list, and it does
+not infer experts from arbitrary `nn.Module` graphs.
+
+`Grid1d` expresses 1D segmentation intent. Its `segment_size` is the logical
+owned-region stride used by routing and restore; optional `context` / `fill`
+overrides are resolved with expert-provided defaults at bind time. Conv
+geometry, required context size, and fold law (concat vs overlap-add) live on
+the Expert object. Experts receive already partitioned routing cells; they do
+not own router or gate logic.
+
+The package remains a component library: it does not provide model-zoo blocks,
+training entrypoints, batch-schema assumptions, expert registries, expert
+parallel all-to-all, or hidden logging behavior.
+
+## Forward Contract
+
+```python
+cells, router_features, layout = partitioner.partition(x)   # internal
+logits = router(router_features)          # or cells when router_features is None
+probabilities = gate(logits)              # full distribution; default softmax
+# sparse: topk(logits) then softmax(selected_logits)
+# dense:  execute with full probabilities
+routing = materialize_routing(logits, probabilities, top_k=runtime_top_k, mask=layout.mask)
+cell_outputs = expert_bank(cells, routing)  # weight-only Expert / grouped kernels
+y = layout.restore(cell_outputs)
+y = expert_bank.apply_bias(y, ...)           # additive channel bias after restore
+return MoEOutput(hidden_states=y, routing=routing, ...)
+```
+
+`Expert.__call__` keeps a torch-style `(input, weight, bias=None)` signature.
+When `bias_kind == "additive_channel"`, the bank always runs cells **without**
+bias, then applies mixed bias after restore. That assumes bias is an additive
+channel term (`y = f(x, W) + b`), which matches `nn.Linear` / `nn.Conv*` /
+`nn.ConvTranspose*`. Grid / overlap-add partitions are equivalent for the
+linear map `f(x, W)`; deferring the additive `b` keeps that equivalence.
+`bias_kind == "none"` rejects a non-`None` bias at bind time.
+
+Component boundaries:
+
+- `Expert`: cell op, op geometry, `bind(grid, weight, bias)` → bank + partitioner,
+  and `bias_kind`.
+- `grid` (`Grid1d` / `NativeGrid` / `None`): thin routing tiling. Not a second
+  copy of conv `kernel/stride/padding`.
+- Router: maps router features to logits shaped `(..., num_experts)`.
+- MoE: owns `num_experts`, orchestration, optional gating/calibration,
+  dense/top-k materialization, and output restoration.
+- Internal `ParamExpertBank`: family selected at bind time; weight-only cell
+  execution then additive bias after restore when applicable.
 
 ## Public API
 
-The subpackage exports:
+Unified entry:
 
-- `TopKRouter` / `LinearTopKRouter`: feature-last linear router from `(..., input_dim)` hidden states to top-k expert assignments.
-- `TokenChoiceMoE` / `MoELayer`: wrapper that runs selected local `nn.Module` experts and combines weighted outputs.
-- `anytrain.module.moe.conv`: convolutional dense-mixture MoE layers (`DynamicConv1d`, `DynamicConv2d`, and `DynamicConvTranspose1d`).
-- `RouterOutput`: MoE-compatible subclass of `anytrain.module.moe.routing.SparseExpertRouting`, carrying router logits, probabilities, selected expert indices, selected combine weights, and optional token mask.
-- `MoEOutput`: combined hidden states, routing output, per-expert assignment counts, and dropped-token mask.
-- `dispatch_to_experts()` / `sparse_dispatch()`: standalone sparse module dispatch/combine helper from `anytrain.module.moe.sparse` for manually supplied `SparseExpertRouting` / `RouterOutput`.
-- `load_balance_loss()`, `router_z_loss()`, `sparse_moe_aux_loss()`, and `SparseMoELoss`: explicit auxiliary loss helpers for downstream code to weight and add to task objectives.
-- `expert_usage()`, `effective_experts()`, `expert_probability_mean()`, `tokens_per_expert()`, `dropped_token_ratio()`, `sparse_moe_routing_metrics()`, and `sparse_moe_loss_metrics()`: pure scalar metric helpers for explicit logging.
+```python
+from anytrain.module.moe import (
+    MoE,
+    LinearRouter,
+    Grid1d,
+    linear,
+    Conv1dExpert,
+    CallableExpert,
+)
+from anytrain.module import AdaptiveDirichletTempering
+from anytrain.module.moe.conv import ConvRouter1d
 
-`anytrain.module` does not re-export these names at the package top level. Users should import from `anytrain.module.moe` explicitly.
+# Core path: stock or custom Expert + expert-major Parameters.
+moe = MoE(
+    num_experts=4,
+    router=LinearRouter(input_dim, 4),
+    expert=linear,
+    weight=nn.Parameter(torch.empty(4, out_dim, input_dim)),
+    bias=nn.Parameter(torch.empty(4, out_dim)),
+    top_k=2,
+)
 
-## Tensor Contract
+# Convenience only for stock Linear / Conv1d / Conv2d / ConvTranspose1d:
+# infer Expert geometry, expand weights, and build a default router.
+# This is not a general Module→Expert compiler.
+template = nn.Conv1d(channels, out_channels, kernel_size=3, padding=1)
+moe = MoE.from_module(
+    template,
+    num_experts=num_experts,
+    gate=AdaptiveDirichletTempering(num_experts=num_experts),
+    grid=Grid1d(segment_size),
+    top_k=None,
+    init="copy",  # copy | kaiming | empty
+)
 
-Sparse MoE and MoE conv share only the routing data contract via `anytrain.module.moe.routing`; expert execution remains subdomain-specific.
+# Lower-level equivalent when you want to pass router / Expert / params explicitly.
+from anytrain.module.moe import expand_expert
 
-- Hidden states are feature-last: `(..., input_dim)`.
-- Router logits and probabilities are shaped `(..., num_experts)`.
-- Selected `indices` and `weights` are shaped `(..., top_k)`.
-- `mask`, when provided, must be boolean and broadcastable to the leading token shape.
-- Masked tokens keep logits/probabilities for diagnostics, but their selected weights are zeroed, they are not dispatched, and they do not contribute to routing metrics.
-- `tokens_per_expert` counts active top-k assignments, not unique tokens, so its sum is `active_tokens * top_k` when all active weights are nonzero.
-- `TokenChoiceMoE.forward_manually()` accepts any `SparseExpertRouting`; `RouterOutput` remains the public MoE convenience class for backward-compatible imports.
+expert, weight, bias = expand_expert(
+    template,
+    num_experts=num_experts,
+    init="copy",
+)
+moe = MoE(
+    num_experts=num_experts,
+    router=ConvRouter1d(channels, num_experts),
+    gate=AdaptiveDirichletTempering(num_experts=num_experts),
+    expert=expert,
+    weight=weight,
+    bias=bias,
+    grid=Grid1d(segment_size),
+    top_k=None,
+)
+
+# Custom cell ops: wrap with CallableExpert (native-resolution grid only).
+# Segmented / custom fold: implement Expert.bind yourself.
+# Do not pass a custom nn.Module into expand_expert.
+
+output = moe(x)                 # MoEOutput
+y = output.hidden_states
+routing = output.routing
+```
+
+Supporting types and helpers:
+
+- `MoEOutput`, `ExpertRouting`, `materialize_routing`
+- `LinearRouter`, `Grid1d`, `NativeGrid`
+- `Expert`, `CallableExpert`, `BoundExpert`, `linear` / `LinearExpert`,
+  `Conv1dExpert`, `Conv2dExpert`, `ConvTranspose1dExpert`, `ParamExpertBank`
+- `ExpertFn` is a compatibility alias of `Expert`
+- `expand_param`, `bank_weight_shape`; optional `expand_expert` for stock ops only
+- `anytrain.module.moe.conv`: `ConvRouter1d` / `ConvRouter2d` (logits only),
+  plus partitioner / shape helpers for advanced use
+
+### Expert contract
+
+```python
+class Expert(Protocol):
+    @property
+    def bias_kind(self) -> Literal["none", "additive_channel"]: ...
+    def __call__(self, input, weight, bias=None, /) -> Tensor: ...
+    def bind(self, weight, bias, *, num_experts, grid) -> BoundExpert: ...
+```
+
+`BoundExpert` holds `bank` + `partitioner`. Stock experts implement `bind`;
+`CallableExpert(fn, bias_kind="none")` covers Identity-only custom fns.
+Bare callables (including raw `F.linear`) are not the public contract;
+`F.linear` is coerced to `LinearExpert()` at MoE construction for convenience.
+
+### Parameter helpers (not Module compilation)
+
+Reliable shared helper:
+
+- `expand_param(single_weight, num_experts, *, init=...)` → `(E, *single.shape)`
+- `bank_weight_shape(module_or_weight, num_experts)` → that size
+
+Optional stock-only factory:
+
+- `expand_expert(module, num_experts, *, init=...)` accepts **only**
+  `nn.Linear`, `nn.Conv1d` (incl. `moe.conv.Conv1d` for `causal`), `nn.Conv2d`,
+  and `nn.ConvTranspose1d`. It copies geometry into the matching `Expert` and
+  expands params with `expand_param`. Anything else raises `TypeError`.
+
+It is **not** a general “infer Expert from `nn.Module`” API. Nested modules,
+activations, residual blocks, and other custom `nn.Module` graphs cannot be
+mapped safely to a single expert call; write the `Expert` and shapes explicitly.
+
+`init="copy"` tiles the template so dense mixtures and sparse one-hot routes
+match the template op. `kaiming` / `empty` are independent bank inits.
+
+### Why Conv and ConvTranspose stay separate
+
+Param expansion is already shared (`expand_param` / expert-major `(E, ...)`).
+Conv and ConvTranspose do **not** share one expert/runtime path because their
+contracts differ:
+
+- weight layout: conv is `(out, in/g, k...)`, transpose is `(in, out/g, k...)`
+- geometry knobs: conv has `causal` / `padding_mode`; transpose has `output_padding`
+- restore: concat for Conv1d grid cells vs overlap-add for ConvTranspose1d
+
+Bias handling is shared for Conv1d and ConvTranspose1d: cell path is
+weight-only; after restore apply
+``restore(bias_cells) / restore(coverage_cells)`` (additive channel bias;
+coverage is 1 for concat, >1 on transpose overlap-add).
+
+Reuse the param factory; keep `Conv*Expert` / partitioners as distinct families.
+
+Router produces logits. Gate (default softmax, or ADT) produces the full
+probability distribution. Sparse combine weights use top-k on logits followed by
+softmax over the selected logits — controlled by `top_k`, not by the gate.
+
+`anytrain.module` does not re-export these names at the package top level.
+
+## Grid Contract
+
+- `grid=None` / `NativeGrid`: token MoE, linear experts, or per-sample Conv2d.
+  `grid=None` is normalized to `NativeGrid()` before `Expert.bind()`.
+- `Grid1d(segment_size, context=None, fill=None)`: tile a 1D axis into routing
+  segments. `segment_size` is the logical owned region / routing stride, not
+  necessarily the tensor length passed to the expert.
+- `context=None` defers to the expert. `context="global"` lets each segment
+  materialize the expert's required left/right context from neighboring real
+  input positions; `context="local"` treats every segment as an independent
+  local boundary.
+- `fill=None` defers to the expert. `fill` controls how missing materialized
+  positions are filled when global boundaries, local boundaries, or tails need
+  extra values. It is grid materialization fill, not a second copy of conv
+  `padding`.
+- `Conv1dExpert` resolves missing `context` to `"global"` and missing `fill`
+  to the expert's `padding_mode`. `ConvTranspose1dExpert` only uses
+  `segment_size`; explicit `context` must be `"global"` and explicit `fill`
+  must be `"zeros"`.
+
+## Expert Execution
+
+| `expert` | `weight` shape |
+|---|---|
+| `linear` / `LinearExpert` | `(E, out, in)` |
+| `Conv1dExpert` | `(E, out, in/groups, k)` |
+| `Conv2dExpert` | `(E, out, in/groups, kH, kW)` |
+| `ConvTranspose1dExpert` | `(E, in, out/groups, k)` |
+| `CallableExpert` / custom `Expert` | `(E, ...)` with Identity unless `bind` says otherwise |
+
+Dense (`top_k=None`) mixes parameters then runs one grouped op when the family
+supports it. Sparse (`top_k=K`) runs each selected expert with its own weight,
+then mixes outputs with the top-k softmax weights — it does not mix parameters.
+Cell execution is weight-only for `additive_channel`; mixed bias is applied
+additively after restore.
 
 ## ADT Integration
 
-`TopKRouter` accepts an optional gate module. Without a gate it applies `softmax` to logits. With `AdaptiveDirichletTempering`, the router passes the broadcast token mask and optional `collect_stats` override through to ADT, then applies top-k selection to the calibrated probabilities.
-
-ADT remains only a logits calibration and utilization-statistics module. Top-k selection, dispatch, auxiliary load-balance loss, z-loss weighting, and Lightning logging stay outside ADT.
+ADT is only a gate: `MoE(..., gate=AdaptiveDirichletTempering(...))`. Router and
+gate both take `num_experts` explicitly at construction; MoE validates they
+match the top-level value. ADT does not live inside the router, select experts,
+partition inputs, dispatch experts, or emit Lightning logs.
 
 ## Auxiliary Loss and Logging
 
-Sparse MoE forward returns `MoEOutput`; it never mutates the training objective or emits logs by itself. Downstream LightningModules should keep task loss composition explicit:
+MoE forward returns `MoEOutput` only. Downstream code composes task loss and
+MoE aux losses explicitly. `MoELoggerCallback` lives under `anytrain.lightning`
+and auto-discovers `MoEOutput` / `ExpertRouting` / `MoEMonitor` entries from
+`training_step` outputs. It logs full gate probabilities separately from actual
+route weights so `top_k=None` and `top_k=K` share one MoE logging surface. The
+default scalar logs are summary metrics rather than per-expert curves; enable
+`log_histograms=True` when the full expert distribution needs inspection.
 
-```python
-output = self.moe(hidden_states, mask=mask)
-task_loss = self.task_loss(output.hidden_states, target)
-moe_loss = sparse_moe_aux_loss(output, load_balance_weight=0.01, router_z_weight=0.001)
-loss = task_loss + moe_loss.total
-```
+## Limits
 
-`SparseMoELoss` provides the same computation as a small `nn.Module` wrapper when users prefer to configure coefficients in `__init__`. By default it returns the scalar aux loss; with `return_details=True`, it returns `(loss, details)` where details contain detached scalar components such as `load_balance`, `router_z`, and their weighted values.
-
-`SparseMoELoggerCallback` lives under `anytrain.lightning`, not inside the MoE layer. It consumes a user-supplied monitor function that returns named `SparseMoEMonitor` objects, so the callback does not scan `pl_module`, interpret batches, or trigger another router forward. A typical callback wiring is:
-
-```python
-from anytrain.lightning import SparseMoELoggerCallback, SparseMoEMonitor
-
-callbacks = [
-    SparseMoELoggerCallback(
-        lambda outputs, batch, pl_module: {
-            "router": SparseMoEMonitor(outputs["moe"], loss=outputs.get("moe_aux_loss")),
-        },
-        every_n_steps=100,
-    )
-]
-```
-
-Default sparse MoE logs are relative scalar keys under `moe/<monitor>/...`, including effective experts, per-expert observed usage, mean router probability, assignment counts, dropped-token ratio, and optional aux-loss components. Loss logs are emitted only when `SparseMoEMonitor(loss=...)` is provided. The callback does not do distributed reduction; if a project needs global router statistics, it should aggregate routing outputs or metrics at the task layer before exposing the monitor.
-
-## First-Version Limits
-
-- Dispatch is local PyTorch dispatch, optimized for clarity and small/medium expert sets rather than fused kernels.
-- Experts are caller-supplied modules and must preserve the routed token batch dimension.
-- Capacity factors, token dropping beyond mask handling, expert parallelism, and custom kernels are intentionally left to downstream projects or later targeted additions.
-- MoE forward never adds auxiliary losses implicitly; downstream LightningModules should combine `sparse_moe_aux_loss()` / `SparseMoELoss` with task losses using explicit coefficients.
+- Local PyTorch execution is the default. Expert parallelism, all-to-all,
+  capacity-factor dropping, and custom fused kernels are left to downstream
+  projects or later targeted additions.
+- MoE forward never adds auxiliary losses implicitly.

@@ -24,9 +24,9 @@ core 提供：
 - `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
 - `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
-- `ADTStatsLoggerCallback`：按下游显式声明的 `AdaptiveDirichletTempering` / `ADTStats` monitor 记录 router utilization、variance、alpha 和 temperature。
+- `ADTStatsLoggerCallback`：记录下游返回的 `AdaptiveDirichletTempering` / `ADTStats` monitor，默认只打 ADT 独有的 variance、alpha 和 temperature；直接返回 ADT module 时按 `pl_module.named_modules()` 自动推断日志名。
 - `QuantizationLoggerCallback`：按下游显式声明的 `QuantizeOutput` 记录量化 loss、code usage、perplexity、dead code 和 active codebook 比例。
-- `SparseMoELoggerCallback`：按下游显式声明的 `MoEOutput` / `SparseExpertRouting` monitor 记录 sparse MoE usage、router probability、assignment counts、dropped-token ratio 和可选 aux-loss components。
+- `MoELoggerCallback`：从 training outputs 自动发现 `MoEOutput` / `ExpertRouting` / `MoEMonitor`，记录 MoE usage、gate probability、actual route weight、assignment counts、dropped-token ratio 的稳定 scalar summary、可选 histogram 和 aux-loss components，并在匹配到 ADT gate 时自动追加 ADT-only `adt/...` stats。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
 
@@ -146,7 +146,7 @@ dynamic conv、MoE、quantization、Qwen 和 idspace 从各自子模块显式导
 - Adaptive Dirichlet Tempering，用于 MoE/router logits 的自适应温度缩放。
 - `anytrain.module.moe.routing`：MoE routing 家族共享的 dense/sparse expert routing 表示、校验和 mask broadcast helper；不执行 expert，也不持有 task schema。
 - `anytrain.module.moe.conv`：1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel。
-- `anytrain.module.moe`：token-choice sparse MoE 的 router、local dispatch、layer、显式 aux loss 和 metrics；expert 模块由下游显式传入。
+- `anytrain.module.moe`：统一 MoE 的 router、dense/top-k dispatch、layer、显式 aux loss 和 metrics；expert 模块由下游显式传入。
 - `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer，以及不依赖 Lightning 的 usage/perplexity 统计 helper。
 - `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 experimental MTP codebook predictor。
 

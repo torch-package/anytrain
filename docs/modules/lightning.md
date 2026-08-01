@@ -25,7 +25,7 @@ src/anytrain/lightning/
     loss.py
     performance.py
     quantization.py
-    sparse_moe.py
+    moe.py
   mixin/
     __init__.py
     log.py
@@ -54,8 +54,8 @@ src/anytrain/lightning/
 - `ADTStatsMonitor`
 - `QuantizationLoggerCallback`
 - `QuantizationMonitor`
-- `SparseMoELoggerCallback`
-- `SparseMoEMonitor`
+- `MoELoggerCallback`
+- `MoEMonitor`
 - `RankLogMode`
 - `prefixed_log_dict`
 
@@ -149,13 +149,15 @@ batch schema，也不自动改写 `state_dict` 里的原始训练权重。
 
 `ADTStatsLoggerCallback` 默认从 `pl_module.named_modules()` 自动发现所有
 `AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper
-推断最短唯一日志名：单个 `encoder.router.gate` 记录为 `adt/gate/usage_mean`；如果同时存在
+推断最短唯一日志名：单个 `encoder.router.gate` 记录为 `adt/gate/temperature_mean`；如果同时存在
 `encoder.router.gate` 和 `decoder.router.gate`，则分别记录为
-`adt/encoder.router.gate/usage_mean` 和 `adt/decoder.router.gate/usage_mean`。显式 mapping key 或
+`adt/encoder.router.gate/temperature_mean` 和 `adt/decoder.router.gate/temperature_mean`。显式 mapping key 或
 `ADTStatsMonitor(name=...)` 会覆盖自动推断；裸 `ADTStats` 无法反查来源时使用稳定 fallback
 如 `adt/monitor_0/...`。callback 不解释 batch，也不额外触发 router forward。它把
-`adt_stats_metrics()` 生成的稳定数量 scalar summary 加上 `tag/name` 前缀记录；完整 per-expert
-分布只在 `log_histograms=True` 时作为 histogram 写入。DDP 下 callback 不做额外 collective。
+`adt_stats_metrics()` 生成的 ADT-only scalar summary 加上 `tag/name` 前缀记录，默认只包含
+variance、alpha 和 temperature；gate utilization / effective experts 由 gate 或 MoE routing logger
+记录，避免和 ADT 重复。完整 ADT per-expert 分布只在 `log_histograms=True` 时作为 histogram 写入。
+DDP 下 callback 不做额外 collective。
 ADT 默认像 BatchNorm 一样只用本地 stats；跨卡同步若以后需要，会以 SyncBatchNorm 风格的
 显式 API 提供，而不是构造参数自动推断。
 
@@ -166,16 +168,27 @@ ADT 默认像 BatchNorm 一样只用本地 stats；跨卡同步若以后需要�
 归约，再计算 perplexity、dead code ratio 和 active ratio，避免平均各 rank 比例。histogram 默认关闭，
 开启后只由 global rank 0 写入本地观测到的 index 分布。
 
-`SparseMoELoggerCallback` 只消费下游显式返回的 `SparseMoEMonitor` mapping；monitor 绑定
-`MoEOutput` 或 `ExpertRouting`（兼容别名 `SparseExpertRouting`），可选携带
-`MoELossOutput`。当前 metrics 主要面向已 materialize 的 top-k 字段；dense-only
-routing 的日志口径随统一 MoE 迁移补齐。callback 不扫描 `pl_module`，不解释 batch，也不为了
-日志额外 forward router 或 expert。它把 `sparse_moe_routing_metrics()` 生成的 routing scalar
-和 `moe_loss()` 返回值里的 loss scalars 加上 `tag/name` 前缀后记录，例如
-`moe/router/effective_experts`、`moe/router/expert_0/usage`、`moe/router/dropped/ratio` 和
-`moe/router/loss/total`。loss logs 只在 monitor 显式提供 `MoELossOutput` 时记录。DDP
-下 callback 不做额外 collective；需要全局 sparse MoE 统计时，下游应先在任务层聚合 routing
-outputs 或 metrics。
+`MoELoggerCallback` 默认从 `training_step` outputs mapping 中自动发现 `MoEOutput` /
+`ExpertRouting` / `MoEMonitor` values；例如返回 `{"router": moe_output}` 时会记录到
+`moe/router/...`。同名 `MoELossOutput` 可用 `router_loss` / `router_aux_loss` /
+`router_moe_loss` / `router/loss` 自动配对；需要自定义抽取时再传显式 monitor function。
+callback 不解释 batch，也不为了日志额外 forward router 或 expert。它把
+`moe_routing_metrics()` 生成的 routing scalar 和 `moe_loss()` 返回值里的 loss scalars 加上
+`tag/name` 前缀后记录，例如 `moe/router/effective_experts`、
+`moe/router/usage_mean`、`moe/router/gate_probability_mean`、
+`moe/router/route_weight_mean`、`moe/router/tokens/total`、`moe/router/dropped/ratio`
+和 `moe/router/loss/total`。默认不为每个 expert 生成 scalar 曲线；需要看完整
+per-expert 分布时设置 `log_histograms=True`，以 histogram 记录 usage、
+gate_probability、route_weight 和 tokens。`gate_probability` 是 gate 输出的 full distribution；
+`route_weight` 是 MoE 实际执行时使用的 combine weight，因此 `top_k=None` 使用 dense
+probabilities，`top_k=K` 使用 materialized selected weights。loss logs 只在 monitor
+提供或 outputs 中可自动配对 `MoELossOutput` 时记录。若 outputs key 与
+`module_monitor_names(pl_module, MoE)` 推断出的 shortest suffix 匹配，且对应 `MoE.gate`
+是 `AdaptiveDirichletTempering`，callback 会在同一 prefix 下追加 `adt/...` stats；
+这些嵌套 ADT stats 默认只包含 ADT 独有的 variance、alpha 和 temperature，usage/effective experts
+继续由 MoE routing metrics 记录。
+独立非 MoE 的 ADT 仍使用 `ADTStatsLoggerCallback`。DDP 下 callback 不做额外 collective；
+需要全局 MoE 统计时，下游应先在任务层聚合 routing outputs 或 metrics。
 
 `LossSummaryCallback` 在 batch hook 中仅保存 detached device scalar。每个指标的状态固定为前后各
 `window_capacity` 个值和完整 observation count；默认 capacity 为 20，不随训练长度增长。训练结束时
@@ -229,7 +242,7 @@ trainer = pl.Trainer(
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
 - `ModelCheckpoint` 的原生接口兼容、异步复制、同步 opt-out 和删除排队。
-- ADT、quantization 和 sparse MoE callback 的显式 monitor contract、日志 cadence 和 root export。
+- ADT、quantization 和 MoE callback 的显式 monitor contract、日志 cadence 和 root export。
 - callback 可直接传入 Lightning `Trainer`。
 
 后续新增 logger backend 或 callback 时，需要补充与 Lightning logger backend 的集成测试，并确保没有引入 optional 依赖到 core import。

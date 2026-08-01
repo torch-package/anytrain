@@ -1,8 +1,8 @@
-"""Expert routing contracts for MoE-family components.
+"""Density-neutral expert routing contracts for MoE-family components.
 
-Routing density is separate from expert-bank shape: dense routing can drive a
-parameter bank such as convolution kernels, while sparse routing can dispatch
-tokens to callable module experts.
+Routing records carry full logits/probabilities for every forward. Dense
+mixture (`top_k=None`) and sparse top-k (`top_k=K`) share one public type;
+expert banks choose an efficient execution path from the materialized fields.
 """
 
 from __future__ import annotations
@@ -34,27 +34,51 @@ class DenseExpertWeights:
 
 @dataclass(eq=False)
 class ExpertRouting:
-    """Sparse top-k expert routing result shared by routing-based modules.
+    """Density-neutral expert routing record.
 
-    logits and probabilities describe the full expert distribution with shape
-    (..., num_experts). indices and weights describe the selected top-k routes
-    with shape (..., top_k). mask marks active leading positions and must be
-    broadcastable to probabilities.shape[:-1].
+    ``logits`` and ``probabilities`` always describe the full expert
+    distribution with shape ``(..., num_experts)``. When ``top_k`` is set,
+    ``indices`` / ``weights`` (selected combine weights) have shape
+    ``(..., top_k)``. Dense mixture leaves those selected fields as ``None``.
     """
 
     logits: Tensor
     probabilities: Tensor
-    indices: Tensor
-    weights: Tensor
+    indices: Tensor | None = None
+    weights: Tensor | None = None
     mask: Tensor | None = None
+    top_k: int | None = None
+
+    def __post_init__(self) -> None:
+        has_indices = self.indices is not None
+        has_weights = self.weights is not None
+        if has_indices != has_weights:
+            raise ValueError("routing.indices and routing.weights must both be set or both None.")
+        if not has_indices:
+            if self.top_k is not None:
+                raise ValueError("dense routing requires top_k=None when indices/weights are absent.")
+            return
+        assert self.indices is not None
+        inferred = int(self.indices.shape[-1])
+        if self.top_k is None:
+            self.top_k = inferred
+        elif self.top_k != inferred:
+            raise ValueError(
+                "routing.top_k must match indices.shape[-1]: "
+                f"got top_k={self.top_k}, indices.shape[-1]={inferred}."
+            )
+
+    @property
+    def selected_weights(self) -> Tensor | None:
+        return self.weights
+
+    @property
+    def is_dense(self) -> bool:
+        return self.top_k is None
 
     @property
     def num_experts(self) -> int:
         return int(self.probabilities.shape[-1])
-
-    @property
-    def top_k(self) -> int:
-        return int(self.indices.shape[-1])
 
     @property
     def leading_shape(self) -> torch.Size:
@@ -75,9 +99,12 @@ class ExpertRouting:
             target_name="routing.probabilities.shape[:-1]",
         )
 
+    def require_topk(self) -> tuple[Tensor, Tensor, int]:
+        """Return selected indices/weights and top_k, or raise if dense."""
 
-SparseExpertRouting = ExpertRouting
-
+        if self.top_k is None or self.indices is None or self.weights is None:
+            raise ValueError("sparse expert path requires materialized top-k routing.")
+        return self.indices, self.weights, self.top_k
 
 def validate_num_experts(num_experts: int, *, name: str = "num_experts") -> None:
     if num_experts <= 0:
@@ -91,6 +118,75 @@ def validate_top_k(top_k: int, *, num_experts: int, name: str = "top_k") -> None
         raise ValueError(
             f"{name} must be <= num_experts: got {name}={top_k}, num_experts={num_experts}."
         )
+
+
+def expert_routing_from_weights(weights: Tensor) -> ExpertRouting:
+    """Build dense ``ExpertRouting`` from already-normalized expert weights."""
+
+    probs = weights
+    logits = probs.clamp_min(torch.finfo(probs.dtype).tiny).log()
+    return ExpertRouting(logits=logits, probabilities=probs, top_k=None)
+
+
+def materialize_routing(
+    logits: Tensor,
+    probabilities: Tensor,
+    *,
+    top_k: int | None,
+    mask: Tensor | None = None,
+    eps: float = 1e-9,
+) -> ExpertRouting:
+    """Build a density-neutral routing record.
+
+    ``probabilities`` are the full expert distribution from the gate (for
+    diagnostics and dense execution). Sparse combine weights are formed by
+    selecting top-k experts on ``logits``, then softmax over those selected
+    logits — not by renormalizing a full-gate top-k slice.
+    """
+
+    del eps
+    if logits.shape != probabilities.shape:
+        raise ValueError(
+            "logits and probabilities must share shape: "
+            f"got {tuple(logits.shape)} and {tuple(probabilities.shape)}."
+        )
+    if logits.ndim < 1:
+        raise ValueError("logits must have an expert dimension.")
+
+    broadcast_mask = None
+    if mask is not None:
+        broadcast_mask = broadcast_routing_mask(
+            mask,
+            leading_shape=probabilities.shape[:-1],
+            device=probabilities.device,
+            target_name="probabilities.shape[:-1]",
+        )
+
+    if top_k is None:
+        return ExpertRouting(
+            logits=logits,
+            probabilities=probabilities,
+            mask=broadcast_mask,
+            top_k=None,
+        )
+
+    validate_top_k(top_k, num_experts=int(probabilities.shape[-1]))
+    selected_logits, indices = logits.topk(top_k, dim=-1)
+    selected_weights = selected_logits.softmax(dim=-1)
+    if broadcast_mask is not None:
+        selected_weights = torch.where(
+            broadcast_mask.unsqueeze(-1),
+            selected_weights,
+            torch.zeros_like(selected_weights),
+        )
+    return ExpertRouting(
+        logits=logits,
+        probabilities=probabilities,
+        indices=indices,
+        weights=selected_weights.to(dtype=probabilities.dtype),
+        mask=broadcast_mask,
+        top_k=top_k,
+    )
 
 
 def dense_expert_weight_tensor(expert_weights: Tensor | DenseExpertWeights) -> Tensor:
@@ -199,26 +295,16 @@ def flatten_active_mask(
 flat_active_mask = flatten_active_mask
 
 
-def validate_sparse_expert_routing(
-    routing: SparseExpertRouting,
+def validate_expert_routing(
+    routing: ExpertRouting,
     *,
     leading_shape: torch.Size | tuple[int, ...],
     num_experts: int,
     device: torch.device,
+    require_topk: bool = False,
 ) -> None:
-    """Validate sparse routing tensors against a routed token leading shape."""
+    """Validate routing tensors against a routed-cell leading shape."""
 
-    expected_route_shape = (*leading_shape, routing.top_k)
-    if routing.indices.shape != expected_route_shape:
-        raise ValueError(
-            "routing.indices must have shape leading_shape + (top_k,): "
-            f"got {tuple(routing.indices.shape)}, expected {tuple(expected_route_shape)}."
-        )
-    if routing.weights.shape != routing.indices.shape:
-        raise ValueError(
-            "routing.weights must have the same shape as routing.indices: "
-            f"got {tuple(routing.weights.shape)} and {tuple(routing.indices.shape)}."
-        )
     expected_probability_shape = (*leading_shape, num_experts)
     if routing.probabilities.shape != expected_probability_shape:
         raise ValueError(
@@ -231,22 +317,12 @@ def validate_sparse_expert_routing(
             "routing.logits must have the same shape as routing.probabilities: "
             f"got {tuple(routing.logits.shape)} and {tuple(routing.probabilities.shape)}."
         )
-    if routing.indices.device != device or routing.weights.device != device:
-        raise ValueError("routing indices and weights must be on the routed tensor device.")
     if routing.probabilities.device != device or routing.logits.device != device:
         raise ValueError("routing logits and probabilities must be on the routed tensor device.")
-    if torch.is_floating_point(routing.indices) or torch.is_complex(routing.indices):
-        raise TypeError("routing.indices must be an integer tensor.")
-    if not torch.is_floating_point(routing.weights) or torch.is_complex(routing.weights):
-        raise TypeError("routing.weights must be real floating-point values.")
     if not torch.is_floating_point(routing.probabilities) or torch.is_complex(
         routing.probabilities
     ):
         raise TypeError("routing.probabilities must be real floating-point values.")
-    if routing.indices.numel() > 0:
-        invalid = (routing.indices < 0) | (routing.indices >= num_experts)
-        if bool(invalid.any().item()):
-            raise ValueError("routing.indices contains expert ids outside [0, num_experts).")
     if routing.mask is not None:
         flatten_active_mask(
             routing.mask,
@@ -255,17 +331,68 @@ def validate_sparse_expert_routing(
             target_name="routing leading shape",
         )
 
+    if routing.top_k is None:
+        if require_topk:
+            raise ValueError("sparse expert path requires materialized top-k routing.")
+        if routing.indices is not None or routing.weights is not None:
+            raise ValueError("dense routing must leave indices/weights as None.")
+        return
+
+    if routing.indices is None or routing.weights is None:
+        raise ValueError("top-k routing requires both indices and weights.")
+    expected_route_shape = (*leading_shape, routing.top_k)
+    if routing.indices.shape != expected_route_shape:
+        raise ValueError(
+            "routing.indices must have shape leading_shape + (top_k,): "
+            f"got {tuple(routing.indices.shape)}, expected {tuple(expected_route_shape)}."
+        )
+    if routing.weights.shape != routing.indices.shape:
+        raise ValueError(
+            "routing.weights must have the same shape as routing.indices: "
+            f"got {tuple(routing.weights.shape)} and {tuple(routing.indices.shape)}."
+        )
+    if routing.indices.device != device or routing.weights.device != device:
+        raise ValueError("routing indices and weights must be on the routed tensor device.")
+    if torch.is_floating_point(routing.indices) or torch.is_complex(routing.indices):
+        raise TypeError("routing.indices must be an integer tensor.")
+    if not torch.is_floating_point(routing.weights) or torch.is_complex(routing.weights):
+        raise TypeError("routing.weights must be real floating-point values.")
+    if routing.indices.numel() > 0:
+        invalid = (routing.indices < 0) | (routing.indices >= num_experts)
+        if bool(invalid.any().item()):
+            raise ValueError("routing.indices contains expert ids outside [0, num_experts).")
+
+
+def validate_sparse_expert_routing(
+    routing: ExpertRouting,
+    *,
+    leading_shape: torch.Size | tuple[int, ...],
+    num_experts: int,
+    device: torch.device,
+) -> None:
+    """Validate sparse top-k routing tensors against a routed token leading shape."""
+
+    validate_expert_routing(
+        routing,
+        leading_shape=leading_shape,
+        num_experts=num_experts,
+        device=device,
+        require_topk=True,
+    )
+
 
 __all__ = [
     "DenseExpertWeights",
     "ExpertRouting",
-    "SparseExpertRouting",
     "broadcast_routing_mask",
     "dense_expert_weight_tensor",
     "expand_dense_expert_weights",
+    "expert_routing_from_weights",
     "flat_active_mask",
     "flatten_active_mask",
+    "materialize_routing",
     "validate_dense_expert_weights",
+    "validate_expert_routing",
     "validate_num_experts",
     "validate_sparse_expert_routing",
     "validate_top_k",
