@@ -10,6 +10,17 @@ from anytrain._buffer import register_buffer
 from anytrain._compat import strict_zip
 
 from . import _checks
+from ._product_codebook import (
+    group_indices_to_indices as _group_indices_to_indices,
+)
+from ._product_codebook import (
+    indices_to_group_indices as _indices_to_group_indices,
+)
+from ._product_codebook import (
+    mixed_radix_basis,
+    product_codebook_size,
+    uniform_group_sizes,
+)
 from ._residual_runner import run_residual_quantization, sample_active_mask
 from .lookup import nearest_codebook_indices
 from .output import QuantizationLoss, QuantizeOutput
@@ -50,7 +61,9 @@ class AGRVQConfig:
                 "input_dim must be divisible by num_groups for AGRVQ projection: "
                 f"got input_dim={self.input_dim}, num_groups={self.num_groups}."
             )
-        public_codebook_size = _product_codebook_size(self.group_size, self.num_groups)
+        public_codebook_size = product_codebook_size(
+            uniform_group_sizes(self.group_size, self.num_groups)
+        )
         if public_codebook_size > torch.iinfo(torch.long).max:
             raise ValueError(
                 "flat AGRVQ codebook_size must fit in torch.long: "
@@ -71,14 +84,15 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         self.input_dim = config.input_dim
         self.num_groups = config.num_groups
         self.group_size = config.group_size
-        self.codebook_size = _product_codebook_size(config.group_size, config.num_groups)
+        group_sizes = uniform_group_sizes(config.group_size, config.num_groups)
+        self.codebook_size = product_codebook_size(group_sizes)
         self.group_codebook_dim = config.codebook_dim
         self.codebook_dim = config.num_groups * config.codebook_dim
         self.dropout = config.dropout
         register_buffer(
             self,
             "_index_basis",
-            _make_index_basis(config.group_size, config.num_groups),
+            mixed_radix_basis(group_sizes),
             persistent=False,
         )
         self.quantizers = nn.ModuleList(
@@ -201,7 +215,7 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         return _indices_to_group_indices(
             indices,
             index_basis=self._index_basis,
-            group_size=self.group_size,
+            group_sizes=self.group_size,
         )
 
     def group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
@@ -275,7 +289,8 @@ class _AutoGroupVectorQuantizer(nn.Module):
         super().__init__()
         self.input_dim = input_dim
         self.group_size = group_size
-        self.codebook_size = _product_codebook_size(group_size, num_groups)
+        group_sizes = uniform_group_sizes(group_size, num_groups)
+        self.codebook_size = product_codebook_size(group_sizes)
         self.group_codebook_dim = codebook_dim
         self.num_groups = num_groups
         self.codebook_dim = num_groups * codebook_dim
@@ -284,7 +299,7 @@ class _AutoGroupVectorQuantizer(nn.Module):
         register_buffer(
             self,
             "_index_basis",
-            _make_index_basis(group_size, num_groups),
+            mixed_radix_basis(group_sizes),
             persistent=False,
         )
 
@@ -412,38 +427,8 @@ class _AutoGroupVectorQuantizer(nn.Module):
         return _indices_to_group_indices(
             indices,
             index_basis=self._index_basis,
-            group_size=self.group_size,
+            group_sizes=self.group_size,
         )
 
     def _group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
         return _group_indices_to_indices(group_indices, index_basis=self._index_basis)
-
-
-def _make_index_basis(group_size: int, num_groups: int) -> Tensor:
-    return torch.tensor(
-        [group_size**power for power in range(num_groups)],
-        dtype=torch.long,
-    )
-
-
-def _product_codebook_size(group_size: int, num_groups: int) -> int:
-    return group_size**num_groups
-
-
-def _indices_to_group_indices(
-    indices: Tensor,
-    *,
-    index_basis: Tensor,
-    group_size: int,
-) -> Tensor:
-    basis = index_basis.to(device=indices.device)
-    return (indices.to(dtype=torch.long).unsqueeze(-1) // basis) % group_size
-
-
-def _group_indices_to_indices(
-    group_indices: Tensor,
-    *,
-    index_basis: Tensor,
-) -> Tensor:
-    basis = index_basis.to(device=group_indices.device)
-    return (group_indices.to(dtype=torch.long) * basis).sum(dim=-1)

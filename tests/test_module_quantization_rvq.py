@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 from dataclasses import FrozenInstanceError
 from datetime import timedelta
@@ -17,6 +19,43 @@ from anytrain.module.quantization import (
 )
 
 
+def _rvq_config(
+    *,
+    input_dim: int,
+    num_codebooks: int,
+    codebook_size: int,
+    codebook_dim: int | None = None,
+    normalize_lookup: bool = True,
+    lookup_in_float32: bool = True,
+    weight_norm: bool = False,
+    scale_grad_by_freq: bool = False,
+    use_ema: bool = False,
+    decay: float = 0.99,
+    eps: float = 1e-5,
+    projection_bias: bool = True,
+    dropout: float | None = None,
+) -> RVQConfig:
+    return RVQConfig(
+        vq_configs=tuple(
+            VQConfig(
+                input_dim=input_dim,
+                codebook_size=codebook_size,
+                codebook_dim=codebook_dim,
+                normalize_lookup=normalize_lookup,
+                lookup_in_float32=lookup_in_float32,
+                weight_norm=weight_norm,
+                scale_grad_by_freq=scale_grad_by_freq,
+                use_ema=use_ema,
+                decay=decay,
+                eps=eps,
+                projection_bias=projection_bias,
+            )
+            for _ in range(num_codebooks)
+        ),
+        dropout=dropout,
+    )
+
+
 def _distributed_ema_dropout_worker(rank: int, world_size: int, init_method: str) -> None:
     torch.distributed.init_process_group(
         "gloo",
@@ -28,7 +67,7 @@ def _distributed_ema_dropout_worker(rank: int, world_size: int, init_method: str
     try:
         torch.manual_seed(0)
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(
+            _rvq_config(
                 input_dim=4,
                 num_codebooks=3,
                 codebook_size=8,
@@ -83,7 +122,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_forward_shapes(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=8, num_codebooks=3, codebook_size=16, codebook_dim=8)
+            _rvq_config(input_dim=8, num_codebooks=3, codebook_size=16, codebook_dim=8)
         )
         x = torch.randn(2, 5, 8)
 
@@ -98,7 +137,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_num_active_codebooks_controls_output_width(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=8, num_codebooks=4, codebook_size=16)
+            _rvq_config(input_dim=8, num_codebooks=4, codebook_size=16)
         )
         quantizer.eval()
 
@@ -110,7 +149,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_indices_round_trip(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=2, codebook_size=8)
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
         )
         indices = torch.tensor([[[0, 1], [2, 3]]])
 
@@ -121,7 +160,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_project_codebook_vectors_sums_projected_books(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=2, codebook_size=8)
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
         )
         indices = torch.tensor([[0, 1], [2, 3]])
         vectors = quantizer.indices_to_codebook_vectors(indices)
@@ -132,7 +171,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_latents_to_codebook_vectors_has_no_training_side_effects(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(
+            _rvq_config(
                 input_dim=4,
                 num_codebooks=3,
                 codebook_size=8,
@@ -151,7 +190,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
     def test_dropout_marks_inactive_codebooks_during_training(self):
         torch.manual_seed(0)
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=4, codebook_size=8, dropout=1.0)
+            _rvq_config(input_dim=4, num_codebooks=4, codebook_size=8, dropout=1.0)
         )
 
         output = quantizer(torch.randn(64, 4))
@@ -175,7 +214,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_empty_eval_ema_stage_does_not_join_training_collectives(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(
+            _rvq_config(
                 input_dim=4,
                 num_codebooks=2,
                 codebook_size=8,
@@ -206,7 +245,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_sample_active_mask_dropout_boundaries(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=4, codebook_size=8, dropout=0.0)
+            _rvq_config(input_dim=4, num_codebooks=4, codebook_size=8, dropout=0.0)
         )
 
         mask = quantizer._sample_active_mask(16, 4, torch.device("cpu"))
@@ -223,7 +262,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((active_counts < 4).any())
 
     def test_config_is_frozen_and_dropout_has_explicit_setter(self):
-        config = RVQConfig.from_kwargs(input_dim=4, num_codebooks=2, codebook_size=8)
+        config = _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
         quantizer = ResidualVectorQuantizer(config)
 
         with self.assertRaises(FrozenInstanceError):
@@ -236,7 +275,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_dropout_has_no_effect_with_one_active_codebook(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=4, codebook_size=8, dropout=1.0)
+            _rvq_config(input_dim=4, num_codebooks=4, codebook_size=8, dropout=1.0)
         )
 
         output = quantizer(torch.randn(8, 4), num_active_codebooks=1)
@@ -247,7 +286,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_eval_disables_dropout(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=4, codebook_size=8, dropout=1.0)
+            _rvq_config(input_dim=4, num_codebooks=4, codebook_size=8, dropout=1.0)
         )
         quantizer.eval()
 
@@ -258,7 +297,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_backward_reaches_input(self):
         quantizer = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=2, codebook_size=8)
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
         )
         x = torch.randn(3, 4, requires_grad=True)
 

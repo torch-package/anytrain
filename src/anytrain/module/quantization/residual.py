@@ -35,45 +35,6 @@ class RVQConfig:
     def num_codebooks(self) -> int:
         return len(self.vq_configs)
 
-    @classmethod
-    def from_kwargs(
-        cls,
-        input_dim: int,
-        num_codebooks: int,
-        codebook_size: int,
-        codebook_dim: int | None = None,
-        normalize_lookup: bool = True,
-        lookup_in_float32: bool = True,
-        weight_norm: bool = False,
-        scale_grad_by_freq: bool = False,
-        use_ema: bool = False,
-        decay: float = 0.99,
-        eps: float = 1e-5,
-        projection_bias: bool = True,
-        dropout: float | None = None,
-    ) -> RVQConfig:
-        if num_codebooks <= 0:
-            raise ValueError(f"num_codebooks must be positive, got {num_codebooks}.")
-        return cls(
-            vq_configs=tuple(
-                VQConfig(
-                    input_dim=input_dim,
-                    codebook_size=codebook_size,
-                    codebook_dim=codebook_dim,
-                    normalize_lookup=normalize_lookup,
-                    lookup_in_float32=lookup_in_float32,
-                    weight_norm=weight_norm,
-                    scale_grad_by_freq=scale_grad_by_freq,
-                    use_ema=use_ema,
-                    decay=decay,
-                    eps=eps,
-                    projection_bias=projection_bias,
-                )
-                for _ in range(num_codebooks)
-            ),
-            dropout=dropout,
-        )
-
 
 class ResidualVectorQuantizer(nn.Module):
     config: RVQConfig

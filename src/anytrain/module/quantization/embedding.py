@@ -165,37 +165,6 @@ class EmbeddingVectorQuantizer(nn.Module):
         _checks.codebook_vectors(codebook_vectors, self.codebook_dim)
         return self.project_out(codebook_vectors)
 
-    @classmethod
-    def from_kwargs(
-        cls,
-        input_dim: int,
-        codebook_size: int,
-        codebook_dim: int | None = None,
-        normalize_lookup: bool = True,
-        lookup_in_float32: bool = True,
-        weight_norm: bool = False,
-        scale_grad_by_freq: bool = False,
-        use_ema: bool = False,
-        decay: float = 0.99,
-        eps: float = 1e-5,
-        projection_bias: bool = True,
-    ) -> EmbeddingVectorQuantizer:
-        return cls(
-            VQConfig(
-                input_dim=input_dim,
-                codebook_size=codebook_size,
-                codebook_dim=codebook_dim,
-                normalize_lookup=normalize_lookup,
-                lookup_in_float32=lookup_in_float32,
-                weight_norm=weight_norm,
-                scale_grad_by_freq=scale_grad_by_freq,
-                use_ema=use_ema,
-                decay=decay,
-                eps=eps,
-                projection_bias=projection_bias,
-            )
-        )
-
     def _nearest_codebook_vectors(self, projected_latents: Tensor) -> tuple[Tensor, Tensor]:
         _checks.codebook_vectors(
             projected_latents,

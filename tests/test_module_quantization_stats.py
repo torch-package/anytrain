@@ -18,7 +18,7 @@ class QuantizationStatsTest(unittest.TestCase):
     def test_codebook_usage_summarizes_single_codebook_indices(self):
         usage = codebook_usage(
             torch.tensor([[0, 1, 1], [3, 3, 3]]),
-            codebook_size=4,
+            codebook_sizes=(4,),
         )
 
         self.assertEqual(usage.counts.tolist(), [[1.0, 2.0, 0.0, 3.0]])
@@ -41,8 +41,7 @@ class QuantizationStatsTest(unittest.TestCase):
 
         usage = codebook_usage(
             indices,
-            codebook_size=4,
-            num_codebooks=3,
+            codebook_sizes=(4, 4, 4),
             active_codebook_mask=active,
         )
 
@@ -65,8 +64,7 @@ class QuantizationStatsTest(unittest.TestCase):
     def test_codebook_usage_treats_negative_one_as_inactive_without_mask(self):
         usage = codebook_usage(
             torch.tensor([[0, -1], [1, 2]]),
-            codebook_size=3,
-            num_codebooks=2,
+            codebook_sizes=(3, 3),
         )
 
         self.assertEqual(usage.counts.tolist(), [[1.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
@@ -81,7 +79,7 @@ class QuantizationStatsTest(unittest.TestCase):
             active_codebook_mask=torch.tensor([[True, True], [True, False]]),
         )
 
-        usage = quantization_usage(output, codebook_size=3, num_codebooks=2)
+        usage = quantization_usage(output, codebook_sizes=(3, 3))
 
         self.assertEqual(usage.counts.tolist(), [[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
 
@@ -112,8 +110,7 @@ class QuantizationStatsTest(unittest.TestCase):
     def test_quantization_usage_metrics_has_stable_relative_keys(self):
         usage = codebook_usage(
             torch.tensor([[0, 1], [1, -1]]),
-            codebook_size=3,
-            num_codebooks=2,
+            codebook_sizes=(3, 3),
             active_codebook_mask=torch.tensor([[True, True], [True, False]]),
         )
 
@@ -126,7 +123,7 @@ class QuantizationStatsTest(unittest.TestCase):
         self.assertIn("book_0/usage/dead_ratio", metrics)
 
     def test_quantization_usage_metrics_can_select_groups(self):
-        usage = codebook_usage(torch.tensor([0, 1]), codebook_size=3)
+        usage = codebook_usage(torch.tensor([0, 1]), codebook_sizes=(3,))
 
         metrics = quantization_usage_metrics(usage, metrics=("active",))
 
@@ -135,27 +132,37 @@ class QuantizationStatsTest(unittest.TestCase):
     def test_valid_indices_by_codebook_returns_only_active_assignments(self):
         values = valid_indices_by_codebook(
             torch.tensor([[0, -1], [1, 2]]),
-            codebook_size=3,
-            num_codebooks=2,
+            codebook_sizes=(3, 3),
             active_codebook_mask=torch.tensor([[True, False], [True, True]]),
         )
 
         self.assertEqual([value.tolist() for value in values], [[0, 1], [2]])
 
     def test_invalid_indices_fail_clearly(self):
-        with self.assertRaisesRegex(ValueError, "codebook_size"):
-            codebook_usage(torch.tensor([0, 4]), codebook_size=4)
+        with self.assertRaisesRegex(ValueError, "codebook range"):
+            codebook_usage(torch.tensor([0, 4]), codebook_sizes=(4,))
         with self.assertRaisesRegex(TypeError, "integer"):
-            codebook_usage(torch.tensor([0.0]), codebook_size=4)
+            codebook_usage(torch.tensor([0.0]), codebook_sizes=(4,))
 
     def test_empty_usage_returns_zero_metrics(self):
-        usage = codebook_usage(torch.empty(0, dtype=torch.long), codebook_size=4)
+        usage = codebook_usage(torch.empty(0, dtype=torch.long), codebook_sizes=(4,))
 
         self.assertEqual(usage.counts.tolist(), [[0.0, 0.0, 0.0, 0.0]])
         self.assertEqual(usage.observations.tolist(), [0.0])
         self.assertEqual(usage.active_ratio.tolist(), [0.0])
         self.assertEqual(usage.perplexity.tolist(), [0.0])
         self.assertFalse(math.isnan(usage.entropy.item()))
+
+    def test_codebook_usage_supports_heterogeneous_codebook_sizes(self):
+        usage = codebook_usage(
+            torch.tensor([[0, 3], [1, -1]]),
+            codebook_sizes=(2, 4),
+        )
+
+        self.assertEqual(usage.counts.tolist(), [[1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
+        self.assertEqual(usage.codebook_sizes, (2, 4))
+        self.assertEqual(usage.dead_count.tolist(), [0.0, 3.0])
+        torch.testing.assert_close(usage.unique_ratio, torch.tensor([1.0, 0.25]))
 
 
 if __name__ == "__main__":

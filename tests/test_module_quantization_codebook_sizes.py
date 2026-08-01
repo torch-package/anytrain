@@ -30,7 +30,7 @@ class QuantizationCodebookSizesTest(unittest.TestCase):
 
     def test_residual_quantizers_expose_public_codebook_size_per_stage(self):
         rvq = ResidualVectorQuantizer(
-            RVQConfig.from_kwargs(input_dim=4, num_codebooks=3, codebook_size=8)
+            RVQConfig(vq_configs=tuple(VQConfig(input_dim=4, codebook_size=8) for _ in range(3)))
         )
         rfsq = ResidualFiniteScalarQuantizer(
             RFSQConfig(input_dim=4, levels=(3, 3), scales=(1.0, 0.5))

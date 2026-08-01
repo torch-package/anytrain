@@ -138,6 +138,9 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
   stage 使用 `num_groups` 个同尺寸 learned group codebook，默认 `num_groups=2`；
   配置中的 `group_size` 是单个 group 的大小；对外 flat `codebook_size` 是
   `group_size ** num_groups`，输出 `codebook_dim` 是配置值乘以 `num_groups`。
+  例如 `AGRVQConfig(input_dim=8, num_codebooks=3, group_size=5)` 的每个 stage
+  对外 `codebook_size=25`；group indices `[2, 4]` 编码为 `2 + 4 * 5 = 22`，
+  和 GVQ / FSQ 使用相同的小端 mixed-radix 顺序。
   `input_dim` 必须能被 `num_groups` 整除，推理可用 `num_active_codebooks` 截断 stage 数，
   训练 dropout 用 `indices == -1` 和 `active_codebook_mask == False` 标记未启用 stage。
 - 量化输出统一为 `QuantizeOutput`，离散整数用 `indices`，连续 codebook 空间向量用 `codebook_vectors`。

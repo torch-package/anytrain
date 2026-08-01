@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from numbers import Integral
 from typing import Any, Union
 
 import lightning.pytorch as pl
@@ -28,35 +29,30 @@ QuantizationMonitorsFn = Callable[
 class QuantizationMonitor:
     output: QuantizeOutput
     quantizer: object | None = None
-    codebook_size: int | None = None
-    num_codebooks: int | None = None
+    codebook_sizes: Sequence[int] | None = None
 
-    def resolved_codebook_size(self) -> int:
-        value = self.codebook_size
-        if value is None:
-            value = getattr(self.quantizer, "codebook_size", None)
-        if value is None:
-            raise ValueError("QuantizationMonitor requires codebook_size or a quantizer.")
-        value = int(value)
-        if value <= 0:
-            raise ValueError(f"codebook_size must be positive, got {value}.")
-        return value
+    def resolved_codebook_sizes(self) -> tuple[int, ...]:
+        value = self.codebook_sizes
+        if value is not None:
+            sizes = tuple(_positive_int_value(size, "codebook_sizes") for size in value)
+            if not sizes:
+                raise ValueError("codebook_sizes must not be empty.")
+            return sizes
 
-    def resolved_num_codebooks(self) -> int:
-        value = self.num_codebooks
+        value = getattr(self.quantizer, "codebook_sizes", None)
         if value is None:
-            value = getattr(self.quantizer, "num_codebooks", 1)
-        if value is None:
-            value = 1
-        value = int(value)
-        if value <= 0:
-            raise ValueError(f"num_codebooks must be positive, got {value}.")
-        return value
+            raise ValueError("QuantizationMonitor requires codebook_sizes or a quantizer.")
 
-    def observed_num_codebooks(self) -> int:
-        configured = self.resolved_num_codebooks()
+        sizes = tuple(_positive_int_value(size, "quantizer.codebook_sizes") for size in value)
+        if not sizes:
+            raise ValueError("quantizer.codebook_sizes must not be empty.")
+        return sizes
+
+    def observed_codebook_sizes(self) -> tuple[int, ...]:
+        sizes = self.resolved_codebook_sizes()
+        configured = len(sizes)
         if configured == 1:
-            return 1
+            return sizes
         if self.output.indices.ndim == 0:
             raise ValueError("multi-codebook QuantizeOutput.indices must include codebook dim.")
         observed = int(self.output.indices.shape[-1])
@@ -65,7 +61,7 @@ class QuantizationMonitor:
                 "QuantizeOutput.indices last dimension must be in [1, num_codebooks]: "
                 f"got {observed}, num_codebooks={configured}."
             )
-        return observed
+        return sizes[:observed]
 
 
 class QuantizationLoggerCallback(pl.Callback):
@@ -156,8 +152,7 @@ class QuantizationLoggerCallback(pl.Callback):
         if usage_metrics:
             usage = quantization_usage(
                 monitor.output,
-                codebook_size=monitor.resolved_codebook_size(),
-                num_codebooks=monitor.observed_num_codebooks(),
+                codebook_sizes=monitor.observed_codebook_sizes(),
             )
             usage = _reduce_usage(trainer, usage)
             for name, value in quantization_usage_metrics(
@@ -181,8 +176,7 @@ class QuantizationLoggerCallback(pl.Callback):
         step = _capability.global_step(trainer)
         indices_by_book = valid_indices_by_codebook(
             monitor.output.indices,
-            codebook_size=monitor.resolved_codebook_size(),
-            num_codebooks=monitor.observed_num_codebooks(),
+            codebook_sizes=monitor.observed_codebook_sizes(),
             active_codebook_mask=monitor.output.active_codebook_mask,
         )
         for book_index, indices in enumerate(indices_by_book):
@@ -218,6 +212,7 @@ def _reduce_usage(trainer: pl.Trainer, usage: QuantizationUsage) -> Quantization
             reduce_op="sum",
             error=error,
         ),
+        codebook_sizes=usage.codebook_sizes,
     )
 
 
@@ -261,6 +256,15 @@ def _positive_int(value: int, name: str) -> None:
         raise TypeError(f"{name} must be an integer.")
     if value <= 0:
         raise ValueError(f"{name} must be positive.")
+
+
+def _positive_int_value(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError(f"{name} must be an integer.")
+    result = int(value)
+    if result <= 0:
+        raise ValueError(f"{name} must be positive, got {result}.")
+    return result
 
 
 def _non_empty_string(value: object, name: str) -> None:

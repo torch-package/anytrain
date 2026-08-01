@@ -162,7 +162,7 @@ ADT 默认像 BatchNorm 一样只用本地 stats；跨卡同步若以后需要�
 显式 API 提供，而不是构造参数自动推断。
 
 `QuantizationLoggerCallback` 只消费下游显式返回的 `QuantizationMonitor` mapping；monitor 绑定
-`QuantizeOutput` 和对应 quantizer 或 `codebook_size` / `num_codebooks`。callback 不扫描
+`QuantizeOutput` 和对应 quantizer 或显式 `codebook_sizes`。callback 不扫描
 `pl_module`，不解释 batch，也不为了日志额外 forward quantizer。单进程直接用当前 batch 的
 `indices` 统计 usage；DDP 下先对每个 codebook 的 counts、active count 和 denominator 做 sum
 归约，再计算 perplexity、dead code ratio 和 active ratio，避免平均各 rank 比例。histogram 默认关闭，

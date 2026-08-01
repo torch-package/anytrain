@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import reduce
-from operator import mul
 
 import torch
 from torch import Tensor, nn
@@ -12,6 +10,16 @@ from anytrain._buffer import register_buffer
 from anytrain._compat import strict_zip
 
 from . import _checks
+from ._product_codebook import (
+    group_indices_to_indices as _group_indices_to_indices,
+)
+from ._product_codebook import (
+    indices_to_group_indices as _indices_to_group_indices,
+)
+from ._product_codebook import (
+    mixed_radix_basis,
+    product_codebook_size,
+)
 from .lookup import nearest_codebook_indices
 from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
@@ -89,7 +97,7 @@ class GroupedVectorQuantizer(nn.Module):
         self.group_dims = group_dims
         self.num_groups = len(config.group_sizes)
         self.num_codebooks = 1
-        self.codebook_size = reduce(mul, config.group_sizes, 1)
+        self.codebook_size = product_codebook_size(config.group_sizes)
 
         self.project_in = make_projection(
             config.input_dim,
@@ -109,7 +117,7 @@ class GroupedVectorQuantizer(nn.Module):
         register_buffer(
             self,
             "_basis",
-            torch.cumprod(torch.tensor([1, *config.group_sizes[:-1]]), dim=0),
+            mixed_radix_basis(config.group_sizes),
         )
         register_buffer(
             self,
@@ -173,13 +181,15 @@ class GroupedVectorQuantizer(nn.Module):
 
     def indices_to_group_indices(self, indices: Tensor) -> Tensor:
         _checks.indices(indices, self.codebook_size)
-        basis = self._basis.to(device=indices.device)
-        group_sizes = self._group_sizes.to(device=indices.device, dtype=indices.dtype)
-        return (indices.unsqueeze(-1) // basis) % group_sizes
+        return _indices_to_group_indices(
+            indices,
+            index_basis=self._basis,
+            group_sizes=self._group_sizes,
+        )
 
     def group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
         self._validate_group_indices(group_indices)
-        return (group_indices * self._basis.to(device=group_indices.device)).sum(dim=-1)
+        return _group_indices_to_indices(group_indices, index_basis=self._basis)
 
     def group_indices_to_codebook_vectors(self, group_indices: Tensor) -> Tensor:
         self._validate_group_indices(group_indices)
@@ -187,29 +197,6 @@ class GroupedVectorQuantizer(nn.Module):
         for group_index, codebook in enumerate(self.codebooks):
             vectors.append(codebook[group_indices[..., group_index]])
         return torch.cat(vectors, dim=-1)
-
-    @classmethod
-    def from_kwargs(
-        cls,
-        input_dim: int,
-        group_sizes: tuple[int, ...] | list[int],
-        codebook_dim: int | None = None,
-        group_dims: tuple[int, ...] | list[int] | None = None,
-        normalize_latents: bool = True,
-        weight_norm: bool = False,
-        projection_bias: bool = True,
-    ) -> GroupedVectorQuantizer:
-        return cls(
-            GVQConfig(
-                input_dim=input_dim,
-                group_sizes=tuple(group_sizes),
-                codebook_dim=codebook_dim,
-                group_dims=None if group_dims is None else tuple(group_dims),
-                normalize_latents=normalize_latents,
-                weight_norm=weight_norm,
-                projection_bias=projection_bias,
-            )
-        )
 
     def _nearest_group_vectors(self, projected_latents: Tensor) -> tuple[Tensor, Tensor]:
         _checks.codebook_vectors(

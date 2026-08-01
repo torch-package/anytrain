@@ -209,26 +209,6 @@ class FiniteScalarQuantizer(nn.Module):
             f"Unsupported logits shape {tuple(logits.shape)} for FSQ level mask."
         )
 
-    @classmethod
-    def from_kwargs(
-        cls,
-        input_dim: int,
-        levels: tuple[int, ...] | list[int] | None = None,
-        bound_scale: float = 1.0,
-        eps: float = 1e-3,
-        projection_bias: bool = True,
-    ) -> FiniteScalarQuantizer:
-        resolved_levels = DEFAULT_FSQ_LEVELS if levels is None else tuple(levels)
-        return cls(
-            FSQConfig(
-                input_dim=input_dim,
-                levels=resolved_levels,
-                bound_scale=bound_scale,
-                eps=eps,
-                projection_bias=projection_bias,
-            )
-        )
-
     def _project_input(self, latents: Tensor) -> Tensor:
         return self.project_in(latents)
 

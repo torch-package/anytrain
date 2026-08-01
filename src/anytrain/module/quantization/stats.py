@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from numbers import Integral
 
 import torch
 from torch import Tensor
@@ -14,14 +15,15 @@ class QuantizationUsage:
     counts: Tensor
     active_count: Tensor
     total_count: Tensor
+    codebook_sizes: tuple[int, ...]
 
     @property
     def num_codebooks(self) -> int:
-        return int(self.counts.shape[0])
+        return len(self.codebook_sizes)
 
     @property
-    def codebook_size(self) -> int:
-        return int(self.counts.shape[1])
+    def codebook_denominator(self) -> Tensor:
+        return self.counts.new_tensor(self.codebook_sizes, dtype=torch.float32)
 
     @property
     def observations(self) -> Tensor:
@@ -37,26 +39,15 @@ class QuantizationUsage:
 
     @property
     def unique_ratio(self) -> Tensor:
-        denominator = self.counts.new_full(
-            (self.num_codebooks,),
-            float(self.codebook_size),
-        )
-        return _safe_divide(self.unique_count, denominator)
+        return _safe_divide(self.unique_count, self.codebook_denominator)
 
     @property
     def dead_count(self) -> Tensor:
-        return self.counts.new_full(
-            (self.num_codebooks,),
-            float(self.codebook_size),
-        ) - self.unique_count
+        return self.codebook_denominator - self.unique_count
 
     @property
     def dead_ratio(self) -> Tensor:
-        denominator = self.counts.new_full(
-            (self.num_codebooks,),
-            float(self.codebook_size),
-        )
-        return _safe_divide(self.dead_count, denominator)
+        return _safe_divide(self.dead_count, self.codebook_denominator)
 
     @property
     def entropy(self) -> Tensor:
@@ -98,27 +89,44 @@ def quantization_usage_metrics(
     *,
     metrics: Iterable[str] = ("usage", "active"),
 ) -> dict[str, Tensor]:
+    """Flatten codebook usage into scalar, logging-friendly relative metric keys."""
+
     enabled = _metric_groups(metrics, allowed={"usage", "active"})
+    observations = usage.observations
+    entropy = usage.entropy
+    unique_count = usage.unique_count
+    denominator = usage.codebook_denominator
+    perplexity = torch.where(
+        observations > 0,
+        entropy.exp(),
+        torch.zeros_like(observations),
+    )
+    unique_ratio = _safe_divide(unique_count, denominator)
+    dead_count = denominator - unique_count
+    dead_ratio = _safe_divide(dead_count, denominator)
+    active_count = usage.active_count
+    active_ratio = usage.active_ratio
+
     values: dict[str, Tensor] = {}
     for book_index in range(usage.num_codebooks):
         book = f"book_{book_index}"
         if "usage" in enabled:
             values.update(
                 {
-                    f"{book}/usage/observations": usage.observations[book_index],
-                    f"{book}/usage/perplexity": usage.perplexity[book_index],
-                    f"{book}/usage/entropy": usage.entropy[book_index],
-                    f"{book}/usage/unique_count": usage.unique_count[book_index],
-                    f"{book}/usage/unique_ratio": usage.unique_ratio[book_index],
-                    f"{book}/usage/dead_count": usage.dead_count[book_index],
-                    f"{book}/usage/dead_ratio": usage.dead_ratio[book_index],
+                    f"{book}/usage/observations": observations[book_index],
+                    f"{book}/usage/perplexity": perplexity[book_index],
+                    f"{book}/usage/entropy": entropy[book_index],
+                    f"{book}/usage/unique_count": unique_count[book_index],
+                    f"{book}/usage/unique_ratio": unique_ratio[book_index],
+                    f"{book}/usage/dead_count": dead_count[book_index],
+                    f"{book}/usage/dead_ratio": dead_ratio[book_index],
                 }
             )
         if "active" in enabled:
             values.update(
                 {
-                    f"{book}/active/count": usage.active_count[book_index],
-                    f"{book}/active/ratio": usage.active_ratio[book_index],
+                    f"{book}/active/count": active_count[book_index],
+                    f"{book}/active/ratio": active_ratio[book_index],
                 }
             )
     return values
@@ -127,13 +135,11 @@ def quantization_usage_metrics(
 def quantization_usage(
     output: QuantizeOutput,
     *,
-    codebook_size: int,
-    num_codebooks: int = 1,
+    codebook_sizes: Sequence[int],
 ) -> QuantizationUsage:
     return codebook_usage(
         output.indices,
-        codebook_size=codebook_size,
-        num_codebooks=num_codebooks,
+        codebook_sizes=codebook_sizes,
         active_codebook_mask=output.active_codebook_mask,
     )
 
@@ -141,20 +147,28 @@ def quantization_usage(
 def codebook_usage(
     indices: Tensor,
     *,
-    codebook_size: int,
-    num_codebooks: int = 1,
+    codebook_sizes: Sequence[int],
     active_codebook_mask: Tensor | None = None,
 ) -> QuantizationUsage:
+    """Summarize discrete codebook assignments.
+
+    ``indices == -1`` is treated as inactive/unassigned. If
+    ``active_codebook_mask`` is omitted, active counts are inferred from
+    ``indices >= 0``; otherwise valid observations require both an active mask
+    entry and a non-negative index.
+    """
+
     flat_indices, active_mask, valid_mask = _flatten_indices(
         indices,
-        codebook_size=codebook_size,
-        num_codebooks=num_codebooks,
+        codebook_sizes=codebook_sizes,
         active_codebook_mask=active_codebook_mask,
     )
     observed_codebooks = flat_indices.shape[1]
+    observed_codebook_sizes = _normalize_codebook_sizes(codebook_sizes)[:observed_codebooks]
+    max_codebook_size = max(observed_codebook_sizes)
     counts = torch.zeros(
         observed_codebooks,
-        codebook_size,
+        max_codebook_size,
         dtype=torch.float32,
         device=indices.device,
     )
@@ -164,8 +178,8 @@ def codebook_usage(
             continue
         counts[book_index] = torch.bincount(
             selected,
-            minlength=codebook_size,
-        ).to(dtype=torch.float32)
+            minlength=max_codebook_size,
+        )[:max_codebook_size].to(dtype=torch.float32)
 
     return QuantizationUsage(
         counts=counts,
@@ -176,20 +190,21 @@ def codebook_usage(
             dtype=torch.float32,
             device=indices.device,
         ),
+        codebook_sizes=observed_codebook_sizes,
     )
 
 
 def valid_indices_by_codebook(
     indices: Tensor,
     *,
-    codebook_size: int,
-    num_codebooks: int = 1,
+    codebook_sizes: Sequence[int],
     active_codebook_mask: Tensor | None = None,
 ) -> tuple[Tensor, ...]:
+    """Return valid non-negative assignment indices for each observed codebook."""
+
     flat_indices, _, valid_mask = _flatten_indices(
         indices,
-        codebook_size=codebook_size,
-        num_codebooks=num_codebooks,
+        codebook_sizes=codebook_sizes,
         active_codebook_mask=active_codebook_mask,
     )
     return tuple(
@@ -201,12 +216,13 @@ def valid_indices_by_codebook(
 def _flatten_indices(
     indices: Tensor,
     *,
-    codebook_size: int,
-    num_codebooks: int,
+    codebook_sizes: Sequence[int],
     active_codebook_mask: Tensor | None,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    _validate_index_inputs(indices, codebook_size=codebook_size, num_codebooks=num_codebooks)
-    flat_indices = _reshape_indices(indices, num_codebooks=num_codebooks)
+    codebook_sizes = _normalize_codebook_sizes(codebook_sizes)
+    _validate_index_inputs(indices, codebook_sizes=codebook_sizes)
+    flat_indices = _reshape_indices(indices, num_codebooks=len(codebook_sizes))
+    observed_codebook_sizes = codebook_sizes[: flat_indices.shape[1]]
     if active_codebook_mask is None:
         active_mask = flat_indices >= 0
     else:
@@ -217,14 +233,15 @@ def _flatten_indices(
             )
         active_mask = _reshape_indices(
             active_codebook_mask.to(dtype=torch.bool),
-            num_codebooks=num_codebooks,
+            num_codebooks=len(codebook_sizes),
         )
 
     if flat_indices.numel() > 0:
-        invalid = (flat_indices < -1) | (flat_indices >= codebook_size)
+        max_values = flat_indices.new_tensor(observed_codebook_sizes).view(1, -1)
+        invalid = (flat_indices < -1) | (flat_indices >= max_values)
         if bool(invalid.any().item()):
             raise ValueError(
-                "indices must contain active values in [0, codebook_size) "
+                "indices must contain active values in each codebook range "
                 "or -1 for inactive codebooks."
             )
     valid_mask = active_mask & (flat_indices >= 0)
@@ -245,13 +262,23 @@ def _reshape_indices(indices: Tensor, *, num_codebooks: int) -> Tensor:
     return indices.reshape(-1, observed_codebooks)
 
 
-def _validate_index_inputs(indices: Tensor, *, codebook_size: int, num_codebooks: int) -> None:
+def _validate_index_inputs(indices: Tensor, *, codebook_sizes: tuple[int, ...]) -> None:
     if torch.is_floating_point(indices) or torch.is_complex(indices):
         raise TypeError("indices must be an integer tensor.")
-    if codebook_size <= 0:
-        raise ValueError(f"codebook_size must be positive, got {codebook_size}.")
-    if num_codebooks <= 0:
-        raise ValueError(f"num_codebooks must be positive, got {num_codebooks}.")
+    if not codebook_sizes:
+        raise ValueError("codebook_sizes must contain at least one value.")
+
+
+def _normalize_codebook_sizes(codebook_sizes: Sequence[int]) -> tuple[int, ...]:
+    sizes = tuple(codebook_sizes)
+    if not sizes:
+        raise ValueError("codebook_sizes must contain at least one value.")
+    for size in sizes:
+        if isinstance(size, bool) or not isinstance(size, Integral):
+            raise TypeError(f"each codebook size must be an integer, got {size!r}.")
+        if size <= 0:
+            raise ValueError(f"each codebook size must be positive, got {size}.")
+    return tuple(int(size) for size in sizes)
 
 
 def _safe_divide(numerator: Tensor, denominator: Tensor) -> Tensor:

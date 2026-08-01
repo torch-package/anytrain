@@ -37,7 +37,10 @@ class QuantizationLoggerCallbackTest(unittest.TestCase):
         module = _LogModule()
         callback = QuantizationLoggerCallback(
             lambda outputs, batch, pl_module: {
-                "rvq": QuantizationMonitor(output=output, codebook_size=3, num_codebooks=2)
+                "rvq": QuantizationMonitor(
+                    output=output,
+                    quantizer=SimpleNamespace(codebook_sizes=(3, 3)),
+                )
             },
             every_n_steps=1,
         )
@@ -74,7 +77,7 @@ class QuantizationLoggerCallbackTest(unittest.TestCase):
         trainer = SimpleNamespace(global_step=3, world_size=1)
         callback = QuantizationLoggerCallback(
             lambda outputs, batch, pl_module: {
-                "vq": QuantizationMonitor(output=output, codebook_size=2)
+                "vq": QuantizationMonitor(output=output, codebook_sizes=(2,))
             },
             every_n_steps=3,
         )
@@ -107,7 +110,7 @@ class QuantizationLoggerCallbackTest(unittest.TestCase):
         strategy = Strategy()
         callback = QuantizationLoggerCallback(
             lambda outputs, batch, pl_module: {
-                "vq": QuantizationMonitor(output=output, codebook_size=4)
+                "vq": QuantizationMonitor(output=output, codebook_sizes=(4,))
             },
             every_n_steps=1,
         )
@@ -136,6 +139,34 @@ class QuantizationLoggerCallbackTest(unittest.TestCase):
             ],
         )
 
+    def test_monitor_supports_heterogeneous_codebook_sizes(self):
+        output = QuantizeOutput(
+            quantized_latents=torch.empty(1, 2),
+            indices=torch.tensor([[1, 3]]),
+        )
+        callback = QuantizationLoggerCallback(
+            lambda outputs, batch, pl_module: {
+                "gvq": QuantizationMonitor(
+                    output=output,
+                    quantizer=SimpleNamespace(codebook_sizes=(2, 4)),
+                )
+            },
+            every_n_steps=1,
+        )
+
+        module = _LogModule()
+        callback.on_train_batch_end(
+            SimpleNamespace(global_step=0, world_size=1),
+            module,
+            None,
+            None,
+            0,
+        )
+
+        values, _ = module.log_dict_calls[0]
+        self.assertEqual(values["quant/gvq/book_0/usage/unique_ratio"].item(), 0.5)
+        self.assertEqual(values["quant/gvq/book_1/usage/unique_ratio"].item(), 0.25)
+
     def test_histogram_logging_uses_global_zero_writer(self):
         writer = _Writer()
         output = QuantizeOutput(
@@ -144,7 +175,7 @@ class QuantizationLoggerCallbackTest(unittest.TestCase):
         )
         callback = QuantizationLoggerCallback(
             lambda outputs, batch, pl_module: {
-                "vq": QuantizationMonitor(output=output, codebook_size=4)
+                "vq": QuantizationMonitor(output=output, codebook_sizes=(4,))
             },
             every_n_steps=1,
             log_histograms=True,
