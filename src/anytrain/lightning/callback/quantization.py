@@ -12,6 +12,7 @@ from anytrain.module.quantization.stats import (
     QuantizationUsage,
     quantization_loss_metrics,
     quantization_usage,
+    quantization_usage_metrics,
     valid_indices_by_codebook,
 )
 
@@ -145,17 +146,25 @@ class QuantizationLoggerCallback(pl.Callback):
     ) -> dict[str, Tensor]:
         values: dict[str, Tensor] = {}
         if "loss" in self.metrics:
-            for name, value in quantization_loss_metrics(monitor.output).items():
-                values[f"{prefix}/loss/{name}"] = _reduce_scalar(trainer, value.detach())
+            for name, value in quantization_loss_metrics(
+                monitor.output,
+                prefix="loss",
+            ).items():
+                values[f"{prefix}/{name}"] = _reduce_scalar(trainer, value.detach())
 
-        if "usage" in self.metrics or "active" in self.metrics:
+        usage_metrics = self.metrics & {"usage", "active"}
+        if usage_metrics:
             usage = quantization_usage(
                 monitor.output,
                 codebook_size=monitor.resolved_codebook_size(),
                 num_codebooks=monitor.observed_num_codebooks(),
             )
             usage = _reduce_usage(trainer, usage)
-            values.update(_usage_metrics(prefix, usage, self.metrics))
+            for name, value in quantization_usage_metrics(
+                usage,
+                metrics=usage_metrics,
+            ).items():
+                values[f"{prefix}/{name}"] = value
         return values
 
     def _log_histograms(
@@ -184,36 +193,6 @@ class QuantizationLoggerCallback(pl.Callback):
                 indices.detach().float().cpu(),
                 step,
             )
-
-
-def _usage_metrics(
-    prefix: str,
-    usage: QuantizationUsage,
-    enabled: set[str],
-) -> dict[str, Tensor]:
-    values: dict[str, Tensor] = {}
-    for book_index in range(usage.num_codebooks):
-        book = f"{prefix}/book_{book_index}"
-        if "usage" in enabled:
-            values.update(
-                {
-                    f"{book}/usage/observations": usage.observations[book_index],
-                    f"{book}/usage/perplexity": usage.perplexity[book_index],
-                    f"{book}/usage/entropy": usage.entropy[book_index],
-                    f"{book}/usage/unique_count": usage.unique_count[book_index],
-                    f"{book}/usage/unique_ratio": usage.unique_ratio[book_index],
-                    f"{book}/usage/dead_count": usage.dead_count[book_index],
-                    f"{book}/usage/dead_ratio": usage.dead_ratio[book_index],
-                }
-            )
-        if "active" in enabled:
-            values.update(
-                {
-                    f"{book}/active/count": usage.active_count[book_index],
-                    f"{book}/active/ratio": usage.active_ratio[book_index],
-                }
-            )
-    return values
 
 
 def _reduce_usage(trainer: pl.Trainer, usage: QuantizationUsage) -> QuantizationUsage:

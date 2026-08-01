@@ -9,6 +9,7 @@ from anytrain.module.quantization import (
     codebook_usage,
     quantization_loss_metrics,
     quantization_usage,
+    quantization_usage_metrics,
     valid_indices_by_codebook,
 )
 
@@ -86,12 +87,38 @@ class QuantizationStatsTest(unittest.TestCase):
 
         self.assertEqual(set(metrics), {"commitment", "codebook", "total"})
         self.assertEqual(metrics["total"].item(), 1.0)
+        prefixed = quantization_loss_metrics(output, prefix="loss")
+        self.assertEqual(set(prefixed), {"loss/commitment", "loss/codebook", "loss/total"})
+        self.assertEqual(prefixed["loss/total"].item(), 1.0)
         self.assertEqual(
             quantization_loss_metrics(
                 QuantizeOutput(quantized_latents=torch.empty(1), indices=torch.tensor([0]))
             ),
             {},
         )
+
+    def test_quantization_usage_metrics_has_stable_relative_keys(self):
+        usage = codebook_usage(
+            torch.tensor([[0, 1], [1, -1]]),
+            codebook_size=3,
+            num_codebooks=2,
+            active_codebook_mask=torch.tensor([[True, True], [True, False]]),
+        )
+
+        metrics = quantization_usage_metrics(usage)
+
+        self.assertEqual(metrics["book_0/usage/observations"].item(), 2.0)
+        self.assertEqual(metrics["book_1/usage/observations"].item(), 1.0)
+        self.assertEqual(metrics["book_1/active/ratio"].item(), 0.5)
+        self.assertIn("book_0/usage/perplexity", metrics)
+        self.assertIn("book_0/usage/dead_ratio", metrics)
+
+    def test_quantization_usage_metrics_can_select_groups(self):
+        usage = codebook_usage(torch.tensor([0, 1]), codebook_size=3)
+
+        metrics = quantization_usage_metrics(usage, metrics=("active",))
+
+        self.assertEqual(set(metrics), {"book_0/active/count", "book_0/active/ratio"})
 
     def test_valid_indices_by_codebook_returns_only_active_assignments(self):
         values = valid_indices_by_codebook(

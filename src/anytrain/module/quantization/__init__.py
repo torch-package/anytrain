@@ -10,6 +10,7 @@ from .stats import (
     codebook_usage,
     quantization_loss_metrics,
     quantization_usage,
+    quantization_usage_metrics,
     valid_indices_by_codebook,
 )
 from .types import QuantizerType
@@ -36,5 +37,6 @@ __all__ = [
     "default_fsq_levels",
     "quantization_loss_metrics",
     "quantization_usage",
+    "quantization_usage_metrics",
     "valid_indices_by_codebook",
 ]

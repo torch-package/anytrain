@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -92,8 +93,68 @@ class ADTConfig:
             )
 
 
+@dataclass(eq=False)
+class ADTStats:
+    """Runtime utilization statistics for Adaptive Dirichlet Tempering."""
+
+    expert_utilization: Tensor
+    expert_vars: Tensor
+    alpha: Tensor
+    temperature: Tensor
+
+    @property
+    def expert_means(self) -> Tensor:
+        """Backward-compatible alias for running expert utilization."""
+
+        return self.expert_utilization
+
+    @property
+    def effective_experts(self) -> Tensor:
+        """Entropy perplexity of the running expert utilization distribution."""
+
+        utilization = self.expert_utilization.to(dtype=torch.float32)
+        safe_utilization = utilization.clamp_min(torch.finfo(utilization.dtype).tiny)
+        terms = torch.where(
+            utilization > 0,
+            utilization * safe_utilization.log(),
+            torch.zeros_like(utilization),
+        )
+        entropy = -terms.sum()
+        return entropy.exp()
+
+
+def adt_stats_metrics(
+    stats: ADTStats,
+    *,
+    metrics: Iterable[str] = ("usage", "variance", "alpha", "temperature"),
+) -> dict[str, Tensor]:
+    enabled = _adt_metric_groups(metrics)
+    values: dict[str, Tensor] = {}
+    if "usage" in enabled:
+        values.update(
+            {
+                "effective_experts": stats.effective_experts,
+                "expert_means": stats.expert_means,
+                "expert_utilization": stats.expert_utilization,
+            }
+        )
+    if "variance" in enabled:
+        values["expert_vars"] = stats.expert_vars
+    if "alpha" in enabled:
+        values["alpha"] = stats.alpha
+    if "temperature" in enabled:
+        values["temperature"] = stats.temperature
+    return values
+
+
 class AdaptiveDirichletTempering(nn.Module):
-    """Adaptive temperature scaling for mixture-of-experts router logits."""
+    """Adaptive temperature scaling for mixture-of-experts router logits.
+
+    ``forward`` accepts router logits with ``num_experts`` on the last dimension
+    and returns same-shaped expert weights.  ADT is intentionally a narrow
+    logits calibration and utilization-statistics module: it does not select
+    experts, compute balancing losses, or perform task/framework logging.
+    """
 
     _eps = 1e-6
     _disabled: bool
@@ -165,6 +226,11 @@ class AdaptiveDirichletTempering(nn.Module):
             return self._with_prior(self._n_eff(0), self._expert_means, self.prior_mean)
 
     @property
+    def expert_utilization(self) -> Tensor:
+        """Running mean router probability for each expert."""
+        return self.expert_means
+
+    @property
     def expert_vars(self) -> Tensor:
         with torch.no_grad():
             variance = self._expert_means_square - self._expert_means.pow(2)
@@ -200,13 +266,22 @@ class AdaptiveDirichletTempering(nn.Module):
             return self._temperature_ema.clone()
         return self._raw_temperature()
 
+    @property
+    def effective_experts(self) -> Tensor:
+        """Entropy perplexity of the running expert utilization distribution."""
+
+        return self.stats().effective_experts
+
+    def stats(self) -> ADTStats:
+        return ADTStats(
+            expert_utilization=self.expert_utilization,
+            expert_vars=self.expert_vars,
+            alpha=self.alpha,
+            temperature=self.temperature,
+        )
+
     def diagnostics(self) -> dict[str, Tensor]:
-        return {
-            "expert_means": self.expert_means,
-            "expert_vars": self.expert_vars,
-            "alpha": self.alpha,
-            "temperature": self.temperature,
-        }
+        return adt_stats_metrics(self.stats())
 
     @torch.no_grad()
     def update_stats(self, logits: Tensor, *, mask: Tensor | None = None) -> None:
@@ -264,6 +339,23 @@ class AdaptiveDirichletTempering(nn.Module):
         mask: Tensor | None = None,
         collect_stats: bool | None = None,
     ) -> Tensor:
+        """Convert router logits to calibrated expert weights.
+
+        Args:
+            logits: Tensor shaped ``(..., num_experts)``. The last dimension is
+                interpreted as expert logits; all leading dimensions are reduced
+                when collecting utilization statistics.
+            mask: Optional bool tensor broadcastable to ``logits.shape[:-1]``.
+                Masked-out positions do not update running statistics.
+            collect_stats: Overrides the default stats collection mode. When
+                ``None``, stats are collected only while the module is in
+                training mode.
+
+        Returns:
+            Tensor with the same shape and dtype as ``logits``. Values are
+            probabilities over the expert dimension and sum to 1 along the last
+            dimension.
+        """
         self._validate_logits(logits)
 
         should_update = self.training if collect_stats is None else collect_stats
@@ -539,3 +631,12 @@ def ema_update(
     if decay is None:
         raise ValueError("decay must be specified.")
     return x * decay + y * (1 - decay)
+
+
+def _adt_metric_groups(values: Iterable[str]) -> set[str]:
+    result = {value.strip() for value in values}
+    allowed = {"usage", "variance", "alpha", "temperature"}
+    unknown = result - allowed
+    if unknown:
+        raise ValueError(f"unknown ADT metrics: {sorted(unknown)!r}.")
+    return result

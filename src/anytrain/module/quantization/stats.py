@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import torch
@@ -77,14 +78,50 @@ class QuantizationUsage:
         )
 
 
-def quantization_loss_metrics(output: QuantizeOutput) -> dict[str, Tensor]:
+def quantization_loss_metrics(
+    output: QuantizeOutput,
+    *,
+    prefix: str | None = None,
+) -> dict[str, Tensor]:
     if output.loss is None:
         return {}
-    return {
+    metrics = {
         "commitment": output.loss.commitment,
         "codebook": output.loss.codebook,
         "total": output.loss.total,
     }
+    return _prefix_metrics(metrics, prefix)
+
+
+def quantization_usage_metrics(
+    usage: QuantizationUsage,
+    *,
+    metrics: Iterable[str] = ("usage", "active"),
+) -> dict[str, Tensor]:
+    enabled = _metric_groups(metrics, allowed={"usage", "active"})
+    values: dict[str, Tensor] = {}
+    for book_index in range(usage.num_codebooks):
+        book = f"book_{book_index}"
+        if "usage" in enabled:
+            values.update(
+                {
+                    f"{book}/usage/observations": usage.observations[book_index],
+                    f"{book}/usage/perplexity": usage.perplexity[book_index],
+                    f"{book}/usage/entropy": usage.entropy[book_index],
+                    f"{book}/usage/unique_count": usage.unique_count[book_index],
+                    f"{book}/usage/unique_ratio": usage.unique_ratio[book_index],
+                    f"{book}/usage/dead_count": usage.dead_count[book_index],
+                    f"{book}/usage/dead_ratio": usage.dead_ratio[book_index],
+                }
+            )
+        if "active" in enabled:
+            values.update(
+                {
+                    f"{book}/active/count": usage.active_count[book_index],
+                    f"{book}/active/ratio": usage.active_ratio[book_index],
+                }
+            )
+    return values
 
 
 def quantization_usage(
@@ -227,10 +264,31 @@ def _safe_divide(numerator: Tensor, denominator: Tensor) -> Tensor:
     )
 
 
+def _metric_groups(values: Iterable[str], *, allowed: set[str]) -> set[str]:
+    result = {value.strip() for value in values}
+    unknown = result - allowed
+    if unknown:
+        raise ValueError(f"unknown quantization metrics: {sorted(unknown)!r}.")
+    return result
+
+
+def _prefix_metrics(
+    metrics: dict[str, Tensor],
+    prefix: str | None,
+) -> dict[str, Tensor]:
+    if prefix is None:
+        return metrics
+    prefix = prefix.strip("/")
+    if not prefix:
+        return metrics
+    return {f"{prefix}/{name}": value for name, value in metrics.items()}
+
+
 __all__ = [
     "QuantizationUsage",
     "codebook_usage",
     "quantization_loss_metrics",
+    "quantization_usage_metrics",
     "quantization_usage",
     "valid_indices_by_codebook",
 ]

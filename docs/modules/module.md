@@ -11,7 +11,9 @@
 `anytrain.module` 顶层只导出少量稳定组件：
 
 - `ADTConfig`
+- `ADTStats`
 - `AdaptiveDirichletTempering`
+- `adt_stats_metrics`
 - `ADT` 兼容别名
 - `DiT`
 - `DiTAttentionBackend`
@@ -21,7 +23,8 @@
 子包显式导出其它组件：
 
 - `anytrain.module.dynamic_conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
-- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput` 和 `QuantizationLoss`。
+- `anytrain.module.moe`：`TopKRouter`、`LinearTopKRouter`、`TokenChoiceMoE`、`MoELayer`、`RouterOutput`、`MoEOutput`、`load_balance_loss`、`router_z_loss`、`expert_usage` 和 `effective_experts`。
+- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
 
@@ -33,6 +36,23 @@ ADT 用于 MoE/router logits 的自适应温度缩放和专家利用率统计，
 避免长序列 reduction 溢出；启用 distributed stats 同步时也使用 FP32 collective。forward
 输出仍以调用方传入的 logits dtype 计算温度 softmax。
 
+### ADT contract
+
+`AdaptiveDirichletTempering.forward()` 的输入是 `(..., num_experts)` router logits，输出是同
+shape、同 dtype 的 expert weight tensor，最后一维是和为 1 的概率分布。`mask` 只影响统计收集，
+必须能 broadcast 到 `logits.shape[:-1]`，不会改变返回权重的 shape。
+
+ADT 的职责边界是 logits calibration 和 router utilization statistics：它不选择 expert、不计算
+load-balancing loss、不假设 batch schema，也不直接做 Lightning logging。下游如果需要负载均衡、
+专家 dropout、top-k routing 或任务相关日志，应在自己的 `LightningModule`、loss 或 router 组合层里显式实现。
+
+公开统计优先使用命名清楚的属性：`expert_utilization` 表示每个 expert 的运行期平均 router 概率，
+`effective_experts` 表示 utilization 分布的 entropy perplexity，`temperature` 表示当前应用到 logits 的
+per-expert 温度。`stats()` 返回纯 `ADTStats` 对象；`adt_stats_metrics()` 负责把 usage、variance、
+alpha 和 temperature 展平成稳定相对 metric key。`diagnostics()` 为兼容旧调用保留，等价于
+`adt_stats_metrics(adt.stats())`，返回这些张量以及 `expert_means`、`expert_vars` 和 `alpha`。
+`ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
+
 Dynamic Conv 用于按样本或按分段动态组合 expert convolution kernel。它保持 task-agnostic：
 
 - 核心卷积只接收外部 `router`，或通过 `forward_manually(x, expert_weights)` 显式传入权重。
@@ -41,6 +61,13 @@ Dynamic Conv 用于按样本或按分段动态组合 expert convolution kernel�
   `DynamicConv2d`；2D transpose、segment/chunk 和 causal padding 等能力等真实下游
   需求明确后再补。
 - router 输出被视作 expert 权重，不在 `DynamicConv1d` 内猜测 logits/softmax 语义。
+
+`anytrain.module.moe` 提供 token-choice sparse MoE 的薄组件层，设计见 [`anytrain.module.moe`](moe.md)。它只负责 feature-last token 的 top-k routing、local expert dispatch、combine 和通用 router metrics：
+
+- `TopKRouter` 把 `(..., input_dim)` hidden states 投影成 `(..., num_experts)` logits，可选复用 `AdaptiveDirichletTempering` 或其它 gate module 做概率校准。
+- `TokenChoiceMoE` / `MoELayer` 接收外部 `nn.Module` experts，不提供 ExpertRegistry、Transformer-MoE block、训练入口或 batch schema。
+- `RouterOutput` / `MoEOutput` 明确暴露 logits、probabilities、indices、weights、mask 和 `tokens_per_expert`，方便下游 LightningModule 自己记录和组合 loss。
+- `load_balance_loss()`、`router_z_loss()`、`expert_usage()` 和 `effective_experts()` 是纯函数；MoE forward 不自动修改训练目标或日志行为。
 
 `anytrain.module.qwen.qwen3` 是 Hugging Face Qwen3 的薄复用层，不重新实现
 transformer block，也不要求下游维护一份庞大的项目级 config：
@@ -109,6 +136,10 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
   `input_dim` 必须能被 `num_groups` 整除，推理可用 `num_active_codebooks` 截断 stage 数，
   训练 dropout 用 `indices == -1` 和 `active_codebook_mask == False` 标记未启用 stage。
 - 量化输出统一为 `QuantizeOutput`，离散整数用 `indices`，连续 codebook 空间向量用 `codebook_vectors`。
+- `quantization_usage()` / `codebook_usage()` 只基于 `indices` 和 `active_codebook_mask`
+  统计 codebook 使用率、perplexity、dead code ratio 和 active ratio；`quantization_usage_metrics()`
+  和 `quantization_loss_metrics()` 负责生成稳定相对 metric key。它们不依赖 Lightning，也不会触发
+  quantizer forward；Lightning callback 只负责 monitor 解析、分布式 reduce 和日志 transport。
 - 单 codebook quantizer 实现 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。
 - RVQ dropout 下 inactive codebook 使用 `indices == -1` 和 `active_codebook_mask == False` 标记，不能只靠 `codebook_vectors` 判断有效性。
 

@@ -5,8 +5,10 @@ import torch
 
 from anytrain.module.dirichlet_tempering import (
     ADT,
-    AdaptiveDirichletTempering,
     ADTConfig,
+    ADTStats,
+    AdaptiveDirichletTempering,
+    adt_stats_metrics,
     ema_update,
 )
 
@@ -272,11 +274,69 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
 
         self.assertEqual(
             set(diagnostics),
-            {"expert_means", "expert_vars", "alpha", "temperature"},
+            {
+                "effective_experts",
+                "expert_means",
+                "expert_utilization",
+                "expert_vars",
+                "alpha",
+                "temperature",
+            },
         )
         for value in diagnostics.values():
             self.assertIsInstance(value, torch.Tensor)
             self.assertTrue(torch.isfinite(value).all())
+
+        self.assertTrue(torch.allclose(adt.expert_utilization, adt.expert_means))
+        self.assertEqual(adt.effective_experts.ndim, 0)
+        self.assertGreaterEqual(float(adt.effective_experts), 1.0)
+        self.assertLessEqual(float(adt.effective_experts), 4.0)
+
+    def test_stats_object_matches_diagnostics(self):
+        adt = ADT.from_kwargs(num_experts=4)
+
+        stats = adt.stats()
+        metrics = adt_stats_metrics(stats)
+
+        self.assertIsInstance(stats, ADTStats)
+        self.assertEqual(set(metrics), set(adt.diagnostics()))
+        for name, value in metrics.items():
+            torch.testing.assert_close(value, adt.diagnostics()[name])
+        torch.testing.assert_close(stats.expert_means, stats.expert_utilization)
+        torch.testing.assert_close(stats.effective_experts, adt.effective_experts)
+
+    def test_stats_metrics_can_select_groups(self):
+        stats = ADT.from_kwargs(num_experts=3).stats()
+
+        usage = adt_stats_metrics(stats, metrics=("usage",))
+        variance_and_temperature = adt_stats_metrics(
+            stats,
+            metrics=("variance", "temperature"),
+        )
+
+        self.assertEqual(
+            set(usage),
+            {"effective_experts", "expert_means", "expert_utilization"},
+        )
+        self.assertEqual(set(variance_and_temperature), {"expert_vars", "temperature"})
+        with self.assertRaisesRegex(ValueError, "unknown ADT metrics"):
+            adt_stats_metrics(stats, metrics=("loss",))
+
+    def test_stats_effective_experts_ignores_zero_utilization(self):
+        stats = ADTStats(
+            expert_utilization=torch.tensor([1.0, 0.0, 0.0]),
+            expert_vars=torch.zeros(3),
+            alpha=torch.ones(3),
+            temperature=torch.ones(3),
+        )
+
+        torch.testing.assert_close(stats.effective_experts, torch.tensor(1.0))
+
+    def test_stats_exports_from_module_root(self):
+        from anytrain import module
+
+        self.assertIs(module.ADTStats, ADTStats)
+        self.assertIs(module.adt_stats_metrics, adt_stats_metrics)
 
     def test_invalid_config_fails_clearly(self):
         with self.assertRaisesRegex(ValueError, "num_experts"):
