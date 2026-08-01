@@ -9,5 +9,6 @@ class QuantizerType(StrEnum):
     AGRVQ = auto()
     FSQ = auto()
     GVQ = auto()
-    VQ = auto()
     RVQ = auto()
+    RFSQ = auto()
+    VQ = auto()
