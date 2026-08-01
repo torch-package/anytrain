@@ -103,10 +103,11 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
 - `GroupedVectorQuantizer` 是 learned product codebook，例如 `group_sizes=(90, 90)` 对外表现为 `codebook_size=8100` 的单 codebook，但内部只搜索两个 90-size group。
 - `ResidualVectorQuantizer` 组合多个 embedding VQ，第一版要求统一 `input_dim`、`codebook_dim` 和 `codebook_size`；`latents_to_codebook_vectors()` 不触发 dropout、loss 或 EMA 更新。
 - `AutoGroupResidualVectorQuantizer` 从 `anytrain.module.quantization` 显式导入。每个 residual
-  stage 使用两个同尺寸 learned group codebook；配置中的 `codebook_size` 是单个 group 的大小，
-  对外 flat `codebook_size` 是它的平方，输出 `codebook_dim` 是配置值的两倍。`input_dim` 必须为
-  偶数，推理可用 `num_active_codebooks` 截断 stage 数，训练 dropout 用 `indices == -1` 和
-  `active_codebook_mask == False` 标记未启用 stage。
+  stage 使用 `num_groups` 个同尺寸 learned group codebook，默认 `num_groups=2`；
+  配置中的 `codebook_size` 是单个 group 的大小，对外 flat `codebook_size` 是
+  `codebook_size ** num_groups`，输出 `codebook_dim` 是配置值乘以 `num_groups`。
+  `input_dim` 必须能被 `num_groups` 整除，推理可用 `num_active_codebooks` 截断 stage 数，
+  训练 dropout 用 `indices == -1` 和 `active_codebook_mask == False` 标记未启用 stage。
 - 量化输出统一为 `QuantizeOutput`，离散整数用 `indices`，连续 codebook 空间向量用 `codebook_vectors`。
 - 单 codebook quantizer 实现 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。
 - RVQ dropout 下 inactive codebook 使用 `indices == -1` 和 `active_codebook_mask == False` 标记，不能只靠 `codebook_vectors` 判断有效性。

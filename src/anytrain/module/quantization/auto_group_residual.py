@@ -6,6 +6,9 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from anytrain._buffer import register_buffer
+from anytrain._compat import strict_zip
+
 from . import _checks
 from ._residual_runner import run_residual_quantization, sample_active_mask
 from .lookup import nearest_codebook_indices
@@ -15,10 +18,17 @@ from .projection import make_projection
 
 @dataclass(frozen=True)
 class AGRVQConfig:
+    """Configuration for auto-group residual vector quantization.
+
+    codebook_size is the per-group size. The public flat codebook size is
+    codebook_size ** num_groups.
+    """
+
     input_dim: int
     num_codebooks: int
     codebook_size: int
     codebook_dim: int = 8
+    num_groups: int = 2
     normalize_latents: bool = True
     projection_bias: bool = True
     weight_norm: bool = False
@@ -27,14 +37,25 @@ class AGRVQConfig:
     def __post_init__(self) -> None:
         if self.input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {self.input_dim}.")
-        if self.input_dim % 2 != 0:
-            raise ValueError("input_dim must be even for two-group AGRVQ projection.")
         if self.num_codebooks <= 0:
             raise ValueError(f"num_codebooks must be positive, got {self.num_codebooks}.")
         if self.codebook_size <= 0:
             raise ValueError(f"codebook_size must be positive, got {self.codebook_size}.")
         if self.codebook_dim <= 0:
             raise ValueError(f"codebook_dim must be positive, got {self.codebook_dim}.")
+        if self.num_groups <= 0:
+            raise ValueError(f"num_groups must be positive, got {self.num_groups}.")
+        if self.input_dim % self.num_groups != 0:
+            raise ValueError(
+                "input_dim must be divisible by num_groups for AGRVQ projection: "
+                f"got input_dim={self.input_dim}, num_groups={self.num_groups}."
+            )
+        flat_codebook_size = self.codebook_size**self.num_groups
+        if flat_codebook_size > torch.iinfo(torch.long).max:
+            raise ValueError(
+                "flat AGRVQ codebook_size must fit in torch.long: "
+                f"got {flat_codebook_size}."
+            )
         _checks.dropout(self.dropout)
 
     @classmethod
@@ -44,6 +65,7 @@ class AGRVQConfig:
         num_codebooks: int,
         codebook_size: int,
         codebook_dim: int = 8,
+        num_groups: int = 2,
         normalize_latents: bool = True,
         projection_bias: bool = True,
         weight_norm: bool = False,
@@ -54,6 +76,7 @@ class AGRVQConfig:
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             codebook_dim=codebook_dim,
+            num_groups=num_groups,
             normalize_latents=normalize_latents,
             projection_bias=projection_bias,
             weight_norm=weight_norm,
@@ -64,23 +87,32 @@ class AGRVQConfig:
 class AutoGroupResidualVectorQuantizer(nn.Module):
     config: AGRVQConfig
     quantizers: nn.ModuleList
+    _index_basis: Tensor
 
     def __init__(self, config: AGRVQConfig) -> None:
         super().__init__()
         self.config = config
         self.num_codebooks = config.num_codebooks
         self.input_dim = config.input_dim
+        self.num_groups = config.num_groups
         self.group_size = config.codebook_size
-        self.codebook_size = config.codebook_size * config.codebook_size
+        self.codebook_size = config.codebook_size**config.num_groups
         self.group_codebook_dim = config.codebook_dim
-        self.codebook_dim = 2 * config.codebook_dim
+        self.codebook_dim = config.num_groups * config.codebook_dim
         self.dropout = config.dropout
+        register_buffer(
+            self,
+            "_index_basis",
+            _make_index_basis(config.codebook_size, config.num_groups),
+            persistent=False,
+        )
         self.quantizers = nn.ModuleList(
             [
                 _AutoGroupVectorQuantizer(
                     input_dim=config.input_dim,
                     codebook_size=config.codebook_size,
                     codebook_dim=config.codebook_dim,
+                    num_groups=config.num_groups,
                     normalize_latents=config.normalize_latents,
                     projection_bias=config.projection_bias,
                     weight_norm=config.weight_norm,
@@ -166,7 +198,7 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             vectors_i = torch.zeros(
                 *indices_i.shape,
                 self.codebook_dim,
-                dtype=quantizer.codebook_a.weight.dtype,
+                dtype=quantizer.codebooks[0].weight.dtype,
                 device=indices.device,
             )
             if bool(mask.any().item()):
@@ -187,14 +219,15 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
 
     def indices_to_group_indices(self, indices: Tensor) -> Tensor:
         _checks.indices(indices, self.codebook_size)
-        return torch.stack(
-            [indices // self.group_size, indices % self.group_size],
-            dim=-1,
+        return _indices_to_group_indices(
+            indices,
+            index_basis=self._index_basis,
+            group_size=self.group_size,
         )
 
     def group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
         self._validate_group_indices(group_indices)
-        return group_indices[..., 0] * self.group_size + group_indices[..., 1]
+        return _group_indices_to_indices(group_indices, index_basis=self._index_basis)
 
     def _sample_active_mask(
         self,
@@ -226,8 +259,13 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         return num_active_codebooks
 
     def _validate_group_indices(self, group_indices: Tensor) -> None:
-        if group_indices.ndim == 0 or group_indices.shape[-1] != 2:
-            raise ValueError("group_indices must end with two group ids.")
+        if group_indices.ndim == 0:
+            raise ValueError(f"group_indices must end with num_groups={self.num_groups}.")
+        if group_indices.shape[-1] != self.num_groups:
+            raise ValueError(
+                f"group_indices must end with num_groups={self.num_groups}, "
+                f"got {tuple(group_indices.shape)}."
+            )
         if torch.is_floating_point(group_indices) or torch.is_complex(group_indices):
             raise TypeError("group_indices must be an integer tensor.")
         if group_indices.numel() == 0:
@@ -242,106 +280,141 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
 
 
 class _AutoGroupVectorQuantizer(nn.Module):
+    _index_basis: Tensor
+
     def __init__(
         self,
         *,
         input_dim: int,
         codebook_size: int,
         codebook_dim: int,
+        num_groups: int,
         normalize_latents: bool,
         projection_bias: bool,
         weight_norm: bool,
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
-        self.codebook_size = codebook_size
-        self.codebook_dim = codebook_dim
-        self.output_dim = input_dim // 2
+        self.group_size = codebook_size
+        self.codebook_size = codebook_size**num_groups
+        self.group_codebook_dim = codebook_dim
+        self.num_groups = num_groups
+        self.codebook_dim = num_groups * codebook_dim
+        self.output_dim = input_dim // num_groups
         self.normalize_latents = normalize_latents
+        register_buffer(
+            self,
+            "_index_basis",
+            _make_index_basis(codebook_size, num_groups),
+            persistent=False,
+        )
 
-        self.in_proj_a = make_projection(
-            input_dim,
-            codebook_dim,
-            bias=projection_bias,
-            weight_norm=weight_norm,
+        self.in_projs = nn.ModuleList(
+            [
+                make_projection(
+                    input_dim,
+                    codebook_dim,
+                    bias=projection_bias,
+                    weight_norm=weight_norm,
+                )
+                for _ in range(num_groups)
+            ]
         )
-        self.out_proj_a = make_projection(
-            codebook_dim,
-            self.output_dim,
-            bias=projection_bias,
-            weight_norm=weight_norm,
+        self.out_projs = nn.ModuleList(
+            [
+                make_projection(
+                    codebook_dim,
+                    self.output_dim,
+                    bias=projection_bias,
+                    weight_norm=weight_norm,
+                )
+                for _ in range(num_groups)
+            ]
         )
-        self.in_proj_b = make_projection(
-            input_dim,
-            codebook_dim,
-            bias=projection_bias,
-            weight_norm=weight_norm,
+        self.codebooks = nn.ModuleList(
+            [nn.Embedding(codebook_size, codebook_dim) for _ in range(num_groups)]
         )
-        self.out_proj_b = make_projection(
-            codebook_dim,
-            self.output_dim,
-            bias=projection_bias,
-            weight_norm=weight_norm,
-        )
-        self.codebook_a = nn.Embedding(codebook_size, codebook_dim)
-        self.codebook_b = nn.Embedding(codebook_size, codebook_dim)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         with torch.no_grad():
-            nn.init.normal_(self.codebook_a.weight, mean=0.0, std=1.0)
-            nn.init.normal_(self.codebook_b.weight, mean=0.0, std=1.0)
+            for codebook in self.codebooks:
+                nn.init.normal_(codebook.weight, mean=0.0, std=1.0)
 
     def forward(self, latents: Tensor) -> QuantizeOutput:
-        projected_a = self.in_proj_a(latents)
-        projected_b = self.in_proj_b(latents)
-        vectors_a, indices_a = self._nearest_codebook_vectors(projected_a, self.codebook_a)
-        vectors_b, indices_b = self._nearest_codebook_vectors(projected_b, self.codebook_b)
+        projected = [project(latents) for project in self.in_projs]
+        nearest = [
+            self._nearest_codebook_vectors(projected_i, codebook)
+            for projected_i, codebook in strict_zip(projected, self.codebooks)
+        ]
+        vectors = [vectors_i for vectors_i, _ in nearest]
+        group_indices = torch.stack([indices_i for _, indices_i in nearest], dim=-1)
 
         loss = None
         if self.training:
-            projected = torch.cat([projected_a, projected_b], dim=-1)
-            vectors = torch.cat([vectors_a, vectors_b], dim=-1)
+            projected_for_loss = torch.cat(projected, dim=-1)
+            vectors_for_loss = torch.cat(vectors, dim=-1)
             loss = QuantizationLoss(
-                commitment=F.mse_loss(projected, vectors.detach()),
-                codebook=F.mse_loss(vectors, projected.detach()),
+                commitment=F.mse_loss(projected_for_loss, vectors_for_loss.detach()),
+                codebook=F.mse_loss(vectors_for_loss, projected_for_loss.detach()),
             )
 
-        straight_a = projected_a + (vectors_a - projected_a).detach()
-        straight_b = projected_b + (vectors_b - projected_b).detach()
+        straight = [
+            projected_i + (vectors_i - projected_i).detach()
+            for projected_i, vectors_i in strict_zip(projected, vectors)
+        ]
         quantized_latents = torch.cat(
-            [self.out_proj_a(straight_a), self.out_proj_b(straight_b)],
+            [
+                project(straight_i)
+                for project, straight_i in strict_zip(self.out_projs, straight)
+            ],
             dim=-1,
         )
         return QuantizeOutput(
             quantized_latents=quantized_latents,
-            indices=indices_a * self.codebook_size + indices_b,
-            codebook_vectors=torch.cat([vectors_a, vectors_b], dim=-1),
-            latents=torch.cat([projected_a, projected_b], dim=-1),
+            indices=self._group_indices_to_indices(group_indices),
+            codebook_vectors=torch.cat(vectors, dim=-1),
+            latents=torch.cat(projected, dim=-1),
             loss=loss,
         )
 
     def latents_to_codebook_vectors(self, latents: Tensor) -> Tensor:
-        projected_a = self.in_proj_a(latents)
-        projected_b = self.in_proj_b(latents)
-        vectors_a, _ = self._nearest_codebook_vectors(projected_a, self.codebook_a)
-        vectors_b, _ = self._nearest_codebook_vectors(projected_b, self.codebook_b)
-        return torch.cat([vectors_a, vectors_b], dim=-1)
+        vectors = []
+        for project, codebook in strict_zip(self.in_projs, self.codebooks):
+            vectors_i, _ = self._nearest_codebook_vectors(project(latents), codebook)
+            vectors.append(vectors_i)
+        return torch.cat(vectors, dim=-1)
 
     def codebook_vectors_to_indices(self, codebook_vectors: Tensor) -> Tensor:
-        vectors_a, vectors_b = codebook_vectors.split(self.codebook_dim, dim=-1)
-        _, indices_a = self._nearest_codebook_vectors(vectors_a, self.codebook_a)
-        _, indices_b = self._nearest_codebook_vectors(vectors_b, self.codebook_b)
-        return indices_a * self.codebook_size + indices_b
+        _checks.codebook_vectors(codebook_vectors, self.codebook_dim)
+        vectors = codebook_vectors.split(self.group_codebook_dim, dim=-1)
+        group_indices = []
+        for vectors_i, codebook in strict_zip(vectors, self.codebooks):
+            _, indices_i = self._nearest_codebook_vectors(vectors_i, codebook)
+            group_indices.append(indices_i)
+        return self._group_indices_to_indices(torch.stack(group_indices, dim=-1))
 
     def indices_to_codebook_vectors(self, indices: Tensor) -> Tensor:
-        indices_a = indices // self.codebook_size
-        indices_b = indices % self.codebook_size
-        return torch.cat([self.codebook_a(indices_a), self.codebook_b(indices_b)], dim=-1)
+        _checks.indices(indices, self.codebook_size)
+        group_indices = self._indices_to_group_indices(indices)
+        return torch.cat(
+            [
+                codebook(group_indices[..., index])
+                for index, codebook in enumerate(self.codebooks)
+            ],
+            dim=-1,
+        )
 
     def project_codebook_vectors(self, codebook_vectors: Tensor) -> Tensor:
-        vectors_a, vectors_b = codebook_vectors.split(self.codebook_dim, dim=-1)
-        return torch.cat([self.out_proj_a(vectors_a), self.out_proj_b(vectors_b)], dim=-1)
+        _checks.codebook_vectors(codebook_vectors, self.codebook_dim)
+        vectors = codebook_vectors.split(self.group_codebook_dim, dim=-1)
+        return torch.cat(
+            [
+                project(vectors_i)
+                for project, vectors_i in strict_zip(self.out_projs, vectors)
+            ],
+            dim=-1,
+        )
 
     def _nearest_codebook_vectors(
         self,
@@ -354,4 +427,40 @@ class _AutoGroupVectorQuantizer(nn.Module):
             codebook.weight,
             normalize=self.normalize_latents,
         )
-        return codebook(indices).reshape(*leading_shape, self.codebook_dim), indices
+        return codebook(indices).reshape(*leading_shape, self.group_codebook_dim), indices
+
+    def _indices_to_group_indices(self, indices: Tensor) -> Tensor:
+        return _indices_to_group_indices(
+            indices,
+            index_basis=self._index_basis,
+            group_size=self.group_size,
+        )
+
+    def _group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
+        return _group_indices_to_indices(group_indices, index_basis=self._index_basis)
+
+
+def _make_index_basis(group_size: int, num_groups: int) -> Tensor:
+    return torch.tensor(
+        [group_size**power for power in range(num_groups - 1, -1, -1)],
+        dtype=torch.long,
+    )
+
+
+def _indices_to_group_indices(
+    indices: Tensor,
+    *,
+    index_basis: Tensor,
+    group_size: int,
+) -> Tensor:
+    basis = index_basis.to(device=indices.device)
+    return (indices.to(dtype=torch.long).unsqueeze(-1) // basis) % group_size
+
+
+def _group_indices_to_indices(
+    group_indices: Tensor,
+    *,
+    index_basis: Tensor,
+) -> Tensor:
+    basis = index_basis.to(device=group_indices.device)
+    return (group_indices.to(dtype=torch.long) * basis).sum(dim=-1)

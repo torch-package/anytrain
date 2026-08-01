@@ -4,6 +4,7 @@ from unittest import mock
 
 import torch
 
+from anytrain._compat import strict_zip
 from anytrain.module.quantization import (
     AGRVQConfig,
     AutoGroupResidualVectorQuantizer,
@@ -20,6 +21,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
         output = quantizer(x)
 
+        self.assertEqual(quantizer.num_groups, 2)
         self.assertEqual(quantizer.group_size, 5)
         self.assertEqual(quantizer.codebook_size, 25)
         self.assertEqual(quantizer.codebook_dim, 8)
@@ -31,6 +33,54 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertIsInstance(output.loss, QuantizationLoss)
         self.assertTrue((output.indices >= 0).all())
         self.assertTrue((output.indices < 25).all())
+
+    def test_configurable_num_groups_shapes_and_flat_codebook_size(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(
+                input_dim=6,
+                num_codebooks=2,
+                codebook_size=4,
+                codebook_dim=2,
+                num_groups=3,
+            )
+        )
+        x = torch.randn(2, 3, 6)
+
+        output = quantizer(x)
+
+        self.assertEqual(quantizer.num_groups, 3)
+        self.assertEqual(quantizer.group_size, 4)
+        self.assertEqual(quantizer.codebook_size, 64)
+        self.assertEqual(quantizer.codebook_dim, 6)
+        self.assertEqual(output.quantized_latents.shape, x.shape)
+        self.assertEqual(output.indices.shape, (2, 3, 2))
+        self.assertEqual(output.codebook_vectors.shape, (2, 3, 2, 6))
+        self.assertEqual(output.latents.shape, (2, 3, 2, 6))
+        self.assertTrue((output.indices >= 0).all())
+        self.assertTrue((output.indices < 64).all())
+
+    def test_one_group_shapes_and_flat_codebook_size(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(
+                input_dim=4,
+                num_codebooks=2,
+                codebook_size=7,
+                codebook_dim=3,
+                num_groups=1,
+            )
+        )
+        x = torch.randn(2, 4)
+
+        output = quantizer(x)
+        group_indices = quantizer.indices_to_group_indices(output.indices)
+        round_trip = quantizer.group_indices_to_indices(group_indices)
+
+        self.assertEqual(quantizer.num_groups, 1)
+        self.assertEqual(quantizer.codebook_size, 7)
+        self.assertEqual(quantizer.codebook_dim, 3)
+        self.assertEqual(output.quantized_latents.shape, x.shape)
+        self.assertEqual(output.codebook_vectors.shape, (2, 2, 3))
+        self.assertTrue(torch.equal(round_trip, output.indices))
 
     def test_num_active_codebooks_controls_output_width(self):
         quantizer = AutoGroupResidualVectorQuantizer(
@@ -56,15 +106,44 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue(torch.equal(indices, torch.tensor([[0, 14], [8, 22]])))
         self.assertTrue(torch.equal(round_trip, group_indices))
 
+    def test_group_indices_round_trip_with_more_groups(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(
+                input_dim=6,
+                num_codebooks=2,
+                codebook_size=4,
+                codebook_dim=2,
+                num_groups=3,
+            )
+        )
+        group_indices = torch.tensor([[[0, 0, 0], [2, 1, 3]], [[1, 2, 0], [3, 3, 3]]])
+
+        indices = quantizer.group_indices_to_indices(group_indices)
+        round_trip = quantizer.indices_to_group_indices(indices)
+
+        self.assertTrue(torch.equal(indices, torch.tensor([[0, 39], [24, 63]])))
+        self.assertTrue(torch.equal(round_trip, group_indices))
+
     def test_indices_round_trip_through_codebook_vectors(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, codebook_dim=2)
+            AGRVQConfig(
+                input_dim=6,
+                num_codebooks=2,
+                codebook_size=3,
+                codebook_dim=2,
+                num_groups=3,
+            )
+        )
+        weights = (
+            torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
+            torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.0, -1.0]]),
+            torch.tensor([[1.0, 1.0], [-1.0, 1.0], [1.0, -1.0]]),
         )
         with torch.no_grad():
             for book in quantizer.quantizers:
-                book.codebook_a.weight.copy_(torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]))
-                book.codebook_b.weight.copy_(torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.0, -1.0]]))
-        indices = torch.tensor([[0, 1], [5, 8]])
+                for codebook, weight in strict_zip(book.codebooks, weights):
+                    codebook.weight.copy_(weight)
+        indices = torch.tensor([[0, 1], [5, 26]])
 
         vectors = quantizer.indices_to_codebook_vectors(indices)
         round_trip = quantizer.codebook_vectors_to_indices(vectors)
@@ -160,6 +239,14 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((output.indices >= 0).all())
         self.assertTrue(output.active_codebook_mask.all())
 
+    def test_group_indices_shape_error_mentions_shape(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=6, num_codebooks=2, codebook_size=3, num_groups=3)
+        )
+
+        with self.assertRaisesRegex(ValueError, r"\(2, 2\)"):
+            quantizer.group_indices_to_indices(torch.zeros(2, 2, dtype=torch.long))
+
     def test_backward_reaches_input_and_codebooks(self):
         quantizer = AutoGroupResidualVectorQuantizer(
             AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, codebook_dim=2)
@@ -173,14 +260,16 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertIsNotNone(x.grad)
         self.assertTrue(torch.isfinite(x.grad).all())
         for book in quantizer.quantizers:
-            self.assertIsNotNone(book.codebook_a.weight.grad)
-            self.assertIsNotNone(book.codebook_b.weight.grad)
+            for codebook in book.codebooks:
+                self.assertIsNotNone(codebook.weight.grad)
 
     def test_invalid_config_fails_clearly(self):
-        with self.assertRaisesRegex(ValueError, "even"):
+        with self.assertRaisesRegex(ValueError, "divisible"):
             AGRVQConfig(input_dim=3, num_codebooks=2, codebook_size=3)
         with self.assertRaisesRegex(ValueError, "num_codebooks"):
             AGRVQConfig(input_dim=4, num_codebooks=0, codebook_size=3)
+        with self.assertRaisesRegex(ValueError, "num_groups"):
+            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, num_groups=0)
         with self.assertRaisesRegex(ValueError, "dropout"):
             AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, dropout=2.0)
 
