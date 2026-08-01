@@ -23,7 +23,7 @@
 子包显式导出其它组件：
 
 - `anytrain.module.routing`：`DenseExpertWeights`、`SparseExpertRouting`、专家数/top-k 校验、dense/sparse route 校验和 mask broadcast helper。
-- `anytrain.module.moe.conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`；旧 `anytrain.module.dynamic_conv` 仅保留兼容 re-export。
+- `anytrain.module.moe.conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
 - `anytrain.module.moe`：`TopKRouter`、`LinearTopKRouter`、`TokenChoiceMoE`、`MoELayer`、`RouterOutput`、`MoEOutput`、`load_balance_loss`、`router_z_loss`、`expert_usage` 和 `effective_experts`。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。

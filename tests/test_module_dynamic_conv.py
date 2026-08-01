@@ -3,10 +3,6 @@ import unittest
 import torch
 from torch import nn
 
-from anytrain.module.dynamic_conv import DynamicConv1d as CompatDynamicConv1d
-from anytrain.module.dynamic_conv.shape import (
-    validate_dynamic_conv1d_args as compat_validate_dynamic_conv1d_args,
-)
 from anytrain.module.moe.conv import (
     ADTRouter1d,
     ADTRouter2d,
@@ -43,10 +39,6 @@ class SimpleRouter2d(nn.Module):
 
 
 class DynamicConv1dTest(unittest.TestCase):
-    def test_dynamic_conv_import_path_is_compatibility_alias(self):
-        self.assertIs(CompatDynamicConv1d, DynamicConv1d)
-        self.assertIs(compat_validate_dynamic_conv1d_args, validate_dynamic_conv1d_args)
-
     def test_initialization_shapes(self):
         conv = DynamicConv1d(
             16,
