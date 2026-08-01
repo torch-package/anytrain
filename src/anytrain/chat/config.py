@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import NamedTuple
+from urllib.parse import urlparse
 
 from .types import ModelType
 
@@ -12,6 +13,7 @@ GLM_BASE_URL_ENV = "GLM_BASE_URL"
 GLM_MODEL_ENV = "GLM_MODEL"
 GLM_API_KEY_ENV = "GLM_API_KEY"
 OPENROUTER_BASE_URL_ENV = "OPENROUTER_BASE_URL"
+OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV = "OPENROUTER_ALLOW_CUSTOM_BASE_URL"
 OPENROUTER_MODELS_ENV = "OPENROUTER_MODELS"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_CANDIDATE_LIMIT_ENV = "OPENROUTER_CANDIDATE_LIMIT"
@@ -100,7 +102,35 @@ def _openrouter_base_url() -> str:
         return OPENROUTER_DEFAULT_BASE_URL
     if value == "":
         raise ValueError(f"{OPENROUTER_BASE_URL_ENV} must not be empty.")
+    _validate_openrouter_base_url(value)
     return value
+
+
+def _validate_openrouter_base_url(value: str) -> None:
+    if value.rstrip("/") == OPENROUTER_DEFAULT_BASE_URL.rstrip("/"):
+        return
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "https":
+        raise ValueError(f"{OPENROUTER_BASE_URL_ENV} custom URLs must use https.")
+    if not parsed.netloc:
+        raise ValueError(f"{OPENROUTER_BASE_URL_ENV} custom URLs must include a host.")
+    if not _truthy_env(OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV):
+        raise ValueError(
+            f"{OPENROUTER_BASE_URL_ENV} points to a custom host. Set "
+            f"{OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV}=1 to explicitly allow sending "
+            "the OpenRouter API key to that endpoint."
+        )
+
+
+def _truthy_env(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    if value in {"1", "true", "True", "yes", "YES", "on", "ON"}:
+        return True
+    if value in {"0", "false", "False", "no", "NO", "off", "OFF", ""}:
+        return False
+    raise ValueError(f"{name} must be a boolean flag.")
 
 
 def _openrouter_allowlist() -> tuple[str, ...] | None:

@@ -112,17 +112,21 @@ class LongCat(DeviceModule):
         *,
         cache_dir: str | os.PathLike[str] | None = None,
         decoder: LongCatDecoderName = DEFAULT_DECODER,
+        revision: str | None = None,
         device: str | torch.device | None = None,
         local_files_only: bool = False,
         force_download: bool = False,
+        allow_unpinned_revision: bool = False,
     ) -> LongCat:
         load_encoder, load_decoder = _load_longcat_loaders()
         decoder_names = (decoder,)
         assets = ensure_longcat_assets(
             cache_dir=cache_dir,
             decoders=decoder_names,
+            revision=revision,
             local_files_only=local_files_only,
             force_download=force_download,
+            allow_unpinned_revision=allow_unpinned_revision,
         )
         resolved_device = resolve_device(device)
 

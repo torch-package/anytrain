@@ -54,6 +54,8 @@ export ANYTRAIN_HOME=/mnt/pami202/zhuyin/.anytrain
 默认 checkpoint 来自 Hugging Face 仓库 `Yidiii/UniCodec_ckpt` 的
 `unicode.ckpt`。默认 config 使用 UniCodec fork 内打包的
 `unicodec_frame75_10s_nq1_code16384_dim512_acousitic.yaml`。
+远程下载默认要求显式传入 Hugging Face `revision=<commit-sha>`；若需要沿用旧的浮动分支
+下载行为，必须显式传入 `allow_unpinned_revision=True`。
 
 ## 使用
 

@@ -51,16 +51,20 @@ class UniCodec(DeviceModule):
         repo_id: str | None = None,
         config_name: str | None = None,
         checkpoint_filename: str | None = None,
+        revision: str | None = None,
         device: str | torch.device | None = None,
         domain: Domain = "0",
         bandwidth_id: int = 0,
         local_files_only: bool = False,
         force_download: bool = False,
+        allow_unpinned_revision: bool = False,
     ) -> UniCodec:
         kwargs: dict[str, object] = {
             "cache_dir": cache_dir,
             "local_files_only": local_files_only,
             "force_download": force_download,
+            "revision": revision,
+            "allow_unpinned_revision": allow_unpinned_revision,
         }
         if repo_id is not None:
             kwargs["repo_id"] = repo_id

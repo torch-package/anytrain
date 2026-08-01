@@ -34,6 +34,9 @@ checkpoint 自动下载到缓存目录。路径优先级：
    `HF_HOME=${ANYTRAIN_HOME:-~/.anytrain}/huggingface`，再使用
    `$HF_HOME/longcat-audio-codec`
 
+远程下载默认要求显式传入 Hugging Face `revision=<commit-sha>`；若需要沿用旧的浮动分支
+下载行为，必须显式传入 `allow_unpinned_revision=True`。
+
 远程服务器上推荐：
 
 ```bash

@@ -466,10 +466,22 @@ class SpeechEvaluatorTest(unittest.TestCase):
         self.assertIsInstance(evaluator.backend, TorchHubUTMOSBackend)
         self.assertEqual(evaluator.backend.model_name, "utmos22_strong")
         self.assertIsNone(evaluator.backend.model)
+        self.assertFalse(evaluator.backend.allow_remote_code)
+
+    def test_torch_hub_utmos_backend_requires_remote_code_opt_in(self):
+        backend = TorchHubUTMOSBackend(device="cpu")
+
+        with (
+            patch("torch.hub.load") as load,
+            self.assertRaisesRegex(ValueError, "allow_remote_code"),
+        ):
+            backend._load_model()
+
+        load.assert_not_called()
 
     def test_torch_hub_utmos_backend_scores_tensor_audio(self):
         model = FakeUTMOSModel(torch.tensor([3.0, 5.0]))
-        backend = TorchHubUTMOSBackend(device="cpu")
+        backend = TorchHubUTMOSBackend(device="cpu", allow_remote_code=True)
 
         with (
             patch.dict(os.environ, {ANYTRAIN_HOME_ENV: "/tmp/anytrain"}, clear=True),
@@ -492,6 +504,23 @@ class SpeechEvaluatorTest(unittest.TestCase):
         self.assertFalse(model.calls[0][4])
         self.assertTrue(model.calls[0][5])
         self.assertEqual(model.eval_calls, 1)
+
+    def test_torch_hub_utmos_backend_preserves_explicit_trust_repo_option(self):
+        model = FakeUTMOSModel(torch.tensor([4.0]))
+        backend = TorchHubUTMOSBackend(
+            device="cpu",
+            allow_remote_code=True,
+            load_options={"trust_repo": False},
+        )
+
+        with patch("torch.hub.load", return_value=model) as load:
+            backend.score(torch.zeros(16000), 16000)
+
+        load.assert_called_once_with(
+            "tarepan/SpeechMOS:v1.2.0",
+            "utmos22_strong",
+            trust_repo=False,
+        )
 
 
 if __name__ == "__main__":

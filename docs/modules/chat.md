@@ -67,10 +67,13 @@ response = await client.acall("compare it with the previous answer")
 - `GLM_API_KEY`
 - `OPENROUTER_API_KEY`（必填）
 - `OPENROUTER_BASE_URL`（可选，默认 `https://openrouter.ai/api/v1`）
+- `OPENROUTER_ALLOW_CUSTOM_BASE_URL`（可选；自定义 OpenRouter host 时必须显式设为 `1`）
 - `OPENROUTER_MODELS`（可选白名单；未设置时从直播 catalog 自动选）
 - `OPENROUTER_CANDIDATE_LIMIT`（可选，默认 `4`；主模型 + 最多 3 个 OpenRouter fallback）
 
 DeepSeek / GLM 变量缺失或为空时，`Chat(...)` 会直接抛出 `ValueError`。OpenRouter 在 `OPENROUTER_API_KEY` 缺失、白名单为空串、或候选 limit 非法时同样直接抛错。
+如果 `OPENROUTER_BASE_URL` 指向非官方 host，必须使用 HTTPS 并设置
+`OPENROUTER_ALLOW_CUSTOM_BASE_URL=1`；否则不会把 API key 发给该 endpoint。
 
 `openrouter` 面向低成本、低智能要求的对话任务（例如给任务生成 prompt），不是 DeepSeek/GLM 的平替智能后端。构造 `Chat("openrouter")` 时会请求 `{base_url}/models`，按直播定价选择候选：
 

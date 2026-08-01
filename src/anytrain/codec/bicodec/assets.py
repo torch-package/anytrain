@@ -23,8 +23,10 @@ def ensure_bicodec_assets(
     cache_dir: str | os.PathLike[str] | None = None,
     *,
     repo_id: str = DEFAULT_HF_REPO_ID,
+    revision: str | None = None,
     local_files_only: bool = False,
     force_download: bool = False,
+    allow_unpinned_revision: bool = False,
 ) -> BiCodecAssets:
     root = hf_cache_dir("bicodec", cache_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -34,8 +36,10 @@ def ensure_bicodec_assets(
         repo_id=repo_id,
         cache_dir=root,
         allow_patterns=SNAPSHOT_PATTERNS,
+        revision=revision,
         local_files_only=local_files_only,
         force_download=force_download,
+        allow_unpinned_revision=allow_unpinned_revision,
     )
     _validate_model_dir(model_dir)
     return {

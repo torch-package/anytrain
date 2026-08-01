@@ -102,8 +102,10 @@ def ensure_longcat_assets(
     *,
     decoders: Sequence[LongCatDecoderName] = DEFAULT_DECODERS,
     repo_id: str = DEFAULT_HF_REPO_ID,
+    revision: str | None = None,
     local_files_only: bool = False,
     force_download: bool = False,
+    allow_unpinned_revision: bool = False,
 ) -> LongCatAssets:
     decoder_names = _validate_decoders(decoders)
     root = hf_cache_dir("longcat-audio-codec", cache_dir)
@@ -120,8 +122,10 @@ def ensure_longcat_assets(
             cache_dir=root,
             filename=f"ckpts/{CHECKPOINT_FILENAMES[name]}",
             target=ckpt_dir / CHECKPOINT_FILENAMES[name],
+            revision=revision,
             local_files_only=local_files_only,
             force_download=force_download,
+            allow_unpinned_revision=allow_unpinned_revision,
         )
         for name in checkpoint_keys
     }

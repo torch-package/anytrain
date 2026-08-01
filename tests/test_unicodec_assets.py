@@ -25,6 +25,7 @@ class UniCodecAssetsTest(unittest.TestCase):
                 local_dir,
                 local_files_only,
                 force_download,
+                revision,
             ):
                 path = Path(local_dir) / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +39,7 @@ class UniCodecAssetsTest(unittest.TestCase):
                 ),
                 patch.object(unicodec_assets, "_default_config_path", return_value=config),
             ):
-                assets = ensure_unicodec_assets(cache_dir=root)
+                assets = ensure_unicodec_assets(cache_dir=root, revision="abc123")
 
             self.assertEqual(assets["cache_dir"], root)
             self.assertEqual(assets["config"], config)
@@ -64,6 +65,17 @@ class UniCodecAssetsTest(unittest.TestCase):
 
             self.assertEqual(assets["checkpoint"], checkpoint)
             self.assertEqual(assets["checkpoint"].read_text(), "existing")
+
+    def test_ensure_assets_requires_revision_for_remote_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config.yaml"
+            config.write_text("model: {}")
+            with (
+                patch.object(unicodec_assets, "_default_config_path", return_value=config),
+                self.assertRaisesRegex(ValueError, "pinned Hugging Face revision"),
+            ):
+                ensure_unicodec_assets(cache_dir=root)
 
 
 if __name__ == "__main__":

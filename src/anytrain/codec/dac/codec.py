@@ -63,6 +63,7 @@ class DAC(DeviceModule):
         n_quantizers: int | None = None,
         local_files_only: bool = False,
         force_download: bool = False,
+        allow_unsafe_download: bool = False,
     ) -> DAC:
         assets = ensure_dac_assets(
             cache_dir,
@@ -71,6 +72,7 @@ class DAC(DeviceModule):
             tag=tag,
             local_files_only=local_files_only,
             force_download=force_download,
+            allow_unsafe_download=allow_unsafe_download,
         )
         resolved_device = resolve_device(device)
         model = _load_checkpoint(assets["checkpoint"], resolved_device)

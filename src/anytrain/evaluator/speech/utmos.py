@@ -21,12 +21,14 @@ class TorchHubUTMOSBackend:
         device: Any | None = None,
         model: Any | None = None,
         load_options: Mapping[str, Any] | None = None,
+        allow_remote_code: bool = False,
     ) -> None:
         self.repo = self._validate_name(repo, name="repo")
         self.model_name = self._validate_name(model_name, name="model_name")
         self.device = device
         self.model = model
         self.load_options = self._validate_load_options(load_options)
+        self.allow_remote_code = self._validate_allow_remote_code(allow_remote_code)
 
     def score(self, audio: Any, sample_rate: int) -> Tensor:
         wave, sample_rate = load_wave_batch(audio, sample_rate)
@@ -40,6 +42,11 @@ class TorchHubUTMOSBackend:
         if self.model is not None:
             return self.model
 
+        if not self.allow_remote_code:
+            raise ValueError(
+                "TorchHubUTMOSBackend remote model loading executes repository code. "
+                "Pass allow_remote_code=True, or inject a preloaded model/backend."
+            )
         torch_home()
         load_options = dict(self.load_options)
         load_options.setdefault("trust_repo", True)
@@ -73,6 +80,11 @@ class TorchHubUTMOSBackend:
             raise TypeError("load_options must be a mapping.")
         return dict(load_options)
 
+    def _validate_allow_remote_code(self, value: bool) -> bool:
+        if not isinstance(value, bool):
+            raise TypeError("allow_remote_code must be a boolean.")
+        return value
+
 
 @runtime_checkable
 class UTMOSBackendProtocol(Protocol):
@@ -92,6 +104,7 @@ class UTMOSEvaluator(EvaluatorABC):
         model_name: str = default_model_name,
         device: Any | None = None,
         backend_load_options: Mapping[str, Any] | None = None,
+        allow_remote_code: bool = False,
     ) -> None:
         super().__init__()
         self.backend = self._backend(
@@ -100,6 +113,7 @@ class UTMOSEvaluator(EvaluatorABC):
             model_name=model_name,
             device=device,
             backend_load_options=backend_load_options,
+            allow_remote_code=allow_remote_code,
         )
 
     def evaluate(self, audio: Any, sample_rate: int) -> MetricDict:
@@ -116,6 +130,7 @@ class UTMOSEvaluator(EvaluatorABC):
         model_name: str,
         device: Any | None,
         backend_load_options: Mapping[str, Any] | None,
+        allow_remote_code: bool,
     ) -> UTMOSBackendProtocol:
         if backend is None:
             return TorchHubUTMOSBackend(
@@ -123,16 +138,18 @@ class UTMOSEvaluator(EvaluatorABC):
                 model_name=model_name,
                 device=device,
                 load_options=backend_load_options,
+                allow_remote_code=allow_remote_code,
             )
         if (
             repo != self.default_repo
             or model_name != self.default_model_name
             or device is not None
             or backend_load_options is not None
+            or allow_remote_code
         ):
             raise ValueError(
-                "repo, model_name, device, and backend_load_options are only used when "
-                "backend is not provided."
+                "repo, model_name, device, backend_load_options, and allow_remote_code are "
+                "only used when backend is not provided."
             )
         if not isinstance(backend, UTMOSBackendProtocol):
             raise TypeError("UTMOSEvaluator backend must implement score(audio, sample_rate).")

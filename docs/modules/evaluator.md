@@ -183,7 +183,7 @@ optional 子模块缺依赖时应抛出清晰错误，提示安装对应 extra�
 - `SpeechEvaluator`：组合 `WhisperASREvaluator` 和 `UTMOSEvaluator`，一次返回 `bleu`、`wer`、`chrf`、`utmos`。
 - `WhisperASREvaluator`：默认用 `openai-whisper` 的 `large-v3` 转写 audio；通过 allowlisted `model_name`、`device`、`download_root`、`load_options` 选择官方 Whisper 配置，不接受本地 checkpoint path，也不开放任意 ASR backend/model 注入；再复用 text evaluator 输出 `bleu`、`wer`、`chrf`。
   短音频 batch 会在兼容选项下使用 Whisper 的 batched 30 秒 mel decode；长音频或需要完整 transcribe 调度的选项会回退到逐条 `model.transcribe()`。
-- `UTMOSEvaluator`：默认用 `torch.hub` 加载 `tarepan/SpeechMOS` 的 `utmos22_strong`，也可显式注入 UTMOS backend；输出 `utmos`。
+- `UTMOSEvaluator`：可用 `torch.hub` 加载 `tarepan/SpeechMOS` 的 `utmos22_strong`，也可显式注入 UTMOS backend；输出 `utmos`。远端 TorchHub 代码加载需要显式传入 `allow_remote_code=True`。
 
 `anytrain.evaluator.speech` 顶层只导出 evaluator。ASR 的 Whisper loader 是私有实现；
 UTMOS backend 细节从 `anytrain.evaluator.speech.utmos` 显式导入。

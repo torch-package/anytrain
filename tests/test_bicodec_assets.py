@@ -35,6 +35,7 @@ class BiCodecAssetsTest(unittest.TestCase):
             ):
                 assets = ensure_bicodec_assets(
                     root,
+                    revision="abc123",
                     local_files_only=True,
                     force_download=True,
                 )
@@ -44,6 +45,7 @@ class BiCodecAssetsTest(unittest.TestCase):
         self.assertEqual(calls["repo_id"], DEFAULT_HF_REPO_ID)
         self.assertEqual(calls["local_dir"], str(root))
         self.assertEqual(calls["allow_patterns"], SNAPSHOT_PATTERNS)
+        self.assertEqual(calls["revision"], "abc123")
         self.assertTrue(calls["local_files_only"])
         self.assertTrue(calls["force_download"])
 
@@ -61,7 +63,7 @@ class BiCodecAssetsTest(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(FileNotFoundError, "incomplete"),
             ):
-                ensure_bicodec_assets(root)
+                ensure_bicodec_assets(root, allow_unpinned_revision=True)
 
 
 if __name__ == "__main__":

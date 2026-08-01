@@ -26,6 +26,7 @@ from anytrain.chat.config import (
     GLM_API_KEY_ENV,
     GLM_BASE_URL_ENV,
     GLM_MODEL_ENV,
+    OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV,
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_BASE_URL_ENV,
     OPENROUTER_CANDIDATE_LIMIT_ENV,
@@ -202,6 +203,40 @@ class ChatTest(unittest.TestCase):
         with (
             patch.dict(os.environ, env, clear=True),
             self.assertRaisesRegex(ValueError, OPENROUTER_MODELS_ENV),
+        ):
+            chat_api.config_from_env(chat_api.ModelType.OPENROUTER)
+
+    def test_openrouter_custom_base_url_requires_explicit_opt_in(self):
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://evil.test/api/v1",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(ValueError, OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV),
+        ):
+            chat_api.config_from_env(chat_api.ModelType.OPENROUTER)
+
+    def test_openrouter_custom_base_url_accepts_explicit_opt_in(self):
+        env = {
+            OPENROUTER_BASE_URL_ENV: "https://proxy.test/api/v1",
+            OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV: "1",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = chat_api.config_from_env(chat_api.ModelType.OPENROUTER)
+
+        self.assertEqual(config.base_url, "https://proxy.test/api/v1")
+
+    def test_openrouter_custom_base_url_must_use_https_even_when_opted_in(self):
+        env = {
+            OPENROUTER_BASE_URL_ENV: "http://proxy.test/api/v1",
+            OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV: "1",
+            OPENROUTER_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(ValueError, "https"),
         ):
             chat_api.config_from_env(chat_api.ModelType.OPENROUTER)
 

@@ -58,6 +58,8 @@ codec = DAC.from_pretrained(
 自动下载不会调用 DAC 上游硬编码到 `~/.cache/descript/dac` 的 downloader。默认缓存目录是
 `ANYTRAIN_HOME/dac`，也可以通过 `cache_dir` 显式指定。共享机器上应优先显式传入稳定模型
 目录，避免权重写入用户 home 或根分区。
+远程下载默认要求 wrapper 维护对应 checkpoint 的 SHA-256 元数据；没有校验元数据时会拒绝
+下载。确实需要沿用旧的不校验下载路径时，显式传入 `allow_unsafe_download=True`。
 
 已有本地 checkpoint 时直接加载：
 

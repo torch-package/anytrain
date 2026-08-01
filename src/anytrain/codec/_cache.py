@@ -33,18 +33,27 @@ def hf_file(
     filename: str,
     cache_dir: Path,
     target: Path,
+    revision: str | None = None,
     local_files_only: bool,
     force_download: bool,
+    allow_unpinned_revision: bool = False,
 ) -> Path:
     if target.exists() and not force_download:
         return target
 
+    revision_kwargs = _revision_kwargs(
+        component,
+        revision=revision,
+        local_files_only=local_files_only,
+        allow_unpinned_revision=allow_unpinned_revision,
+    )
     download = require_hf_function("hf_hub_download", component)
     downloaded = Path(
         download(
             repo_id=repo_id,
             filename=filename,
             local_dir=str(cache_dir),
+            **revision_kwargs,
             local_files_only=local_files_only,
             force_download=force_download,
         )
@@ -62,15 +71,24 @@ def hf_snapshot(
     repo_id: str,
     cache_dir: Path,
     allow_patterns: Sequence[str],
+    revision: str | None = None,
     local_files_only: bool,
     force_download: bool,
+    allow_unpinned_revision: bool = False,
 ) -> Path:
+    revision_kwargs = _revision_kwargs(
+        component,
+        revision=revision,
+        local_files_only=local_files_only,
+        allow_unpinned_revision=allow_unpinned_revision,
+    )
     download = require_hf_function("snapshot_download", component)
     return Path(
         download(
             repo_id=repo_id,
             local_dir=str(cache_dir),
             allow_patterns=allow_patterns,
+            **revision_kwargs,
             local_files_only=local_files_only,
             force_download=force_download,
         )
@@ -86,3 +104,25 @@ def require_hf_function(name: str, component: str) -> Callable[..., Any]:
             '`python -m pip install "huggingface-hub>=0.23"`.'
         ) from exc
     return getattr(huggingface_hub, name)
+
+
+def _revision_kwargs(
+    component: str,
+    *,
+    revision: str | None,
+    local_files_only: bool,
+    allow_unpinned_revision: bool,
+) -> dict[str, str]:
+    if revision is not None:
+        if not isinstance(revision, str):
+            raise TypeError(f"{component} revision must be a string.")
+        if revision == "":
+            raise ValueError(f"{component} revision must not be empty.")
+        return {"revision": revision}
+    if local_files_only or allow_unpinned_revision:
+        return {}
+    raise ValueError(
+        f"{component} remote downloads require a pinned Hugging Face revision. "
+        "Pass revision=<commit-sha> or set allow_unpinned_revision=True for an "
+        "explicitly unsafe, non-reproducible download."
+    )

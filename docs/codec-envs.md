@@ -43,6 +43,8 @@ codes/cache，再由主训练环境读取产物。
 - `anytrain` core 继续保持宽 Python 约束和当前 torch 主线，不为旧 codec 整体降级。
 - DAC 已作为普通 optional codec wrapper 接入；wrapper 使用显式 `cache_dir` 或
   `ANYTRAIN_HOME/dac`，不调用上游硬编码到 `Path.home()/.cache/descript/dac` 的下载入口。
+- 远程 checkpoint/snapshot 下载默认要求可复现 pin：Hugging Face 路径传
+  `revision=<commit-sha>`，DAC 路径需要 SHA-256 元数据；旧式浮动/未校验下载必须显式 opt in。
 - UniCodec wrapper 保持 optional；不要让 pip 在主环境里自由解析 `fairseq` 和 torch。
 - Stable Codec wrapper 保持 optional；文档要求用户在独立兼容环境中安装上游包和
   FlashAttention。

@@ -23,8 +23,10 @@ def ensure_unicodec_assets(
     repo_id: str = DEFAULT_HF_REPO_ID,
     config_name: str = DEFAULT_CONFIG_NAME,
     checkpoint_filename: str = DEFAULT_CHECKPOINT_FILENAME,
+    revision: str | None = None,
     local_files_only: bool = False,
     force_download: bool = False,
+    allow_unpinned_revision: bool = False,
 ) -> UniCodecAssets:
     root = hf_cache_dir("unicodec", cache_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -34,8 +36,10 @@ def ensure_unicodec_assets(
         cache_dir=root,
         filename=checkpoint_filename,
         target=root / checkpoint_filename,
+        revision=revision,
         local_files_only=local_files_only,
         force_download=force_download,
+        allow_unpinned_revision=allow_unpinned_revision,
     )
 
     return {

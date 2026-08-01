@@ -70,6 +70,8 @@ cross-attention 读取完整 semantic memory。BiCodec wrapper 本身不规定�
 
 默认模型仓库是 `SparkAudio/Spark-TTS-0.5B`。`ensure_bicodec_assets()` 只下载 BiCodec、
 `wav2vec2-large-xlsr-53` 和根 `config.yaml`，避免为 codec tokenization 拉取完整 LLM 权重。
+远程下载默认要求显式传入 Hugging Face `revision=<commit-sha>`；若需要沿用旧的浮动分支
+下载行为，必须显式传入 `allow_unpinned_revision=True`。
 
 缓存路径优先级：
 

@@ -104,9 +104,11 @@ class BiCodec(DeviceModule):
         cache_dir: str | os.PathLike[str] | None = None,
         model_dir: str | os.PathLike[str] | None = None,
         repo_id: str = "SparkAudio/Spark-TTS-0.5B",
+        revision: str | None = None,
         device: str | torch.device | None = None,
         local_files_only: bool = False,
         force_download: bool = False,
+        allow_unpinned_revision: bool = False,
     ) -> BiCodec:
         model_cls = _load_bicodec_model()
         processor_cls, feature_extractor_cls = _load_wav2vec2_classes()
@@ -115,8 +117,10 @@ class BiCodec(DeviceModule):
             assets = ensure_bicodec_assets(
                 cache_dir=cache_dir,
                 repo_id=repo_id,
+                revision=revision,
                 local_files_only=local_files_only,
                 force_download=force_download,
+                allow_unpinned_revision=allow_unpinned_revision,
             )
             root = assets["model_dir"]
         else:

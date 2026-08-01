@@ -29,6 +29,7 @@ class LongCatAssetsTest(unittest.TestCase):
                 local_dir,
                 local_files_only,
                 force_download,
+                revision,
             ):
                 path = Path(local_dir) / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,7 +46,7 @@ class LongCatAssetsTest(unittest.TestCase):
                 ),
                 patch.object(longcat_assets, "_read_default_config", side_effect=fake_config),
             ):
-                assets = ensure_longcat_assets(cache_dir=root)
+                assets = ensure_longcat_assets(cache_dir=root, revision="abc123")
 
             self.assertEqual(assets.cache_dir, root)
             self.assertEqual(assets.ckpt_dir, root / "ckpts")
@@ -82,6 +83,7 @@ class LongCatAssetsTest(unittest.TestCase):
                 local_dir,
                 local_files_only,
                 force_download,
+                revision,
             ):
                 downloads.append(filename)
                 path = Path(local_dir) / filename
@@ -99,7 +101,11 @@ class LongCatAssetsTest(unittest.TestCase):
                 ),
                 patch.object(longcat_assets, "_read_default_config", side_effect=fake_config),
             ):
-                assets = ensure_longcat_assets(cache_dir=root, decoders=("16k_4codebooks",))
+                assets = ensure_longcat_assets(
+                    cache_dir=root,
+                    decoders=("16k_4codebooks",),
+                    revision="abc123",
+                )
 
             self.assertEqual(
                 set(assets.checkpoints),
