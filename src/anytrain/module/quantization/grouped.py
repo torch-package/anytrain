@@ -36,36 +36,33 @@ class GVQConfig:
             if group_size <= 0:
                 raise ValueError(f"each group size must be positive, got {group_size}.")
 
-        if self.codebook_dim is None:
-            object.__setattr__(self, "codebook_dim", self.input_dim)
-        if self.codebook_dim <= 0:
-            raise ValueError(f"codebook_dim must be positive, got {self.codebook_dim}.")
+        codebook_dim = self.input_dim if self.codebook_dim is None else self.codebook_dim
+        if codebook_dim <= 0:
+            raise ValueError(f"codebook_dim must be positive, got {codebook_dim}.")
+        object.__setattr__(self, "codebook_dim", codebook_dim)
 
         if self.group_dims is None:
-            object.__setattr__(
-                self,
-                "group_dims",
-                _balanced_group_dims(self.codebook_dim, len(self.group_sizes)),
-            )
+            group_dims = _balanced_group_dims(codebook_dim, len(self.group_sizes))
         else:
-            object.__setattr__(self, "group_dims", tuple(self.group_dims))
+            group_dims = tuple(self.group_dims)
+        object.__setattr__(self, "group_dims", group_dims)
 
-        if len(self.group_dims) != len(self.group_sizes):
+        if len(group_dims) != len(self.group_sizes):
             raise ValueError(
                 "group_dims must have the same length as group_sizes: "
-                f"got {len(self.group_dims)} and {len(self.group_sizes)}."
+                f"got {len(group_dims)} and {len(self.group_sizes)}."
             )
-        if sum(self.group_dims) != self.codebook_dim:
+        if sum(group_dims) != codebook_dim:
             raise ValueError(
-                f"sum(group_dims) must equal codebook_dim={self.codebook_dim}, "
-                f"got {sum(self.group_dims)}."
+                f"sum(group_dims) must equal codebook_dim={codebook_dim}, "
+                f"got {sum(group_dims)}."
             )
-        for group_dim in self.group_dims:
+        for group_dim in group_dims:
             if group_dim <= 0:
                 raise ValueError(f"each group dim must be positive, got {group_dim}.")
 
         object.__setattr__(self, "group_sizes", tuple(int(size) for size in self.group_sizes))
-        object.__setattr__(self, "group_dims", tuple(int(dim) for dim in self.group_dims))
+        object.__setattr__(self, "group_dims", tuple(int(dim) for dim in group_dims))
 
 
 class GroupedVectorQuantizer(nn.Module):

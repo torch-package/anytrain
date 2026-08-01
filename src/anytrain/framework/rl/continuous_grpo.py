@@ -46,7 +46,7 @@ class ContinuousGRPOLoss(nn.Module):
         self.kl_beta = float(kl_beta)
         self.eps = float(eps)
         self.adv_clip_max = None if adv_clip_max is None else float(adv_clip_max)
-        self.step_reduction = step_reduction
+        self.step_reduction: StepReduction = step_reduction
 
     def forward(
         self,

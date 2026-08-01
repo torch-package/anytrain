@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal
 
 from torch import Tensor
-from typing_extensions import NotRequired
+from typing_extensions import TypedDict
 
 TokenReduction = Literal["token_mean", "sequence_mean"]
 SequenceReduction = Literal["sum", "mean"]
@@ -11,7 +11,12 @@ StepReduction = Literal["step_mean", "trajectory_mean"]
 NeighborReduction = Literal["neighbor_mean", "anchor_step_mean"]
 
 
-class RolloutBatch(TypedDict):
+class _RolloutBatchOptional(TypedDict, total=False):
+    ref_token_logps: Tensor | None
+    group_mask: Tensor | None
+
+
+class RolloutBatch(_RolloutBatchOptional):
     """Tensor contract for token/logit group rollouts used by GRPO objectives.
 
     This stays task-agnostic by carrying only tensors that the objective consumes.
@@ -23,11 +28,14 @@ class RolloutBatch(TypedDict):
     old_token_logps: Tensor
     rewards: Tensor
     response_mask: Tensor
-    ref_token_logps: NotRequired[Tensor | None]
-    group_mask: NotRequired[Tensor | None]
 
 
-class ContinuousRolloutBatch(TypedDict):
+class _ContinuousRolloutBatchOptional(TypedDict, total=False):
+    kl_values: Tensor | None
+    group_mask: Tensor | None
+
+
+class ContinuousRolloutBatch(_ContinuousRolloutBatchOptional):
     """Tensor contract for continuous latent transition GRPO objectives.
 
     ``policy_step_logps`` and ``old_step_logps`` describe per-step trajectory
@@ -38,11 +46,15 @@ class ContinuousRolloutBatch(TypedDict):
     old_step_logps: Tensor
     rewards: Tensor
     step_mask: Tensor
-    kl_values: NotRequired[Tensor | None]
-    group_mask: NotRequired[Tensor | None]
 
 
-class NeighborRolloutBatch(TypedDict):
+class _NeighborRolloutBatchOptional(TypedDict, total=False):
+    kl_values: Tensor | None
+    group_mask: Tensor | None
+    anchor_mask: Tensor | None
+
+
+class NeighborRolloutBatch(_NeighborRolloutBatchOptional):
     """Tensor contract for neighbor/symmetric flow GRPO objectives.
 
     ``policy_neighbor_logps`` and ``old_neighbor_logps`` describe the surrogate
@@ -53,9 +65,6 @@ class NeighborRolloutBatch(TypedDict):
     old_neighbor_logps: Tensor
     rewards: Tensor
     neighbor_mask: Tensor
-    kl_values: NotRequired[Tensor | None]
-    group_mask: NotRequired[Tensor | None]
-    anchor_mask: NotRequired[Tensor | None]
 
 
 __all__ = [

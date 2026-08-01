@@ -3,10 +3,15 @@ from unittest.mock import patch
 
 import torch
 
+import anytrain.module as module_api
 from anytrain.module import DiT, DiTAttentionBackend, DiTConditionState, DiTConditionType
 
 
 class DiTModuleTest(unittest.TestCase):
+    def test_top_level_exports_only_stable_dit_state(self):
+        self.assertNotIn("AttentionKV", module_api.__all__)
+        self.assertFalse(hasattr(module_api, "AttentionKV"))
+
     def test_none_condition_rejects_condition_inputs(self):
         model = DiT(input_dim=5, hidden_dim=8, layers=1, heads=2, ffn_ratio=2)
         x_t = torch.randn(2, 3, 5)

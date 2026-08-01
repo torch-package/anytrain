@@ -7,7 +7,6 @@ from typing import Literal
 import torch
 from torch import Tensor
 
-
 LogProbReduction = Literal["mean", "sum"]
 
 
@@ -47,7 +46,7 @@ class RectifiedFlowSDE:
             raise ValueError("log_prob_reduction must be 'mean' or 'sum'.")
         self.noise_level = float(noise_level)
         self.eps = float(eps)
-        self.log_prob_reduction = log_prob_reduction
+        self.log_prob_reduction: LogProbReduction = log_prob_reduction
 
     def step_with_log_prob(
         self,

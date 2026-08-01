@@ -35,7 +35,7 @@ class GRPOLoss(nn.Module):
         self.clip_range = float(clip_range)
         self.kl_beta = float(kl_beta)
         self.eps = float(eps)
-        self.token_reduction = token_reduction
+        self.token_reduction: TokenReduction = token_reduction
 
     def forward(
         self,

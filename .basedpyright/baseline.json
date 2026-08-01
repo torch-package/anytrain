@@ -10,32 +10,6 @@
                 }
             }
         ],
-        "./src/anytrain/chat/_provider.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 27,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/anytrain/codec/bicodec/codec.py": [
             {
                 "code": "reportMissingImports",
@@ -326,16 +300,6 @@
                 "range": {
                     "startColumn": 13,
                     "endColumn": 21,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/anytrain/evaluator/speech/asr.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 26,
                     "lineCount": 1
                 }
             }

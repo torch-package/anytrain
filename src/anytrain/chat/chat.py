@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
 from threading import RLock
-from typing import TypeVar
+from typing import TypeVar, Union
 
 from ._openrouter import resolve_models
 from ._provider import (
@@ -32,7 +32,7 @@ from .types import (
 )
 
 _ChatT = TypeVar("_ChatT", bound="Chat")
-ImageInput = str | PathLike[str]
+ImageInput = Union[str, PathLike[str]]
 
 
 class Chat:

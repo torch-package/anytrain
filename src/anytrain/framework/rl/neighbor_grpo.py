@@ -54,7 +54,7 @@ class NeighborGRPOLoss(nn.Module):
         self.eps = float(eps)
         self.adv_clip_max = None if adv_clip_max is None else float(adv_clip_max)
         self.advantage_norm_p = float(advantage_norm_p)
-        self.neighbor_reduction = neighbor_reduction
+        self.neighbor_reduction: NeighborReduction = neighbor_reduction
 
     def forward(
         self,

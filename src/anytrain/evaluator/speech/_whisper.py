@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping, Sequence
 from dataclasses import fields
 from pathlib import Path
@@ -106,13 +107,12 @@ class _OpenAIWhisperTranscriber:
 
     def _load_whisper_module(self) -> Any:
         try:
-            import whisper
+            return importlib.import_module("whisper")
         except ImportError as exc:
             raise ImportError(
                 "WhisperASREvaluator requires the openai-whisper package. "
                 "Install it with python -m pip install openai-whisper."
             ) from exc
-        return whisper
 
     def _prepare_model(self, model: Any) -> Any:
         model = freeze_model(model, device=self.device)

@@ -8,8 +8,8 @@ from .logprob import gather_token_logps, masked_mean, sequence_logps
 from .neighbor_grpo import NeighborGRPOLoss, neighbor_logps_from_distances
 from .types import (
     ContinuousRolloutBatch,
-    NeighborRolloutBatch,
     NeighborReduction,
+    NeighborRolloutBatch,
     RolloutBatch,
     SequenceReduction,
     StepReduction,

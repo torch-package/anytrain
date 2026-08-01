@@ -7,7 +7,7 @@ from lightning import pytorch as pl
 
 
 class _ReduceStrategy(Protocol):
-    def reduce(self, tensor: _T, *, reduce_op: str) -> object: ...
+    def reduce(self, tensor: object, *, reduce_op: str) -> object: ...
 
 
 class _BarrierStrategy(Protocol):

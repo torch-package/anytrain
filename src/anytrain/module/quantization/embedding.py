@@ -32,10 +32,10 @@ class VQConfig:
             raise ValueError(f"input_dim must be positive, got {self.input_dim}.")
         if self.codebook_size <= 0:
             raise ValueError(f"codebook_size must be positive, got {self.codebook_size}.")
-        if self.codebook_dim is None:
-            object.__setattr__(self, "codebook_dim", self.input_dim)
-        if self.codebook_dim <= 0:
-            raise ValueError(f"codebook_dim must be positive, got {self.codebook_dim}.")
+        codebook_dim = self.input_dim if self.codebook_dim is None else self.codebook_dim
+        if codebook_dim <= 0:
+            raise ValueError(f"codebook_dim must be positive, got {codebook_dim}.")
+        object.__setattr__(self, "codebook_dim", codebook_dim)
         if not 0 <= self.decay < 1:
             raise ValueError(f"decay must be in [0, 1), got {self.decay}.")
         if self.eps <= 0:

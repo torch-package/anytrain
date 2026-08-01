@@ -7,8 +7,10 @@ from unittest import mock
 
 import torch
 
+import anytrain.module.quantization as quantization_api
 from anytrain._compat import strict_zip
 from anytrain.module.quantization import (
+    ResidualQuantizerProtocol,
     ResidualVectorQuantizer,
     RVQConfig,
     VQConfig,
@@ -75,6 +77,10 @@ def _distributed_ema_dropout_worker(rank: int, world_size: int, init_method: str
 
 
 class ResidualVectorQuantizerTest(unittest.TestCase):
+    def test_quantization_exports_residual_protocol(self):
+        self.assertIn("ResidualQuantizerProtocol", quantization_api.__all__)
+        self.assertIn(quantization_api.QuantizerProtocol, ResidualQuantizerProtocol.__bases__)
+
     def test_forward_shapes(self):
         quantizer = ResidualVectorQuantizer(
             RVQConfig.from_kwargs(input_dim=8, num_codebooks=3, codebook_size=16, codebook_dim=8)
