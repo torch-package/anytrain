@@ -136,8 +136,8 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
 - `ResidualVectorQuantizer` 组合多个 embedding VQ，第一版要求统一 `input_dim`、`codebook_dim` 和 `codebook_size`；`latents_to_codebook_vectors()` 不触发 dropout、loss 或 EMA 更新。
 - `AutoGroupResidualVectorQuantizer` 从 `anytrain.module.quantization` 显式导入。每个 residual
   stage 使用 `num_groups` 个同尺寸 learned group codebook，默认 `num_groups=2`；
-  配置中的 `codebook_size` 是单个 group 的大小，对外 flat `codebook_size` 是
-  `codebook_size ** num_groups`，输出 `codebook_dim` 是配置值乘以 `num_groups`。
+  配置中的 `group_size` 是单个 group 的大小；对外 flat `codebook_size` 是
+  `group_size ** num_groups`，输出 `codebook_dim` 是配置值乘以 `num_groups`。
   `input_dim` 必须能被 `num_groups` 整除，推理可用 `num_active_codebooks` 截断 stage 数，
   训练 dropout 用 `indices == -1` 和 `active_codebook_mask == False` 标记未启用 stage。
 - 量化输出统一为 `QuantizeOutput`，离散整数用 `indices`，连续 codebook 空间向量用 `codebook_vectors`。
@@ -146,6 +146,8 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 A
   和 `quantization_loss_metrics()` 负责生成稳定相对 metric key。它们不依赖 Lightning，也不会触发
   quantizer forward；Lightning callback 只负责 monitor 解析、分布式 reduce 和日志 transport。
 - 单 codebook quantizer 实现 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。
+- 所有 quantizer 暴露 `codebook_sizes`，单 codebook 为 `(codebook_size,)`，residual
+  / multi-stage quantizer 为每个 stage 的 flat id 空间大小。
 - RVQ dropout 下 inactive codebook 使用 `indices == -1` 和 `active_codebook_mask == False` 标记，不能只靠 `codebook_vectors` 判断有效性。
 
 迁移设计见 [`docs/quantization-migration.md`](../quantization-migration.md)。第一版不迁入 audio codec、model zoo 或 deepaudio 的 projector/MoE 体系。

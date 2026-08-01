@@ -20,13 +20,13 @@ from .projection import make_projection
 class AGRVQConfig:
     """Configuration for auto-group residual vector quantization.
 
-    codebook_size is the per-group size. The public flat codebook size is
-    codebook_size ** num_groups.
+    group_size is the per-group size. The public flat codebook size is
+    group_size ** num_groups.
     """
 
     input_dim: int
     num_codebooks: int
-    codebook_size: int
+    group_size: int
     codebook_dim: int = 8
     num_groups: int = 2
     normalize_latents: bool = True
@@ -39,8 +39,8 @@ class AGRVQConfig:
             raise ValueError(f"input_dim must be positive, got {self.input_dim}.")
         if self.num_codebooks <= 0:
             raise ValueError(f"num_codebooks must be positive, got {self.num_codebooks}.")
-        if self.codebook_size <= 0:
-            raise ValueError(f"codebook_size must be positive, got {self.codebook_size}.")
+        if self.group_size <= 0:
+            raise ValueError(f"group_size must be positive, got {self.group_size}.")
         if self.codebook_dim <= 0:
             raise ValueError(f"codebook_dim must be positive, got {self.codebook_dim}.")
         if self.num_groups <= 0:
@@ -50,38 +50,13 @@ class AGRVQConfig:
                 "input_dim must be divisible by num_groups for AGRVQ projection: "
                 f"got input_dim={self.input_dim}, num_groups={self.num_groups}."
             )
-        flat_codebook_size = self.codebook_size**self.num_groups
-        if flat_codebook_size > torch.iinfo(torch.long).max:
+        public_codebook_size = _product_codebook_size(self.group_size, self.num_groups)
+        if public_codebook_size > torch.iinfo(torch.long).max:
             raise ValueError(
                 "flat AGRVQ codebook_size must fit in torch.long: "
-                f"got {flat_codebook_size}."
+                f"got {public_codebook_size}."
             )
         _checks.dropout(self.dropout)
-
-    @classmethod
-    def from_kwargs(
-        cls,
-        input_dim: int,
-        num_codebooks: int,
-        codebook_size: int,
-        codebook_dim: int = 8,
-        num_groups: int = 2,
-        normalize_latents: bool = True,
-        projection_bias: bool = True,
-        weight_norm: bool = False,
-        dropout: float | None = None,
-    ) -> AGRVQConfig:
-        return cls(
-            input_dim=input_dim,
-            num_codebooks=num_codebooks,
-            codebook_size=codebook_size,
-            codebook_dim=codebook_dim,
-            num_groups=num_groups,
-            normalize_latents=normalize_latents,
-            projection_bias=projection_bias,
-            weight_norm=weight_norm,
-            dropout=dropout,
-        )
 
 
 class AutoGroupResidualVectorQuantizer(nn.Module):
@@ -95,22 +70,22 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         self.num_codebooks = config.num_codebooks
         self.input_dim = config.input_dim
         self.num_groups = config.num_groups
-        self.group_size = config.codebook_size
-        self.codebook_size = config.codebook_size**config.num_groups
+        self.group_size = config.group_size
+        self.codebook_size = _product_codebook_size(config.group_size, config.num_groups)
         self.group_codebook_dim = config.codebook_dim
         self.codebook_dim = config.num_groups * config.codebook_dim
         self.dropout = config.dropout
         register_buffer(
             self,
             "_index_basis",
-            _make_index_basis(config.codebook_size, config.num_groups),
+            _make_index_basis(config.group_size, config.num_groups),
             persistent=False,
         )
         self.quantizers = nn.ModuleList(
             [
                 _AutoGroupVectorQuantizer(
                     input_dim=config.input_dim,
-                    codebook_size=config.codebook_size,
+                    group_size=config.group_size,
                     codebook_dim=config.codebook_dim,
                     num_groups=config.num_groups,
                     normalize_latents=config.normalize_latents,
@@ -120,6 +95,10 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
                 for _ in range(config.num_codebooks)
             ]
         )
+
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,) * self.num_codebooks
 
     def forward(
         self,
@@ -286,7 +265,7 @@ class _AutoGroupVectorQuantizer(nn.Module):
         self,
         *,
         input_dim: int,
-        codebook_size: int,
+        group_size: int,
         codebook_dim: int,
         num_groups: int,
         normalize_latents: bool,
@@ -295,8 +274,8 @@ class _AutoGroupVectorQuantizer(nn.Module):
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
-        self.group_size = codebook_size
-        self.codebook_size = codebook_size**num_groups
+        self.group_size = group_size
+        self.codebook_size = _product_codebook_size(group_size, num_groups)
         self.group_codebook_dim = codebook_dim
         self.num_groups = num_groups
         self.codebook_dim = num_groups * codebook_dim
@@ -305,7 +284,7 @@ class _AutoGroupVectorQuantizer(nn.Module):
         register_buffer(
             self,
             "_index_basis",
-            _make_index_basis(codebook_size, num_groups),
+            _make_index_basis(group_size, num_groups),
             persistent=False,
         )
 
@@ -332,7 +311,7 @@ class _AutoGroupVectorQuantizer(nn.Module):
             ]
         )
         self.codebooks = nn.ModuleList(
-            [nn.Embedding(codebook_size, codebook_dim) for _ in range(num_groups)]
+            [nn.Embedding(group_size, codebook_dim) for _ in range(num_groups)]
         )
         self.reset_parameters()
 
@@ -442,9 +421,13 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
 def _make_index_basis(group_size: int, num_groups: int) -> Tensor:
     return torch.tensor(
-        [group_size**power for power in range(num_groups - 1, -1, -1)],
+        [group_size**power for power in range(num_groups)],
         dtype=torch.long,
     )
+
+
+def _product_codebook_size(group_size: int, num_groups: int) -> int:
+    return group_size**num_groups
 
 
 def _indices_to_group_indices(

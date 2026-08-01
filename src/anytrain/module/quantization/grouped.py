@@ -119,6 +119,10 @@ class GroupedVectorQuantizer(nn.Module):
         )
         self.reset_parameters()
 
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,)
+
     def reset_parameters(self) -> None:
         with torch.no_grad():
             for codebook in self.codebooks:

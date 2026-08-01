@@ -95,6 +95,10 @@ class ResidualVectorQuantizer(nn.Module):
             [EmbeddingVectorQuantizer(vq_config) for vq_config in config.vq_configs]
         )
 
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,) * self.num_codebooks
+
     def forward(
         self,
         latents: Tensor,

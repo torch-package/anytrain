@@ -109,6 +109,10 @@ class FiniteScalarQuantizer(nn.Module):
             persistent=False,
         )
 
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,)
+
     def forward(self, latents: Tensor) -> QuantizeOutput:
         return self.quantize(latents)
 

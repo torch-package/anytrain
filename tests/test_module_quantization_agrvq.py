@@ -13,9 +13,9 @@ from anytrain.module.quantization import (
 
 
 class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
-    def test_forward_shapes_and_flat_codebook_size(self):
+    def test_forward_shapes_and_public_codebook_size(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=8, num_codebooks=2, codebook_size=5, codebook_dim=4)
+            AGRVQConfig(input_dim=8, num_codebooks=2, group_size=5, codebook_dim=4)
         )
         x = torch.randn(2, 3, 8)
 
@@ -34,12 +34,12 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((output.indices >= 0).all())
         self.assertTrue((output.indices < 25).all())
 
-    def test_configurable_num_groups_shapes_and_flat_codebook_size(self):
+    def test_configurable_num_groups_shapes_and_public_codebook_size(self):
         quantizer = AutoGroupResidualVectorQuantizer(
             AGRVQConfig(
                 input_dim=6,
                 num_codebooks=2,
-                codebook_size=4,
+                group_size=4,
                 codebook_dim=2,
                 num_groups=3,
             )
@@ -59,12 +59,12 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((output.indices >= 0).all())
         self.assertTrue((output.indices < 64).all())
 
-    def test_one_group_shapes_and_flat_codebook_size(self):
+    def test_one_group_shapes_and_public_codebook_size(self):
         quantizer = AutoGroupResidualVectorQuantizer(
             AGRVQConfig(
                 input_dim=4,
                 num_codebooks=2,
-                codebook_size=7,
+                group_size=7,
                 codebook_dim=3,
                 num_groups=1,
             )
@@ -84,7 +84,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_num_active_codebooks_controls_output_width(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=8, num_codebooks=4, codebook_size=5)
+            AGRVQConfig(input_dim=8, num_codebooks=4, group_size=5)
         )
         quantizer.eval()
 
@@ -96,14 +96,14 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_group_indices_round_trip(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=5, codebook_dim=2)
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=5, codebook_dim=2)
         )
         group_indices = torch.tensor([[[0, 0], [2, 4]], [[1, 3], [4, 2]]])
 
         indices = quantizer.group_indices_to_indices(group_indices)
         round_trip = quantizer.indices_to_group_indices(indices)
 
-        self.assertTrue(torch.equal(indices, torch.tensor([[0, 14], [8, 22]])))
+        self.assertTrue(torch.equal(indices, torch.tensor([[0, 22], [16, 14]])))
         self.assertTrue(torch.equal(round_trip, group_indices))
 
     def test_group_indices_round_trip_with_more_groups(self):
@@ -111,7 +111,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
             AGRVQConfig(
                 input_dim=6,
                 num_codebooks=2,
-                codebook_size=4,
+                group_size=4,
                 codebook_dim=2,
                 num_groups=3,
             )
@@ -121,7 +121,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         indices = quantizer.group_indices_to_indices(group_indices)
         round_trip = quantizer.indices_to_group_indices(indices)
 
-        self.assertTrue(torch.equal(indices, torch.tensor([[0, 39], [24, 63]])))
+        self.assertTrue(torch.equal(indices, torch.tensor([[0, 54], [9, 63]])))
         self.assertTrue(torch.equal(round_trip, group_indices))
 
     def test_indices_round_trip_through_codebook_vectors(self):
@@ -129,7 +129,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
             AGRVQConfig(
                 input_dim=6,
                 num_codebooks=2,
-                codebook_size=3,
+                group_size=3,
                 codebook_dim=2,
                 num_groups=3,
             )
@@ -152,7 +152,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_project_codebook_vectors_sums_projected_books(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, codebook_dim=2)
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3, codebook_dim=2)
         )
         indices = torch.tensor([[0, 1], [5, 8]])
         vectors = quantizer.indices_to_codebook_vectors(indices)
@@ -164,7 +164,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
     def test_dropout_marks_inactive_codebooks_during_training(self):
         torch.manual_seed(0)
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=4, codebook_size=3, dropout=1.0)
+            AGRVQConfig(input_dim=4, num_codebooks=4, group_size=3, dropout=1.0)
         )
 
         output = quantizer(torch.randn(64, 4))
@@ -174,7 +174,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_dropout_preserves_empty_trailing_codebooks(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=3, codebook_size=3, dropout=1.0)
+            AGRVQConfig(input_dim=4, num_codebooks=3, group_size=3, dropout=1.0)
         )
         active_mask = torch.tensor([[True, False, False], [True, False, False]])
 
@@ -189,7 +189,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_sample_active_mask_dropout_boundaries(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=4, codebook_size=3, dropout=0.0)
+            AGRVQConfig(input_dim=4, num_codebooks=4, group_size=3, dropout=0.0)
         )
 
         mask = quantizer._sample_active_mask(16, 4, torch.device("cpu"))
@@ -206,7 +206,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((active_counts < 4).any())
 
     def test_config_is_frozen_and_dropout_has_explicit_setter(self):
-        config = AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3)
+        config = AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3)
         quantizer = AutoGroupResidualVectorQuantizer(config)
 
         with self.assertRaises(FrozenInstanceError):
@@ -219,7 +219,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_dropout_has_no_effect_with_one_active_codebook(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=4, codebook_size=3, dropout=1.0)
+            AGRVQConfig(input_dim=4, num_codebooks=4, group_size=3, dropout=1.0)
         )
 
         output = quantizer(torch.randn(8, 4), num_active_codebooks=1)
@@ -230,7 +230,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_eval_disables_dropout(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=4, codebook_size=3, dropout=1.0)
+            AGRVQConfig(input_dim=4, num_codebooks=4, group_size=3, dropout=1.0)
         )
         quantizer.eval()
 
@@ -241,7 +241,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_group_indices_shape_error_mentions_shape(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=6, num_codebooks=2, codebook_size=3, num_groups=3)
+            AGRVQConfig(input_dim=6, num_codebooks=2, group_size=3, num_groups=3)
         )
 
         with self.assertRaisesRegex(ValueError, r"\(2, 2\)"):
@@ -249,7 +249,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_backward_reaches_input_and_codebooks(self):
         quantizer = AutoGroupResidualVectorQuantizer(
-            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, codebook_dim=2)
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3, codebook_dim=2)
         )
         x = torch.randn(3, 4, requires_grad=True)
 
@@ -265,13 +265,15 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
 
     def test_invalid_config_fails_clearly(self):
         with self.assertRaisesRegex(ValueError, "divisible"):
-            AGRVQConfig(input_dim=3, num_codebooks=2, codebook_size=3)
+            AGRVQConfig(input_dim=3, num_codebooks=2, group_size=3)
         with self.assertRaisesRegex(ValueError, "num_codebooks"):
-            AGRVQConfig(input_dim=4, num_codebooks=0, codebook_size=3)
+            AGRVQConfig(input_dim=4, num_codebooks=0, group_size=3)
+        with self.assertRaisesRegex(ValueError, "group_size"):
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=0)
         with self.assertRaisesRegex(ValueError, "num_groups"):
-            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, num_groups=0)
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3, num_groups=0)
         with self.assertRaisesRegex(ValueError, "dropout"):
-            AGRVQConfig(input_dim=4, num_codebooks=2, codebook_size=3, dropout=2.0)
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3, dropout=2.0)
 
 
 if __name__ == "__main__":

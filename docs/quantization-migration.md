@@ -125,6 +125,8 @@ class QuantizerProtocol(Protocol):
     codebook_dim: int
     input_dim: int
 
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]: ...
     def forward(self, latents: Tensor) -> QuantizeOutput: ...
     def quantize(self, latents: Tensor) -> QuantizeOutput: ...
     def latents_to_codebook_vectors(self, latents: Tensor) -> Tensor: ...
@@ -171,6 +173,8 @@ deepaudio 当前 FSQ 的 `codes_to_indices()` 返回的是 per-dimension levels�
 
 - `indices`: shape `(...)`，和普通 VQ 一样表示单个 codebook 的 flat integer id。
 - `codebook_vectors`: shape `(..., codebook_dim)`，和普通 VQ 的末维接口对齐。
+- `codebook_sizes`: 单 codebook 返回 `(codebook_size,)`；residual / multi-stage
+  quantizer 返回每个 stage 的 flat id 空间大小。
 - `levels`: 每个 scalar code dimension 的 level 数。
 - `codebook_size`: `prod(levels)`，即 flat id 的取值范围是 `[0, codebook_size - 1]`。
 - `indices_to_levels(indices)`: flat id 转 per-dimension level indices。

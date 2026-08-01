@@ -98,6 +98,10 @@ class EmbeddingVectorQuantizer(nn.Module):
         return self.config.use_ema
 
     @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,)
+
+    @property
     def ema_counts(self) -> Tensor:
         if not self.use_ema:
             raise AttributeError("ema_counts is only available when use_ema=True.")
