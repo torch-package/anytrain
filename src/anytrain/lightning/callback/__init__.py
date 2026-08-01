@@ -18,6 +18,11 @@ from .loss import (
     window_summary,
 )
 from .performance import FlopsProvider, PerformanceCallback
+from .quantization import (
+    QuantizationLoggerCallback,
+    QuantizationMonitor,
+    QuantizationMonitorsFn,
+)
 
 __all__ = [
     "DataThroughputCallback",
@@ -38,5 +43,8 @@ __all__ = [
     "LossTimeBucketLoggerCallback",
     "ModelCheckpoint",
     "PerformanceCallback",
+    "QuantizationLoggerCallback",
+    "QuantizationMonitor",
+    "QuantizationMonitorsFn",
     "window_summary",
 ]

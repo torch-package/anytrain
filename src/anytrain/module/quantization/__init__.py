@@ -5,6 +5,13 @@ from .grouped import GroupedVectorQuantizer, GVQConfig
 from .output import QuantizationLoss, QuantizeOutput
 from .protocol import QuantizerProtocol, ResidualQuantizerProtocol
 from .residual import ResidualVectorQuantizer, RVQConfig
+from .stats import (
+    QuantizationUsage,
+    codebook_usage,
+    quantization_loss_metrics,
+    quantization_usage,
+    valid_indices_by_codebook,
+)
 from .types import QuantizerType
 
 __all__ = [
@@ -17,6 +24,7 @@ __all__ = [
     "GVQConfig",
     "GroupedVectorQuantizer",
     "QuantizationLoss",
+    "QuantizationUsage",
     "QuantizeOutput",
     "QuantizerProtocol",
     "QuantizerType",
@@ -24,5 +32,9 @@ __all__ = [
     "RVQConfig",
     "ResidualVectorQuantizer",
     "VQConfig",
+    "codebook_usage",
     "default_fsq_levels",
+    "quantization_loss_metrics",
+    "quantization_usage",
+    "valid_indices_by_codebook",
 ]

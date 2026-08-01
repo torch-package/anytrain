@@ -22,6 +22,7 @@ src/anytrain/lightning/
     grad.py
     loss.py
     performance.py
+    quantization.py
   mixin/
     __init__.py
     log.py
@@ -43,6 +44,8 @@ src/anytrain/lightning/
 - `LossTimeBucketLoggerCallback`
 - `FlopsProvider`
 - `PerformanceCallback`
+- `QuantizationLoggerCallback`
+- `QuantizationMonitor`
 - `RankLogMode`
 - `prefixed_log_dict`
 
@@ -127,6 +130,13 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
+
+`QuantizationLoggerCallback` 只消费下游显式返回的 `QuantizationMonitor` mapping；monitor 绑定
+`QuantizeOutput` 和对应 quantizer 或 `codebook_size` / `num_codebooks`。callback 不扫描
+`pl_module`，不解释 batch，也不为了日志额外 forward quantizer。单进程直接用当前 batch 的
+`indices` 统计 usage；DDP 下先对每个 codebook 的 counts、active count 和 denominator 做 sum
+归约，再计算 perplexity、dead code ratio 和 active ratio，避免平均各 rank 比例。histogram 默认关闭，
+开启后只由 global rank 0 写入本地观测到的 index 分布。
 
 `LossSummaryCallback` 在 batch hook 中仅保存 detached device scalar。每个指标的状态固定为前后各
 `window_capacity` 个值和完整 observation count；默认 capacity 为 20，不随训练长度增长。训练结束时

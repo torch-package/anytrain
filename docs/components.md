@@ -24,6 +24,7 @@ core 提供：
 - `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
 - `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
+- `QuantizationLoggerCallback`：按下游显式声明的 `QuantizeOutput` 记录量化 loss、code usage、perplexity、dead code 和 active codebook 比例。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
 
@@ -142,7 +143,7 @@ dynamic conv、quantization、Qwen 和 idspace 从各自子模块显式导入。
 
 - Adaptive Dirichlet Tempering，用于 MoE/router logits 的自适应温度缩放。
 - `anytrain.module.dynamic_conv`：1D Dynamic Conv / Dynamic Conv Transpose 和 2D Dynamic Conv，用于按样本或按分段组合 expert kernel。
-- `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer。
+- `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer，以及不依赖 Lightning 的 usage/perplexity 统计 helper。
 - `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 experimental MTP codebook predictor。
 
 `anytrain.module.idspace` 也是 core 组件，维护 local/global token id 映射和 block embedding

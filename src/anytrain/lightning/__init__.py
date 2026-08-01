@@ -19,6 +19,11 @@ from .callback.loss import (
     window_summary,
 )
 from .callback.performance import FlopsProvider, PerformanceCallback
+from .callback.quantization import (
+    QuantizationLoggerCallback,
+    QuantizationMonitor,
+    QuantizationMonitorsFn,
+)
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
 
 __all__ = [
@@ -41,6 +46,9 @@ __all__ = [
     "LightningLogMixin",
     "ModelCheckpoint",
     "PerformanceCallback",
+    "QuantizationLoggerCallback",
+    "QuantizationMonitor",
+    "QuantizationMonitorsFn",
     "RankLogMode",
     "experiment",
     "prefixed_log_dict",
