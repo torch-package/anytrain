@@ -133,8 +133,14 @@ class FiniteScalarQuantizerTest(unittest.TestCase):
             FSQConfig(input_dim=4, bound_scale=0)
         with self.assertRaisesRegex(ValueError, "levels"):
             FSQConfig(input_dim=4, levels=())
+        with self.assertRaisesRegex(TypeError, "integer"):
+            FSQConfig(input_dim=4, levels=(3.7,))  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "integer"):
+            FSQConfig(input_dim=4, levels=(True,))  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, ">= 2"):
             FSQConfig(input_dim=4, levels=(1,))
+        with self.assertRaisesRegex(ValueError, "codebook_size"):
+            FSQConfig(input_dim=4, levels=(torch.iinfo(torch.long).max, 2))
 
     def test_default_levels(self):
         self.assertEqual(default_fsq_levels(8), (7, 7, 5))

@@ -19,7 +19,8 @@ class VQConfig:
     input_dim: int
     codebook_size: int
     codebook_dim: int | None = None
-    normalize_latents: bool = True
+    normalize_lookup: bool = True
+    lookup_in_float32: bool = True
     weight_norm: bool = False
     scale_grad_by_freq: bool = False
     use_ema: bool = False
@@ -121,6 +122,11 @@ class EmbeddingVectorQuantizer(nn.Module):
         if self.training:
             if self.use_ema:
                 self._update_ema(projected_latents, indices)
+                commitment = F.mse_loss(projected_latents, codebook_vectors.detach())
+                loss = QuantizationLoss(
+                    commitment=commitment,
+                    codebook=torch.zeros_like(commitment),
+                )
             else:
                 loss = QuantizationLoss(
                     commitment=F.mse_loss(projected_latents, codebook_vectors.detach()),
@@ -161,7 +167,8 @@ class EmbeddingVectorQuantizer(nn.Module):
         input_dim: int,
         codebook_size: int,
         codebook_dim: int | None = None,
-        normalize_latents: bool = True,
+        normalize_lookup: bool = True,
+        lookup_in_float32: bool = True,
         weight_norm: bool = False,
         scale_grad_by_freq: bool = False,
         use_ema: bool = False,
@@ -174,7 +181,8 @@ class EmbeddingVectorQuantizer(nn.Module):
                 input_dim=input_dim,
                 codebook_size=codebook_size,
                 codebook_dim=codebook_dim,
-                normalize_latents=normalize_latents,
+                normalize_lookup=normalize_lookup,
+                lookup_in_float32=lookup_in_float32,
                 weight_norm=weight_norm,
                 scale_grad_by_freq=scale_grad_by_freq,
                 use_ema=use_ema,
@@ -194,7 +202,8 @@ class EmbeddingVectorQuantizer(nn.Module):
         indices = nearest_codebook_indices(
             projected_latents,
             self.codebook.weight,
-            normalize=self.config.normalize_latents,
+            normalize=self.config.normalize_lookup,
+            lookup_in_float32=self.config.lookup_in_float32,
         )
         codebook_vectors = self.codebook(indices).reshape(*leading_shape, self.codebook_dim)
         return codebook_vectors, indices

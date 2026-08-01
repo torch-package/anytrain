@@ -231,7 +231,7 @@ deepaudio 当前 VQ 实现有几处不能照搬的问题：
 
 迁移时应把这些作为接口修正，而不是做兼容分支。
 
-VQ 的 l2-normalized nearest-neighbor lookup 保留为默认行为，但要用显式配置字段表示，例如 `normalize_latents: bool = True`，避免后续读代码时把它误判为标准欧氏 VQ。
+VQ 的 l2-normalized nearest-neighbor lookup 保留为默认行为，但要用显式配置字段表示，例如 `normalize_lookup: bool = True`，避免后续读代码时把它误判为标准欧氏 VQ。lookup 比较默认临时升到 FP32（`lookup_in_float32=True`），输出仍保持 embedding/projector 的 dtype。
 
 ### 7. RVQ 先支持统一 codebook dim
 
@@ -278,7 +278,8 @@ FSQ 的 basis、levels、half levels、offsets，VQ EMA 的 counter/sum 都通�
 - 修正 `loss` 字段命名。
 - 修正 EMA 和非 EMA 训练分支。
 - eval 模式返回 `loss=None`。
-- 增加 `normalize_latents: bool = True`，显式保留 deepaudio 当前的 l2-normalized distance 行为。
+- 增加 `normalize_lookup: bool = True`，显式保留 deepaudio 当前的 l2-normalized distance 行为。
+- 增加 `lookup_in_float32: bool = True`，避免低精度 lookup 在大维度或 L2 距离下误选。
 
 验收：
 

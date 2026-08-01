@@ -3,6 +3,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from functools import reduce
+from numbers import Integral
 from operator import mul
 from typing import Literal
 
@@ -34,13 +35,20 @@ class FSQConfig:
         if self.eps <= 0 or self.eps >= 1:
             raise ValueError(f"eps must be in (0, 1), got {self.eps}.")
 
-        levels = tuple(self.levels)
-        if not levels:
+        raw_levels = tuple(self.levels)
+        if not raw_levels:
             raise ValueError("levels must contain at least one value.")
-        for level in levels:
+        levels = []
+        for level in raw_levels:
+            if isinstance(level, bool) or not isinstance(level, Integral):
+                raise TypeError(f"each FSQ level must be an integer, got {level!r}.")
             if level < 2:
                 raise ValueError(f"each FSQ level must be >= 2, got {level}.")
-        object.__setattr__(self, "levels", tuple(int(level) for level in levels))
+            levels.append(int(level))
+        codebook_size = reduce(mul, levels, 1)
+        if codebook_size > torch.iinfo(torch.long).max:
+            raise ValueError("FSQ codebook_size must fit in torch.long.")
+        object.__setattr__(self, "levels", tuple(levels))
         even_levels = tuple(level for level in self.levels if level % 2 == 0)
         if even_levels:
             warnings.warn(
@@ -86,7 +94,7 @@ class FiniteScalarQuantizer(nn.Module):
         register_buffer(
             self,
             "_basis",
-            torch.cumprod(torch.tensor([1, *config.levels[:-1]]), dim=0),
+            torch.cumprod(torch.tensor([1, *config.levels[:-1]], dtype=torch.long), dim=0),
         )
         register_buffer(self, "_levels", levels)
         register_buffer(self, "_half_width", levels.div(2, rounding_mode="floor").float())

@@ -18,7 +18,9 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
         field_names = {field.name for field in fields(config)}
 
-        self.assertIn("normalize_latents", field_names)
+        self.assertIn("normalize_lookup", field_names)
+        self.assertIn("lookup_in_float32", field_names)
+        self.assertNotIn("normalize_latents", field_names)
         self.assertEqual(config.codebook_dim, 4)
 
     def test_forward_shapes(self):
@@ -72,7 +74,7 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         self.assertIsNotNone(quantizer.codebook.weight.grad)
         self.assertTrue(torch.isfinite(quantizer.codebook.weight.grad).all())
 
-    def test_ema_updates_without_codebook_grad(self):
+    def test_ema_updates_with_commitment_loss_without_codebook_grad(self):
         quantizer = EmbeddingVectorQuantizer(
             VQConfig(input_dim=8, codebook_size=16, codebook_dim=4, use_ema=True, decay=0.5)
         )
@@ -80,7 +82,9 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
         output = quantizer(torch.randn(6, 8))
 
-        self.assertIsNone(output.loss)
+        self.assertIsInstance(output.loss, QuantizationLoss)
+        self.assertEqual(output.loss.codebook.item(), 0.0)
+        self.assertGreaterEqual(output.loss.commitment.item(), 0.0)
         self.assertFalse(torch.allclose(quantizer.ema_counts, before_counts))
         self.assertFalse(quantizer.codebook.weight.requires_grad)
 
@@ -92,7 +96,7 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         with mock.patch("torch.nn.functional.one_hot", side_effect=AssertionError("one_hot")):
             output = quantizer(torch.randn(32, 8))
 
-        self.assertIsNone(output.loss)
+        self.assertIsInstance(output.loss, QuantizationLoss)
         self.assertTrue(torch.isfinite(quantizer.codebook.weight).all())
 
     def test_ema_update_synchronizes_counts_and_sums_when_distributed(self):
@@ -231,9 +235,22 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
                 self.assertTrue(torch.equal(indices, torch.tensor([0])))
 
+    def test_lookup_can_compare_in_float32(self):
+        latents = torch.tensor([[200.0, 0.0]], dtype=torch.float16)
+        codebook = torch.tensor([[0.0, 0.0], [200.0, 0.0]], dtype=torch.float16)
+
+        indices = nearest_codebook_indices(
+            latents,
+            codebook,
+            normalize=False,
+            lookup_in_float32=True,
+        )
+
+        self.assertTrue(torch.equal(indices, torch.tensor([1])))
+
     def test_non_normalized_lookup(self):
         quantizer = EmbeddingVectorQuantizer(
-            VQConfig(input_dim=2, codebook_size=2, normalize_latents=False)
+            VQConfig(input_dim=2, codebook_size=2, normalize_lookup=False)
         )
         with torch.no_grad():
             quantizer.codebook.weight.copy_(torch.tensor([[0.0, 0.0], [10.0, 0.0]]))

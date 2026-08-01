@@ -14,6 +14,7 @@ def nearest_codebook_indices(
     *,
     normalize: bool,
     max_lookup_elements: int = _MAX_LOOKUP_ELEMENTS,
+    lookup_in_float32: bool = True,
 ) -> Tensor:
     if latents.ndim == 0:
         raise ValueError("latents must have at least one dimension.")
@@ -32,6 +33,11 @@ def nearest_codebook_indices(
     flat_latents = latents.reshape(-1, codebook.shape[-1])
     if flat_latents.shape[0] == 0:
         return torch.empty(leading_shape, dtype=torch.long, device=latents.device)
+
+    if lookup_in_float32:
+        flat_latents = flat_latents.float()
+        codebook = codebook.float()
+
     codebook_chunk_size = min(codebook.shape[0], max_lookup_elements)
     latent_chunk_size = max(1, max_lookup_elements // codebook_chunk_size)
     if normalize:
