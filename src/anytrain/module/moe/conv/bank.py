@@ -1,9 +1,15 @@
+"""Convolutional expert-bank helpers.
+
+Conv experts are stored as parameter banks and executed by mixing kernels and
+biases with dense route weights, instead of calling one module per expert.
+"""
+
 from __future__ import annotations
 
 import torch
 from torch import Tensor
 
-from ...routing import (
+from ..routing import (
     DenseExpertWeights,
     validate_dense_expert_weights,
     validate_num_experts,

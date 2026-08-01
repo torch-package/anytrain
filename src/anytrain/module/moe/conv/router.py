@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 
 from ...dirichlet_tempering import ADT
-from ...routing import validate_num_experts
+from ..routing import validate_num_experts
 
 ActivationName = Literal["gelu", "identity", "relu", "silu"]
 NormName = Literal["batch", "group", "identity"]

@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from anytrain.module.routing import (
+from anytrain.module.moe.routing import (
     DenseExpertWeights,
     SparseExpertRouting,
     flat_active_mask,

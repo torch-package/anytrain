@@ -13,16 +13,16 @@ The subpackage exports:
 - `TopKRouter` / `LinearTopKRouter`: feature-last linear router from `(..., input_dim)` hidden states to top-k expert assignments.
 - `TokenChoiceMoE` / `MoELayer`: wrapper that runs selected local `nn.Module` experts and combines weighted outputs.
 - `anytrain.module.moe.conv`: convolutional dense-mixture MoE layers (`DynamicConv1d`, `DynamicConv2d`, and `DynamicConvTranspose1d`).
-- `RouterOutput`: MoE-compatible subclass of `anytrain.module.routing.SparseExpertRouting`, carrying router logits, probabilities, selected expert indices, selected combine weights, and optional token mask.
+- `RouterOutput`: MoE-compatible subclass of `anytrain.module.moe.routing.SparseExpertRouting`, carrying router logits, probabilities, selected expert indices, selected combine weights, and optional token mask.
 - `MoEOutput`: combined hidden states, routing output, per-expert assignment counts, and dropped-token mask.
-- `dispatch_to_experts()` / `sparse_dispatch()`: standalone dispatch/combine helper for manually supplied `SparseExpertRouting` / `RouterOutput`.
+- `dispatch_to_experts()` / `sparse_dispatch()`: standalone sparse module dispatch/combine helper from `anytrain.module.moe.sparse` for manually supplied `SparseExpertRouting` / `RouterOutput`.
 - `load_balance_loss()`, `router_z_loss()`, `expert_usage()`, and `effective_experts()`: pure metric/loss helpers for downstream code to weight and log explicitly.
 
 `anytrain.module` does not re-export these names at the package top level. Users should import from `anytrain.module.moe` explicitly.
 
 ## Tensor Contract
 
-Sparse MoE and MoE conv share only the routing data contract via `anytrain.module.routing`; expert execution remains subdomain-specific.
+Sparse MoE and MoE conv share only the routing data contract via `anytrain.module.moe.routing`; expert execution remains subdomain-specific.
 
 - Hidden states are feature-last: `(..., input_dim)`.
 - Router logits and probabilities are shaped `(..., num_experts)`.

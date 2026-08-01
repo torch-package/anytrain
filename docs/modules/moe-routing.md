@@ -1,8 +1,8 @@
-# `anytrain.module.routing` Design
+# `anytrain.module.moe.routing` Design
 
 ## Positioning
 
-`anytrain.module.routing` is the neutral expert-routing contract shared by MoE-family components that choose among experts.
+`anytrain.module.moe.routing` is the neutral expert-routing contract shared by MoE-family components that choose among experts.
 
 It deliberately models routing data and validation only. It does not execute experts, mix kernels, create expert registries, add auxiliary losses, perform distributed all-to-all, or assume a downstream batch schema.
 
@@ -17,14 +17,14 @@ The module exports:
 - `validate_sparse_expert_routing()`: validates sparse route shape, expert ids, dtype, and device.
 - `broadcast_routing_mask()` and `flat_active_mask()`: shared boolean mask broadcasting for router, dispatch, and metrics.
 
-`anytrain.module` does not re-export these names at the package top level. Users should import from `anytrain.module.routing` explicitly when they need the shared routing objects.
+`anytrain.module` does not re-export these names at the package top level. Users should import from `anytrain.module.moe.routing` explicitly when they need the shared routing objects.
 
 ## Boundary
 
-Shared abstraction stops at the route:
+Shared abstraction stops at routing and expert-bank contracts:
 
-- `anytrain.module.moe.conv` consumes dense expert weights, then mixes convolution kernels and bias tensors.
-- Sparse MoE consumes sparse expert routing, then dispatches feature-last tokens to local experts and combines outputs.
+- `anytrain.module.moe.conv.bank` is the convolutional parameter-bank expert implementation; it consumes dense expert weights, then mixes convolution kernels and bias tensors.
+- `anytrain.module.moe.sparse` is the module-backed sparse executor; it consumes sparse expert routing, then dispatches feature-last tokens to local experts and combines outputs.
 - Metrics such as MoE load-balance loss and z-loss remain in `anytrain.module.moe`, because they are sparse-router training objectives rather than generic routing data.
 - ADT remains a logits calibration/statistics component; routing modules decide whether to use calibrated probabilities densely or sparsely.
 

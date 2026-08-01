@@ -5,7 +5,7 @@ import inspect
 import torch
 from torch import Tensor, nn
 
-from ..routing import broadcast_routing_mask, validate_num_experts, validate_top_k
+from .routing import broadcast_routing_mask, validate_num_experts, validate_top_k
 from .types import RouterOutput
 
 

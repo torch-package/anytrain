@@ -19,7 +19,7 @@ from anytrain.module.moe import (
     load_balance_loss,
     router_z_loss,
 )
-from anytrain.module.routing import SparseExpertRouting
+from anytrain.module.moe.routing import SparseExpertRouting
 
 
 class ScaleExpert(nn.Module):

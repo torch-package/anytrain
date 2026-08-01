@@ -5,8 +5,8 @@ from typing import Any
 
 from torch import Tensor, nn
 
-from ..routing import SparseExpertRouting
-from .dispatch import dispatch_to_experts
+from .routing import SparseExpertRouting
+from .sparse import dispatch_to_experts
 from .types import MoEOutput
 
 

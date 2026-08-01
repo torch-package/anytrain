@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from torch import Tensor
 
-from ..routing import SparseExpertRouting
+from .routing import SparseExpertRouting
 
 
 @dataclass(eq=False)

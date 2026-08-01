@@ -1,3 +1,10 @@
+"""Expert routing contracts for MoE-family components.
+
+Routing density is separate from expert-bank shape: dense routing can drive a
+parameter bank such as convolution kernels, while sparse routing can dispatch
+tokens to callable module experts.
+"""
+
 from __future__ import annotations
 
 import math
@@ -27,7 +34,7 @@ class DenseExpertWeights:
 
 @dataclass(eq=False)
 class ExpertRouting:
-    """Sparse expert routing result shared by routing-based modules.
+    """Sparse top-k expert routing result shared by routing-based modules.
 
     logits and probabilities describe the full expert distribution with shape
     (..., num_experts). indices and weights describe the selected top-k routes

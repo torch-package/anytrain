@@ -11,7 +11,7 @@
 - [`anytrain.evaluator`](evaluator.md)：训练期 evaluator 接口和组合器边界。
 - [`anytrain.optim`](optim.md)：optimizer、scheduler 和 LLM/Muon helper。
 - [`anytrain.module`](module.md)：task-agnostic `torch.nn.Module` 积木和子模块入口边界。
-- [`anytrain.module.routing`](routing.md)：MoE routing 家族共享的专家路由表示、校验和 mask 语义。
+- [`anytrain.module.moe.routing`](moe-routing.md)：MoE routing 家族共享的专家路由表示、校验和 mask 语义。
 - [`anytrain.module.moe`](moe.md)：task-agnostic sparse MoE router、dispatch、layer 和 metrics。
 - `anytrain.module.moe.conv`：convolutional dense-mixture MoE layers；归入 [`anytrain.module.moe`](moe.md)。
 - [`anytrain.module.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。

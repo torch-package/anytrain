@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from ..routing import SparseExpertRouting
+from .routing import SparseExpertRouting
 
 
 def expert_usage(routing: SparseExpertRouting) -> Tensor:

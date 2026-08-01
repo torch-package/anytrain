@@ -1,3 +1,5 @@
+"""Sparse token executor for module-backed experts."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -5,7 +7,7 @@ from collections.abc import Sequence
 import torch
 from torch import Tensor, nn
 
-from ..routing import SparseExpertRouting, flat_active_mask, validate_sparse_expert_routing
+from .routing import SparseExpertRouting, flat_active_mask, validate_sparse_expert_routing
 
 
 def sparse_dispatch(

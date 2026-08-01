@@ -5,20 +5,20 @@ from einops import rearrange
 from torch import Size, Tensor, nn
 from torch.nn import functional as F
 
-from ...routing import DenseExpertWeights
-from ._expert import (
+from ..routing import DenseExpertWeights
+from .bank import (
     expand_expert_weights as _expand_expert_weights,
 )
-from ._expert import (
+from .bank import (
     mix_expert_bias as _mix_expert_bias,
 )
-from ._expert import (
+from .bank import (
     mix_expert_weights as _mix_expert_weights,
 )
-from ._expert import (
+from .bank import (
     validate_channels as _validate_channels,
 )
-from ._expert import (
+from .bank import (
     validate_expert_weights as _validate_expert_weights,
 )
 from .segment import PaddingMode

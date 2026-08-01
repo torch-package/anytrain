@@ -17,7 +17,7 @@ from anytrain.module.moe.conv.shape import (
     infer_padding_2d,
     validate_dynamic_conv1d_args,
 )
-from anytrain.module.routing import DenseExpertWeights
+from anytrain.module.moe.routing import DenseExpertWeights
 
 
 class SimpleRouter(nn.Module):

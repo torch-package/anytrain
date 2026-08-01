@@ -38,7 +38,7 @@
 - `anytrain.evaluator`：通用 evaluator 接口和组合器。
 - `anytrain.optim`：optimizer、scheduler 和 LLM/Muon helper。
 - `anytrain.module`：少量稳定的 task-agnostic `torch.nn.Module` 积木。
-- `anytrain.module.routing`：MoE routing 家族共享的专家路由表示、校验和 mask 语义。
+- `anytrain.module.moe.routing`：MoE routing 家族共享的专家路由表示、校验和 mask 语义。
 - `anytrain.module.moe`、`anytrain.module.moe.conv`、`anytrain.module.quantization`、`anytrain.module.qwen`：显式子模块组件入口。
 - `anytrain.module.idspace`：local/global token id 映射和 block embedding 路由。
 
@@ -140,7 +140,7 @@ class MyPLModule(pl.LightningModule):
 
 ### `module`
 
-提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；routing、MoE、MoE conv、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv` 的 dense kernel mixing 与 `anytrain.module.moe` 的 sparse token dispatch 仍留在各自子域。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
+提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；MoE routing、sparse MoE、MoE conv、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.moe.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv.bank` 的 dense parameter-bank mixing 与 `anytrain.module.moe.sparse` 的 sparse module dispatch 是两种 executor。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
 
 ### `module.idspace` / `tokenizer`
 
@@ -171,8 +171,9 @@ src/anytrain/
   evaluator/
   optim/
   module/
-    routing.py
     moe/
+      routing.py
+      sparse.py
       conv/
     idspace/
     quantization/
