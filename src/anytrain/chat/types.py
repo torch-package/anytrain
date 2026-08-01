@@ -36,6 +36,15 @@ class ChatMessage(TypedDict):
     content: ChatContent
 
 
+class ChatResponse(NamedTuple):
+    text: str
+    model: str | None
+    usage: Mapping[str, object] | None
+    request_id: str | None
+    finish_reason: str | None
+    raw: object
+
+
 class ImageOutput(NamedTuple):
     url: str | None
     b64_json: str | None

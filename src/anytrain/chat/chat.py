@@ -14,15 +14,22 @@ from ._provider import (
     GLM_IMAGE_MODEL,
     GLM_IMAGE_SIZE,
     GLM_IMAGE_TIMEOUT,
-    async_request,
+    async_request_detail,
     create_async_client,
     create_client,
     generate_image,
     initial_messages,
-    request,
+    request_detail,
 )
 from .config import config_from_env
-from .types import ChatContent, ChatContentPart, ChatMessage, ImageGeneration, ModelType
+from .types import (
+    ChatContent,
+    ChatContentPart,
+    ChatMessage,
+    ChatResponse,
+    ImageGeneration,
+    ModelType,
+)
 
 _ChatT = TypeVar("_ChatT", bound="Chat")
 ImageInput = str | PathLike[str]
@@ -41,6 +48,7 @@ class Chat:
         self._async_lock_loop: asyncio.AbstractEventLoop | None = None
         self._messages = initial_messages(self.model_type)
         self._lock = RLock()
+        self.last_response: ChatResponse | None = None
 
     @classmethod
     async def async_create(
@@ -75,7 +83,7 @@ class Chat:
         if prompt == "":
             raise ValueError("prompt must not be empty.")
         with self._lock:
-            return self._request_text(prompt, images=images, refresh=refresh)
+            return self._request_detail(prompt, images=images, refresh=refresh).text
 
     async def async_call(
         self,
@@ -87,7 +95,9 @@ class Chat:
         if prompt == "":
             raise ValueError("prompt must not be empty.")
         async with self._async_text_lock():
-            return await self._request_text_async(prompt, images=images, refresh=refresh)
+            return (
+                await self._request_detail_async(prompt, images=images, refresh=refresh)
+            ).text
 
     async def acall(
         self,
@@ -97,6 +107,46 @@ class Chat:
         refresh: bool = False,
     ) -> str:
         return await self.async_call(prompt, images=images, refresh=refresh)
+
+    def request(
+        self,
+        prompt: str,
+        *,
+        images: ImageInput | Iterable[ImageInput] | None = None,
+        refresh: bool = False,
+    ) -> ChatResponse:
+        if prompt == "":
+            raise ValueError("prompt must not be empty.")
+        with self._lock:
+            return self._request_detail(prompt, images=images, refresh=refresh)
+
+    async def async_request(
+        self,
+        prompt: str,
+        *,
+        images: ImageInput | Iterable[ImageInput] | None = None,
+        refresh: bool = False,
+    ) -> ChatResponse:
+        if prompt == "":
+            raise ValueError("prompt must not be empty.")
+        async with self._async_text_lock():
+            return await self._request_detail_async(prompt, images=images, refresh=refresh)
+
+    @property
+    def last_usage(self) -> object:
+        return None if self.last_response is None else self.last_response.usage
+
+    @property
+    def last_model(self) -> str | None:
+        return None if self.last_response is None else self.last_response.model
+
+    @property
+    def last_request_id(self) -> str | None:
+        return None if self.last_response is None else self.last_response.request_id
+
+    @property
+    def last_finish_reason(self) -> str | None:
+        return None if self.last_response is None else self.last_response.finish_reason
 
     def image(
         self,
@@ -144,9 +194,18 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None,
         refresh: bool,
     ) -> str:
+        return self._request_detail(prompt, images=images, refresh=refresh).text
+
+    def _request_detail(
+        self,
+        prompt: str,
+        *,
+        images: ImageInput | Iterable[ImageInput] | None,
+        refresh: bool,
+    ) -> ChatResponse:
         content = _content_for_prompt(self.model_type, prompt, images=images)
         messages = self._messages_for_prompt(content, refresh=refresh)
-        response = request(
+        response = request_detail(
             self.model_type,
             self._client,
             self._config.model,
@@ -163,9 +222,18 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None,
         refresh: bool,
     ) -> str:
+        return (await self._request_detail_async(prompt, images=images, refresh=refresh)).text
+
+    async def _request_detail_async(
+        self,
+        prompt: str,
+        *,
+        images: ImageInput | Iterable[ImageInput] | None,
+        refresh: bool,
+    ) -> ChatResponse:
         content = _content_for_prompt(self.model_type, prompt, images=images)
         messages = self._messages_for_prompt(content, refresh=refresh)
-        response = await async_request(
+        response = await async_request_detail(
             self.model_type,
             self._async_provider_client(),
             self._config.model,
@@ -183,8 +251,9 @@ class Chat:
             {"role": "user", "content": content},
         ]
 
-    def _record_response(self, messages: list[ChatMessage], response: str) -> None:
-        self._messages = [*messages, {"role": "assistant", "content": response}]
+    def _record_response(self, messages: list[ChatMessage], response: ChatResponse) -> None:
+        self.last_response = response
+        self._messages = [*messages, {"role": "assistant", "content": response.text}]
 
     def _async_provider_client(self) -> object:
         if self._async_client is None:
