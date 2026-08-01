@@ -22,9 +22,9 @@
 
 子包显式导出其它组件：
 
-- `anytrain.module.moe.routing`：`DenseExpertWeights`、`SparseExpertRouting`、专家数/top-k 校验、dense/sparse route 校验和 mask broadcast helper。
-- `anytrain.module.moe.conv`：`DynamicConv1d`、`DynamicConv2d`、`DynamicConvTranspose1d`、`ADTRouter1d`、`ADTRouter2d`、`MultiScalePool1d`。
-- `anytrain.module.moe`：`TopKRouter`、`LinearTopKRouter`、`TokenChoiceMoE`、`MoELayer`、`RouterOutput`、`MoEOutput`、`SparseMoELoss`、`sparse_moe_aux_loss`、`load_balance_loss`、`router_z_loss`、`expert_usage`、`effective_experts` 和 sparse MoE routing/loss metrics。
+- `anytrain.module.moe.routing`：density-neutral `ExpertRouting`、校验和 mask helper；`SparseExpertRouting` / `DenseExpertWeights` 为别名或辅助视图。
+- `anytrain.module.moe.conv`：`ConvRouter1d` / `ConvRouter2d`（只产 logits）、partitioner / shape helpers、`MultiScalePool1d`。
+- `anytrain.module.moe`：统一入口 `MoE(num_experts=..., expert=Expert, weight=(E,...), bias=..., grid=...)`；Expert 对象负责 `__call__` / `bias_kind` / `bind(grid,...)`；`Grid1d` 表达 1D segment intent，`NativeGrid` 表示不切分的 native-resolution 路径；`expand_param` 做 E 轴扩维；`expand_expert` 仅便利 stock `Linear/Conv*`，不是通用 Module→Expert 推断。另有 `CallableExpert`、`linear` / `Conv*Expert`、`LinearRouter`、`NativeGrid`、`MoEOutput`、`ExpertRouting`、sparse aux-loss / metrics helpers。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
@@ -33,9 +33,12 @@
 kernel size。
 
 ADT 用于 MoE/router logits 的自适应温度缩放和专家利用率统计，适合跨 audio、vision、text 等项目复用。
+公开构造面是 `AdaptiveDirichletTempering(num_experts, *, warmup_steps=0,
+min_temperature=None, max_temperature=None)`。dispersion / EMA / Minka / Gumbel /
+temperature_groups / sync 等实现旋钮先留在类私有默认值，需要时再提升为公开参数。
+统计默认像 BatchNorm 一样只用本地 batch；跨卡同步以后若提供，会走 SyncBatchNorm 风格的显式 API。
 统计收集路径会先把 FP16/BF16 logits 升到 FP32，再计算用于统计的 softmax、计数和各阶矩，
-避免长序列 reduction 溢出；启用 distributed stats 同步时也使用 FP32 collective。forward
-输出仍以调用方传入的 logits dtype 计算温度 softmax。
+避免长序列 reduction 溢出。forward 输出仍以调用方传入的 logits dtype 计算温度 softmax。
 
 ### ADT contract
 
@@ -50,29 +53,25 @@ load-balancing loss、不假设 batch schema，也不直接做 Lightning logging
 公开统计优先使用命名清楚的属性：`expert_utilization` 表示每个 expert 的运行期平均 router 概率，
 `effective_experts` 表示 utilization 分布的 entropy perplexity，`temperature` 表示当前应用到 logits 的
 per-expert 温度。`stats()` 返回纯 `ADTStats` 对象；`adt_stats_metrics()` 负责把 usage、variance、
-alpha 和 temperature 展平成 scalar relative metric key，例如 `effective_experts`、
-`expert_0/usage`、`expert_0/variance`、`expert_0/alpha` 和 `expert_0/temperature`。
-`diagnostics()` 为兼容旧调用保留，等价于 `adt_stats_metrics(adt.stats())`。
+alpha 和 temperature 汇总成稳定数量的 scalar relative metric key，例如 `effective_experts`、
+`usage_mean`、`usage_std`、`temperature_min` 和 `temperature_max`。
+`diagnostics()` 直接返回同一套 scalar summary key，和 `ADTStatsLoggerCallback` 配套；需要结构化张量时使用
+`stats()`，或者读取 ADT module 的只读 `monitor` property 获取当前 `ADTStats` snapshot。
+如果需要看完整 per-expert 分布，使用 `ADTStatsLoggerCallback(log_histograms=True)` 记录 usage、variance、
+alpha 和 temperature 的 histogram，而不是为每个 expert 生成一条 scalar 曲线。
+默认使用 `ADTStatsLoggerCallback()` 即可：callback 会从 `pl_module.named_modules()` 自动发现所有
+`AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper 从 module path
+推断最短唯一日志名：单个 `encoder.router.gate` 记为 `adt/gate/usage_mean`，如果同时存在
+`encoder.router.gate` 和 `decoder.router.gate`，则分别记为
+`adt/encoder.router.gate/usage_mean` 和 `adt/decoder.router.gate/usage_mean`；
+需要覆盖时再传显式 mapping key 或 `ADTStatsMonitor(name=...)`。
 `ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
 
-`anytrain.module.moe.conv` 用于按样本或按分段动态组合 expert convolution kernel。它是 MoE 家族里的 convolutional dense-mixture expert 层，并保持 task-agnostic：
+`anytrain.module.moe` 的公共模型是统一 `MoE`：`num_experts` 为顶层真相，核心契约是 `Expert` 对象 + 已是 `(E,...)` 的 `weight`/`bias` + 可选薄 `grid`。`expand_expert` 只对 stock `nn.Linear`/`nn.Conv*` 做几何拷贝和参数扩维，**不能**也不应用于自定义 `nn.Module` 推断。Conv 与 ConvTranspose 共享 `expand_param`、`Grid1d` 和「restore 后再加 bias」；weight 布局与 restore（concat vs OLA）由各自 Expert.`bind` 选择。设计见 [`moe.md`](moe.md) 与 [`moe-routing.md`](moe-routing.md)。
 
-- 核心卷积只接收外部 `router`，或通过 `forward_manually(x, expert_weights)` 显式传入权重。
-- 默认 `ADTRouter1d` 只依赖 torch 原生层和 `AdaptiveDirichletTempering`。
-- 当前提供 1D conv / transposed conv，以及用于 Conv2d subsampling 的最小
-  `DynamicConv2d`；2D transpose、segment/chunk 和 causal padding 等能力等真实下游
-  需求明确后再补。
-- router 输出被视作 expert 权重，不在 `DynamicConv1d` 内猜测 logits/softmax 语义。
-
-MoE conv 和 sparse MoE 共享的抽象只放在 `anytrain.module.moe.routing`：dense expert weights、sparse expert routing、专家数/top-k 校验和 mask broadcast。`anytrain.module.moe.conv.bank` 负责 convolutional parameter-bank dense mixing；`anytrain.module.moe.sparse` 负责 module-backed sparse token dispatch/combine；MoE 专属 routing metrics 仍留在 `anytrain.module.moe.metrics`，避免把两者包成隐藏执行框架。设计见 [`anytrain.module.moe.routing`](moe-routing.md)。
-
-`anytrain.module.moe` 提供 token-choice sparse MoE 的薄组件层，设计见 [`anytrain.module.moe`](moe.md)。它只负责 feature-last token 的 top-k routing、local expert dispatch、combine 和通用 router metrics：
-
-- `TopKRouter` 把 `(..., input_dim)` hidden states 投影成 `(..., num_experts)` logits，可选复用 `AdaptiveDirichletTempering` 或其它 gate module 做概率校准。
-- `TokenChoiceMoE` / `MoELayer` 接收外部 `nn.Module` experts，不提供 ExpertRegistry、Transformer-MoE block、训练入口或 batch schema。
-- `RouterOutput` / `MoEOutput` 明确暴露 logits、probabilities、indices、weights、mask、`tokens_per_expert` 和 dropped-token mask，方便下游 LightningModule 自己记录和组合 loss。
-- `RouterOutput` 是 `anytrain.module.moe.routing.SparseExpertRouting` 的 MoE 兼容子类；自定义 router 也可以直接返回通用 sparse routing 对象。
-- `load_balance_loss()`、`router_z_loss()`、`sparse_moe_aux_loss()`、`SparseMoELoss`、`expert_usage()`、`effective_experts()` 和 `sparse_moe_routing_metrics()` 是显式 helper；MoE forward 不自动修改训练目标或日志行为。
+- Token MoE：`MoE(..., expert=linear, weight=(N, out, in), top_k=2)`；需要对齐某个 `nn.Linear` 时可用 `expand_expert` 便利构造。
+- Dynamic conv：`MoE(..., expert=Conv1dExpert(...), weight=..., grid=Grid1d(...), top_k=None)`；对齐某个 `nn.Conv1d` 时可用 `expand_expert`，自定义 cell 算子用 `CallableExpert`（native-resolution）或自实现 `Expert.bind`。
+- `moe_loss()` 和 routing metrics 是显式 helper；MoE forward 不自动改训练目标或打日志。
 
 `anytrain.module.qwen.qwen3` 是 Hugging Face Qwen3 的薄复用层，不重新实现
 transformer block，也不要求下游维护一份庞大的项目级 config：

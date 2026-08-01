@@ -13,6 +13,46 @@ from anytrain.module.dirichlet_tempering import (
 )
 
 
+class _FastEmaADT(ADT):
+    _stat_ema_decays = (0.5, 0.5, 0.5)
+
+
+class _ZeroEmaADT(ADT):
+    _stat_ema_decays = (0.0, 0.0, 0.0)
+
+
+class _GroupedADT(ADT):
+    _temperature_groups = 3
+
+
+class _OneExpertPerGroupADT(ADT):
+    _temperature_groups = 4
+
+
+class _GumbelGroupedADT(ADT):
+    _temperature_groups = 2
+    _use_gumbel_softmax = True
+
+
+class _SmoothedEmaADT(ADT):
+    _stat_ema_decays = (0.5, 0.5, 0.5)
+    _temperature_smoothing_decay = 0.5
+
+
+class _SyncADT(ADT):
+    _sync_distributed_stats = True
+
+
+class _MinkaGroupedADT(ADT):
+    _temperature_groups = 2
+    _minka_refinement_iters = 1
+
+
+class _ZeroEmaMinkaADT(ADT):
+    _stat_ema_decays = (0.0, 0.0, 0.0)
+    _minka_refinement_iters = 1
+
+
 class AdaptiveDirichletTemperingTest(unittest.TestCase):
     def test_config_is_plain_data(self):
         config = ADTConfig(num_experts=4)
@@ -28,7 +68,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertIn("dispersion_strategy", field_names)
 
     def test_forward_returns_simplex_weights(self):
-        adt = AdaptiveDirichletTempering(ADTConfig(num_experts=4))
+        adt = AdaptiveDirichletTempering(num_experts=4)
         logits = torch.randn(8, 4)
 
         weights = adt(logits)
@@ -38,7 +78,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(weights).all())
 
     def test_forward_accepts_sequence_logits(self):
-        adt = AdaptiveDirichletTempering(ADTConfig(num_experts=4))
+        adt = AdaptiveDirichletTempering(num_experts=4)
         logits = torch.randn(2, 5, 4)
 
         weights = adt(logits)
@@ -47,7 +87,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(weights.sum(dim=-1), torch.ones(2, 5), atol=1e-6))
 
     def test_training_updates_stats(self):
-        adt = ADT.from_kwargs(num_experts=3, stat_ema_decays=(0.5, 0.5, 0.5))
+        adt = _FastEmaADT(num_experts=3)
         before = adt.expert_means.clone()
 
         adt(torch.tensor([[3.0, 0.0, -1.0], [2.0, -1.0, 0.5]]))
@@ -75,7 +115,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         )
 
     def test_eval_does_not_update_stats_by_default(self):
-        adt = ADT.from_kwargs(num_experts=3)
+        adt = ADT(num_experts=3)
         adt.eval()
         before = adt.expert_means.clone()
 
@@ -85,7 +125,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(adt.expert_means, before))
 
     def test_eval_can_update_stats_with_override(self):
-        adt = ADT.from_kwargs(num_experts=3)
+        adt = ADT(num_experts=3)
         adt.eval()
 
         adt(torch.randn(4, 3), collect_stats=True)
@@ -93,7 +133,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertEqual(adt.num_updates, 1)
 
     def test_disable_uses_unit_temperature_tensor(self):
-        adt = ADT.from_kwargs(num_experts=3)
+        adt = ADT(num_experts=3)
         logits = torch.randn(5, 3)
 
         adt.disable()
@@ -103,7 +143,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(weights, logits.softmax(dim=-1), atol=1e-6))
 
     def test_grouped_temperature_shape(self):
-        adt = ADT.from_kwargs(num_experts=6, temperature_groups=3)
+        adt = _GroupedADT(num_experts=6)
 
         temperature = adt.temperature
 
@@ -111,7 +151,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertEqual(temperature.shape, (6,))
 
     def test_one_expert_per_group_temperature_is_finite(self):
-        adt = ADT.from_kwargs(num_experts=4, temperature_groups=4)
+        adt = _OneExpertPerGroupADT(num_experts=4)
 
         temperature = adt.temperature
 
@@ -119,11 +159,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(temperature).all())
 
     def test_gumbel_softmax_accepts_grouped_temperature(self):
-        adt = ADT.from_kwargs(
-            num_experts=4,
-            temperature_groups=2,
-            use_gumbel_softmax=True,
-        )
+        adt = _GumbelGroupedADT(num_experts=4)
         adt.train()
         logits = torch.randn(3, 4)
 
@@ -133,7 +169,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(weights.sum(dim=-1), torch.ones(3), atol=1e-6))
 
     def test_temperature_bounds_are_applied(self):
-        adt = ADT.from_kwargs(
+        adt = ADT(
             num_experts=4,
             min_temperature=0.75,
             max_temperature=1.0,
@@ -147,11 +183,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue((temperature <= 1.0).all())
 
     def test_temperature_ema_updates_during_training_forward(self):
-        adt = ADT.from_kwargs(
-            num_experts=4,
-            stat_ema_decays=(0.5, 0.5, 0.5),
-            temperature_smoothing_decay=0.5,
-        )
+        adt = _SmoothedEmaADT(num_experts=4)
         before = adt.temperature.clone()
 
         adt(torch.tensor([[8.0, -2.0, -2.0, -2.0], [7.0, -1.0, -1.0, -1.0]]))
@@ -160,10 +192,9 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(adt.temperature).all())
 
     def test_warmup_uses_unit_temperature_but_collects_stats(self):
-        adt = ADT.from_kwargs(
+        adt = _FastEmaADT(
             num_experts=3,
-            temperature_warmup_steps=2,
-            stat_ema_decays=(0.5, 0.5, 0.5),
+            warmup_steps=2,
         )
         logits = torch.tensor([[4.0, 0.0, -1.0]])
 
@@ -173,17 +204,15 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(weights, logits.softmax(dim=-1), atol=1e-6))
 
     def test_num_updates_restores_from_state_dict(self):
-        adt = ADT.from_kwargs(
+        adt = _ZeroEmaADT(
             num_experts=3,
-            temperature_warmup_steps=1,
-            stat_ema_decays=(0.0, 0.0, 0.0),
+            warmup_steps=1,
         )
         adt(torch.tensor([[8.0, -2.0, -2.0]]))
 
-        restored = ADT.from_kwargs(
+        restored = _ZeroEmaADT(
             num_experts=3,
-            temperature_warmup_steps=1,
-            stat_ema_decays=(0.0, 0.0, 0.0),
+            warmup_steps=1,
         )
         restored.load_state_dict(adt.state_dict())
 
@@ -192,7 +221,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertFalse(torch.allclose(weights, torch.tensor([[4.0, 0.0, -1.0]]).softmax(dim=-1)))
 
     def test_mask_excludes_invalid_sequence_positions_from_stats(self):
-        adt = ADT.from_kwargs(num_experts=3, stat_ema_decays=(0.0, 0.0, 0.0))
+        adt = _ZeroEmaADT(num_experts=3)
         logits = torch.tensor(
             [
                 [
@@ -210,13 +239,13 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(adt.expert_means, expected, atol=1e-6))
 
     def test_mask_must_be_bool(self):
-        adt = ADT.from_kwargs(num_experts=3)
+        adt = ADT(num_experts=3)
 
         with self.assertRaisesRegex(TypeError, "bool"):
             adt(torch.randn(2, 4, 3), mask=torch.ones(2, 4))
 
     def test_mask_can_broadcast_to_sequence_shape(self):
-        adt = ADT.from_kwargs(num_experts=3, stat_ema_decays=(0.0, 0.0, 0.0))
+        adt = _ZeroEmaADT(num_experts=3)
         logits = torch.randn(2, 4, 3)
 
         adt(logits, mask=torch.tensor([[True, False, True, False]]))
@@ -224,7 +253,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertEqual(adt.num_updates, 1)
 
     def test_empty_mask_does_not_update_stats(self):
-        adt = ADT.from_kwargs(num_experts=3)
+        adt = ADT(num_experts=3)
         before = adt.expert_means.clone()
 
         adt(torch.randn(2, 4, 3), mask=torch.zeros(2, 4, dtype=torch.bool))
@@ -233,7 +262,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(adt.expert_means, before))
 
     def test_freeze_and_reset_stats(self):
-        adt = ADT.from_kwargs(num_experts=3, stat_ema_decays=(0.5, 0.5, 0.5))
+        adt = _FastEmaADT(num_experts=3)
 
         adt.freeze_stats()
         adt(torch.randn(4, 3))
@@ -249,18 +278,14 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.equal(adt.temperature, torch.ones(3)))
 
     def test_sync_stats_is_noop_when_distributed_is_uninitialized(self):
-        adt = ADT.from_kwargs(num_experts=3, sync_distributed_stats=True)
+        adt = _SyncADT(num_experts=3)
 
         adt(torch.randn(4, 3))
 
         self.assertEqual(adt.num_updates, 1)
 
     def test_minka_refinement_supports_groups(self):
-        adt = ADT.from_kwargs(
-            num_experts=4,
-            temperature_groups=2,
-            minka_refinement_iters=1,
-        )
+        adt = _MinkaGroupedADT(num_experts=4)
 
         adt(torch.randn(6, 4))
 
@@ -268,18 +293,18 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(adt.alpha).all())
 
     def test_diagnostics_contains_expected_tensors(self):
-        adt = ADT.from_kwargs(num_experts=4)
+        adt = ADT(num_experts=4)
 
         diagnostics = adt.diagnostics()
 
         expected = {"effective_experts"}
-        for expert_index in range(4):
+        for group in ("usage", "variance", "alpha", "temperature"):
             expected.update(
                 {
-                    f"expert_{expert_index}/usage",
-                    f"expert_{expert_index}/variance",
-                    f"expert_{expert_index}/alpha",
-                    f"expert_{expert_index}/temperature",
+                    f"{group}_mean",
+                    f"{group}_std",
+                    f"{group}_min",
+                    f"{group}_max",
                 }
             )
 
@@ -295,20 +320,26 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertLessEqual(float(adt.effective_experts), 4.0)
 
     def test_stats_object_matches_diagnostics(self):
-        adt = ADT.from_kwargs(num_experts=4)
+        adt = ADT(num_experts=4)
 
         stats = adt.stats()
+        monitor = adt.monitor
         metrics = adt_stats_metrics(stats)
 
         self.assertIsInstance(stats, ADTStats)
+        self.assertIsInstance(monitor, ADTStats)
         self.assertEqual(set(metrics), set(adt.diagnostics()))
         for name, value in metrics.items():
             torch.testing.assert_close(value, adt.diagnostics()[name])
         torch.testing.assert_close(stats.expert_means, stats.expert_utilization)
         torch.testing.assert_close(stats.effective_experts, adt.effective_experts)
+        torch.testing.assert_close(monitor.expert_utilization, stats.expert_utilization)
+        torch.testing.assert_close(monitor.expert_vars, stats.expert_vars)
+        torch.testing.assert_close(monitor.alpha, stats.alpha)
+        torch.testing.assert_close(monitor.temperature, stats.temperature)
 
     def test_stats_metrics_can_select_groups(self):
-        stats = ADT.from_kwargs(num_experts=3).stats()
+        stats = ADT(num_experts=3).stats()
 
         usage = adt_stats_metrics(stats, metrics=("usage",))
         variance_and_temperature = adt_stats_metrics(
@@ -320,20 +351,23 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
             set(usage),
             {
                 "effective_experts",
-                "expert_0/usage",
-                "expert_1/usage",
-                "expert_2/usage",
+                "usage_mean",
+                "usage_std",
+                "usage_min",
+                "usage_max",
             },
         )
         self.assertEqual(
             set(variance_and_temperature),
             {
-                "expert_0/variance",
-                "expert_1/variance",
-                "expert_2/variance",
-                "expert_0/temperature",
-                "expert_1/temperature",
-                "expert_2/temperature",
+                "variance_mean",
+                "variance_std",
+                "variance_min",
+                "variance_max",
+                "temperature_mean",
+                "temperature_std",
+                "temperature_min",
+                "temperature_max",
             },
         )
         with self.assertRaisesRegex(ValueError, "unknown ADT metrics"):
@@ -362,15 +396,15 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
             ADTConfig(num_experts=5, temperature_groups=2)
         with self.assertRaisesRegex(ValueError, "stat_ema_decays"):
             ADTConfig(num_experts=4, stat_ema_decays=(0.9, 0.9))
-        with self.assertRaisesRegex(ValueError, "temperature_warmup"):
-            ADTConfig(num_experts=4, temperature_warmup_steps=-1)
+        with self.assertRaisesRegex(ValueError, "warmup_steps"):
+            ADTConfig(num_experts=4, warmup_steps=-1)
         with self.assertRaisesRegex(ValueError, "min_temperature"):
             ADTConfig(num_experts=4, min_temperature=2.0, max_temperature=1.0)
         with self.assertRaisesRegex(ValueError, "temperature_smoothing_decay"):
             ADTConfig(num_experts=4, temperature_smoothing_decay=1.0)
 
     def test_invalid_logits_shape_fails_clearly(self):
-        adt = ADT.from_kwargs(num_experts=4)
+        adt = ADT(num_experts=4)
 
         with self.assertRaisesRegex(ValueError, "last logits dimension"):
             adt(torch.randn(2, 3))
@@ -393,11 +427,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         logits_per_token: torch.Tensor,
     ) -> None:
         num_tokens = 70_001
-        adt = ADT.from_kwargs(
-            num_experts=4,
-            stat_ema_decays=(0.0, 0.0, 0.0),
-            minka_refinement_iters=1,
-        )
+        adt = _ZeroEmaMinkaADT(num_experts=4)
         logits = logits_per_token.to(dtype=dtype).expand(num_tokens, -1)
 
         sums, square_sums, log_sums, count, local_count = adt._router_stat_sums(

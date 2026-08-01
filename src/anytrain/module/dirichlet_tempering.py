@@ -21,7 +21,7 @@ class ADTConfig:
     minka_refinement_iters: int | None = None
     use_gumbel_softmax: bool = False
     temperature_groups: int = 1
-    temperature_warmup_steps: int = 0
+    warmup_steps: int = 0
     min_temperature: float | None = None
     max_temperature: float | None = None
     temperature_smoothing_decay: float | None = None
@@ -56,10 +56,9 @@ class ADTConfig:
                 "minka_refinement_iters must be positive, "
                 f"got {self.minka_refinement_iters}."
             )
-        if self.temperature_warmup_steps < 0:
+        if self.warmup_steps < 0:
             raise ValueError(
-                "temperature_warmup_steps must be non-negative, "
-                f"got {self.temperature_warmup_steps}."
+                f"warmup_steps must be non-negative, got {self.warmup_steps}."
             )
         if self.min_temperature is not None and self.min_temperature <= 0:
             raise ValueError(
@@ -128,17 +127,25 @@ def adt_stats_metrics(
     *,
     metrics: Iterable[str] = ("usage", "variance", "alpha", "temperature"),
 ) -> dict[str, Tensor]:
+    """Flatten ADT stats into compact, logging-friendly scalar summaries.
+
+    Per-expert vectors are summarized as {group}_mean, {group}_std,
+    {group}_min and {group}_max so scalar dashboards stay stable as the
+    number of experts grows.  Use ADTStatsLoggerCallback(log_histograms=True)
+    to log the full per-expert distributions.
+    """
+
     enabled = _adt_metric_groups(metrics)
     values: dict[str, Tensor] = {}
     if "usage" in enabled:
         values["effective_experts"] = stats.effective_experts
-        values.update(_per_expert_metrics(stats.expert_utilization, "usage"))
+        values.update(_summary_metrics(stats.expert_utilization, "usage"))
     if "variance" in enabled:
-        values.update(_per_expert_metrics(stats.expert_vars, "variance"))
+        values.update(_summary_metrics(stats.expert_vars, "variance"))
     if "alpha" in enabled:
-        values.update(_per_expert_metrics(stats.alpha, "alpha"))
+        values.update(_summary_metrics(stats.alpha, "alpha"))
     if "temperature" in enabled:
-        values.update(_per_expert_metrics(stats.temperature, "temperature"))
+        values.update(_summary_metrics(stats.temperature, "temperature"))
     return values
 
 
@@ -152,6 +159,20 @@ class AdaptiveDirichletTempering(nn.Module):
     """
 
     _eps = 1e-6
+    # Implementation knobs below are intentionally not constructor arguments.
+    # Keep them as class defaults for now; promote to public ``__init__`` kwargs
+    # only when a caller needs to tune them in production.
+    _dispersion_strategy: DirichletStrategy = "std"
+    _stat_ema_decays: tuple[float, float, float] = (0.9, 0.999, 0.9)
+    _prior_strength: float | None = None
+    _minka_refinement_iters: int | None = None
+    _use_gumbel_softmax: bool = False
+    _temperature_groups: int = 1
+    _temperature_smoothing_decay: float | None = None
+    # Local stats only, like ``nn.BatchNorm*``. Cross-rank sync stays opt-in via
+    # a future SyncBatchNorm-style API rather than a silent auto switch.
+    _sync_distributed_stats: bool = False
+
     _disabled: bool
     _stats_frozen: bool
     _expert_means: Tensor
@@ -164,25 +185,49 @@ class AdaptiveDirichletTempering(nn.Module):
     prior_var: Tensor
     prior_log: Tensor
 
-    def __init__(self, config: ADTConfig) -> None:
+    def __init__(
+        self,
+        num_experts: int,
+        *,
+        warmup_steps: int = 0,
+        min_temperature: float | None = None,
+        max_temperature: float | None = None,
+    ) -> None:
         super().__init__()
-        self.config = config
+        self.config = ADTConfig(
+            num_experts=num_experts,
+            dispersion_strategy=self._dispersion_strategy,
+            stat_ema_decays=self._stat_ema_decays,
+            prior_strength=self._prior_strength,
+            minka_refinement_iters=self._minka_refinement_iters,
+            use_gumbel_softmax=self._use_gumbel_softmax,
+            temperature_groups=self._temperature_groups,
+            warmup_steps=warmup_steps,
+            min_temperature=min_temperature,
+            max_temperature=max_temperature,
+            temperature_smoothing_decay=self._temperature_smoothing_decay,
+            sync_distributed_stats=self._sync_distributed_stats,
+        )
 
         register_buffer(self, "_expert_means", self._initial_expert_means())
         register_buffer(self, "_expert_means_square", self._initial_expert_means().pow(2))
-        register_buffer(self, "_expert_logs", torch.zeros(config.num_experts))
+        register_buffer(self, "_expert_logs", torch.zeros(self.config.num_experts))
 
         prior_mean, prior_var, prior_log = self._initial_priors()
         register_buffer(self, "prior_mean", prior_mean)
         register_buffer(self, "prior_var", prior_var)
         register_buffer(self, "prior_log", prior_log)
 
-        register_buffer(self, "_temperature_ema", torch.ones(config.num_experts))
+        register_buffer(self, "_temperature_ema", torch.ones(self.config.num_experts))
         register_buffer(self, "_num_updates", torch.zeros((), dtype=torch.long))
         self._num_updates_value = 0
 
         self._disabled = False
         self._stats_frozen = False
+
+    @property
+    def num_experts(self) -> int:
+        return self.config.num_experts
 
     def disable(self) -> AdaptiveDirichletTempering:
         self._disabled = True
@@ -274,6 +319,12 @@ class AdaptiveDirichletTempering(nn.Module):
             alpha=self.alpha,
             temperature=self.temperature,
         )
+
+    @property
+    def monitor(self) -> ADTStats:
+        """Read-only logging monitor snapshot for callback auto-discovery."""
+
+        return self.stats()
 
     def diagnostics(self) -> dict[str, Tensor]:
         return adt_stats_metrics(self.stats())
@@ -449,7 +500,7 @@ class AdaptiveDirichletTempering(nn.Module):
         return temperature
 
     def _in_warmup(self) -> bool:
-        return self._num_updates_value < self.config.temperature_warmup_steps
+        return self._num_updates_value < self.config.warmup_steps
 
     def _load_from_state_dict(self, *args, **kwargs) -> None:
         super()._load_from_state_dict(*args, **kwargs)
@@ -541,39 +592,6 @@ class AdaptiveDirichletTempering(nn.Module):
                 f"got {logits.size(-1)}, expected {self.config.num_experts}."
             )
 
-    @classmethod
-    def from_kwargs(
-        cls,
-        num_experts: int,
-        dispersion_strategy: DirichletStrategy = "std",
-        stat_ema_decays: tuple[float, float, float] = (0.9, 0.999, 0.9),
-        prior_strength: float | None = None,
-        minka_refinement_iters: int | None = None,
-        use_gumbel_softmax: bool = False,
-        temperature_groups: int = 1,
-        temperature_warmup_steps: int = 0,
-        min_temperature: float | None = None,
-        max_temperature: float | None = None,
-        temperature_smoothing_decay: float | None = None,
-        sync_distributed_stats: bool = False,
-    ) -> AdaptiveDirichletTempering:
-        config = ADTConfig(
-            num_experts=num_experts,
-            dispersion_strategy=dispersion_strategy,
-            stat_ema_decays=stat_ema_decays,
-            prior_strength=prior_strength,
-            minka_refinement_iters=minka_refinement_iters,
-            use_gumbel_softmax=use_gumbel_softmax,
-            temperature_groups=temperature_groups,
-            temperature_warmup_steps=temperature_warmup_steps,
-            min_temperature=min_temperature,
-            max_temperature=max_temperature,
-            temperature_smoothing_decay=temperature_smoothing_decay,
-            sync_distributed_stats=sync_distributed_stats,
-        )
-        return cls(config)
-
-
 ADT = AdaptiveDirichletTempering
 
 
@@ -637,7 +655,12 @@ def _adt_metric_groups(values: Iterable[str]) -> set[str]:
     return result
 
 
-def _per_expert_metrics(values: Tensor, name: str) -> dict[str, Tensor]:
+def _summary_metrics(values: Tensor, name: str) -> dict[str, Tensor]:
     if values.ndim != 1:
         raise ValueError(f"ADT stat {name} must be a 1D tensor, got shape {tuple(values.shape)}.")
-    return {f"expert_{expert_index}/{name}": value for expert_index, value in enumerate(values)}
+    return {
+        f"{name}_mean": values.mean(),
+        f"{name}_std": values.std(unbiased=False),
+        f"{name}_min": values.min(),
+        f"{name}_max": values.max(),
+    }

@@ -147,11 +147,17 @@ batch schema，也不自动改写 `state_dict` 里的原始训练权重。
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
 
-`ADTStatsLoggerCallback` 只消费下游显式返回的 `ADTStatsMonitor` mapping；monitor 绑定
-`AdaptiveDirichletTempering` 或快照 `ADTStats`，callback 不扫描 `pl_module`，不解释 batch，也不额外
-触发 router forward。它把 `adt_stats_metrics()` 生成的 scalar relative keys 加上 `tag/name`
-前缀后记录，例如 `adt/router/expert_0/usage` 和 `adt/router/effective_experts`。DDP 下 callback
-不做额外 collective；如果需要全局 router stats，应在 ADT 本身启用 `sync_distributed_stats=True`。
+`ADTStatsLoggerCallback` 默认从 `pl_module.named_modules()` 自动发现所有
+`AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper
+推断最短唯一日志名：单个 `encoder.router.gate` 记录为 `adt/gate/usage_mean`；如果同时存在
+`encoder.router.gate` 和 `decoder.router.gate`，则分别记录为
+`adt/encoder.router.gate/usage_mean` 和 `adt/decoder.router.gate/usage_mean`。显式 mapping key 或
+`ADTStatsMonitor(name=...)` 会覆盖自动推断；裸 `ADTStats` 无法反查来源时使用稳定 fallback
+如 `adt/monitor_0/...`。callback 不解释 batch，也不额外触发 router forward。它把
+`adt_stats_metrics()` 生成的稳定数量 scalar summary 加上 `tag/name` 前缀记录；完整 per-expert
+分布只在 `log_histograms=True` 时作为 histogram 写入。DDP 下 callback 不做额外 collective。
+ADT 默认像 BatchNorm 一样只用本地 stats；跨卡同步若以后需要，会以 SyncBatchNorm 风格的
+显式 API 提供，而不是构造参数自动推断。
 
 `QuantizationLoggerCallback` 只消费下游显式返回的 `QuantizationMonitor` mapping；monitor 绑定
 `QuantizeOutput` 和对应 quantizer 或 `codebook_size` / `num_codebooks`。callback 不扫描
@@ -161,13 +167,15 @@ batch schema，也不自动改写 `state_dict` 里的原始训练权重。
 开启后只由 global rank 0 写入本地观测到的 index 分布。
 
 `SparseMoELoggerCallback` 只消费下游显式返回的 `SparseMoEMonitor` mapping；monitor 绑定
-`MoEOutput` 或 `SparseExpertRouting`，可选携带 `SparseMoELossOutput`。callback 不扫描
-`pl_module`，不解释 batch，也不为了日志额外 forward router 或 expert。它把
-`sparse_moe_routing_metrics()` 和 `sparse_moe_loss_metrics()` 生成的 scalar relative keys 加上
-`tag/name` 前缀后记录，例如 `moe/router/effective_experts`、`moe/router/expert_0/usage`、
-`moe/router/dropped/ratio` 和 `moe/router/loss/total`。loss logs 只在 monitor 显式提供
-`SparseMoELossOutput` 时记录。DDP 下 callback 不做额外 collective；需要全局 sparse MoE 统计时，
-下游应先在任务层聚合 routing outputs 或 metrics。
+`MoEOutput` 或 `ExpertRouting`（兼容别名 `SparseExpertRouting`），可选携带
+`MoELossOutput`。当前 metrics 主要面向已 materialize 的 top-k 字段；dense-only
+routing 的日志口径随统一 MoE 迁移补齐。callback 不扫描 `pl_module`，不解释 batch，也不为了
+日志额外 forward router 或 expert。它把 `sparse_moe_routing_metrics()` 生成的 routing scalar
+和 `moe_loss()` 返回值里的 loss scalars 加上 `tag/name` 前缀后记录，例如
+`moe/router/effective_experts`、`moe/router/expert_0/usage`、`moe/router/dropped/ratio` 和
+`moe/router/loss/total`。loss logs 只在 monitor 显式提供 `MoELossOutput` 时记录。DDP
+下 callback 不做额外 collective；需要全局 sparse MoE 统计时，下游应先在任务层聚合 routing
+outputs 或 metrics。
 
 `LossSummaryCallback` 在 batch hook 中仅保存 detached device scalar。每个指标的状态固定为前后各
 `window_capacity` 个值和完整 observation count；默认 capacity 为 20，不随训练长度增长。训练结束时
