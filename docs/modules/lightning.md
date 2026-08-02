@@ -55,8 +55,12 @@ src/anytrain/lightning/
 - `PerformanceCallback`
 - `ADTStatsLoggerCallback`
 - `ADTStatsMonitor`
+- `CodebookUsageLoggerCallback`
+- `CodebookUsageMonitor`
+- `CodebookUsageMonitorsFn`
 - `QuantizationLoggerCallback`
 - `QuantizationMonitor`
+- `QuantizationMonitorsFn`
 - `MoELoggerCallback`
 - `MoEMonitor`
 - `RankLogMode`
@@ -183,12 +187,17 @@ DDP 下 callback 不做额外 collective。
 ADT 默认像 BatchNorm 一样只用本地 stats；跨卡同步若以后需要，会以 SyncBatchNorm 风格的
 显式 API 提供，而不是构造参数自动推断。
 
+`CodebookUsageLoggerCallback` 只消费下游显式返回的 `CodebookUsageMonitor` mapping；
+monitor 绑定任意离散 `indices`、对应 `codebook_sizes` 和可选
+`active_codebook_mask`。它不扫描 `pl_module`，不解释 batch，也不为了日志额外 forward
+模型。单进程直接用当前 batch 的 indices 统计 usage；DDP 下先对每个 codebook 的 counts、
+active count 和 denominator 做 sum 归约，再计算 perplexity、dead code ratio 和 active ratio，
+避免平均各 rank 比例。histogram 默认关闭，开启后只由 global rank 0 写入本地观测到的 index 分布。
+
 `QuantizationLoggerCallback` 只消费下游显式返回的 `QuantizationMonitor` mapping；monitor 绑定
-`QuantizeOutput` 和对应 quantizer 或显式 `codebook_sizes`。callback 不扫描
-`pl_module`，不解释 batch，也不为了日志额外 forward quantizer。单进程直接用当前 batch 的
-`indices` 统计 usage；DDP 下先对每个 codebook 的 counts、active count 和 denominator 做 sum
-归约，再计算 perplexity、dead code ratio 和 active ratio，避免平均各 rank 比例。histogram 默认关闭，
-开启后只由 global rank 0 写入本地观测到的 index 分布。
+`QuantizeOutput` 和对应 quantizer 或显式 `codebook_sizes`。callback 记录 quantization loss，
+并把 `QuantizeOutput.indices` / `active_codebook_mask` 转交给同一套 codebook usage 统计；
+它同样不扫描 `pl_module`，不解释 batch，也不为了日志额外 forward quantizer。
 
 `MoELoggerCallback` 默认从 `training_step` outputs mapping 中自动发现 `MoEOutput` /
 `ExpertRouting` / `MoEMonitor` values；例如返回 `{"router": moe_output}` 时会记录到

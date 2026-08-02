@@ -36,6 +36,9 @@ from .parameter_policy import (
 )
 from .performance import FlopsProvider, PerformanceCallback
 from .quantization import (
+    CodebookUsageLoggerCallback,
+    CodebookUsageMonitor,
+    CodebookUsageMonitorsFn,
     QuantizationLoggerCallback,
     QuantizationMonitor,
     QuantizationMonitorsFn,
@@ -45,6 +48,9 @@ __all__ = [
     "ADTStatsLoggerCallback",
     "ADTStatsMonitor",
     "ADTStatsMonitorsFn",
+    "CodebookUsageLoggerCallback",
+    "CodebookUsageMonitor",
+    "CodebookUsageMonitorsFn",
     "DebugCallback",
     "EMACallback",
     "FlopsProvider",

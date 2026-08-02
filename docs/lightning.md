@@ -14,7 +14,8 @@
 - 训练 outputs 里的 total loss 和命名 loss item 窗口汇总 callback。
 - 训练 outputs 里的命名 loss item 按下游 label 分组记录 callback。
 - 基于命名 `LossItem` 的梯度关系、全局梯度范数和 time-bucket loss 观测 callback。
-- 训练 outputs 中显式声明的 `QuantizeOutput` usage、perplexity、dead code 和 active codebook 观测 callback。
+- 任意离散 codebook indices 的 usage、perplexity、dead code 和 active codebook 观测 callback。
+- 训练 outputs 中显式声明的 `QuantizeOutput` loss 和 codebook usage 观测 callback。
 - non-finite loss 检查等训练调试 callback。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
 - 训练效率观测 callback，记录参数量、step time、硬件峰值算力和 MFU。

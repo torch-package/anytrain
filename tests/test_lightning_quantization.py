@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 import torch
 
-from anytrain.lightning import QuantizationLoggerCallback, QuantizationMonitor
+from anytrain.lightning import (
+    CodebookUsageLoggerCallback,
+    CodebookUsageMonitor,
+    QuantizationLoggerCallback,
+    QuantizationMonitor,
+)
 from anytrain.module.quantization import QuantizationLoss, QuantizeOutput
 
 
@@ -24,6 +29,59 @@ class _Writer:
 
 
 class QuantizationLoggerCallbackTest(unittest.TestCase):
+    def test_codebook_usage_callback_logs_raw_index_distribution(self):
+        module = _LogModule()
+        callback = CodebookUsageLoggerCallback(
+            lambda outputs, batch, pl_module: {
+                "target": CodebookUsageMonitor(
+                    indices=torch.tensor([[0, 1], [1, -1]]),
+                    codebook_sizes=(3, 3),
+                    active_codebook_mask=torch.tensor([[True, True], [True, False]]),
+                )
+            },
+            every_n_steps=1,
+        )
+
+        callback.on_train_batch_end(
+            SimpleNamespace(global_step=0, world_size=1),
+            module,
+            None,
+            None,
+            0,
+        )
+
+        self.assertEqual(len(module.log_dict_calls), 1)
+        values, kwargs = module.log_dict_calls[0]
+        self.assertEqual(kwargs["on_step"], True)
+        self.assertEqual(kwargs["on_epoch"], False)
+        self.assertEqual(kwargs["logger"], True)
+        self.assertEqual(kwargs["sync_dist"], False)
+        self.assertEqual(values["codebook/target/book_0/usage/observations"].item(), 2.0)
+        self.assertEqual(values["codebook/target/book_1/usage/observations"].item(), 1.0)
+        self.assertEqual(values["codebook/target/book_1/active/ratio"].item(), 0.5)
+
+    def test_codebook_usage_callback_rejects_quantization_only_metrics(self):
+        with self.assertRaisesRegex(ValueError, "unknown codebook usage metrics"):
+            CodebookUsageLoggerCallback(
+                lambda outputs, batch, pl_module: {},
+                metrics=("loss",),
+            )
+
+    def test_codebook_usage_callback_requires_usage_monitors(self):
+        callback = CodebookUsageLoggerCallback(
+            lambda outputs, batch, pl_module: {"target": object()},
+            every_n_steps=1,
+        )
+
+        with self.assertRaisesRegex(TypeError, "CodebookUsageMonitor"):
+            callback.on_train_batch_end(
+                SimpleNamespace(global_step=0, world_size=1),
+                _LogModule(),
+                None,
+                None,
+                0,
+            )
+
     def test_logs_loss_usage_and_active_metrics_from_explicit_monitors(self):
         output = QuantizeOutput(
             quantized_latents=torch.empty(2, 3),
@@ -215,9 +273,16 @@ class QuantizationLoggerCallbackTest(unittest.TestCase):
 
     def test_callback_exports_from_lightning_root(self):
         from anytrain import lightning
+        from anytrain.lightning import callback
 
+        self.assertIs(lightning.CodebookUsageLoggerCallback, CodebookUsageLoggerCallback)
+        self.assertIs(lightning.CodebookUsageMonitor, CodebookUsageMonitor)
         self.assertIs(lightning.QuantizationLoggerCallback, QuantizationLoggerCallback)
         self.assertIs(lightning.QuantizationMonitor, QuantizationMonitor)
+        self.assertIs(callback.CodebookUsageLoggerCallback, CodebookUsageLoggerCallback)
+        self.assertIs(callback.CodebookUsageMonitor, CodebookUsageMonitor)
+        self.assertIs(callback.QuantizationLoggerCallback, QuantizationLoggerCallback)
+        self.assertIs(callback.QuantizationMonitor, QuantizationMonitor)
 
 
 if __name__ == "__main__":
