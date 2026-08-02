@@ -3,8 +3,9 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-import torch
 from torch import Tensor
+
+from anytrain._audio import channel_time_waveform
 
 from .resources import color_your_night_path, vctk_path
 
@@ -153,10 +154,8 @@ def _stop_seconds(
 
 
 def _normalize_waveform(waveform: Tensor) -> Tensor:
-    if waveform.ndim == 1:
-        waveform = waveform.unsqueeze(0)
-    if waveform.ndim != 2:
-        raise ValueError("example audio waveform must have shape (channels, time).")
-    if not waveform.is_floating_point():
-        waveform = waveform.to(torch.float32)
-    return waveform.detach().cpu().to(torch.float32).contiguous()
+    return channel_time_waveform(
+        waveform,
+        shape_error="example audio waveform must have shape (channels, time).",
+        cpu=True,
+    )

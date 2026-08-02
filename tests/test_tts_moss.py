@@ -54,7 +54,7 @@ class MossTTSImportTest(unittest.TestCase):
     def test_from_pretrained_requires_optional_dependency_when_missing(self):
         with (
             patch(
-                "anytrain.tts.moss.tts.load_transformers_auto_model_class",
+                "anytrain.tts.moss._loading.load_transformers_auto_model_class",
                 side_effect=ImportError("transformers missing"),
             ),
             self.assertRaisesRegex(
@@ -82,15 +82,15 @@ class MossTTSAdapterTest(unittest.TestCase):
 
         with (
             patch(
-                "anytrain.tts.moss.tts.load_transformers_auto_model_class",
+                "anytrain.tts.moss._loading.load_transformers_auto_model_class",
                 return_value=FakeAutoModel,
             ),
             patch(
-                "anytrain.tts.moss.tts.load_transformers_auto_processor_class",
+                "anytrain.tts.moss._loading.load_transformers_auto_processor_class",
                 return_value=FakeAutoProcessor,
             ),
             patch(
-                "anytrain.tts.moss.tts._pretrained_source",
+                "anytrain.tts.moss._loading.pretrained_source",
                 side_effect=lambda source, **kwargs: str(source),
             ),
         ):
