@@ -192,7 +192,7 @@ class FlowMatchingComponentTest(unittest.TestCase):
             condition=torch.zeros(4, 1),
         )
         self.assertEqual(output.final.shape, x_1.shape)
-        self.assertIsNotNone(output.states)
+        self.assertIsNone(output.states)
         self.assertIsNotNone(output.time_grid)
 
     def test_continuous_loss_accepts_custom_masked_loss(self):
@@ -290,7 +290,7 @@ class FlowMatchingComponentTest(unittest.TestCase):
             return model(x_t, t)
 
         model = RecordingModel()
-        sampler = ODESampler(solver_factory=FakeSolver, return_intermediates=False)
+        sampler = ODESampler(solver_factory=FakeSolver)
         runtime = ContinuousFlowRuntime(sampler=sampler, call_model=call_model)
         output = runtime.sample(model, torch.zeros(4, 3), condition=torch.ones(4, 1))
 
@@ -331,7 +331,7 @@ class FlowMatchingComponentTest(unittest.TestCase):
 
         output = runtime.sample(model, torch.randint(0, vocab_size, (4, 5)))
         self.assertEqual(output.final.shape, x_1.shape)
-        self.assertIsNotNone(output.states)
+        self.assertIsNone(output.states)
         self.assertIsNotNone(output.time_grid)
 
     def test_discrete_inputs_must_be_long(self):

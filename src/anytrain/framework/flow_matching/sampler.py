@@ -64,7 +64,7 @@ class ODESampler:
         method: str = "midpoint",
         nfe: int = 20,
         num_steps: int = 10,
-        return_intermediates: bool = True,
+        return_intermediates: bool = False,
     ):
         if nfe <= 0:
             raise ValueError(f"nfe must be positive, got {nfe}.")
@@ -117,7 +117,7 @@ class DiscreteEulerSampler:
         nfe: int = 64,
         num_steps: int = 10,
         eps: float = DEFAULT_TIME_EPS,
-        return_intermediates: bool = True,
+        return_intermediates: bool = False,
         verbose: bool = False,
     ):
         if nfe <= 0:

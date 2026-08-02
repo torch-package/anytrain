@@ -192,7 +192,7 @@ class FlowSampleOutput:
 - `method="midpoint"`
 - `nfe=20`
 - `num_steps=10`
-- `return_intermediates=True`
+- `return_intermediates=False`
 
 离散 sampler 默认封装 `MixtureDiscreteEulerSolver`，内部把 logits 转成概率：
 
@@ -208,7 +208,7 @@ continuous 和 discrete 使用同一套调用方式：
 
 ```python
 continuous = ContinuousFlowRuntime(
-    sampler=ODESampler(return_intermediates=False),
+    sampler=ODESampler(),
 )
 continuous_objective = ContinuousVelocityObjective(continuous)
 
