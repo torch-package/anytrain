@@ -95,15 +95,12 @@ class ParameterPolicyCallback(pl.Callback):
         self.summary: ParameterTrainabilitySummary | None = None
         self.applied = False
 
-    def setup(
+    def on_fit_start(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        stage: str | None,
     ) -> None:
         del trainer
-        if stage != "fit":
-            return
         if self.applied:
             return
         module = self.module(pl_module) if self.module is not None else pl_module

@@ -8,8 +8,8 @@ import torch
 from anytrain.lightning import ParameterPolicyCallback, apply_parameter_trainability
 from anytrain.lightning import __all__ as lightning_exports
 from anytrain.lightning.callback import ParameterPolicyCallback as CallbackExport
-from anytrain.lightning.callback import apply_parameter_trainability as apply_export
 from anytrain.lightning.callback import __all__ as callback_exports
+from anytrain.lightning.callback import apply_parameter_trainability as apply_export
 
 
 class ParameterPolicyTest(unittest.TestCase):
@@ -38,7 +38,7 @@ class ParameterPolicyTest(unittest.TestCase):
                 lambda _module, _name, _parameter: 1,
             )
 
-    def test_parameter_policy_callback_applies_once_for_fit(self):
+    def test_parameter_policy_callback_applies_once_on_fit_start(self):
         module = torch.nn.Sequential(torch.nn.Linear(1, 1))
         calls = []
 
@@ -47,11 +47,8 @@ class ParameterPolicyTest(unittest.TestCase):
             return False
 
         callback = ParameterPolicyCallback(trainable)
-        callback.setup(SimpleNamespace(), module, "validate")
-        self.assertFalse(callback.applied)
-
-        callback.setup(SimpleNamespace(), module, "fit")
-        callback.setup(SimpleNamespace(), module, "fit")
+        callback.on_fit_start(SimpleNamespace(), module)
+        callback.on_fit_start(SimpleNamespace(), module)
 
         self.assertTrue(callback.applied)
         self.assertEqual(calls, ["0.weight", "0.bias"])
