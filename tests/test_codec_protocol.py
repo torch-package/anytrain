@@ -123,7 +123,10 @@ def test_semantic_acoustic_loader_uses_lazy_bicodec_loader() -> None:
         loaded = load_semantic_acoustic("bicodec", device="cpu")
 
     assert loaded is backend
-    load.assert_called_once_with(device="cpu")
+    load.assert_called_once_with(
+        device="cpu",
+        revision="642071559bfc6346c2359d19dcb6be3f9dd8a05d",
+    )
 
 
 def test_frame_loader_rejects_structured_only_codec_before_loading() -> None:
