@@ -315,10 +315,10 @@ class DiTBlock(nn.Module):
 
 
 class DiT(nn.Module):
+    """Sequence DiT with one explicit condition mode and reusable condition state."""
+
     position_embedding: Tensor
     position_frequency: Tensor
-
-    """Sequence DiT with one explicit condition mode and reusable condition state."""
 
     def __init__(
         self,

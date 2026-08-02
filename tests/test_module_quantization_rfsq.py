@@ -1,5 +1,5 @@
 import unittest
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import fields
 
 import torch
 
@@ -12,15 +12,19 @@ from anytrain.module.quantization import (
 
 class ResidualFiniteScalarQuantizerTest(unittest.TestCase):
     def test_config_is_plain_data(self):
-        config = RFSQConfig(input_dim=6, levels=(5, 5), scales=(1.0, 0.25))
+        config = RFSQConfig(
+            input_dim=6,
+            levels=[5, 5],  # type: ignore[arg-type]
+            scales=[1, 0.25],  # type: ignore[arg-type]
+        )
 
         field_names = {field.name for field in fields(config)}
 
         self.assertEqual(field_names, {"input_dim", "levels", "scales", "projection_bias"})
         self.assertEqual(config.levels, (5, 5))
         self.assertEqual(config.scales, (1.0, 0.25))
-        with self.assertRaises(FrozenInstanceError):
-            config.input_dim = 8  # type: ignore[misc]
+        config.input_dim = 8
+        self.assertEqual(config.input_dim, 8)
 
     def test_forward_shapes_and_residual_indices(self):
         quantizer = ResidualFiniteScalarQuantizer(

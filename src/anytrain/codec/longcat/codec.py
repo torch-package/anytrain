@@ -272,7 +272,7 @@ class LongCat(DeviceModule):
             raise ValueError("semantic codes must have shape [batch, time, codebook].")
         if semantic.shape[-1] != len(self.semantic_codebook_sizes):
             raise ValueError(
-                f"semantic codes must contain {len(self.semantic_codebook_sizes)} codebook."
+                f"semantic codes must contain {len(self.semantic_codebook_sizes)} codebooks."
             )
         if acoustic.dim() != 3:
             raise ValueError("acoustic codes must have shape [batch, time, codebook].")

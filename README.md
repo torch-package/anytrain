@@ -118,7 +118,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.optim` | AdamW/Muon/LoRA-Muon 参数分组、scheduler helper 和 LLM optimizer helper。 |
 | `anytrain.optim.peft` | 依赖 `peft` extra，从 Hugging Face PEFT Linear adapter 构造 LoRA-Muon。 |
 | `anytrain.module` | 少量稳定的 task-agnostic `torch.nn.Module` 积木，例如 ADT 和 DiT。 |
-| `anytrain.module.dynamic_conv` | 动态卷积和 router 组件。 |
+| `anytrain.module.moe.conv` | 动态卷积和 router 组件。 |
 | `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
 | `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
@@ -147,13 +147,22 @@ PYTHONPATH=src python examples/tiny_regression.py
 
 ## 开发
 
-常用检查：
+常用检查使用顶层 dev-env 约定的 `py312`：
 
 ```bash
 PY312=/Users/zhuyin/miniconda3/envs/py312/bin/python
 "$PY312" -m pytest
 "$PY312" -m ruff check .
 "$PY312" -m basedpyright --pythonpath "$PY312"
+```
+
+包的兼容下限仍是 Python 3.9；涉及公开 API、语法、类型或依赖下限的改动时，补跑：
+
+```bash
+PY39=/Users/zhuyin/miniconda3/envs/py39/bin/python
+"$PY39" -m pytest
+"$PY39" -m ruff check .
+"$PY39" -m basedpyright --pythonpath "$PY39"
 ```
 
 basedpyright 使用仓库 baseline 记录迁入组件已有的类型债务；新增诊断仍会让检查失败。修复已有

@@ -22,7 +22,7 @@ class GradientLossGroupProvider(Protocol):
     def current_gradient_loss_groups(self) -> Mapping[str, Mapping[str, Any]]: ...
 
 
-@dataclass(frozen=True)
+@dataclass
 class GradientProbe:
     name: str
     parameters: tuple[str, ...]
@@ -40,7 +40,7 @@ class GradientProbe:
             raise ValueError("gradient probe match must be 'exact' or 'regex'.")
         if not isinstance(self.trainable_only, bool):
             raise TypeError("gradient probe trainable_only must be a boolean.")
-        object.__setattr__(self, "parameters", parameters)
+        self.parameters = parameters
 
 
 @dataclass(frozen=True)

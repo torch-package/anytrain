@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import FrozenInstanceError
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -261,17 +260,26 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((active_counts <= 4).all())
         self.assertTrue((active_counts < 4).any())
 
-    def test_config_is_frozen_and_dropout_has_explicit_setter(self):
-        config = _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
+    def test_config_is_plain_data_and_dropout_has_explicit_setter(self):
+        config = RVQConfig(
+            vq_configs=[
+                VQConfig(input_dim=4, codebook_size=8),
+                VQConfig(input_dim=4, codebook_size=8),
+            ],
+        )
         quantizer = ResidualVectorQuantizer(config)
 
-        with self.assertRaises(FrozenInstanceError):
-            config.dropout = 1.0
+        self.assertIsInstance(config.vq_configs, tuple)
+        config.dropout = 1.0
+        self.assertEqual(config.dropout, 1.0)
         returned = quantizer.set_dropout(0.5)
 
         self.assertIs(returned, quantizer)
         self.assertEqual(quantizer.dropout, 0.5)
-        self.assertIsNone(quantizer.config.dropout)
+        self.assertEqual(quantizer.config.dropout, 1.0)
+
+        with self.assertRaisesRegex(ValueError, "dropout"):
+            RVQConfig(vq_configs=list(config.vq_configs), dropout=1.1)
 
     def test_dropout_has_no_effect_with_one_active_codebook(self):
         quantizer = ResidualVectorQuantizer(

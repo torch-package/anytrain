@@ -178,8 +178,53 @@ class PerformanceCallback(pl.Callback):
         if self._step_started_at is None:
             return
 
+        self._record_batch(
+            trainer=trainer,
+            pl_module=pl_module,
+            outputs=outputs,
+            batch=batch,
+            batch_idx=batch_idx,
+        )
+        step = self._close_optimizer_step(trainer)
+        if step is None:
+            return
+        global_step, measurement = step
+        if not self._should_log(global_step):
+            return
+
+        metrics = self._metrics(trainer, pl_module, measurement)
+        pl_module.log_dict(metrics, on_step=True, on_epoch=False, logger=True, sync_dist=False)
+
+    def on_train_epoch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        del pl_module
+        self._discard_pending(global_step=_capability.global_step(trainer))
+
+    def on_exception(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        exception: BaseException,
+    ) -> None:
+        del pl_module, exception
+        self._discard_pending(global_step=_capability.global_step(trainer))
+
+    def _record_batch(
+        self,
+        *,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
         profiled_flops = self._stop_flop_counter()
         _sync_cuda(self.sync_cuda)
+        if self._step_started_at is None:
+            raise RuntimeError("Cannot record a performance batch before it starts.")
         batch_time = time.perf_counter() - self._step_started_at
         self._step_started_at = None
         _require_positive(batch_time, "measured batch time")
@@ -198,15 +243,19 @@ class PerformanceCallback(pl.Callback):
                 "model_flops_per_batch result",
             )
 
+    def _close_optimizer_step(
+        self,
+        trainer: pl.Trainer,
+    ) -> tuple[int, _Measurement] | None:
         global_step = _capability.global_step(trainer)
         if self._last_global_step is None:
             self._last_global_step = global_step
-            return
+            return None
         optimizer_steps = global_step - self._last_global_step
         if optimizer_steps < 0:
             raise RuntimeError("trainer.global_step moved backwards during training.")
         if optimizer_steps == 0:
-            return
+            return None
 
         flops: float | None = None
         if self.profile_flops or self.model_flops_per_batch is not None:
@@ -223,12 +272,20 @@ class PerformanceCallback(pl.Callback):
         self._pending_time = 0.0
         self._pending_flops = 0.0
         self._last_global_step = global_step
+        return global_step, measurement
 
+    def _should_log(self, global_step: int) -> bool:
         if global_step < self.warmup_steps:
-            return
-        if global_step % self.log_every_n_steps != 0:
-            return
+            return False
+        return global_step % self.log_every_n_steps == 0
 
+    def _metrics(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        measurement: _Measurement,
+    ) -> dict[str, float]:
+        optimizer_steps = measurement.optimizer_steps
         window_steps = sum(item.optimizer_steps for item in self._measurements)
         totals = _totals(
             trainer=trainer,
@@ -255,25 +312,7 @@ class PerformanceCallback(pl.Callback):
                 hardware_peak_flops=totals.hardware_peak_flops,
             )
         metrics.update(_memory_metrics(trainer, pl_module))
-
-        pl_module.log_dict(metrics, on_step=True, on_epoch=False, logger=True, sync_dist=False)
-
-    def on_train_epoch_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-    ) -> None:
-        del pl_module
-        self._discard_pending(global_step=_capability.global_step(trainer))
-
-    def on_exception(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        exception: BaseException,
-    ) -> None:
-        del pl_module, exception
-        self._discard_pending(global_step=_capability.global_step(trainer))
+        return metrics
 
     def _reset(self, *, global_step: int) -> None:
         self._discard_pending(global_step=global_step)

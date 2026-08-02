@@ -19,7 +19,7 @@ from .projection import make_projection
 DEFAULT_FSQ_LEVELS: tuple[int, ...] = (9, 7, 7, 7, 7, 3)
 
 
-@dataclass(frozen=True)
+@dataclass
 class FSQConfig:
     input_dim: int
     levels: tuple[int, ...] = DEFAULT_FSQ_LEVELS
@@ -48,7 +48,7 @@ class FSQConfig:
         codebook_size = reduce(mul, levels, 1)
         if codebook_size > torch.iinfo(torch.long).max:
             raise ValueError("FSQ codebook_size must fit in torch.long.")
-        object.__setattr__(self, "levels", tuple(levels))
+        self.levels = tuple(levels)
         even_levels = tuple(level for level in self.levels if level % 2 == 0)
         if even_levels:
             warnings.warn(

@@ -17,7 +17,7 @@ from .output import QuantizeOutput
 from .projection import make_projection
 
 
-@dataclass(frozen=True)
+@dataclass
 class RFSQConfig:
     input_dim: int
     levels: tuple[int, ...] = DEFAULT_FSQ_LEVELS
@@ -33,7 +33,7 @@ class RFSQConfig:
             levels=tuple(self.levels),
             projection_bias=self.projection_bias,
         )
-        object.__setattr__(self, "levels", fsq.levels)
+        self.levels = fsq.levels
 
         raw_scales = tuple(self.scales)
         if not raw_scales:
@@ -46,7 +46,7 @@ class RFSQConfig:
             if not isfinite(value) or value <= 0:
                 raise ValueError(f"each residual FSQ scale must be positive, got {scale!r}.")
             scales.append(value)
-        object.__setattr__(self, "scales", tuple(scales))
+        self.scales = tuple(scales)
 
 
 class ResidualFiniteScalarQuantizer(nn.Module):

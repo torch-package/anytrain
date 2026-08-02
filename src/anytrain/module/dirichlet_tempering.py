@@ -12,7 +12,7 @@ from anytrain._buffer import register_buffer
 DirichletStrategy = Literal["std", "var", "range"]
 
 
-@dataclass(frozen=True)
+@dataclass
 class ADTConfig:
     num_experts: int
     dispersion_strategy: DirichletStrategy = "std"
@@ -28,7 +28,7 @@ class ADTConfig:
     sync_distributed_stats: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "stat_ema_decays", tuple(self.stat_ema_decays))
+        raw_decays = tuple(self.stat_ema_decays)
         if self.num_experts <= 0:
             raise ValueError(f"num_experts must be positive, got {self.num_experts}.")
         if self.temperature_groups <= 0:
@@ -41,14 +41,15 @@ class ADTConfig:
                 f"got num_experts={self.num_experts}, "
                 f"temperature_groups={self.temperature_groups}."
             )
-        if len(self.stat_ema_decays) != 3:
+        if len(raw_decays) != 3:
             raise ValueError(
                 "stat_ema_decays must contain exactly 3 values, "
-                f"got {len(self.stat_ema_decays)}."
+                f"got {len(raw_decays)}."
             )
-        for decay in self.stat_ema_decays:
+        for decay in raw_decays:
             if not 0 <= decay < 1:
                 raise ValueError(f"each stat EMA decay must be in [0, 1), got {decay}.")
+        self.stat_ema_decays = (raw_decays[0], raw_decays[1], raw_decays[2])
         if self.prior_strength is not None and self.prior_strength < 0:
             raise ValueError(f"prior_strength must be non-negative, got {self.prior_strength}.")
         if self.minka_refinement_iters is not None and self.minka_refinement_iters <= 0:

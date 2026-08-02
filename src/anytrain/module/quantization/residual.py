@@ -11,13 +11,13 @@ from .embedding import EmbeddingVectorQuantizer, VQConfig
 from .output import QuantizeOutput
 
 
-@dataclass(frozen=True)
+@dataclass
 class RVQConfig:
     vq_configs: list[VQConfig] | tuple[VQConfig, ...]
     dropout: float | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "vq_configs", tuple(self.vq_configs))
+        self.vq_configs = tuple(self.vq_configs)
         if not self.vq_configs:
             raise ValueError("vq_configs must contain at least one VQConfig.")
         _checks.dropout(self.dropout)

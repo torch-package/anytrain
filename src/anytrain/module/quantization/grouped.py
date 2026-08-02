@@ -25,7 +25,7 @@ from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
 
 
-@dataclass(frozen=True)
+@dataclass
 class GVQConfig:
     input_dim: int
     group_sizes: tuple[int, ...]
@@ -47,13 +47,13 @@ class GVQConfig:
         codebook_dim = self.input_dim if self.codebook_dim is None else self.codebook_dim
         if codebook_dim <= 0:
             raise ValueError(f"codebook_dim must be positive, got {codebook_dim}.")
-        object.__setattr__(self, "codebook_dim", codebook_dim)
+        self.codebook_dim = codebook_dim
 
         if self.group_dims is None:
             group_dims = _balanced_group_dims(codebook_dim, len(self.group_sizes))
         else:
             group_dims = tuple(self.group_dims)
-        object.__setattr__(self, "group_dims", group_dims)
+        self.group_dims = group_dims
 
         if len(group_dims) != len(self.group_sizes):
             raise ValueError(
@@ -69,8 +69,8 @@ class GVQConfig:
             if group_dim <= 0:
                 raise ValueError(f"each group dim must be positive, got {group_dim}.")
 
-        object.__setattr__(self, "group_sizes", tuple(int(size) for size in self.group_sizes))
-        object.__setattr__(self, "group_dims", tuple(int(dim) for dim in group_dims))
+        self.group_sizes = tuple(int(size) for size in self.group_sizes)
+        self.group_dims = tuple(int(dim) for dim in group_dims)
 
 
 class GroupedVectorQuantizer(nn.Module):
