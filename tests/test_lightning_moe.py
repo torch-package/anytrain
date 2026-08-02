@@ -18,8 +18,9 @@ from anytrain.module.moe import (
 )
 
 
-class _LogModule:
+class _LogModule(nn.Module):
     def __init__(self):
+        super().__init__()
         self.log_dict_calls = []
 
     def log_dict(self, values, **kwargs):

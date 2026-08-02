@@ -2,13 +2,15 @@ import unittest
 from types import SimpleNamespace
 
 import torch
+from torch import nn
 
 from anytrain.lightning import ADTStatsLoggerCallback, ADTStatsMonitor
 from anytrain.module.dirichlet_tempering import ADT, ADTStats
 
 
-class _LogModule:
+class _LogModule(nn.Module):
     def __init__(self):
+        super().__init__()
         self.log_dict_calls = []
 
     def log_dict(self, values, **kwargs):
@@ -18,10 +20,10 @@ class _LogModule:
 class _NamedLogModule(_LogModule):
     def __init__(self, modules):
         super().__init__()
-        self._modules = modules
+        self._named_modules = modules
 
     def named_modules(self):
-        return iter(self._modules)
+        return iter(self._named_modules)
 
 
 class _Writer:

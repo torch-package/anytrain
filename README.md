@@ -110,6 +110,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | 模块 | 作用 |
 | --- | --- |
 | `anytrain.lightning` | Lightning logging mixin、loss summary / loss item / gradient / time-bucket logging、task-agnostic debug callback 和性能观测 callback。 |
+| `anytrain.lightning.schedule` | 统一 step/unit LR schedule spec、unit progress、unit LR runtime 和按 unit 停止训练。 |
 | `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
 | `anytrain.stats` | 纯 tensor 统计 helper，例如按 time bucket 聚合 loss。 |
 | `anytrain.loss` | 通用 loss 接口、loss 组合器和 loss balancer。 |
@@ -135,7 +136,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 - 下游项目负责具体任务语义、`training_step`、batch 解释和模型组合。
 - 配置组合和对象实例化由下游选择，可以用普通 Python、Hydra、argparse、pydantic 或其它项目内约定。
 - `anytrain.lightning` 是核心依赖层；Lightning 不是 optional integration。
-- `lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
+- `lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
 
 明确不做：
 
@@ -149,9 +150,10 @@ PYTHONPATH=src python examples/tiny_regression.py
 常用检查：
 
 ```bash
-python -m pytest
-python -m ruff check .
-python -m basedpyright --pythonpath "$(command -v python)"
+PY312=/Users/zhuyin/miniconda3/envs/py312/bin/python
+"$PY312" -m pytest
+"$PY312" -m ruff check .
+"$PY312" -m basedpyright --pythonpath "$PY312"
 ```
 
 basedpyright 使用仓库 baseline 记录迁入组件已有的类型债务；新增诊断仍会让检查失败。修复已有

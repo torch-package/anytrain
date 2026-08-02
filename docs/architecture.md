@@ -32,7 +32,8 @@
 
 默认安装必须可用：
 
-- `anytrain.lightning`：LightningModule logging mixin、debug callback 和性能观测 callback。
+- `anytrain.lightning`：LightningModule logging mixin、debug callback、schedule runtime 和性能观测 callback。
+- `anytrain.lightning.schedule`：step/unit LR schedule spec、unit progress、unit LR runtime 和 unit stop。
 - `anytrain.lightning.perf`：训练效率观测 helper，包括参数量、FLOPs、硬件峰值算力和 MFU。
 - `anytrain.loss`：通用 loss 接口和组合器。
 - `anytrain.evaluator`：通用 evaluator 接口和组合器。
@@ -124,7 +125,11 @@ class MyPLModule(pl.LightningModule):
 
 ### `lightning.perf`
 
-提供 task-agnostic 的训练效率观测能力。`anytrain.lightning.perf` 可以统计参数量、估算代表性 forward FLOPs、查表推断硬件峰值算力，并通过 Lightning callback 记录 step time 和 MFU。下游项目仍负责提供代表性输入、训练 step FLOPs 估计口径，以及 tokens/frames 等任务数据量日志。
+提供 task-agnostic 的训练效率观测能力。`anytrain.lightning.perf` 可以统计参数量、估算代表性 forward FLOPs、查表推断硬件峰值算力，并通过 Lightning callback 记录 step time 和 MFU。下游项目仍负责提供代表性输入和训练 step FLOPs 估计口径。tokens/frames/audio seconds 等有效数据量作为训练时钟时归入 `anytrain.lightning.schedule`。
+
+### `lightning.schedule`
+
+提供统一的 step/unit LR schedule spec 和 Lightning runtime 装配。step clock 编译成 Lightning 原生 step scheduler；unit clock 由 schedule runtime callback 读取下游显式 `UnitProvider`、聚合 global units、更新 optimizer LR、记录 progress/padding/throughput，并可按 units 停止训练。它不创建 optimizer、不解释 batch schema、不重建 optimizer，也不接管完整训练入口。
 
 ### `loss`
 
@@ -185,7 +190,7 @@ src/anytrain/
   example/
 ```
 
-`lightning`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`chat`、
+`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`chat`、
 `framework` 和领域组件按依赖拆分为 optional 子模块。
 
 ## 边界

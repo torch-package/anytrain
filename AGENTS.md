@@ -4,6 +4,9 @@
 
 - 本仓库同时受 `../../AGENTS.md` 的顶层开发约定约束。开始任何任务前，先读顶层
   `AGENTS.md`，再读本文件以及下方引用的 `docs/` 文档。
+- 涉及本地 Python、虚拟环境、ruff、basedpyright 或 pytest 时，先读
+  `../../docs/dev-env.md`。本仓库本地开发和验证默认使用顶层约定的 `py312`
+  环境，不使用系统 Python，也不写裸 `python` / `python3` 命令。
 - 本文件是 anytrain 的特化约定；如果顶层通用训练工程组织和本文件的组件库边界冲突，
   以本文件的 `项目边界` 为准，因为 anytrain 是 `third_party/` 下的通用训练组件库，
   不是具体训练工程。
@@ -11,6 +14,21 @@
   以及跨模块先读文档等要求在本仓库默认全部适用。
 
 这是从 `deepaudio.lightning` 和训练组件中抽出的 PyTorch/Lightning 训练代码组件库，不再绑定 audio。它重点服务用户自己写普通 `LightningModule` 时会用到的组件，不框架化用户自己的入口、配置系统或 LightningModule。
+
+## 本地开发与验证
+
+- 默认 Python 解释器是
+  `/Users/zhuyin/miniconda3/envs/py312/bin/python`；如果先手动
+  `conda activate py312`，也要确保命令实际来自该环境。
+- 依赖和检查参数以 `pyproject.toml` 为事实来源；不要临时改用 pyright、mypy
+  或自造配置。
+- 常规验证命令：
+
+```bash
+/Users/zhuyin/miniconda3/envs/py312/bin/python -m pytest
+/Users/zhuyin/miniconda3/envs/py312/bin/python -m ruff check .
+/Users/zhuyin/miniconda3/envs/py312/bin/python -m basedpyright --pythonpath /Users/zhuyin/miniconda3/envs/py312/bin/python
+```
 
 ## 项目边界
 
@@ -20,13 +38,13 @@
 - `lightning` 负责 task-agnostic 的 LightningModule logging mixin 和训练调试 callback；Lightning 是核心依赖，不是 optional integration。
 - 公开接口优先围绕 `pl_module`，不要把单一 `model` 写成硬边界。
 - 下游 `pl_module` 直接继承 Lightning 原生 `LightningModule`；不要提供或要求继承 `AnyTrainModule` 这类魔法基类。
-- `lightning`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 构成默认依赖下的核心体验。
+- `lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 构成默认依赖下的核心体验。
 - `chat`、`tokenizer`、`codec`、`tts`、`framework` 和领域组件按依赖拆分为 optional 子模块。
 - package root 保持轻量，不从 `anytrain` 根包导出跨模块快捷别名。
 
 ## 当前模块
 
-- `lightning`：logging mixin、checkpoint 和训练调试 callback。
+- `lightning`：logging mixin、schedule runtime、checkpoint 和训练调试 callback。
 - `loss`、`evaluator`：通用接口、组合器及按领域拆分的实现。
 - `optim`：optimizer 参数分组、scheduler 和 LLM/Muon helper。
 - `module`：task-agnostic `nn.Module` 积木；`module.idspace` 存 token id space。

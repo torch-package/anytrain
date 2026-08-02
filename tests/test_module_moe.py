@@ -27,8 +27,8 @@ from anytrain.module.moe import (
     linear,
     load_balance_loss,
     materialize_routing,
-    moe_routing_metrics,
     moe_loss,
+    moe_routing_metrics,
     router_z_loss,
     tokens_per_expert,
 )

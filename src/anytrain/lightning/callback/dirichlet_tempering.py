@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Union, cast
 
 import lightning.pytorch as pl
 from torch import Tensor
@@ -196,7 +196,8 @@ def _discover_monitors(
     module_names = module_monitor_names(pl_module, AdaptiveDirichletTempering)
     result: list[tuple[str, ADTStatsMonitor]] = []
     seen: set[int] = set()
-    for name, module in named_modules():
+    modules = cast(Iterable[tuple[str, object]], named_modules())
+    for name, module in modules:
         if isinstance(module, AdaptiveDirichletTempering):
             module_id = id(module)
             if module_id in seen:

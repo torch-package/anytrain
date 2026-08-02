@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-import torch
 from torch import Tensor, nn
 
 from .bank import ParamExpertBank
@@ -93,7 +92,7 @@ class MoE(nn.Module):
         top_k: int | None = None,
         init: ExpertInit = "copy",
         eps: float = 1e-9,
-    ) -> "MoE":
+    ) -> MoE:
         """Build MoE from a supported single-op module.
 
         This is a convenience wrapper around expand_expert, not a general

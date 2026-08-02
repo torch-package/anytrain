@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from torch import nn
 
+from .segment import PaddingMode
+
 
 class Conv1d(nn.Conv1d):
     """``nn.Conv1d`` with an optional causal pad flag.
@@ -24,7 +26,7 @@ class Conv1d(nn.Conv1d):
         dilation: int = 1,
         groups: int = 1,
         bias: bool = True,
-        padding_mode: str = "zeros",
+        padding_mode: PaddingMode = "zeros",
         device=None,
         dtype=None,
         *,

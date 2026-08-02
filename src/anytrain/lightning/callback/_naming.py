@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import TypeVar
 
 import torch.nn as nn
@@ -71,15 +71,9 @@ def _matching_module_paths(
     pl_module: nn.Module,
     predicate: Callable[[nn.Module], bool],
 ) -> list[tuple[int, str]]:
-    named_modules = getattr(pl_module, "named_modules", None)
-    if not callable(named_modules):
-        return []
-
     seen: set[int] = set()
     result: list[tuple[int, str]] = []
-    for name, module in named_modules():
-        if not isinstance(module, nn.Module):
-            continue
+    for name, module in pl_module.named_modules():
         if not predicate(module):
             continue
         module_id = id(module)
@@ -90,7 +84,7 @@ def _matching_module_paths(
     return result
 
 
-def _shortest_unique_suffixes(paths: object) -> Mapping[str, str]:
+def _shortest_unique_suffixes(paths: Iterable[str]) -> Mapping[str, str]:
     path_list = list(paths)
     suffixes: dict[str, str] = {}
     for path in path_list:

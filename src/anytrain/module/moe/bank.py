@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Callable, cast
 
 import torch
 from torch import Tensor, nn
@@ -361,11 +362,12 @@ def _apply_1d_bias(
             "1d conv bias restore requires a layout with restore(), "
             f"got {type(layout)!r}."
         )
+    restore_tensor = cast(Callable[[Tensor], Tensor], restore)
     time = cell_outputs.size(-1)
     bias_cells = mixed_bias[..., None].expand(-1, -1, time)
-    restored_bias = restore(bias_cells)
+    restored_bias = restore_tensor(bias_cells)
     coverage_cells = bias_cells.new_ones(bias_cells.size(0), 1, time)
-    coverage = restore(coverage_cells).clamp_min(1)
+    coverage = restore_tensor(coverage_cells).clamp_min(1)
     return hidden_states + restored_bias / coverage
 
 

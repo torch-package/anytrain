@@ -1,8 +1,8 @@
 from .dirichlet_tempering import (
     ADT,
+    AdaptiveDirichletTempering,
     ADTConfig,
     ADTStats,
-    AdaptiveDirichletTempering,
     adt_stats_metrics,
 )
 from .dit import DiT, DiTAttentionBackend, DiTConditionState, DiTConditionType

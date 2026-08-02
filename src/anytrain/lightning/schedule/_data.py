@@ -1,31 +1,61 @@
-"""Pure helpers for valid/padded data-unit accounting."""
-
 from __future__ import annotations
 
 import math
 import re
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import lightning.pytorch as pl
 
 _UNIT_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def padding_ratio(*, valid_units: float, padded_units: float) -> float:
-    """Return ``1 - valid/padded`` for one batch of homogeneous units."""
+@dataclass(frozen=True)
+class UnitBatch:
+    """Homogeneous valid/padded units observed for one train batch.
 
+    ``valid`` is the unit count that should advance the training clock. ``padded``
+    is optional and, when present, uses the same unit for padding/throughput logs.
+    """
+
+    valid: float
+    unit: str
+    padded: float | None = None
+
+    def __post_init__(self) -> None:
+        require_unit_name(self.unit)
+        valid = _require_non_negative(self.valid, "valid")
+        if self.padded is None:
+            return
+        padded = _require_non_negative(self.padded, "padded")
+        if valid > padded:
+            raise ValueError(f"valid ({valid}) cannot exceed padded ({padded}).")
+
+
+class UnitProvider(Protocol):
+    def __call__(
+        self,
+        *,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> UnitBatch: ...
+
+
+def padding_ratio(*, valid_units: float, padded_units: float) -> float:
     valid = _require_non_negative(valid_units, "valid_units")
     padded = _require_positive(padded_units, "padded_units")
     if valid > padded:
-        raise ValueError(
-            f"valid_units ({valid}) cannot exceed padded_units ({padded})."
-        )
+        raise ValueError(f"valid_units ({valid}) cannot exceed padded_units ({padded}).")
     return 1.0 - valid / padded
 
 
-def units_realtime(*, valid_units: float, step_time: float) -> float:
-    """Valid data units consumed per wall second."""
-
+def units_per_second(*, valid_units: float, step_time: float) -> float:
     valid = _require_non_negative(valid_units, "valid_units")
-    step_time = _require_positive(step_time, "step_time")
-    return valid / step_time
+    elapsed = _require_positive(step_time, "step_time")
+    return valid / elapsed
 
 
 def require_unit_name(unit: str) -> str:
@@ -62,7 +92,9 @@ def _as_float(value: float, name: str) -> float:
 
 
 __all__ = [
+    "UnitBatch",
+    "UnitProvider",
     "padding_ratio",
     "require_unit_name",
-    "units_realtime",
+    "units_per_second",
 ]

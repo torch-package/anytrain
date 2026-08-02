@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Union, cast
 
 import lightning.pytorch as pl
 from torch import Tensor
@@ -268,7 +268,8 @@ def _moe_modules_by_id(pl_module: pl.LightningModule) -> dict[int, MoE]:
     if not callable(named_modules):
         return {}
     result: dict[int, MoE] = {}
-    for _name, module in named_modules():
+    modules = cast(Iterable[tuple[str, object]], named_modules())
+    for _name, module in modules:
         if isinstance(module, MoE):
             result.setdefault(id(module), module)
     return result

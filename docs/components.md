@@ -51,7 +51,7 @@ optional backend：
 - `PerformanceCallback`：在 Lightning 训练中记录性能元数据、optimizer step time 和 MFU；
   支持固定 step FLOPs，以及由 `FlopsProvider` 提供的动态 train-batch FLOPs。
 
-`anytrain` 不内置任务的数据量语义。samples、tokens、frames、valid mask count 和详细 loss 由下游 `training_step` 按任务 schema 显式记录。
+`anytrain` 不内置任务的数据量语义。samples、tokens、frames、valid mask count 和详细 loss 由下游 `training_step` 按任务 schema 显式记录；需要把这些 units 作为训练时钟、LR schedule 和停止条件时，使用 `anytrain.lightning.schedule`。
 
 ## Loss
 

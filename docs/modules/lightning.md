@@ -15,6 +15,8 @@ src/anytrain/lightning/
   __init__.py
   experiment.py
   validation.py
+  schedule/
+    __init__.py
   callback/
     __init__.py
     checkpoint.py
@@ -35,6 +37,7 @@ src/anytrain/lightning/
 
 - `experiment`：从 Trainer 主 logger 获取 text/scalar/audio/histogram 能力。
 - `validation`：加权 validation logging 与可恢复指标历史。
+- `schedule`：统一 step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制。
 - `LightningLogMixin`
 - `ModelCheckpoint`
 - `DebugCallback`
@@ -60,6 +63,25 @@ src/anytrain/lightning/
 - `prefixed_log_dict`
 
 `anytrain.lightning` 不导出自定义 LightningModule 基类，也不通过继承改变训练行为。下游项目直接继承 `lightning.pytorch.LightningModule`。
+
+## Schedule
+
+`anytrain.lightning.schedule` 提供统一的 LR schedule spec，但按 clock 选择不同执行机制。
+下游用同一个 `LRSchedule(phases=...)` 描述 warmup、stable、decay 等阶段；`StepClock`
+编译成 Lightning 原生 step scheduler，`UnitClock` 则不返回 Lightning scheduler，而是由
+`ScheduleRuntime.callbacks()` 生成唯一 owner 的 unit runtime callback。`Phase.duration` 和
+`LRSchedule.milestones()` 的单位都由 clock 决定：step clock 下是 optimizer steps，unit clock
+下是 global valid units。
+
+下游仍显式创建 optimizer，并在 `configure_optimizers()` 中调用
+`runtime.configure_optimizers(optimizer)`。step clock 返回 optimizer + Lightning scheduler；unit
+clock 只返回 optimizer。Trainer callback 列表加入 `*runtime.callbacks()`。unit runtime 在 train
+batch end 读取下游 `UnitProvider`、按 rank sum 得到 global valid/padded units、维护 checkpoint
+state、只在 optimizer step boundary 更新 LR，并在达到 `stop_at` 或 `stop_at_end` 时设置
+`trainer.should_stop=True`。它会拒绝和 Lightning `lr_scheduler` 同时启用，并默认检查 optimizer
+LR 没有被其它 callback 改写。日志使用 `progress/*` 命名，例如 `progress/tokens_total`、
+`progress/tokens_per_second_window`、`progress/padding_ratio` 和 `progress/lr_ratio`。schedule
+runtime 不重建 optimizer、不改变 param group 结构，也不解释 batch schema。
 
 ## Validation
 

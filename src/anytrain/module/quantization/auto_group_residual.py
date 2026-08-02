@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeVar
 
 import torch
 from torch import Tensor, nn
@@ -25,6 +26,8 @@ from ._residual_runner import run_residual_quantization, sample_active_mask
 from .lookup import nearest_codebook_indices
 from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
+
+ModuleT = TypeVar("ModuleT", bound=nn.Module)
 
 
 @dataclass(frozen=True)
@@ -156,7 +159,9 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         residual = latents.reshape(-1, self.input_dim)
 
         vectors = []
-        for quantizer in self.quantizers[:active_count]:
+        for quantizer in _typed_module_list(self.quantizers, _AutoGroupVectorQuantizer)[
+            :active_count
+        ]:
             vectors_i = quantizer.latents_to_codebook_vectors(residual)
             vectors.append(vectors_i)
             residual = residual - quantizer.project_codebook_vectors(vectors_i)
@@ -173,7 +178,11 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             num_codebooks=self.num_codebooks,
         )
         indices = []
-        for index, quantizer in enumerate(self.quantizers[: codebook_vectors.shape[-2]]):
+        for index, quantizer in enumerate(
+            _typed_module_list(self.quantizers, _AutoGroupVectorQuantizer)[
+                : codebook_vectors.shape[-2]
+            ]
+        ):
             indices.append(quantizer.codebook_vectors_to_indices(codebook_vectors[..., index, :]))
         return torch.stack(indices, dim=-1)
 
@@ -185,13 +194,17 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             allow_inactive=True,
         )
         vectors = []
-        for index, quantizer in enumerate(self.quantizers[: indices.shape[-1]]):
+        for index, quantizer in enumerate(
+            _typed_module_list(self.quantizers, _AutoGroupVectorQuantizer)[
+                : indices.shape[-1]
+            ]
+        ):
             indices_i = indices[..., index]
             mask = indices_i >= 0
             vectors_i = torch.zeros(
                 *indices_i.shape,
                 self.codebook_dim,
-                dtype=quantizer.codebooks[0].weight.dtype,
+                dtype=_typed_module_list(quantizer.codebooks, nn.Embedding)[0].weight.dtype,
                 device=indices.device,
             )
             if bool(mask.any().item()):
@@ -206,7 +219,11 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             num_codebooks=self.num_codebooks,
         )
         projected = []
-        for index, quantizer in enumerate(self.quantizers[: codebook_vectors.shape[-2]]):
+        for index, quantizer in enumerate(
+            _typed_module_list(self.quantizers, _AutoGroupVectorQuantizer)[
+                : codebook_vectors.shape[-2]
+            ]
+        ):
             projected.append(quantizer.project_codebook_vectors(codebook_vectors[..., index, :]))
         return torch.stack(projected, dim=-2).sum(dim=-2)
 
@@ -332,14 +349,17 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
     def reset_parameters(self) -> None:
         with torch.no_grad():
-            for codebook in self.codebooks:
+            for codebook in _typed_module_list(self.codebooks, nn.Embedding):
                 nn.init.normal_(codebook.weight, mean=0.0, std=1.0)
 
     def forward(self, latents: Tensor) -> QuantizeOutput:
         projected = [project(latents) for project in self.in_projs]
         nearest = [
             self._nearest_codebook_vectors(projected_i, codebook)
-            for projected_i, codebook in strict_zip(projected, self.codebooks)
+            for projected_i, codebook in strict_zip(
+                projected,
+                _typed_module_list(self.codebooks, nn.Embedding),
+            )
         ]
         vectors = [vectors_i for vectors_i, _ in nearest]
         group_indices = torch.stack([indices_i for _, indices_i in nearest], dim=-1)
@@ -374,7 +394,10 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
     def latents_to_codebook_vectors(self, latents: Tensor) -> Tensor:
         vectors = []
-        for project, codebook in strict_zip(self.in_projs, self.codebooks):
+        for project, codebook in strict_zip(
+            self.in_projs,
+            _typed_module_list(self.codebooks, nn.Embedding),
+        ):
             vectors_i, _ = self._nearest_codebook_vectors(project(latents), codebook)
             vectors.append(vectors_i)
         return torch.cat(vectors, dim=-1)
@@ -383,7 +406,10 @@ class _AutoGroupVectorQuantizer(nn.Module):
         _checks.codebook_vectors(codebook_vectors, self.codebook_dim)
         vectors = codebook_vectors.split(self.group_codebook_dim, dim=-1)
         group_indices = []
-        for vectors_i, codebook in strict_zip(vectors, self.codebooks):
+        for vectors_i, codebook in strict_zip(
+            vectors,
+            _typed_module_list(self.codebooks, nn.Embedding),
+        ):
             _, indices_i = self._nearest_codebook_vectors(vectors_i, codebook)
             group_indices.append(indices_i)
         return self._group_indices_to_indices(torch.stack(group_indices, dim=-1))
@@ -394,7 +420,9 @@ class _AutoGroupVectorQuantizer(nn.Module):
         return torch.cat(
             [
                 codebook(group_indices[..., index])
-                for index, codebook in enumerate(self.codebooks)
+                for index, codebook in enumerate(
+                    _typed_module_list(self.codebooks, nn.Embedding)
+                )
             ],
             dim=-1,
         )
@@ -432,3 +460,17 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
     def _group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
         return _group_indices_to_indices(group_indices, index_basis=self._index_basis)
+
+
+def _typed_module_list(
+    modules: nn.ModuleList,
+    module_type: type[ModuleT],
+) -> tuple[ModuleT, ...]:
+    typed: list[ModuleT] = []
+    for module in modules:
+        if not isinstance(module, module_type):
+            raise TypeError(
+                f"expected {module_type.__name__} in ModuleList, got {type(module)!r}."
+            )
+        typed.append(module)
+    return tuple(typed)

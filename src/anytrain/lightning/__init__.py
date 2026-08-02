@@ -1,6 +1,5 @@
-from . import experiment, validation
+from . import experiment, schedule, validation
 from .callback.checkpoint import ModelCheckpoint
-from .callback.data_throughput import DataThroughputCallback, DataUnits, DataUnitsProvider
 from .callback.debug import DebugCallback
 from .callback.dirichlet_tempering import (
     ADTStatsLoggerCallback,
@@ -24,6 +23,11 @@ from .callback.loss import (
     LossTimeBucketLoggerCallback,
     window_summary,
 )
+from .callback.moe import (
+    MoELoggerCallback,
+    MoEMonitor,
+    MoEMonitorsFn,
+)
 from .callback.parameter_policy import (
     ModuleSelector,
     ParameterPolicyCallback,
@@ -37,17 +41,9 @@ from .callback.quantization import (
     QuantizationMonitor,
     QuantizationMonitorsFn,
 )
-from .callback.moe import (
-    MoELoggerCallback,
-    MoEMonitor,
-    MoEMonitorsFn,
-)
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
 
 __all__ = [
-    "DataThroughputCallback",
-    "DataUnits",
-    "DataUnitsProvider",
     "ADTStatsLoggerCallback",
     "ADTStatsMonitor",
     "ADTStatsMonitorsFn",
@@ -84,6 +80,7 @@ __all__ = [
     "apply_parameter_trainability",
     "experiment",
     "prefixed_log_dict",
+    "schedule",
     "window_summary",
     "validation",
 ]

@@ -32,7 +32,8 @@ window_mfu = sum(model_flops) / sum(step_time) / hardware_peak_flops
 
 - 替下游选择代表性输入。
 - 猜测 batch schema。
-- 猜测 tokens、frames、valid mask count 等任务数据量（由下游 `DataUnitsProvider` 显式提供）。
+- 猜测 tokens、frames、valid mask count 等任务数据量。unit 进度、padding 和吞吐日志由
+  `anytrain.lightning.schedule` 的 `UnitClock` / `UnitScheduleCallback` 负责。
 - 接管 Hydra、Trainer 或训练入口装配。
 
 下游 job 可以显式覆盖 `hardware_peak_flops`。覆盖值会在日志元数据中标记为 `override`。
@@ -175,30 +176,10 @@ parallel 的 FLOPs 归属和设备峰值分母需要下游另行定义，callbac
   allocator 的峰值；DDP 日志点取各 rank 最大值。
 - `perf/model_flops_source`：metadata 字段，取 `static`、`provider`、`profile` 或 `unresolved`。
 
-## 有效数据量与 padding
+## Unit 进度边界
 
-`DataThroughputCallback` 记录有效数据吞吐和 padding，不猜测 batch 字段。下游提供
-`DataUnitsProvider`，返回同单位的 `valid` / `padded` 与 `unit` 名（如 `audio_seconds`、
-`tokens`、`frames`）：
-
-```python
-from anytrain.lightning import DataThroughputCallback, DataUnits
-
-class SpeechAudioUnits:
-    def __call__(self, *, trainer, pl_module, outputs, batch, batch_idx) -> DataUnits:
-        del trainer, pl_module, outputs, batch_idx
-        sample_rate = 16_000
-        valid = float(batch.lengths.sum()) / sample_rate
-        padded = float(batch.waveform.shape[0] * batch.waveform.shape[-1]) / sample_rate
-        return DataUnits(valid=valid, padded=padded, unit="audio_seconds")
-
-callback = DataThroughputCallback(data_units=SpeechAudioUnits())
-```
-
-纯函数 `padding_ratio` / `units_realtime` 可供测试或非 Lightning 路径复用。日志字段：
-
-- `perf/padding_ratio`：`1 - valid / padded`
-- `perf/{unit}`：本 batch 有效量
-- `perf/{unit}_realtime`：`valid / step_time`
-- `perf/{unit}_realtime_window`：窗口 `sum(valid) / sum(step_time)`
-- `perf/step_time`、`perf/step_time_window`：与 MFU callback 可并存
+有效数据量、padding 和 `{unit}_per_second` 不再属于 `lightning.perf`。当训练需要按
+tokens、frames 或 audio seconds 作为可比时间轴时，使用 `anytrain.lightning.schedule`：unit
+runtime 只从下游显式 `UnitProvider` 读取 batch schema，并在同一个 owner callback 中完成 DDP
+unit 聚合、LR 调度、停止训练、progress 日志和 checkpoint state。`PerformanceCallback` 继续只
+负责 FLOPs/MFU、step time 和 memory。

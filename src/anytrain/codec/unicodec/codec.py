@@ -9,7 +9,13 @@ from typing_extensions import TypeAlias
 
 from .._audio import model_frame_rate, resample
 from .._module import DeviceModule, resolve_device, validate_frame_codes
-from .assets import UniCodecAssets, ensure_unicodec_assets
+from .assets import (
+    DEFAULT_CHECKPOINT_FILENAME,
+    DEFAULT_CONFIG_NAME,
+    DEFAULT_HF_REPO_ID,
+    UniCodecAssets,
+    ensure_unicodec_assets,
+)
 
 Domain: TypeAlias = Union[str, int]
 SAMPLE_RATE = 24_000
@@ -59,21 +65,20 @@ class UniCodec(DeviceModule):
         force_download: bool = False,
         allow_unpinned_revision: bool = False,
     ) -> UniCodec:
-        kwargs: dict[str, object] = {
-            "cache_dir": cache_dir,
-            "local_files_only": local_files_only,
-            "force_download": force_download,
-            "revision": revision,
-            "allow_unpinned_revision": allow_unpinned_revision,
-        }
-        if repo_id is not None:
-            kwargs["repo_id"] = repo_id
-        if config_name is not None:
-            kwargs["config_name"] = config_name
-        if checkpoint_filename is not None:
-            kwargs["checkpoint_filename"] = checkpoint_filename
-
-        assets = ensure_unicodec_assets(**kwargs)
+        assets = ensure_unicodec_assets(
+            cache_dir=cache_dir,
+            repo_id=repo_id if repo_id is not None else DEFAULT_HF_REPO_ID,
+            config_name=config_name if config_name is not None else DEFAULT_CONFIG_NAME,
+            checkpoint_filename=(
+                checkpoint_filename
+                if checkpoint_filename is not None
+                else DEFAULT_CHECKPOINT_FILENAME
+            ),
+            revision=revision,
+            local_files_only=local_files_only,
+            force_download=force_download,
+            allow_unpinned_revision=allow_unpinned_revision,
+        )
         model_cls = _load_unicodec_model()
         resolved_device = resolve_device(device)
         model = model_cls.from_pretrained0802(

@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 import torch
 from torch import Size, Tensor, nn
 
+from .conv.segment import PaddingMode
 from .conv.shape import pair_2d, scalar_1d, size_1d, size_2d
 from .expert import (
     Conv1dExpert,
@@ -163,12 +164,13 @@ def _kaiming_weight_(weight: Tensor) -> None:
 
 
 def _conv1d_expert(module: nn.Conv1d) -> Conv1dExpert:
-    if isinstance(module.padding, str):
+    padding_value = module.padding
+    if isinstance(padding_value, str):
         raise TypeError(
             "expand_expert requires integer Conv1d.padding; "
-            f"got padding={module.padding!r}."
+            f"got padding={padding_value!r}."
         )
-    padding = scalar_1d(size_1d(module.padding, name="padding"), name="padding")
+    padding = scalar_1d(size_1d(padding_value, name="padding"), name="padding")
     causal = bool(getattr(module, "causal", False))
     padding_mode = module.padding_mode
     if padding_mode not in {"zeros", "reflect", "replicate", "circular"}:
@@ -179,14 +181,20 @@ def _conv1d_expert(module: nn.Conv1d) -> Conv1dExpert:
         dilation=scalar_1d(size_1d(module.dilation, name="dilation"), name="dilation"),
         groups=module.groups,
         causal=causal,
-        padding_mode=padding_mode,  # type: ignore[arg-type]
+        padding_mode=cast(PaddingMode, padding_mode),
     )
 
 
 def _conv_transpose1d_expert(module: nn.ConvTranspose1d) -> ConvTranspose1dExpert:
+    padding_value = module.padding
+    if isinstance(padding_value, str):
+        raise TypeError(
+            "expand_expert requires integer ConvTranspose1d.padding; "
+            f"got padding={padding_value!r}."
+        )
     return ConvTranspose1dExpert(
         stride=scalar_1d(size_1d(module.stride, name="stride"), name="stride"),
-        padding=scalar_1d(size_1d(module.padding, name="padding"), name="padding"),
+        padding=scalar_1d(size_1d(padding_value, name="padding"), name="padding"),
         output_padding=scalar_1d(
             size_1d(module.output_padding, name="output_padding"),
             name="output_padding",

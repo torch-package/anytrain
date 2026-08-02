@@ -199,6 +199,11 @@ class ResidualFiniteScalarQuantizer(nn.Module):
     def _out_dtype(self, like: Tensor) -> torch.dtype:
         if isinstance(self.project_out, nn.Identity):
             return like.dtype if torch.is_floating_point(like) else torch.float32
+        if not isinstance(self.project_out, nn.Linear):
+            raise TypeError(
+                "ResidualFiniteScalarQuantizer project_out must be Identity or Linear, "
+                f"got {type(self.project_out)!r}."
+            )
         weight = self.project_out.weight
         return weight.dtype
 

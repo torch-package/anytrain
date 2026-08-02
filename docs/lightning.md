@@ -32,7 +32,7 @@
 
 `anytrain` 可以提供训练组件，但按依赖层级拆分：
 
-- core：`lightning`、`lightning.perf`、通用 loss/evaluator/optim/module 接口和 `module.idspace`。
+- core：`lightning`、`lightning.schedule`、`lightning.perf`、通用 loss/evaluator/optim/module 接口和 `module.idspace`。
 - optional general：通用 torchmetrics evaluator、第三方 logger backend。
 - optional domain：audio/text/speech 等领域 loss、evaluator。
 - optional framework：flow matching、MAE、GAN adversarial training 等研究框架。
@@ -326,8 +326,8 @@ backward 后只重复检查可训练参数与现有梯度，因此冻结参数�
 - `perf/step_time`、`perf/step_time_window` 和 `perf/mfu`。
 
 代表性输入、训练 step FLOPs 口径属于下游任务语义，不由 callback 猜测。有效 audio 秒 / token
-数等数据量通过 `DataThroughputCallback` + `DataUnitsProvider` 显式提供；padding 与
-`{unit}_realtime` 由 valid/padded 同单位计算。动态窗口按 `sum(flops) / sum(time) / peak_flops`
+数等 unit 进度由 `anytrain.lightning.schedule` 的 `UnitClock` 显式提供，并由 unit runtime
+记录 `progress/*`、padding 和 `{unit}_per_second`。动态窗口按 `sum(flops) / sum(time) / peak_flops`
 计算；梯度累积按 optimizer `global_step` 形成 measurement。DDP provider 返回 local-rank FLOPs，
 callback 统一聚合 rank 工作量、最慢 rank 时间和各 rank 峰值算力。`sync_distributed=True` 时，
 每个 batch timer 启动前先 barrier，使上一 batch 的 rank-local callback 工作不会错开下一步计时
