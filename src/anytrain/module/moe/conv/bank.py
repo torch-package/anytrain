@@ -72,11 +72,16 @@ def expand_expert_weights(
 
 
 def mix_expert_weights(expert_weights: Tensor, weight: Tensor) -> Tensor:
-    return torch.matmul(expert_weights, weight.flatten(start_dim=1)).reshape(
+    combine_dtype = torch.promote_types(expert_weights.dtype, weight.dtype)
+    return torch.matmul(
+        expert_weights.to(dtype=combine_dtype),
+        weight.flatten(start_dim=1).to(dtype=combine_dtype),
+    ).reshape(
         expert_weights.size(0),
         *weight.shape[1:],
     )
 
 
 def mix_expert_bias(expert_weights: Tensor, bias: Tensor) -> Tensor:
-    return expert_weights @ bias
+    combine_dtype = torch.promote_types(expert_weights.dtype, bias.dtype)
+    return expert_weights.to(dtype=combine_dtype) @ bias.to(dtype=combine_dtype)

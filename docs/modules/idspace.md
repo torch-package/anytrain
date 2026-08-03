@@ -95,6 +95,13 @@ decay。如果调用方保留了已有的零梯度，这一层不会替 optimize
 路由结束后同步一次并显式报错。带 adapter 或异构输出时也使用通用路径，且只要求本次实际命中
 的 block 输出维一致。
 
+训练入口如果已经在 CPU 上验证过一批输入，可以把精确 block 集传给
+`forward(input_ids, selected_blocks=..., validate=False)`。该可信入口不会再次扫描设备上的
+token，也不会为未选中的 embedding 或 adapter 建立 autograd 边；调用方必须保证集合覆盖所有
+输入 id，且自行负责此前的 id/shape 校验。默认 `validate=True` 仍会严格验证输入，适合生成和
+外部调用。`selected_blocks(input_ids)` 是一个方便的严格 CPU 预扫描入口，可用于在异步搬运前
+生成该提示。
+
 `Embedding` 不提供输出 head。下游如果要做 tied head，直接读取对应 block
 embedding 的 `weight`，并显式使用 `layout` 做 label 的 global/local 转换：
 

@@ -17,20 +17,13 @@ def expert_usage(routing: ExpertRouting) -> Tensor:
     distribution.
     """
 
-    sums = _route_weight_sums(routing)
-    if not bool((sums > 0).any().item()):
-        return sums
-    return sums / sums.sum().clamp_min(torch.finfo(sums.dtype).tiny)
+    return _usage_from_sums(_route_weight_sums(routing))
 
 
 def effective_experts(routing: ExpertRouting) -> Tensor:
     """Entropy perplexity of the actual route-weight usage distribution."""
 
-    usage = expert_usage(routing)
-    if not bool((usage > 0).any().item()):
-        return usage.new_zeros(())
-    log_usage = usage.clamp_min(torch.finfo(usage.dtype).tiny).log()
-    return (-(usage * log_usage).sum()).exp()
+    return _effective_experts_from_usage(expert_usage(routing))
 
 
 def load_balance_loss(routing: ExpertRouting) -> Tensor:
@@ -52,10 +45,10 @@ def router_z_loss(routing: ExpertRouting) -> Tensor:
 
     active_mask = routing.active_mask()
     flat_logits = routing.logits.reshape(-1, routing.num_experts)
-    if not bool(active_mask.any().item()):
-        return flat_logits.new_zeros(())
-    log_z = flat_logits[active_mask].logsumexp(dim=-1)
-    return log_z.pow(2).mean()
+    safe_logits = flat_logits.masked_fill(~active_mask.unsqueeze(-1), 0)
+    log_z = safe_logits.logsumexp(dim=-1)
+    weights = active_mask.to(dtype=log_z.dtype)
+    return (log_z.pow(2) * weights).sum() / weights.sum().clamp_min(1)
 
 
 def expert_probability_mean(routing: ExpertRouting) -> Tensor:
@@ -67,10 +60,8 @@ def expert_probability_mean(routing: ExpertRouting) -> Tensor:
 def expert_route_weight_mean(routing: ExpertRouting) -> Tensor:
     """Mean actual combine weight per expert over active routed positions."""
 
-    active_count = _active_count(routing)
-    if active_count == 0:
-        return routing.probabilities.new_zeros(routing.num_experts)
-    return _route_weight_sums(routing) / active_count
+    active_count = routing.active_mask().sum()
+    return _route_weight_sums(routing) / active_count.clamp_min(1)
 
 
 def tokens_per_expert(routing: ExpertRouting) -> Tensor:
@@ -113,8 +104,6 @@ def dropped_token_ratio(
     indices, weights, _top_k = routing.require_topk()
     del indices
     active_mask = routing.active_mask()
-    if not bool(active_mask.any().item()):
-        return routing.probabilities.new_zeros(())
     if dropped_mask is None:
         dropped = weights.sum(dim=-1) <= 0
     else:
@@ -129,8 +118,9 @@ def dropped_token_ratio(
             f"got {tuple(dropped_mask.shape) if dropped_mask is not None else tuple(dropped.shape)}, "
             f"leading shape {tuple(routing.leading_shape)}."
         ) from exc
-    dropped = dropped.reshape(-1).to(device=active_mask.device)
-    return dropped[active_mask].to(dtype=routing.probabilities.dtype).mean()
+    dropped = dropped.reshape(-1).to(dtype=routing.probabilities.dtype, device=active_mask.device)
+    active = active_mask.to(dtype=dropped.dtype)
+    return (dropped * active).sum() / active.sum().clamp_min(1)
 
 
 def moe_routing_metrics(
@@ -148,17 +138,26 @@ def moe_routing_metrics(
 ) -> dict[str, Tensor]:
     metric_set = _metrics(metrics)
     values: dict[str, Tensor] = {}
+    route_weight_sums = None
+    if "usage" in metric_set or "route_weight" in metric_set:
+        route_weight_sums = _route_weight_sums(routing)
     if "usage" in metric_set:
-        usage = expert_usage(routing)
-        values["effective_experts"] = effective_experts(routing)
+        assert route_weight_sums is not None
+        usage = _usage_from_sums(route_weight_sums)
+        values["effective_experts"] = _effective_experts_from_usage(usage)
         values.update(_summary_metrics(usage, "usage"))
     if "gate_probability" in metric_set:
         values.update(
             _summary_metrics(expert_probability_mean(routing), "gate_probability")
         )
     if "route_weight" in metric_set:
+        assert route_weight_sums is not None
+        active_count = routing.active_mask().sum()
         values.update(
-            _summary_metrics(expert_route_weight_mean(routing), "route_weight")
+            _summary_metrics(
+                route_weight_sums / active_count.clamp_min(1),
+                "route_weight",
+            )
         )
     if "tokens" in metric_set:
         assignment_counts = tokens if tokens is not None else tokens_per_expert(routing)
@@ -178,34 +177,44 @@ def _route_weight_sums(routing: ExpertRouting) -> Tensor:
     active_mask = routing.active_mask()
     if routing.is_dense:
         flat_probabilities = routing.probabilities.reshape(-1, routing.num_experts)
-        if not bool(active_mask.any().item()):
-            return flat_probabilities.new_zeros(routing.num_experts)
-        return flat_probabilities[active_mask].sum(dim=0)
+        safe_probabilities = flat_probabilities.masked_fill(
+            ~active_mask.unsqueeze(-1),
+            0,
+        )
+        return safe_probabilities.sum(dim=0)
 
     indices, weights, top_k = routing.require_topk()
     flat_indices = indices.reshape(-1, top_k)
     flat_weights = weights.reshape(-1, top_k)
     selected = active_mask.unsqueeze(-1) & (flat_weights != 0)
     sums = routing.probabilities.new_zeros(routing.num_experts)
-    if not bool(selected.any().item()):
-        return sums
+    safe_indices = torch.where(selected, flat_indices, torch.zeros_like(flat_indices))
+    safe_weights = flat_weights.masked_fill(~selected, 0)
     return sums.scatter_add(
         0,
-        flat_indices[selected],
-        flat_weights[selected].to(dtype=sums.dtype),
+        safe_indices.reshape(-1),
+        safe_weights.reshape(-1).to(dtype=sums.dtype),
     )
 
 
-def _active_count(routing: ExpertRouting) -> int:
-    return int(routing.active_mask().sum().item())
+def _usage_from_sums(sums: Tensor) -> Tensor:
+    return sums / sums.sum().clamp_min(torch.finfo(sums.dtype).tiny)
+
+
+def _effective_experts_from_usage(usage: Tensor) -> Tensor:
+    log_usage = usage.clamp_min(torch.finfo(usage.dtype).tiny).log()
+    value = (-(usage * log_usage).sum()).exp()
+    return torch.where(usage.sum() > 0, value, value.new_zeros(()))
 
 
 def _probability_mean(routing: ExpertRouting) -> Tensor:
     active_mask = routing.active_mask()
     flat_probabilities = routing.probabilities.reshape(-1, routing.num_experts)
-    if not bool(active_mask.any().item()):
-        return flat_probabilities.new_zeros(routing.num_experts)
-    return flat_probabilities[active_mask].mean(dim=0)
+    safe_probabilities = flat_probabilities.masked_fill(
+        ~active_mask.unsqueeze(-1),
+        0,
+    )
+    return safe_probabilities.sum(dim=0) / active_mask.sum().clamp_min(1)
 
 
 def _summary_metrics(values: Tensor, name: str) -> dict[str, Tensor]:

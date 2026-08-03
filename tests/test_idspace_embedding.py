@@ -86,6 +86,65 @@ class EmbeddingTest(unittest.TestCase):
         self.assertIsNone(audio.weight.grad)
         self.assertIsNone(audio_adapter.weight.grad)
 
+    def test_trusted_selected_blocks_skips_device_routing_summary(self):
+        layout = Layout(text=(0, 2), audio=(2, 4))
+        text = nn.Embedding(2, 2)
+        audio = nn.Embedding(2, 2)
+        adapter = nn.Linear(2, 2, bias=False)
+        embed = Embedding(layout, adapters={"audio": adapter}, text=text, audio=audio)
+
+        with patch(
+            "anytrain.module.idspace.embedding._selected_blocks",
+            side_effect=AssertionError("trusted routing must not rescan device ids"),
+        ):
+            output = embed(
+                torch.tensor([0, 1]),
+                selected_blocks=frozenset({"text"}),
+                validate=False,
+            )
+        output.sum().backward()
+
+        self.assertIsNotNone(text.weight.grad)
+        self.assertIsNone(audio.weight.grad)
+        self.assertIsNone(adapter.weight.grad)
+
+    def test_trusted_selected_blocks_bypasses_homogeneous_validation_path(self):
+        layout = Layout(text=(0, 2), audio=(2, 4))
+        text = nn.Embedding(2, 2)
+        audio = nn.Embedding(2, 2)
+        embed = Embedding(layout, text=text, audio=audio)
+
+        with (
+            patch(
+                "anytrain.module.idspace.embedding._selected_blocks",
+                side_effect=AssertionError("trusted routing must not rescan device ids"),
+            ),
+            patch(
+                "anytrain.module.idspace.embedding._validate_covered",
+                side_effect=AssertionError("trusted routing must not synchronize coverage"),
+            ),
+        ):
+            output = embed(
+                torch.tensor([0, 1]),
+                selected_blocks={"text"},
+                validate=False,
+            )
+        output.sum().backward()
+
+        self.assertIsNotNone(text.weight.grad)
+        self.assertIsNone(audio.weight.grad)
+
+    def test_trusted_selected_blocks_requires_known_nonempty_names(self):
+        layout = Layout(text=(0, 2), audio=(2, 4))
+        embed = Embedding(layout, text=nn.Embedding(2, 2), audio=nn.Embedding(2, 2))
+
+        with self.assertRaisesRegex(ValueError, "required"):
+            embed(torch.tensor([0]), validate=False)
+        with self.assertRaisesRegex(ValueError, "unknown blocks"):
+            embed(torch.tensor([0]), selected_blocks={"image"}, validate=False)
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            embed(torch.tensor([0]), selected_blocks=set(), validate=False)
+
     def test_homogeneous_inference_falls_back_for_mixed_dtypes(self):
         layout = Layout(text=(0, 2), audio=(10, 12))
         text = nn.Embedding(2, 2, dtype=torch.float32)

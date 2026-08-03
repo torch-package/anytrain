@@ -102,16 +102,28 @@ class ParamExpertBank(nn.Module):
                 "routing leading shape must match cells layout: "
                 f"got {tuple(routing.leading_shape)}, expected {tuple(leading)}."
             )
+        execution_cells = cells
+        if (
+            routing.is_dense
+            and routing.mask is not None
+            and self.family
+            in (
+                ExpertFamily.CONV1D,
+                ExpertFamily.CONV_TRANSPOSE1D,
+                ExpertFamily.CONV2D,
+            )
+        ):
+            execution_cells = _mask_cell_outputs(cells, routing)
         if self.family is ExpertFamily.LINEAR:
-            outputs = self._forward_linear(cells, routing)
+            outputs = self._forward_linear(execution_cells, routing)
         elif self.family is ExpertFamily.CONV1D:
-            outputs = self._forward_conv1d(cells, routing)
+            outputs = self._forward_conv1d(execution_cells, routing)
         elif self.family is ExpertFamily.CONV_TRANSPOSE1D:
-            outputs = self._forward_conv_transpose1d(cells, routing)
+            outputs = self._forward_conv_transpose1d(execution_cells, routing)
         elif self.family is ExpertFamily.CONV2D:
-            outputs = self._forward_conv2d(cells, routing)
+            outputs = self._forward_conv2d(execution_cells, routing)
         else:
-            outputs = self._forward_generic(cells, routing)
+            outputs = self._forward_generic(execution_cells, routing)
         return _mask_cell_outputs(outputs, routing)
 
     def apply_bias(
@@ -156,18 +168,33 @@ class ParamExpertBank(nn.Module):
         if self.bias is None:
             return None
         if routing.is_dense:
-            probs = routing.probabilities.reshape(-1, self.num_experts)
+            probs = _dense_probabilities(routing)
             return mix_expert_bias(probs, self.bias)
         indices, selected_weights, top_k = routing.require_topk()
         flat_indices = indices.reshape(-1, top_k)
         flat_weights = selected_weights.reshape(-1, top_k)
-        return torch.einsum("uk,uko->uo", flat_weights, self.bias[flat_indices])
+        if routing.mask is not None:
+            active = routing.flat_active_mask().unsqueeze(-1)
+            flat_weights = flat_weights.masked_fill(~active, 0)
+        selected_bias = self.bias[flat_indices]
+        combine_dtype = torch.promote_types(flat_weights.dtype, selected_bias.dtype)
+        return torch.einsum(
+            "uk,uko->uo",
+            flat_weights.to(dtype=combine_dtype),
+            selected_bias.to(dtype=combine_dtype),
+        )
 
     def _forward_linear(self, cells: Tensor, routing: ExpertRouting) -> Tensor:
         leading_shape = cells.shape[:-1]
         flat = cells.reshape(-1, cells.size(-1))
         if routing.is_dense:
-            probs = routing.probabilities.reshape(-1, self.num_experts)
+            probs = _dense_probabilities(routing)
+            active_indices: Tensor | None = None
+            token_count = flat.size(0)
+            if routing.mask is not None:
+                active_indices = routing.flat_active_mask().nonzero(as_tuple=False).flatten()
+                flat = flat.index_select(0, active_indices)
+                probs = probs.index_select(0, active_indices)
             y = None
             for expert_index in range(self.num_experts):
                 expert_y = self.expert(
@@ -175,11 +202,18 @@ class ParamExpertBank(nn.Module):
                     self.weight[expert_index],
                     None,
                 )
+                combine_dtype = torch.promote_types(expert_y.dtype, probs.dtype)
                 if y is None:
-                    y = torch.zeros_like(expert_y)
-                combine_weight = probs[:, expert_index].to(dtype=expert_y.dtype)
-                y.add_(expert_y * combine_weight.unsqueeze(-1))
+                    y = expert_y.new_zeros(expert_y.shape, dtype=combine_dtype)
+                else:
+                    accumulator_dtype = torch.promote_types(y.dtype, combine_dtype)
+                    if accumulator_dtype != y.dtype:
+                        y = y.to(dtype=accumulator_dtype)
+                combine_weight = probs[:, expert_index].to(dtype=y.dtype)
+                y.add_(expert_y.to(dtype=y.dtype) * combine_weight.unsqueeze(-1))
             assert y is not None
+            if active_indices is not None:
+                y = _restore_active_tokens(y, active_indices, token_count)
         else:
             route_tokens, route_weights, token_counts = self._grouped_topk_routes(routing)
             y = None
@@ -195,19 +229,40 @@ class ParamExpertBank(nn.Module):
                     self.weight[expert_index],
                     None,
                 )
+                combine_dtype = torch.promote_types(
+                    expert_y.dtype,
+                    route_weights.dtype,
+                )
                 if y is None:
-                    y = expert_y.new_zeros(flat.size(0), expert_y.size(-1))
-                combine_weight = route_weights[start:end].to(dtype=expert_y.dtype)
+                    y = expert_y.new_zeros(
+                        flat.size(0),
+                        expert_y.size(-1),
+                        dtype=combine_dtype,
+                    )
+                else:
+                    accumulator_dtype = torch.promote_types(y.dtype, combine_dtype)
+                    if accumulator_dtype != y.dtype:
+                        y = y.to(dtype=accumulator_dtype)
+                combine_weight = route_weights[start:end].to(dtype=y.dtype)
                 y.index_add_(
                     0,
                     token_indices,
-                    expert_y * combine_weight.unsqueeze(-1),
+                    expert_y.to(dtype=y.dtype) * combine_weight.unsqueeze(-1),
                 )
                 start = end
             if y is None:
-                probe = self.expert(flat, self.weight[0], None)
-                zero = route_weights.sum().to(dtype=probe.dtype) * 0
-                y = probe * zero
+                probe = self.expert(flat[:0], self.weight[0], None)
+                _validate_generic_expert_output(
+                    probe,
+                    token_count=0,
+                    expert_index=0,
+                )
+                y = _empty_bank_output(
+                    probe,
+                    token_count=flat.size(0),
+                    route_weights=route_weights,
+                    graph_inputs=(flat, self.weight),
+                )
         return y.reshape(*leading_shape, y.size(-1))
 
     def _forward_conv1d(self, cells: Tensor, routing: ExpertRouting) -> Tensor:
@@ -221,10 +276,10 @@ class ParamExpertBank(nn.Module):
                 f"Conv1dExpert expects cells shaped (U, C, T), got {tuple(cells.shape)}."
             )
         if routing.is_dense:
-            probs = routing.probabilities.reshape(-1, self.num_experts)
+            probs = _dense_probabilities(routing)
             mixed_weight = mix_expert_weights(probs, self.weight)
             return grouped_conv1d(
-                cells,
+                cells.to(dtype=mixed_weight.dtype),
                 mixed_weight,
                 stride=expert.stride,
                 padding=expert.padding,
@@ -244,7 +299,12 @@ class ParamExpertBank(nn.Module):
         expert_outputs = expert_outputs.reshape(
             cells.size(0), top_k, expert_outputs.size(1), expert_outputs.size(-1)
         )
-        return torch.einsum("uk,ukot->uot", selected_weights, expert_outputs)
+        combine_dtype = torch.promote_types(selected_weights.dtype, expert_outputs.dtype)
+        return torch.einsum(
+            "uk,ukot->uot",
+            selected_weights.to(dtype=combine_dtype),
+            expert_outputs.to(dtype=combine_dtype),
+        )
 
     def _forward_conv_transpose1d(self, cells: Tensor, routing: ExpertRouting) -> Tensor:
         expert = self.expert
@@ -259,10 +319,10 @@ class ParamExpertBank(nn.Module):
                 f"got {tuple(cells.shape)}."
             )
         if routing.is_dense:
-            probs = routing.probabilities.reshape(-1, self.num_experts)
+            probs = _dense_probabilities(routing)
             mixed_weight = mix_expert_weights(probs, self.weight)
             return grouped_conv_transpose1d(
-                cells,
+                cells.to(dtype=mixed_weight.dtype),
                 mixed_weight,
                 stride=expert.stride,
                 dilation=expert.dilation,
@@ -280,7 +340,12 @@ class ParamExpertBank(nn.Module):
         expert_outputs = expert_outputs.reshape(
             cells.size(0), top_k, expert_outputs.size(1), expert_outputs.size(-1)
         )
-        return torch.einsum("uk,ukot->uot", selected_weights, expert_outputs)
+        combine_dtype = torch.promote_types(selected_weights.dtype, expert_outputs.dtype)
+        return torch.einsum(
+            "uk,ukot->uot",
+            selected_weights.to(dtype=combine_dtype),
+            expert_outputs.to(dtype=combine_dtype),
+        )
 
     def _forward_conv2d(self, cells: Tensor, routing: ExpertRouting) -> Tensor:
         expert = self.expert
@@ -293,10 +358,10 @@ class ParamExpertBank(nn.Module):
                 f"Conv2dExpert expects cells shaped (U, C, H, W), got {tuple(cells.shape)}."
             )
         if routing.is_dense:
-            probs = routing.probabilities.reshape(-1, self.num_experts)
+            probs = _dense_probabilities(routing)
             mixed_weight = mix_expert_weights(probs, self.weight)
             return grouped_conv2d(
-                cells,
+                cells.to(dtype=mixed_weight.dtype),
                 mixed_weight,
                 stride=expert.stride,
                 padding=expert.padding,
@@ -320,7 +385,12 @@ class ParamExpertBank(nn.Module):
             expert_outputs.size(-2),
             expert_outputs.size(-1),
         )
-        return torch.einsum("uk,ukohw->uohw", selected_weights, expert_outputs)
+        combine_dtype = torch.promote_types(selected_weights.dtype, expert_outputs.dtype)
+        return torch.einsum(
+            "uk,ukohw->uohw",
+            selected_weights.to(dtype=combine_dtype),
+            expert_outputs.to(dtype=combine_dtype),
+        )
 
     def _forward_generic(self, cells: Tensor, routing: ExpertRouting) -> Tensor:
         leading = routing.leading_shape
@@ -335,14 +405,40 @@ class ParamExpertBank(nn.Module):
         flat_cells = cells.reshape(flat_count, *cells.shape[len(leading) :])
 
         if routing.is_dense:
-            probs = routing.probabilities.reshape(flat_count, self.num_experts)
-            outputs = [
-                self.expert(flat_cells, self.weight[expert_index], None)
-                for expert_index in range(self.num_experts)
-            ]
+            probs = _dense_probabilities(routing)
+            active_indices: Tensor | None = None
+            if routing.mask is not None:
+                active_indices = routing.flat_active_mask().nonzero(as_tuple=False).flatten()
+                flat_cells = flat_cells.index_select(0, active_indices)
+                probs = probs.index_select(0, active_indices)
+            dense_count = flat_cells.size(0)
+            outputs = []
+            output_tail_shape = None
+            for expert_index in range(self.num_experts):
+                output = self.expert(flat_cells, self.weight[expert_index], None)
+                _validate_generic_expert_output(
+                    output,
+                    token_count=dense_count,
+                    expert_index=expert_index,
+                )
+                if output_tail_shape is None:
+                    output_tail_shape = output.shape[1:]
+                elif output.shape[1:] != output_tail_shape:
+                    raise ValueError(
+                        "all experts must return the same non-batch shape: "
+                        f"expected {tuple(output_tail_shape)}, got "
+                        f"{tuple(output.shape[1:])} from expert {expert_index}."
+                    )
+                outputs.append(output)
             stacked = torch.stack(outputs, dim=1)
-            weight_view = probs.reshape(flat_count, self.num_experts, *([1] * (stacked.ndim - 2)))
+            weight_view = probs.reshape(
+                dense_count,
+                self.num_experts,
+                *([1] * (stacked.ndim - 2)),
+            )
             mixed = (weight_view * stacked).sum(dim=1)
+            if active_indices is not None:
+                mixed = _restore_active_tokens(mixed, active_indices, flat_count)
         else:
             route_tokens, route_weights, token_counts = self._grouped_topk_routes(routing)
             mixed = None
@@ -401,18 +497,18 @@ class ParamExpertBank(nn.Module):
                 )
                 start = end
             if mixed is None:
-                probe = self.expert(flat_cells, self.weight[0], None)
+                probe = self.expert(flat_cells[:0], self.weight[0], None)
                 _validate_generic_expert_output(
                     probe,
-                    token_count=flat_count,
+                    token_count=0,
                     expert_index=0,
                 )
-                combine_dtype = torch.promote_types(
-                    probe.dtype,
-                    route_weights.dtype,
+                mixed = _empty_bank_output(
+                    probe,
+                    token_count=flat_count,
+                    route_weights=route_weights,
+                    graph_inputs=(flat_cells, self.weight),
                 )
-                zero = route_weights.sum().to(dtype=combine_dtype) * 0
-                mixed = probe.to(dtype=combine_dtype) * zero
         return mixed.reshape(*leading, *mixed.shape[1:])
 
     def _grouped_topk_routes(
@@ -484,6 +580,26 @@ def _mask_mixed_bias(mixed_bias: Tensor, active: Tensor) -> Tensor:
     return mixed_bias.masked_fill(~active, 0)
 
 
+def _restore_active_tokens(
+    active_output: Tensor,
+    active_indices: Tensor,
+    token_count: int,
+) -> Tensor:
+    output = active_output.new_zeros(
+        token_count,
+        *active_output.shape[1:],
+    )
+    return output.index_copy(0, active_indices, active_output)
+
+
+def _dense_probabilities(routing: ExpertRouting) -> Tensor:
+    probabilities = routing.probabilities.reshape(-1, routing.num_experts)
+    if routing.mask is None:
+        return probabilities
+    active = routing.flat_active_mask().unsqueeze(-1)
+    return probabilities.masked_fill(~active, 0)
+
+
 def _validate_generic_expert_output(
     output: Tensor,
     *,
@@ -501,6 +617,27 @@ def _validate_generic_expert_output(
             "expert output batch size must match routed token count: "
             f"expert {expert_index} returned {output.size(0)}, expected {token_count}."
         )
+
+
+def _empty_bank_output(
+    probe: Tensor,
+    *,
+    token_count: int,
+    route_weights: Tensor,
+    graph_inputs: tuple[Tensor, ...],
+) -> Tensor:
+    output_dtype = torch.promote_types(probe.dtype, route_weights.dtype)
+    output = probe.new_zeros(
+        token_count,
+        *probe.shape[1:],
+        dtype=output_dtype,
+    )
+    graph_zero = output.new_zeros(())
+    for graph_input in (*graph_inputs, route_weights):
+        graph_zero = graph_zero + graph_input.unsqueeze(0)[:0].sum().to(
+            dtype=output_dtype
+        )
+    return output + graph_zero
 
 
 def _apply_1d_bias(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 import torch
 from torch import nn
@@ -30,12 +30,39 @@ class Embedding(nn.Module):
     def vocab_size(self) -> int:
         return self.num_embeddings
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        selected_blocks: Collection[str] | None = None,
+        validate: bool = True,
+    ) -> torch.Tensor:
         if input_ids.numel() == 0:
             raise ValueError("input_ids must not be empty.")
-        if self._homogeneous_output_dim is not None and _can_use_homogeneous_path(self.embeddings):
+        selected = _checked_selected_blocks(selected_blocks, self.layout)
+        if not validate and selected is None:
+            raise ValueError("selected_blocks is required when validate=False.")
+        if (
+            selected is None
+            and self._homogeneous_output_dim is not None
+            and _can_use_homogeneous_path(self.embeddings)
+        ):
             return self._forward_homogeneous(input_ids, output_dim=self._homogeneous_output_dim)
-        return self._forward_with_adapters(input_ids)
+        return self._forward_with_adapters(
+            input_ids,
+            selected_blocks=selected,
+            validate=validate,
+        )
+
+    def selected_blocks(self, input_ids: torch.Tensor) -> frozenset[str]:
+        """Return the exact routed blocks after validating global ids.
+
+        Call this while ``input_ids`` are still on CPU when a trusted caller needs
+        to carry routing metadata across an asynchronous device transfer.
+        """
+        if input_ids.numel() == 0:
+            raise ValueError("input_ids must not be empty.")
+        return frozenset(_selected_blocks(input_ids, self.layout))
 
     def _forward_homogeneous(self, input_ids: torch.Tensor, *, output_dim: int) -> torch.Tensor:
         first = next(iter(self.embeddings.values()))
@@ -51,9 +78,18 @@ class Embedding(nn.Module):
         _validate_covered(input_ids, covered)
         return output
 
-    def _forward_with_adapters(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def _forward_with_adapters(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        selected_blocks: frozenset[str] | None,
+        validate: bool,
+    ) -> torch.Tensor:
         output: torch.Tensor | None = None
-        selected = _selected_blocks(input_ids, self.layout)
+        selected = _selected_blocks(input_ids, self.layout) if validate else selected_blocks
+        if selected is None:
+            raise ValueError("selected_blocks is required when validate=False.")
+        assert selected is not None
 
         for name, embed in self.embeddings.items():
             if name not in selected:
@@ -71,6 +107,7 @@ class Embedding(nn.Module):
                 output = local_output.new_empty((*input_ids.shape, local_output.shape[-1]))
             elif local_output.shape[-1] != output.shape[-1]:
                 raise ValueError("all selected embedding blocks must produce the same output dim.")
+            assert output is not None
             output[mask] = local_output
 
         if output is None:
@@ -170,6 +207,21 @@ def _selected_blocks(input_ids: torch.Tensor, layout: Layout) -> set[str]:
         for name, hit in zip(layout.block_names, selected)
         if hit
     }
+
+
+def _checked_selected_blocks(
+    selected_blocks: Collection[str] | None,
+    layout: Layout,
+) -> frozenset[str] | None:
+    if selected_blocks is None:
+        return None
+    selected = frozenset(selected_blocks)
+    unknown = selected - set(layout.block_names)
+    if unknown:
+        raise ValueError(f"selected_blocks contains unknown blocks: {sorted(unknown)!r}.")
+    if not selected:
+        raise ValueError("selected_blocks must not be empty.")
+    return selected
 
 
 def _can_use_homogeneous_path(embeddings: nn.ModuleDict) -> bool:

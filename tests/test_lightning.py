@@ -1198,6 +1198,39 @@ class LightningTest(unittest.TestCase):
         finally:
             callback._close_async_storage()
 
+    def test_model_checkpoint_async_remove_skips_failed_publication(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = ModelCheckpoint(async_save=True)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                source = Path(tmp_dir) / "source.ckpt"
+                source.write_bytes(b"new")
+                target = Path(tmp_dir) / "target.ckpt"
+                previous = Path(tmp_dir) / "previous.ckpt"
+                previous.write_bytes(b"previous")
+
+                with patch.object(
+                    callback,
+                    "_copy_to_target",
+                    side_effect=OSError("storage unavailable"),
+                ):
+                    callback._submit_async_copy(source, target)
+                    callback._submit_async_remove(previous)
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Asynchronous checkpoint storage failed",
+                    ):
+                        callback.wait_async_saves()
+
+                self.assertFalse(target.exists())
+                self.assertEqual(previous.read_bytes(), b"previous")
+        finally:
+            callback._close_async_storage()
+
     def test_model_checkpoint_backpressure_precedes_next_local_save(self):
         from tempfile import TemporaryDirectory
         from threading import Event, Thread
@@ -1667,6 +1700,132 @@ class LightningTest(unittest.TestCase):
             if callback is not None:
                 callback._close_async_storage()
 
+    def test_model_checkpoint_failed_last_link_update_keeps_previous_topk(self):
+        import os
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        import torch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = None
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    filename="step-{step:02d}",
+                    monitor="score",
+                    mode="max",
+                    save_last="link",
+                    save_top_k=1,
+                    auto_insert_metric_name=False,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                trainer = _CheckpointTrainer(payload=b"saved")
+                trainer.ckpt_path = None
+                first_candidates = {
+                    "epoch": torch.tensor(0),
+                    "step": torch.tensor(1),
+                    "score": torch.tensor(1.0),
+                }
+                second_candidates = {
+                    "epoch": torch.tensor(0),
+                    "step": torch.tensor(2),
+                    "score": torch.tensor(2.0),
+                }
+
+                callback._save_topk_checkpoint(trainer, first_candidates)
+                callback._save_last_checkpoint(trainer, first_candidates)
+                callback.wait_async_saves()
+
+                first = Path(tmp_dir) / "step-01.ckpt"
+                last = Path(tmp_dir) / "last.ckpt"
+                self.assertTrue(first.is_file())
+                self.assertTrue(last.is_symlink())
+
+                with patch.object(
+                    callback,
+                    "_update_last_checkpoint",
+                    side_effect=OSError("last update failed"),
+                ):
+                    callback._save_topk_checkpoint(trainer, second_candidates)
+                    callback._save_last_checkpoint(trainer, second_candidates)
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Asynchronous checkpoint storage failed",
+                    ):
+                        callback.wait_async_saves()
+
+                self.assertTrue(first.is_file())
+                self.assertTrue(last.is_symlink())
+                linked = (last.parent / os.readlink(last)).resolve()
+                self.assertEqual(linked, first.resolve())
+                self.assertEqual(last.read_bytes(), b"saved")
+        finally:
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_failed_copy_does_not_relink_deleted_local_source(self):
+        import os
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        import torch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = None
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    filename="step-{step:02d}",
+                    save_last="link",
+                    save_top_k=-1,
+                    auto_insert_metric_name=False,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                trainer = _CheckpointTrainer(payload=b"saved")
+                candidates = {
+                    "epoch": torch.tensor(0),
+                    "step": torch.tensor(1),
+                }
+
+                callback._save_topk_checkpoint(trainer, candidates)
+                callback._save_last_checkpoint(trainer, candidates)
+                callback.wait_async_saves()
+
+                persistent = Path(tmp_dir) / "step-01.ckpt"
+                last = Path(tmp_dir) / "last.ckpt"
+                failed_target = Path(tmp_dir) / "failed.ckpt"
+                with patch.object(
+                    callback,
+                    "_copy_to_target",
+                    side_effect=OSError("storage unavailable"),
+                ):
+                    callback._save_checkpoint(trainer, str(failed_target))
+                    failed_local = trainer.saved_paths[-1][0]
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Asynchronous checkpoint storage failed",
+                    ):
+                        callback.wait_async_saves()
+
+                self.assertFalse(failed_local.exists())
+                callback._save_last_checkpoint(trainer, candidates)
+                callback.wait_async_saves()
+
+                self.assertTrue(last.is_symlink())
+                linked = (last.parent / os.readlink(last)).resolve()
+                self.assertEqual(linked, persistent.resolve())
+                self.assertEqual(last.read_bytes(), b"saved")
+        finally:
+            if callback is not None:
+                callback._close_async_storage()
+
     def test_model_checkpoint_save_top_k_zero_serializes_last_once(self):
         from tempfile import TemporaryDirectory
 
@@ -1786,7 +1945,7 @@ class LightningTest(unittest.TestCase):
 
                 with patch("os.symlink", side_effect=OSError("links unavailable")):
                     callback._save_last_checkpoint(trainer, candidates)
-                callback.wait_async_saves()
+                    callback.wait_async_saves()
 
                 last = Path(callback.dirpath) / "last.ckpt"
                 self.assertFalse(last.is_symlink())
@@ -1836,9 +1995,8 @@ class LightningTest(unittest.TestCase):
 
                     callback._save_last_checkpoint(trainer, {})
 
-                    self.assertTrue(link.is_symlink())
-                    linked = (link.parent / os.readlink(link)).resolve()
-                    self.assertEqual(linked, target.resolve())
+                    self.assertFalse(link.is_symlink())
+                    self.assertEqual(link.read_bytes(), b"previous")
                     release_copy.set()
                     callback.wait_async_saves()
 
@@ -1894,7 +2052,7 @@ class LightningTest(unittest.TestCase):
                     callback._save_last_checkpoint(trainer, {})
 
                     self.assertFalse(link.is_symlink())
-                    self.assertEqual(link.read_bytes(), b"saved")
+                    self.assertEqual(link.read_bytes(), b"previous")
                     release_copy.set()
                     callback.wait_async_saves()
 
@@ -1904,6 +2062,32 @@ class LightningTest(unittest.TestCase):
             release_copy.set()
             if callback is not None:
                 callback._close_async_storage()
+
+    def test_model_checkpoint_last_update_replaces_existing_directory(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = ModelCheckpoint(async_save=True)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                persistent = Path(tmp_dir) / "model.ckpt"
+                persistent.write_bytes(b"saved")
+                last = Path(tmp_dir) / "last.ckpt"
+                last.mkdir()
+                (last / "shard").write_bytes(b"old")
+
+                callback._update_last_checkpoint(
+                    None,
+                    persistent,
+                    last,
+                    True,
+                )
+
+                self.assertTrue(last.is_symlink())
+                self.assertEqual(last.read_bytes(), b"saved")
+        finally:
+            callback._close_async_storage()
 
     def test_model_checkpoint_remove_does_not_consume_copy_backpressure(self):
         from tempfile import TemporaryDirectory

@@ -141,17 +141,15 @@ class MoETest(unittest.TestCase):
         self.assertIsNotNone(selected_weights.grad)
         self.assertNotEqual(float(selected_weights.grad[1, 0]), 0.0)
 
-    def test_topk_generic_all_masked_does_not_require_empty_batch(self):
+    def test_topk_generic_all_masked_uses_empty_shape_probe(self):
         batch_sizes: list[int] = []
 
-        def nonempty_expert(
+        def probed_expert(
             input: Tensor,
             weight: Tensor,
             bias: Tensor | None = None,
         ) -> Tensor:
             del bias
-            if input.size(0) == 0:
-                raise ValueError("empty batches are unsupported")
             batch_sizes.append(input.size(0))
             return input * weight
 
@@ -167,7 +165,7 @@ class MoETest(unittest.TestCase):
         moe = MoE(
             num_experts=2,
             router=LinearRouter(2, 2),
-            expert=CallableExpert(nonempty_expert),
+            expert=CallableExpert(probed_expert),
             weight=nn.Parameter(torch.tensor([2.0, 3.0])),
             top_k=1,
         )
@@ -175,7 +173,7 @@ class MoETest(unittest.TestCase):
         output = moe.forward_manually(hidden, routing)
 
         self.assertTrue(torch.equal(output.hidden_states, torch.zeros_like(hidden)))
-        self.assertEqual(batch_sizes, [3])
+        self.assertEqual(batch_sizes, [0])
         output.hidden_states.sum().backward()
         self.assertIsNotNone(hidden.grad)
         self.assertIsNotNone(selected_weights.grad)
@@ -237,6 +235,50 @@ class MoETest(unittest.TestCase):
             self.assertIsNotNone(grad)
             assert grad is not None
             self.assertTrue(torch.equal(grad, torch.zeros_like(grad)))
+
+    def test_sparse_dispatch_all_masked_does_not_read_nan_inputs(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        hidden = torch.tensor([[float("nan"), float("inf")]], requires_grad=True)
+        selected_weights = torch.full((1, 1), float("nan"), requires_grad=True)
+        routing = ExpertRouting(
+            logits=torch.zeros(1, 1),
+            probabilities=torch.ones(1, 1),
+            indices=torch.zeros(1, 1, dtype=torch.long),
+            weights=selected_weights,
+            mask=torch.zeros(1, dtype=torch.bool),
+        )
+        expert = nn.Linear(2, 1)
+
+        output, _counts = sparse_dispatch(hidden, routing, [expert])
+        output.sum().backward()
+
+        self.assertTrue(torch.equal(output, torch.zeros_like(output)))
+        for grad in (hidden.grad, selected_weights.grad, expert.weight.grad, expert.bias.grad):
+            self.assertIsNotNone(grad)
+            assert grad is not None
+            self.assertTrue(torch.equal(grad, torch.zeros_like(grad)))
+
+    def test_sparse_dispatch_all_masked_does_not_update_batch_norm_mean(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        hidden = torch.full((4, 2), 7.0)
+        routing = ExpertRouting(
+            logits=torch.zeros(4, 1),
+            probabilities=torch.ones(4, 1),
+            indices=torch.zeros(4, 1, dtype=torch.long),
+            weights=torch.ones(4, 1),
+            mask=torch.zeros(4, dtype=torch.bool),
+        )
+        expert = nn.BatchNorm1d(2)
+        before = expert.running_mean.detach().clone()
+        before_batches = expert.num_batches_tracked.detach().clone()
+
+        output, _counts = sparse_dispatch(hidden, routing, [expert])
+
+        self.assertTrue(torch.equal(output, torch.zeros_like(output)))
+        torch.testing.assert_close(expert.running_mean, before)
+        torch.testing.assert_close(expert.num_batches_tracked, before_batches)
 
     def test_sparse_dispatch_zero_weights_keep_route_derivatives(self):
         from anytrain.module.moe.sparse import sparse_dispatch
@@ -738,7 +780,7 @@ class MoETest(unittest.TestCase):
         torch.amp.autocast_mode.is_autocast_available("cpu"),
         "requires CPU autocast",
     )
-    def test_linear_bank_cpu_autocast_preserves_output_dtype_and_backward(self):
+    def test_linear_bank_cpu_autocast_promotes_float32_routes_and_backward(self):
         torch.manual_seed(0)
         for top_k in (None, 2):
             with self.subTest(top_k=top_k):
@@ -777,7 +819,7 @@ class MoETest(unittest.TestCase):
                     output = moe.forward_manually(hidden, routing).hidden_states
                 output.float().square().mean().backward()
 
-                self.assertEqual(output.dtype, torch.bfloat16)
+                self.assertEqual(output.dtype, torch.float32)
                 for grad in (
                     hidden.grad,
                     weight.grad,
@@ -787,6 +829,149 @@ class MoETest(unittest.TestCase):
                     self.assertIsNotNone(grad)
                     assert grad is not None
                     self.assertTrue(torch.isfinite(grad).all())
+
+    def test_linear_bank_promotes_bfloat16_parameters_with_float32_routes(self):
+        torch.manual_seed(0)
+        for top_k in (None, 2):
+            with self.subTest(top_k=top_k):
+                hidden = torch.randn(2, 3, 4, dtype=torch.bfloat16, requires_grad=True)
+                weight = nn.Parameter(torch.randn(3, 5, 4, dtype=torch.bfloat16))
+                bias = nn.Parameter(torch.randn(3, 5, dtype=torch.bfloat16))
+                logits = torch.randn(2, 3, 3)
+                probabilities = logits.softmax(dim=-1).detach().requires_grad_(True)
+                if top_k is None:
+                    routing = ExpertRouting(logits=logits, probabilities=probabilities)
+                    route_values = probabilities
+                else:
+                    indices = logits.topk(top_k, dim=-1).indices
+                    selected_weights = torch.rand(2, 3, top_k, requires_grad=True)
+                    routing = ExpertRouting(
+                        logits=logits,
+                        probabilities=probabilities,
+                        indices=indices,
+                        weights=selected_weights,
+                    )
+                    route_values = selected_weights
+                moe = MoE(
+                    num_experts=3,
+                    router=LinearRouter(4, 3),
+                    expert=linear,
+                    weight=weight,
+                    bias=bias,
+                    top_k=top_k,
+                )
+
+                output = moe.forward_manually(hidden, routing).hidden_states
+                output.square().mean().backward()
+
+                self.assertEqual(output.dtype, torch.float32)
+                for grad in (hidden.grad, weight.grad, bias.grad, route_values.grad):
+                    self.assertIsNotNone(grad)
+                    assert grad is not None
+                    self.assertTrue(torch.isfinite(grad).all())
+
+    def test_linear_bank_all_masked_does_not_read_nonfinite_values(self):
+        for top_k in (None, 1):
+            with self.subTest(top_k=top_k):
+                hidden = torch.tensor(
+                    [[float("nan"), float("inf")]],
+                    requires_grad=True,
+                )
+                weight = nn.Parameter(torch.ones(2, 1, 2))
+                bias = nn.Parameter(torch.ones(2, 1))
+                probabilities = torch.full((1, 2), float("nan"), requires_grad=True)
+                logits = torch.zeros(1, 2)
+                if top_k is None:
+                    routing = ExpertRouting(logits=logits, probabilities=probabilities)
+                    route_values = probabilities
+                else:
+                    selected_weights = torch.full(
+                        (1, 1),
+                        float("nan"),
+                        requires_grad=True,
+                    )
+                    routing = ExpertRouting(
+                        logits=logits,
+                        probabilities=probabilities,
+                        indices=torch.zeros(1, 1, dtype=torch.long),
+                        weights=selected_weights,
+                    )
+                    route_values = selected_weights
+                routing.mask = torch.zeros(1, dtype=torch.bool)
+                moe = MoE(
+                    num_experts=2,
+                    router=LinearRouter(2, 2),
+                    expert=linear,
+                    weight=weight,
+                    bias=bias,
+                    top_k=top_k,
+                )
+
+                output = moe.forward_manually(hidden, routing).hidden_states
+                output.sum().backward()
+
+                self.assertTrue(torch.equal(output, torch.zeros_like(output)))
+                for grad in (hidden.grad, weight.grad, bias.grad, route_values.grad):
+                    self.assertIsNotNone(grad)
+                    assert grad is not None
+                    self.assertTrue(torch.equal(grad, torch.zeros_like(grad)))
+
+    def test_linear_bank_masked_nonfinite_token_has_zero_gradient(self):
+        for top_k in (None, 1):
+            with self.subTest(top_k=top_k):
+                hidden = torch.tensor(
+                    [[1.0, 2.0], [float("nan"), float("inf")]],
+                    requires_grad=True,
+                )
+                weight = nn.Parameter(torch.ones(2, 1, 2))
+                bias = nn.Parameter(torch.ones(2, 1))
+                probabilities = torch.tensor(
+                    [[1.0, 0.0], [float("nan"), float("nan")]],
+                    requires_grad=True,
+                )
+                logits = torch.zeros(2, 2)
+                kwargs = {}
+                route_values = probabilities
+                if top_k is not None:
+                    selected_weights = torch.tensor(
+                        [[1.0], [float("nan")]],
+                        requires_grad=True,
+                    )
+                    kwargs = {
+                        "indices": torch.zeros(2, 1, dtype=torch.long),
+                        "weights": selected_weights,
+                    }
+                    route_values = selected_weights
+                routing = ExpertRouting(
+                    logits=logits,
+                    probabilities=probabilities,
+                    mask=torch.tensor([True, False]),
+                    **kwargs,
+                )
+                moe = MoE(
+                    num_experts=2,
+                    router=LinearRouter(2, 2),
+                    expert=linear,
+                    weight=weight,
+                    bias=bias,
+                    top_k=top_k,
+                )
+
+                output = moe.forward_manually(hidden, routing).hidden_states
+                output.sum().backward()
+
+                torch.testing.assert_close(output[0], torch.tensor([4.0]))
+                self.assertTrue(torch.equal(output[1], torch.zeros_like(output[1])))
+                for grad in (hidden.grad, weight.grad, bias.grad, route_values.grad):
+                    self.assertIsNotNone(grad)
+                    assert grad is not None
+                    self.assertTrue(torch.isfinite(grad).all())
+                assert hidden.grad is not None
+                assert route_values.grad is not None
+                self.assertTrue(torch.equal(hidden.grad[1], torch.zeros_like(hidden.grad[1])))
+                self.assertTrue(
+                    torch.equal(route_values.grad[1], torch.zeros_like(route_values.grad[1]))
+                )
 
     def test_normal_forward_avoids_tensor_scalar_checks(self):
         moe = MoE(
@@ -852,6 +1037,60 @@ class MoETest(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(output.hidden_states, expected))
         self.assertIsInstance(moe.expert_bank, ParamExpertBank)
+
+    def test_generic_bank_dense_rejects_wrong_expert_batch_size(self):
+        def wrong_batch_expert(
+            input: Tensor,
+            weight: Tensor,
+            bias: Tensor | None = None,
+        ) -> Tensor:
+            del bias
+            return input[:1] * weight
+
+        routing = expert_routing_from_weights(torch.full((2, 2), 0.5))
+        moe = MoE(
+            num_experts=2,
+            router=LinearRouter(2, 2),
+            expert=CallableExpert(wrong_batch_expert),
+            weight=nn.Parameter(torch.ones(2)),
+            top_k=None,
+        )
+
+        with self.assertRaisesRegex(ValueError, "batch size"):
+            moe.forward_manually(torch.ones(2, 2), routing)
+
+    def test_generic_bank_dense_executes_only_active_tokens(self):
+        batch_sizes: list[int] = []
+
+        def recording_expert(
+            input: Tensor,
+            weight: Tensor,
+            bias: Tensor | None = None,
+        ) -> Tensor:
+            del bias
+            batch_sizes.append(input.size(0))
+            return input * weight
+
+        hidden = torch.tensor([[1.0, 2.0], [float("nan"), float("inf")], [3.0, 4.0]])
+        probabilities = torch.full((3, 2), 0.5)
+        routing = ExpertRouting(
+            logits=torch.zeros(3, 2),
+            probabilities=probabilities,
+            mask=torch.tensor([True, False, True]),
+        )
+        moe = MoE(
+            num_experts=2,
+            router=LinearRouter(2, 2),
+            expert=CallableExpert(recording_expert),
+            weight=nn.Parameter(torch.tensor([1.0, 10.0])),
+            top_k=None,
+        )
+
+        output = moe.forward_manually(hidden, routing).hidden_states
+
+        self.assertEqual(batch_sizes, [2, 2])
+        self.assertTrue(torch.equal(output[1], torch.zeros_like(output[1])))
+        self.assertTrue(torch.isfinite(output).all())
 
     def test_generic_bank_promotes_bfloat16_outputs_with_float32_routes(self):
         def bfloat16_expert(
@@ -1110,6 +1349,81 @@ class MoEMetricsTest(unittest.TestCase):
             mask=torch.tensor([True, True, False]),
         )
         torch.testing.assert_close(dropped_token_ratio(routing), torch.tensor(0.5))
+
+    def test_all_masked_metrics_ignore_nonfinite_values_and_gradients(self):
+        logits = torch.full((2, 2), float("nan"), requires_grad=True)
+        probabilities = torch.full((2, 2), float("nan"), requires_grad=True)
+        weights = torch.full((2, 1), float("nan"), requires_grad=True)
+        routing = ExpertRouting(
+            logits=logits,
+            probabilities=probabilities,
+            indices=torch.zeros(2, 1, dtype=torch.long),
+            weights=weights,
+            mask=torch.zeros(2, dtype=torch.bool),
+        )
+
+        metrics = moe_routing_metrics(routing)
+
+        for value in metrics.values():
+            self.assertTrue(torch.isfinite(value).all())
+        loss = (
+            router_z_loss(routing)
+            + expert_usage(routing).sum()
+            + expert_probability_mean(routing).sum()
+            + expert_route_weight_mean(routing).sum()
+        )
+        loss.backward()
+        for gradient in (logits.grad, probabilities.grad, weights.grad):
+            self.assertIsNotNone(gradient)
+            assert gradient is not None
+            self.assertTrue(torch.equal(gradient, torch.zeros_like(gradient)))
+
+    def test_metrics_avoid_tensor_scalar_checks(self):
+        routing = ExpertRouting(
+            logits=torch.zeros(2, 2),
+            probabilities=torch.full((2, 2), 0.5),
+            indices=torch.tensor([[0], [1]]),
+            weights=torch.ones(2, 1),
+        )
+
+        with (
+            patch.object(
+                torch.Tensor,
+                "item",
+                side_effect=AssertionError("MoE metrics called Tensor.item()"),
+            ),
+            patch.object(
+                torch.Tensor,
+                "__bool__",
+                side_effect=AssertionError("MoE metrics converted Tensor to bool"),
+            ),
+        ):
+            metrics = moe_routing_metrics(routing)
+
+        self.assertIn("effective_experts", metrics)
+
+    def test_metrics_do_not_read_nonfinite_masked_positions(self):
+        for top_k in (None, 1):
+            with self.subTest(top_k=top_k):
+                kwargs = {}
+                if top_k is not None:
+                    kwargs = {
+                        "indices": torch.tensor([[0], [1]]),
+                        "weights": torch.tensor([[1.0], [float("nan")]]),
+                    }
+                routing = ExpertRouting(
+                    logits=torch.tensor([[0.0, 0.0], [float("nan"), float("inf")]]),
+                    probabilities=torch.tensor([[0.75, 0.25], [float("nan"), float("nan")]]),
+                    mask=torch.tensor([True, False]),
+                    **kwargs,
+                )
+
+                metrics = moe_routing_metrics(routing)
+
+                self.assertTrue(torch.isfinite(router_z_loss(routing)))
+                self.assertTrue(torch.isfinite(load_balance_loss(routing)))
+                for value in metrics.values():
+                    self.assertTrue(torch.isfinite(value))
 
 
 class ExpandExpertTest(unittest.TestCase):

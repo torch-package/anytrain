@@ -368,7 +368,9 @@ callback 统一聚合 rank 工作量、最慢 rank 时间和各 rank 峰值算�
 本地无界积压；需要用有限本地空间换取更深 I/O overlap 时可以显式调高。传入 `async_save=False` 时，它的保存、top-k、
 `save_last`、删除和 logger 通知行为保持原生同步逻辑。
 
-异步队列串行处理目标路径复制和 top-k 删除，避免旧 checkpoint 的后台复制晚于删除完成而重新写回。后台复制会先写目标目录下的 `.part` 文件，再 `os.replace()` 到最终路径，减少半写入文件被观察到的风险。`save_last="link"` 会把 `last.ckpt` 指向持久目标 checkpoint，而不是本地临时 source；不能创建 symlink 的平台继续使用 Lightning 的文件复制语义。新目标尚在后台复制时，symlink 可以暂时是 dangling link；`wait_async_saves()`、正常 fit end 和 exception drain 返回后保证目标已原子发布并可读。
+异步队列串行处理目标路径复制和 top-k 删除，避免旧 checkpoint 的后台复制晚于删除完成而重新写回。后台复制会先写目标目录下的 `.part` 文件，再 `os.replace()` 到最终路径，减少半写入文件被观察到的风险。`save_last="link"` 会在持久目标 checkpoint 发布成功后原子替换 `last.ckpt`，而不是链接会被清理的本地临时 source；不能创建 symlink 的平台同样在主发布成功后执行 Lightning 的文件复制语义。复制期间已有 `last.ckpt` 保持可读；首次保存则直到主目标发布成功才创建。旧 top-k checkpoint 的删除还会等待本轮 last 更新成功，因此任一发布失败都保留上一份可读链接及其目标。`wait_async_saves()`、正常 fit end 和 exception drain 返回后保证新 last 已发布并可读。
+
+当同一次回调既保存 top-k checkpoint 又设置 `save_last` 时，异步模式只调用一次 `trainer.save_checkpoint()`：先发布持久 top-k 文件，再从该文件原子更新或链接 `last.ckpt`。这同样适用于 `save_on_exception=True`；`save_top_k=0` 则只序列化 `last.ckpt` 一次。
 
 第一版只支持本地文件系统路径，包括挂载到本机的 NFS；不支持 `s3://`、`gs://` 等远端 URI。后台任务错误会在下一次 checkpoint 操作、`on_fit_end()`、异常处理保存后或用户显式调用 `wait_async_saves()` 时抛出。DDP 下一次保存会先由 global rank 0 完成 backlog/error preflight，再把结果同步给所有 rank；发生 prior async error 时所有 rank 都在进入 `trainer.save_checkpoint()` collective 前失败，rank 0 保留原始异常 cause。`on_fit_end()` 和 `on_exception()` 的后台任务 drain 同样由 rank 0 等待后同步结果，避免训练收尾阶段各 rank 分叉。
 

@@ -46,6 +46,7 @@ def sparse_dispatch(
     route_weights = flat_weights.reshape(-1)
 
     counted_routes = route_weights != 0
+    active_routes: Tensor | None = None
     if routing.mask is not None:
         active_mask = flat_active_mask(
             routing.mask,
@@ -54,26 +55,29 @@ def sparse_dispatch(
         )
         active_routes = active_mask.unsqueeze(-1).expand_as(flat_indices).reshape(-1)
         counted_routes = counted_routes & active_routes
-        route_expert_indices = route_expert_indices[active_routes]
-        route_token_indices = route_token_indices[active_routes]
-        route_weights = route_weights[active_routes]
 
+    sentinel = torch.full_like(route_expert_indices, len(experts))
+    counted_experts = torch.where(counted_routes, route_expert_indices, sentinel)
     tokens_per_expert = torch.bincount(
-        flat_indices.reshape(-1)[counted_routes],
-        minlength=len(experts),
-    )
+        counted_experts,
+        minlength=len(experts) + 1,
+    )[: len(experts)]
 
-    sorted_order = route_expert_indices.argsort(stable=True)
-    route_expert_indices = route_expert_indices.index_select(0, sorted_order)
+    if active_routes is None:
+        group_keys = route_expert_indices
+    else:
+        group_keys = torch.where(active_routes, route_expert_indices, sentinel)
+    sorted_order = group_keys.argsort(stable=True)
     route_token_indices = route_token_indices.index_select(0, sorted_order)
     route_weights = route_weights.index_select(0, sorted_order)
+    group_keys = group_keys.index_select(0, sorted_order)
     dispatch_counts = torch.bincount(
-        route_expert_indices,
-        minlength=len(experts),
+        group_keys,
+        minlength=len(experts) + 1,
     )
     # Python dispatch to distinct nn.Module experts needs segment lengths on the
     # host. Keep that to one synchronization instead of probing every expert.
-    token_counts = dispatch_counts.tolist()
+    token_counts = dispatch_counts[: len(experts)].tolist()
 
     start = 0
     for expert_index, (expert, token_count) in enumerate(zip(experts, token_counts)):
@@ -151,14 +155,17 @@ def _empty_output(
     route_weights: Tensor,
     experts: Sequence[nn.Module],
 ) -> Tensor:
-    probe_output = experts[0](flat_hidden)
+    probe_output = _empty_expert_probe(experts[0], flat_hidden[:0])
     _validate_expert_output(
         probe_output,
-        token_count=flat_hidden.size(0),
+        token_count=0,
         expert_index=0,
     )
     output_dtype = torch.promote_types(probe_output.dtype, route_weights.dtype)
-    output = probe_output.new_zeros(probe_output.shape, dtype=output_dtype)
+    output = probe_output.new_zeros(
+        (flat_hidden.size(0), *probe_output.shape[1:]),
+        dtype=output_dtype,
+    )
 
     graph_inputs = [flat_hidden, route_weights]
     graph_inputs.extend(
@@ -167,10 +174,25 @@ def _empty_output(
         for parameter in expert.parameters()
         if parameter.requires_grad and parameter.device == output.device
     )
+    graph_zero = output.new_zeros(())
     for graph_input in graph_inputs:
-        graph_zero = graph_input.reshape(-1)[:1].sum().to(dtype=output_dtype) * 0
-        output = output + graph_zero
-    return output
+        # Empty reductions retain a zero-gradient edge without reading NaN/Inf data.
+        graph_zero = graph_zero + graph_input.unsqueeze(0)[:0].sum().to(
+            dtype=output_dtype
+        )
+    return output + graph_zero
+
+
+def _empty_expert_probe(expert: nn.Module, empty_input: Tensor) -> Tensor:
+    training_states = tuple((module, module.training) for module in expert.modules())
+    try:
+        for module, _training in training_states:
+            module.training = False
+        with torch.no_grad():
+            return expert(empty_input)
+    finally:
+        for module, training in training_states:
+            module.training = training
 
 
 dispatch_to_experts = sparse_dispatch

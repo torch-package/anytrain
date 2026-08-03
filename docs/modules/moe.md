@@ -161,6 +161,15 @@ class Expert(Protocol):
 Bare callables (including raw `F.linear`) are not the public contract;
 `F.linear` is coerced to `LinearExpert()` at MoE construction for convenience.
 
+Masked dense or sparse routing may produce a step with no active route. On the
+first such step, module-backed and custom generic experts are called with an
+empty batch to probe their output shape and dtype; custom experts therefore
+need to preserve their normal non-batch output contract for
+`input.shape[0] == 0`. The empty probe avoids executing masked token data or
+updating stateful layers with it. Dense Linear and generic banks also compact
+partially masked inputs and execute only active positions before scattering
+outputs back to the original layout.
+
 ### Parameter helpers (not Module compilation)
 
 Reliable shared helper:

@@ -205,8 +205,11 @@ callback state，因此 `load_state_dict` 会暂存 EMA payload，并在 `on_fit
 不会造成临时文件无界积压。删除任务不占该容量，但继续在同一 worker 中保持顺序。DDP 保存前由
 global rank 0 完成 backlog/error preflight，并把错误结果同步到所有 rank，避免其它 rank 进入
 `trainer.save_checkpoint()` collective 后挂起；fit-end 和 exception drain 也同步传播 rank 0 的后台
-错误。`save_last="link"` 始终链接持久 target，不链接会被清理的临时 source；后台复制完成前该
-symlink 可能暂时 dangling，显式 wait 或训练结束 drain 后保证可读。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
+错误。`save_last="link"` 只在持久 target 发布成功后原子替换 `last.ckpt`，不链接会被清理的
+临时 source；后台复制期间已有 last 保持可读，首次保存则暂不创建。显式 wait 或训练结束 drain
+后保证新 last 可读。旧 top-k 仅在该更新成功后删除；更新失败时旧链接及其目标都会保留。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
+
+同一次 top-k 和 `save_last` 保存会复用一份本地序列化结果：先异步发布持久 top-k checkpoint，再从它原子更新或链接 `last.ckpt`，不会重复调用 `trainer.save_checkpoint()`。异常 checkpoint 同样复用该路径；`save_top_k=0` 只保存 `last.ckpt` 一次。
 
 异步模式要求 `trainer.save_checkpoint()` 产出普通文件，并明确不支持 FSDP/DeepSpeed 的目录型或分片 checkpoint；这类训练应设置 `async_save=False`。异步复制完成后才通知 logger 的 `after_save_checkpoint`。
 

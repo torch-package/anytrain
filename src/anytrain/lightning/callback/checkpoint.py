@@ -74,14 +74,19 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._async_futures: list[Future[None]] = []
         self._async_copy_futures: list[Future[None]] = []
         self._async_callbacks: dict[Future[None], tuple[Callable[[], None], ...]] = {}
+        self._async_publications: dict[Future[None], tuple[str, str, Path]] = {}
         self._async_sources: dict[Path, Path] = {}
         self._async_source_futures: dict[Path, Future[None]] = {}
+        self._last_persistent_checkpoint: Path | None = None
+        self._latest_publication_future: Future[None] | None = None
+        self._latest_publication_path: Path | None = None
+        self._deferred_async_removes: list[str] = []
         self._prepared_last_paths: tuple[str, str] | None = None
         self._reused_last_save: tuple[str, str, Path, Path, Future[None] | None] | None = None
         self._async_lock = threading.Lock()
 
     def __getstate__(self) -> dict[str, Any]:
-        if self._async_futures:
+        if self._async_futures or self._deferred_async_removes:
             raise RuntimeError("Cannot serialize ModelCheckpoint while async saves are pending.")
 
         state = self.__dict__.copy()
@@ -90,8 +95,12 @@ class ModelCheckpoint(LightningModelCheckpoint):
         state["_async_futures"] = []
         state["_async_copy_futures"] = []
         state["_async_callbacks"] = {}
+        state["_async_publications"] = {}
         state["_async_sources"] = {}
         state["_async_source_futures"] = {}
+        state["_latest_publication_future"] = None
+        state["_latest_publication_path"] = state.get("_last_persistent_checkpoint")
+        state["_deferred_async_removes"] = []
         state["_prepared_last_paths"] = None
         state["_reused_last_save"] = None
         state["_async_lock"] = None
@@ -99,14 +108,19 @@ class ModelCheckpoint(LightningModelCheckpoint):
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         state.setdefault("max_pending_async_saves", 1)
+        state.setdefault("_last_persistent_checkpoint", None)
         self.__dict__.update(state)
         self._async_executor = None
         self._async_tmp_dir = None
         self._async_futures = []
         self._async_copy_futures = []
         self._async_callbacks = {}
+        self._async_publications = {}
         self._async_sources = {}
         self._async_source_futures = {}
+        self._latest_publication_future = None
+        self._latest_publication_path = self._last_persistent_checkpoint
+        self._deferred_async_removes = []
         self._prepared_last_paths = None
         self._reused_last_save = None
         self._async_lock = threading.Lock()
@@ -171,39 +185,56 @@ class ModelCheckpoint(LightningModelCheckpoint):
 
         prepared = self._prepared_last_paths
         self._prepared_last_paths = None
+        previous_checkpoint_saved = self._last_checkpoint_saved
         try:
             self._validate_async_strategy(trainer)
-            self._prepare_async_save(trainer)
             target = self._target_path(filepath)
             is_global_zero = _capability.is_global_zero(trainer)
-            local = self._local_checkpoint_path(target)
+            local = self._prepare_async_save(trainer, target)
 
             # DDP/strategy collectives may require every rank to enter save_checkpoint,
             # but only global zero typically materializes a regular file.
             trainer.save_checkpoint(str(local), self.save_weights_only)
             self._last_global_step_saved = _capability.global_step(trainer)
-            if not is_global_zero:
+            future: Future[None] | None = None
+            local_error: BaseException | None = None
+            if is_global_zero:
+                try:
+                    if not local.is_file():
+                        raise RuntimeError(
+                            "async_save requires trainer.save_checkpoint() to produce a "
+                            "regular file; use async_save=False for directory-based or "
+                            "sharded checkpoints."
+                        )
+                    # Expose the local temp path until all publications finish so
+                    # immediate readers see an existing file.
+                    self._last_checkpoint_saved = str(local)
+                    with self._async_lock:
+                        self._async_sources[local] = target
+
+                    callbacks: tuple[Callable[[], None], ...] = ()
+                    publication: tuple[str, str, Path] | None = None
+                    if prepared is None:
+                        callbacks = self._checkpoint_callbacks(trainer, filepath)
+                        publication = (str(local), filepath, target)
+                    future = self._submit_async_copy(
+                        local,
+                        target,
+                        callbacks=callbacks,
+                        publication=publication,
+                    )
+                except BaseException as error:
+                    local_error = error
+            else:
                 self._last_checkpoint_saved = filepath
-                if prepared is not None:
-                    previous, last = prepared
-                    self._reused_last_save = (previous, last, local, target, None)
-                return
 
-            if not local.is_file():
-                raise RuntimeError(
-                    "async_save requires trainer.save_checkpoint() to produce a regular file; "
-                    "use async_save=False for directory-based or sharded checkpoints."
-                )
-            # Expose the local temp path until all publications finish so immediate
-            # readers see an existing file.
-            self._last_checkpoint_saved = str(local)
-            with self._async_lock:
-                self._async_sources[local] = target
-
-            callbacks: tuple[Callable[[], None], ...] = ()
-            if prepared is None:
-                callbacks = self._checkpoint_callbacks(trainer, filepath)
-            future = self._submit_async_copy(local, target, callbacks=callbacks)
+            synchronized = self._synchronize_async_error(trainer, local_error)
+            if synchronized is not None:
+                if is_global_zero and future is None:
+                    self._remove_target(local)
+                    self._forget_async_source(local)
+                self._last_checkpoint_saved = previous_checkpoint_saved
+                raise synchronized
             if prepared is not None:
                 previous, last = prepared
                 self._reused_last_save = (previous, last, local, target, future)
@@ -219,13 +250,21 @@ class ModelCheckpoint(LightningModelCheckpoint):
             super()._remove_checkpoint(trainer, filepath)
             return
 
-        local_error = self._collect_done_async_error() if _capability.is_global_zero(trainer) else None
+        defer_remove = self.save_last == "link" and self._reused_last_save is not None
+        local_error: BaseException | None = None
+        if _capability.is_global_zero(trainer):
+            local_error = self._collect_done_async_error()
+            if local_error is None and not defer_remove:
+                try:
+                    target = self._target_path(filepath)
+                    self._submit_async_remove(target)
+                except BaseException as error:
+                    local_error = error
         error = self._synchronize_async_error(trainer, local_error)
         if error is not None:
             raise error
-        if _capability.is_global_zero(trainer):
-            target = self._target_path(filepath)
-            self._submit_async_remove(target)
+        if defer_remove:
+            self._deferred_async_removes.append(filepath)
 
     def _save_last_checkpoint(
         self,
@@ -238,56 +277,88 @@ class ModelCheckpoint(LightningModelCheckpoint):
             return
 
         if reused is None:
-            if (
-                self.save_last != "link"
-                or not self._last_checkpoint_saved
-                or self.save_top_k == 0
-            ):
+            if self.save_last != "link" or self.save_top_k == 0:
                 super()._save_last_checkpoint(trainer, monitor_candidates)
                 return
 
-            saved = Path(self._last_checkpoint_saved)
+            local_error: BaseException | None = None
+            if _capability.is_global_zero(trainer):
+                local_error = self._collect_done_async_error()
+            error = self._synchronize_async_error(trainer, local_error)
+            if error is not None:
+                raise error
+
+            persistent: Path | None = None
+            prerequisite: Future[None] | None = None
+            if _capability.is_global_zero(trainer):
+                persistent, prerequisite = self._latest_persistent_publication()
+            has_persistent = self._synchronize_rank_zero_flag(
+                trainer,
+                persistent is not None,
+            )
+            if not has_persistent:
+                self._last_checkpoint_saved = ""
+                super()._save_last_checkpoint(trainer, monitor_candidates)
+                return
+
             previous, last = self._last_save_paths(trainer, monitor_candidates)
             self.last_model_path = last
-            with self._async_lock:
-                persistent = self._async_sources.get(saved) or saved
-                prerequisite = self._async_source_futures.get(saved)
-            self._link_async_checkpoint(
-                trainer,
-                local=saved,
-                persistent=persistent,
-                linkpath=Path(last),
-            )
+            local_error = None
             if _capability.is_global_zero(trainer):
-                self._submit_async_last_ready(prerequisite)
+                assert persistent is not None
+                try:
+                    self._submit_async_last_update(
+                        prerequisite,
+                        persistent,
+                        Path(last),
+                        link=True,
+                        publication=(
+                            self._last_checkpoint_saved,
+                            str(persistent),
+                            persistent,
+                        ),
+                    )
+                except BaseException as error:
+                    local_error = error
+            error = self._synchronize_async_error(trainer, local_error)
+            if error is not None:
+                self.last_model_path = previous
+                raise error
             if previous and self._should_remove_checkpoint(trainer, previous, last):
                 self._remove_checkpoint(trainer, previous)
             return
 
         self._reused_last_save = None
-        previous, last, local, persistent, prerequisite = reused
-        if self.save_last == "link":
-            self._link_async_checkpoint(
-                trainer,
-                local=local,
-                persistent=persistent,
-                linkpath=Path(last),
-            )
+        deferred_removes = self._deferred_async_removes
+        self._deferred_async_removes = []
+        previous, last, _local, persistent, prerequisite = reused
+        local_error = None
         if _capability.is_global_zero(trainer):
-            final_path = str(persistent) if self.save_last == "link" else last
-            callbacks = self._checkpoint_callbacks(trainer, final_path)
-            if self.save_last == "link":
-                self._submit_async_last_ready(prerequisite, callbacks=callbacks)
-            else:
+            try:
+                final_path = str(persistent) if self.save_last == "link" else last
+                callbacks = self._checkpoint_callbacks(trainer, final_path)
                 self._submit_async_last_update(
                     prerequisite,
                     persistent,
                     Path(last),
-                    link=False,
+                    link=self.save_last == "link",
                     callbacks=callbacks,
+                    publication=(
+                        str(_local),
+                        final_path,
+                        persistent if self.save_last == "link" else Path(last),
+                    ),
                 )
+            except BaseException as error:
+                local_error = error
         elif self.save_last is True:
             self._last_checkpoint_saved = last
+        error = self._synchronize_async_error(trainer, local_error)
+        if error is not None:
+            self.last_model_path = previous
+            raise error
+        for deferred in deferred_removes:
+            self._remove_checkpoint(trainer, deferred)
         if previous and self._should_remove_checkpoint(trainer, previous, last):
             self._remove_checkpoint(trainer, previous)
 
@@ -349,10 +420,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
         trainer: pl.Trainer,
         filepath: str,
     ) -> tuple[Callable[[], None], ...]:
-        def finalize_checkpoint_path() -> None:
-            self._last_checkpoint_saved = filepath
-
-        return (finalize_checkpoint_path,) + tuple(
+        del filepath
+        return tuple(
             lambda logger=logger: logger.after_save_checkpoint(proxy(self))
             for logger in _capability.loggers(trainer)
         )
@@ -363,6 +432,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         target: Path,
         *,
         callbacks: Iterable[Callable[[], None]] = (),
+        publication: tuple[str, str, Path] | None = None,
     ) -> Future[None]:
         self._wait_for_async_capacity()
         future = self._async_executor_or_create().submit(
@@ -382,32 +452,9 @@ class ModelCheckpoint(LightningModelCheckpoint):
         )
         with self._async_lock:
             self._async_source_futures[source] = future
+        if publication is not None:
+            self._track_async_publication(future, publication)
         return future
-
-    def _link_async_checkpoint(
-        self,
-        trainer: pl.Trainer,
-        *,
-        local: Path,
-        persistent: Path,
-        linkpath: Path,
-    ) -> None:
-        if _capability.is_global_zero(trainer) and persistent.absolute() != linkpath.absolute():
-            link_tmp = linkpath.with_name(f".{linkpath.name}.part.{uuid4().hex}")
-            try:
-                linkpath.parent.mkdir(parents=True, exist_ok=True)
-                if linkpath.is_dir() and not linkpath.is_symlink():
-                    shutil.rmtree(linkpath)
-                try:
-                    os.symlink(os.path.relpath(persistent, linkpath.parent), link_tmp)
-                    os.replace(link_tmp, linkpath)
-                except OSError:
-                    link_tmp.unlink(missing_ok=True)
-                    source = local if local.is_file() else persistent
-                    self._copy_to_target_static(source, linkpath)
-            finally:
-                link_tmp.unlink(missing_ok=True)
-        _capability.strategy_barrier(trainer)
 
     def _submit_async_last_update(
         self,
@@ -417,7 +464,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
         *,
         link: bool,
         callbacks: Iterable[Callable[[], None]] = (),
-    ) -> None:
+        publication: tuple[str, str, Path] | None = None,
+    ) -> Future[None]:
         future = self._async_executor_or_create().submit(
             self._update_last_checkpoint,
             prerequisite,
@@ -426,24 +474,20 @@ class ModelCheckpoint(LightningModelCheckpoint):
             link,
         )
         self._track_async_future(future, callbacks=callbacks)
+        if publication is not None:
+            self._track_async_publication(future, publication)
+        return future
 
-    def _submit_async_last_ready(
-        self,
-        prerequisite: Future[None] | None,
-        *,
-        callbacks: Iterable[Callable[[], None]] = (),
-    ) -> None:
-        future = self._async_executor_or_create().submit(self._wait_for_future, prerequisite)
-        self._track_async_future(future, callbacks=callbacks)
-
-    @staticmethod
-    def _wait_for_future(prerequisite: Future[None] | None) -> None:
-        if prerequisite is not None:
-            prerequisite.result()
-
-    def _submit_async_remove(self, target: Path) -> None:
-        future = self._async_executor_or_create().submit(self._remove_target, target)
+    def _submit_async_remove(self, target: Path) -> Future[None]:
+        with self._async_lock:
+            prerequisites = tuple(self._async_futures)
+        future = self._async_executor_or_create().submit(
+            self._remove_target_after,
+            prerequisites,
+            target,
+        )
         self._track_async_future(future)
+        return future
 
     def _copy_local_checkpoint(self, source: Path, target: Path) -> None:
         try:
@@ -477,23 +521,43 @@ class ModelCheckpoint(LightningModelCheckpoint):
             prerequisite.result()
         if persistent.absolute() == last.absolute():
             return
-        if not link:
-            self._copy_to_target(persistent, last)
-            return
-
+        directory_backup: Path | None = None
         last_tmp = last.with_name(f".{last.name}.part.{uuid4().hex}")
         try:
             last.parent.mkdir(parents=True, exist_ok=True)
             if last.is_dir() and not last.is_symlink():
-                shutil.rmtree(last)
-            try:
-                os.symlink(os.path.relpath(persistent, last.parent), last_tmp)
-                os.replace(last_tmp, last)
-            except OSError:
-                last_tmp.unlink(missing_ok=True)
+                directory_backup = last.with_name(
+                    f".{last.name}.backup.{uuid4().hex}"
+                )
+                os.replace(last, directory_backup)
+            if not link:
                 self._copy_to_target(persistent, last)
+            else:
+                try:
+                    os.symlink(os.path.relpath(persistent, last.parent), last_tmp)
+                    os.replace(last_tmp, last)
+                except OSError:
+                    last_tmp.unlink(missing_ok=True)
+                    self._copy_to_target(persistent, last)
+        except BaseException:
+            if directory_backup is not None and directory_backup.exists():
+                self._remove_target(last)
+                os.replace(directory_backup, last)
+            raise
+        else:
+            if directory_backup is not None:
+                shutil.rmtree(directory_backup)
         finally:
             last_tmp.unlink(missing_ok=True)
+
+    def _remove_target_after(
+        self,
+        prerequisites: tuple[Future[None], ...],
+        target: Path,
+    ) -> None:
+        for prerequisite in prerequisites:
+            prerequisite.result()
+        self._remove_target(target)
 
     def _remove_target(self, target: Path) -> None:
         if target.is_symlink() or target.is_file():
@@ -517,7 +581,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
             return _storage_error(first_error)
         return None
 
-    def _prepare_async_save(self, trainer: pl.Trainer) -> None:
+    def _prepare_async_save(self, trainer: pl.Trainer, target: Path) -> Path:
+        local = target
         local_error: BaseException | None = None
         if _capability.is_global_zero(trainer):
             local_error = self._collect_done_async_error()
@@ -527,9 +592,15 @@ class ModelCheckpoint(LightningModelCheckpoint):
                     self._wait_for_async_capacity()
                 except BaseException as error:
                     local_error = error
+            if local_error is None:
+                try:
+                    local = self._local_checkpoint_path(target)
+                except BaseException as error:
+                    local_error = error
         error = self._synchronize_async_error(trainer, local_error)
         if error is not None:
             raise error
+        return local
 
     def _wait_async_saves_distributed(self, trainer: pl.Trainer) -> None:
         local_error: BaseException | None = None
@@ -617,9 +688,11 @@ class ModelCheckpoint(LightningModelCheckpoint):
         try:
             future.result()
         except BaseException as error:
+            self._finish_async_publication(future, success=False)
             self._discard_async_callbacks(future)
             self._forget_async_copy_future(future)
             return error
+        self._finish_async_publication(future, success=True)
         try:
             self._run_async_callbacks(future)
         except BaseException as error:
@@ -653,8 +726,12 @@ class ModelCheckpoint(LightningModelCheckpoint):
             self._async_tmp_dir = None
         with self._async_lock:
             self._async_copy_futures = []
+            self._async_publications = {}
             self._async_sources = {}
             self._async_source_futures = {}
+            self._latest_publication_future = None
+            self._latest_publication_path = self._last_persistent_checkpoint
+            self._deferred_async_removes = []
 
     def _track_async_future(
         self,
@@ -720,6 +797,79 @@ class ModelCheckpoint(LightningModelCheckpoint):
     def _discard_async_callbacks(self, future: Future[None]) -> None:
         with self._async_lock:
             self._async_callbacks.pop(future, None)
+
+    def _track_async_publication(
+        self,
+        future: Future[None],
+        publication: tuple[str, str, Path],
+    ) -> None:
+        with self._async_lock:
+            self._async_publications[future] = publication
+            self._latest_publication_future = future
+            self._latest_publication_path = publication[2]
+
+    def _finish_async_publication(
+        self,
+        future: Future[None],
+        *,
+        success: bool,
+    ) -> None:
+        with self._async_lock:
+            publication = self._async_publications.pop(future, None)
+            is_latest = self._latest_publication_future is future
+        if publication is None:
+            return
+
+        expected_current, saved_path, persistent_path = publication
+        if success:
+            self._last_persistent_checkpoint = persistent_path
+            self._last_checkpoint_saved = saved_path
+        elif self._last_checkpoint_saved == expected_current:
+            persistent = self._last_persistent_checkpoint
+            self._last_checkpoint_saved = "" if persistent is None else str(persistent)
+
+        if is_latest:
+            with self._async_lock:
+                self._latest_publication_future = None
+                self._latest_publication_path = self._last_persistent_checkpoint
+
+    def _latest_persistent_publication(
+        self,
+    ) -> tuple[Path | None, Future[None] | None]:
+        with self._async_lock:
+            if self._latest_publication_path is not None:
+                return self._latest_publication_path, self._latest_publication_future
+        return self._last_persistent_checkpoint, None
+
+    def _synchronize_rank_zero_flag(self, trainer: pl.Trainer, value: bool) -> bool:
+        if _capability.world_size(trainer) <= 1:
+            return value
+
+        strategy = getattr(trainer, "strategy", None)
+        broadcast = getattr(strategy, "broadcast", None)
+        if callable(broadcast):
+            synchronized = broadcast(
+                value if _capability.is_global_zero(trainer) else None,
+                src=0,
+            )
+            return bool(synchronized)
+
+        device = getattr(strategy, "root_device", None)
+        flag = torch.tensor(
+            int(value) if _capability.is_global_zero(trainer) else 0,
+            dtype=torch.int64,
+            device=device,
+        )
+        reduced = _capability.strategy_reduce(
+            trainer,
+            flag,
+            reduce_op="sum",
+            error=(
+                "Distributed asynchronous checkpoint state propagation requires "
+                "trainer.strategy.broadcast() or reduce()."
+            ),
+        )
+        return bool(int(reduced.detach().cpu().item()))
 
     @staticmethod
     def _validate_async_strategy(trainer: pl.Trainer) -> None:
