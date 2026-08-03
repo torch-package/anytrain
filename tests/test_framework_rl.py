@@ -1,6 +1,7 @@
 import math
 import unittest
 from importlib import import_module
+from unittest.mock import patch
 
 import torch
 from torch.nn import functional as F
@@ -142,6 +143,30 @@ class DPOLossTest(unittest.TestCase):
     def test_reference_logps_are_required_by_default(self):
         with self.assertRaisesRegex(ValueError, "reference"):
             DPOLoss()(policy_chosen_logps=torch.ones(1), policy_rejected_logps=torch.zeros(1))
+
+    def test_default_validation_rejects_nonfinite_logps(self):
+        with self.assertRaisesRegex(ValueError, "finite"):
+            DPOLoss(reference_free=True)(
+                policy_chosen_logps=torch.tensor([float("nan")]),
+                policy_rejected_logps=torch.zeros(1),
+            )
+
+    def test_trusted_path_avoids_tensor_scalar_checks(self):
+        with (
+            patch.object(torch.Tensor, "item", side_effect=AssertionError("DPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor,
+                "__bool__",
+                side_effect=AssertionError("DPO converted Tensor to bool"),
+            ),
+        ):
+            loss, _ = DPOLoss(reference_free=True)(
+                policy_chosen_logps=torch.ones(1),
+                policy_rejected_logps=torch.zeros(1),
+                validate=False,
+            )
+
+        self.assertTrue(torch.isfinite(loss))
 
 
 class AdvantageTest(unittest.TestCase):
@@ -295,6 +320,26 @@ class GRPOLossTest(unittest.TestCase):
         torch.testing.assert_close(details["token_count"], torch.tensor(2.0))
         torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
 
+    def test_trusted_path_avoids_tensor_scalar_checks(self):
+        policy = torch.zeros(1, 2, 1)
+        with (
+            patch.object(torch.Tensor, "item", side_effect=AssertionError("GRPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor,
+                "__bool__",
+                side_effect=AssertionError("GRPO converted Tensor to bool"),
+            ),
+        ):
+            loss, _ = GRPOLoss()(
+                policy_token_logps=policy,
+                old_token_logps=torch.zeros_like(policy),
+                rewards=torch.tensor([[1.0, 3.0]]),
+                response_mask=torch.ones_like(policy, dtype=torch.bool),
+                validate=False,
+            )
+
+        self.assertTrue(torch.isfinite(loss))
+
 
 class ContinuousGRPOLossTest(unittest.TestCase):
     def test_continuous_grpo_uses_step_logps_and_clipping(self):
@@ -407,6 +452,26 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         torch.testing.assert_close(details["step_count"], torch.tensor(2.0))
         torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
 
+    def test_trusted_path_avoids_tensor_scalar_checks(self):
+        policy = torch.zeros(1, 2, 1)
+        with (
+            patch.object(torch.Tensor, "item", side_effect=AssertionError("continuous GRPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor,
+                "__bool__",
+                side_effect=AssertionError("continuous GRPO converted Tensor to bool"),
+            ),
+        ):
+            loss, _ = ContinuousGRPOLoss()(
+                policy_step_logps=policy,
+                old_step_logps=torch.zeros_like(policy),
+                rewards=torch.tensor([[1.0, 3.0]]),
+                step_mask=torch.ones_like(policy, dtype=torch.bool),
+                validate=False,
+            )
+
+        self.assertTrue(torch.isfinite(loss))
+
 
 class NeighborGRPOLossTest(unittest.TestCase):
     def test_neighbor_grpo_uses_surrogate_logps_and_clipping(self):
@@ -508,6 +573,44 @@ class NeighborGRPOLossTest(unittest.TestCase):
                 neighbor_mask=torch.tensor([[[[True, False]]]]),
                 group_mask=torch.tensor([[True, True]]),
             )
+
+    def test_trusted_path_avoids_tensor_scalar_checks(self):
+        policy = torch.zeros(1, 1, 1, 2)
+        with (
+            patch.object(torch.Tensor, "item", side_effect=AssertionError("neighbor GRPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor,
+                "__bool__",
+                side_effect=AssertionError("neighbor GRPO converted Tensor to bool"),
+            ),
+        ):
+            loss, _ = NeighborGRPOLoss()(
+                policy_neighbor_logps=policy,
+                old_neighbor_logps=torch.zeros_like(policy),
+                rewards=torch.tensor([[1.0, 3.0]]),
+                neighbor_mask=torch.ones_like(policy, dtype=torch.bool),
+                validate=False,
+            )
+
+        self.assertTrue(torch.isfinite(loss))
+
+    def test_neighbor_grpo_ignores_nonfinite_masked_candidates(self):
+        policy = torch.tensor(
+            [[[[math.log(0.8), math.log(1.5), float("nan")]]]]
+        )
+        old = torch.tensor([[[[0.0, 0.0, float("inf")]]]])
+        rewards = torch.tensor([[1.0, 3.0, 100.0]])
+        neighbor_mask = torch.tensor([[[[True, True, False]]]])
+
+        loss, details = NeighborGRPOLoss()(
+            policy_neighbor_logps=policy,
+            old_neighbor_logps=old,
+            rewards=rewards,
+            neighbor_mask=neighbor_mask,
+        )
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(details["pg_loss"]))
 
 
 if __name__ == "__main__":

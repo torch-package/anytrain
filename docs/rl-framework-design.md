@@ -33,6 +33,14 @@ anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate�
 anytrain.framework.__init__ 不默认导出 RL 子模块，用户需要显式导入
 anytrain.framework.rl。
 
+## Trusted training path
+
+`DPOLoss`、`GRPOLoss`、`ContinuousGRPOLoss` 和 `NeighborGRPOLoss` 的 forward 都默认
+`validate=True`：它们会检查 tensor 形状、device、dtype、mask 约束和有效位置的有限性。
+下游 datamodule / objective 已在进入 loss 前建立同一契约时，可显式传
+`validate=False`。该可信路径跳过这些重复检查，避免训练热路径把 GPU 标量带回主机；它
+不是容错模式，错误形状、非法 mask 或非有限值的结果未定义，必须由调用方负责拒绝。
+
 ## Rollout tensor contracts
 
 `RolloutBatch`、`ContinuousRolloutBatch` 和 `NeighborRolloutBatch` 只描述进入 loss

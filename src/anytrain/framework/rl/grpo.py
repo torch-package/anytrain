@@ -46,22 +46,37 @@ class GRPOLoss(nn.Module):
         response_mask: Tensor,
         ref_token_logps: Tensor | None = None,
         group_mask: Tensor | None = None,
+        validate: bool = True,
     ) -> tuple[Tensor, LossDetails]:
-        _validate_rollout_tensors(policy_token_logps, old_token_logps, response_mask)
-        if rewards.shape != policy_token_logps.shape[:2]:
-            raise ValueError("rewards must have shape [batch, group].")
+        """Compute GRPO loss.
+
+        Set ``validate=False`` only for batches whose tensor contracts have
+        already been checked by their owner. This avoids host synchronization
+        from per-step finite and mask validation.
+        """
+
+        if validate:
+            _validate_rollout_tensors(policy_token_logps, old_token_logps, response_mask)
+            if rewards.shape != policy_token_logps.shape[:2]:
+                raise ValueError("rewards must have shape [batch, group].")
         old_token_logps = old_token_logps.detach()
         rewards = rewards.detach()
-        candidate_mask = _candidate_mask(response_mask, rewards, group_mask)
+        candidate_mask = _candidate_mask(response_mask, rewards, group_mask, validate=validate)
         selected_token_mask = response_mask & candidate_mask.unsqueeze(-1)
-        _validate_selected_logps(
-            policy_token_logps,
-            old_token_logps,
-            selected_token_mask,
-        )
+        if validate:
+            _validate_selected_logps(
+                policy_token_logps,
+                old_token_logps,
+                selected_token_mask,
+            )
         policy_token_logps = policy_token_logps.masked_fill(~selected_token_mask, 0)
         old_token_logps = old_token_logps.masked_fill(~selected_token_mask, 0)
-        advantages = group_relative_advantages(rewards, candidate_mask, eps=self.eps).detach()
+        advantages = group_relative_advantages(
+            rewards,
+            candidate_mask,
+            eps=self.eps,
+            validate=validate,
+        ).detach()
 
         log_ratio = policy_token_logps - old_token_logps
         ratio = torch.exp(log_ratio)
@@ -73,6 +88,7 @@ class GRPOLoss(nn.Module):
             selected_token_mask,
             candidate_mask,
             self.token_reduction,
+            validate=validate,
         )
 
         if ref_token_logps is None:
@@ -80,7 +96,8 @@ class GRPOLoss(nn.Module):
                 raise ValueError("ref_token_logps is required when kl_beta is positive.")
             kl = policy_token_logps.new_zeros(())
         else:
-            _validate_reference(policy_token_logps, ref_token_logps, selected_token_mask)
+            if validate:
+                _validate_reference(policy_token_logps, ref_token_logps, selected_token_mask)
             ref_token_logps = ref_token_logps.detach().masked_fill(~selected_token_mask, 0)
             kl_values = _approx_kl(policy_token_logps, ref_token_logps)
             kl = _reduce_token_values(
@@ -88,6 +105,7 @@ class GRPOLoss(nn.Module):
                 selected_token_mask,
                 candidate_mask,
                 self.token_reduction,
+                validate=validate,
             )
 
         total = pg_loss + policy_token_logps.new_tensor(self.kl_beta) * kl
@@ -143,24 +161,28 @@ def _candidate_mask(
     response_mask: Tensor,
     rewards: Tensor,
     group_mask: Tensor | None,
+    *,
+    validate: bool,
 ) -> Tensor:
-    if rewards.device != response_mask.device:
-        raise ValueError("rewards must be on the same device as response_mask.")
-    if rewards.is_complex() or rewards.dtype == torch.bool:
-        raise TypeError("rewards must be real-valued.")
+    if validate:
+        if rewards.device != response_mask.device:
+            raise ValueError("rewards must be on the same device as response_mask.")
+        if rewards.is_complex() or rewards.dtype == torch.bool:
+            raise TypeError("rewards must be real-valued.")
     derived = response_mask.any(dim=-1)
     if group_mask is None:
         return derived
-    if not isinstance(group_mask, Tensor):
-        raise TypeError("group_mask must be a tensor.")
-    if group_mask.dtype != torch.bool:
-        raise TypeError("group_mask must be boolean.")
-    if group_mask.shape != rewards.shape:
-        raise ValueError("group_mask must have the same shape as rewards.")
-    if group_mask.device != rewards.device:
-        raise ValueError("group_mask must be on the same device as rewards.")
-    if bool((group_mask & ~derived).any()):
-        raise ValueError("group_mask cannot select candidates with no response tokens.")
+    if validate:
+        if not isinstance(group_mask, Tensor):
+            raise TypeError("group_mask must be a tensor.")
+        if group_mask.dtype != torch.bool:
+            raise TypeError("group_mask must be boolean.")
+        if group_mask.shape != rewards.shape:
+            raise ValueError("group_mask must have the same shape as rewards.")
+        if group_mask.device != rewards.device:
+            raise ValueError("group_mask must be on the same device as rewards.")
+        if bool((group_mask & ~derived).any()):
+            raise ValueError("group_mask cannot select candidates with no response tokens.")
     return group_mask
 
 
@@ -187,23 +209,25 @@ def _reduce_token_values(
     selected_token_mask: Tensor,
     candidate_mask: Tensor,
     reduction: TokenReduction,
+    *,
+    validate: bool,
 ) -> Tensor:
     resolved = cast(TokenReduction, reduction)
     weights = selected_token_mask.to(device=value.device, dtype=value.dtype)
     if resolved == "token_mean":
         token_count = weights.sum()
-        if bool(token_count <= 0):
+        if validate and bool(token_count <= 0):
             raise ValueError("response_mask must select at least one token.")
         return (value * weights).sum() / token_count
     if resolved == "sequence_mean":
         token_counts = weights.sum(dim=-1)
-        if bool((token_counts.masked_select(candidate_mask) <= 0).any()):
+        if validate and bool((token_counts.masked_select(candidate_mask) <= 0).any()):
             raise ValueError("selected candidates must contain at least one token.")
         sequence_loss = (value * weights).sum(dim=-1) / token_counts.clamp_min(1)
-        selected = sequence_loss.masked_select(candidate_mask)
-        if not bool(selected.numel()):
+        candidate_weights = candidate_mask.to(dtype=sequence_loss.dtype)
+        if validate and bool(candidate_weights.sum() <= 0):
             raise ValueError("group_mask must select at least one candidate.")
-        return selected.mean()
+        return (sequence_loss * candidate_weights).sum() / candidate_weights.sum().clamp_min(1)
     raise ValueError("token_reduction must be 'token_mean' or 'sequence_mean'.")
 
 
