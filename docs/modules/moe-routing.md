@@ -48,3 +48,9 @@ routing = materialize_routing(logits, probabilities, top_k=runtime_top_k, mask=.
 Partition/restore belongs to `MoEPartitioner` in `anytrain.module.moe`. Expert
 banks consume `ExpertRouting` and choose an efficient execution path. Metrics
 and aux losses remain in `anytrain.module.moe`.
+
+Public validation checks sparse expert ids, including their value range. Routes
+created inside `MoE.forward` come directly from `torch.topk`; execution skips the
+redundant value scan so a normal CUDA forward does not synchronize merely to
+revalidate those trusted ids. `forward_manually` keeps the strict external-input
+check.

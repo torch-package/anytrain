@@ -64,8 +64,7 @@ def indices(
 ) -> None:
     if require_ndim and values.ndim == 0:
         raise ValueError("indices must have at least one dimension.")
-    if torch.is_floating_point(values) or torch.is_complex(values):
-        raise TypeError("indices must be an integer tensor.")
+    index_dtype(values)
     if values.numel() == 0:
         raise ValueError("indices must contain at least one value.")
     min_allowed = -1 if allow_inactive else 0
@@ -81,6 +80,13 @@ def indices(
             "indices must be in [0, codebook_size - 1]: "
             f"got min={min_index}, max={max_index}, codebook_size={codebook_size}."
         )
+
+
+def index_dtype(values: Tensor) -> None:
+    if values.dtype == torch.bool:
+        raise TypeError("indices must be an integer tensor; bool tensors are not valid indices.")
+    if torch.is_floating_point(values) or torch.is_complex(values):
+        raise TypeError("indices must be an integer tensor.")
 
 
 def active_indices(

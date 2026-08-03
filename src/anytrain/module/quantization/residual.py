@@ -26,7 +26,7 @@ class RVQConfig:
         for config in self.vq_configs:
             if config.input_dim != first.input_dim:
                 raise ValueError("RVQ first version requires uniform input_dim.")
-            if config.codebook_dim != first.codebook_dim:
+            if config.resolved_codebook_dim != first.resolved_codebook_dim:
                 raise ValueError("RVQ first version requires uniform codebook_dim.")
             if config.codebook_size != first.codebook_size:
                 raise ValueError("RVQ first version requires uniform codebook_size.")
@@ -42,9 +42,7 @@ class ResidualVectorQuantizer(nn.Module):
 
     def __init__(self, config: RVQConfig) -> None:
         super().__init__()
-        codebook_dim = config.vq_configs[0].codebook_dim
-        if codebook_dim is None:
-            raise RuntimeError("VQConfig.codebook_dim should be resolved in __post_init__.")
+        codebook_dim = config.vq_configs[0].resolved_codebook_dim
 
         self.config = config
         self.num_codebooks = config.num_codebooks

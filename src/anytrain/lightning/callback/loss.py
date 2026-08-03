@@ -14,6 +14,7 @@ from anytrain.loss import LossItem, iter_loss_items, loss_item_mean
 from anytrain.stats import TimeBucketedMean, time_bucketed_mean
 
 from .. import _capability, experiment
+from ._cadence import StepCadence
 
 LossItemsFn = Callable[[Mapping[str, Any]], Iterable[tuple[str, LossItem]]]
 LossItemLabelsFn = Callable[[str, Any], Sequence[object]]
@@ -295,8 +296,6 @@ class LossTimeBucketLoggerCallback(pl.Callback):
         t_max: float = 1.0,
     ) -> None:
         super().__init__()
-        if every_n_steps is not None:
-            _positive_int(every_n_steps, "every_n_steps")
         if bucket_count < 1:
             raise ValueError("bucket_count must be positive")
         if t_max <= t_min:
@@ -306,6 +305,7 @@ class LossTimeBucketLoggerCallback(pl.Callback):
         self.histogram_tag = histogram_tag
         self.scalar_template = scalar_template
         self.every_n_steps = every_n_steps
+        self._cadence = StepCadence(every_n_steps)
         self.bucket_count = bucket_count
         self.t_min = t_min
         self.t_max = t_max
@@ -347,9 +347,7 @@ class LossTimeBucketLoggerCallback(pl.Callback):
         batch: Any,
     ) -> bool:
         del pl_module, batch
-        if self.every_n_steps is None:
-            return True
-        return _capability.global_step(trainer) % self.every_n_steps == 0
+        return self._cadence.should_log(trainer)
 
     def _log_histogram(self, trainer: pl.Trainer, values: Tensor) -> None:
         if self.histogram_tag is None:

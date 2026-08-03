@@ -235,11 +235,27 @@ softmax over the selected logits — controlled by `top_k`, not by the gate.
 | `ConvTranspose1dExpert` | `(E, in, out/groups, k)` |
 | `CallableExpert` / custom `Expert` | `(E, ...)` with Identity unless `bind` says otherwise |
 
-Dense (`top_k=None`) mixes parameters then runs one grouped op when the family
-supports it. Sparse (`top_k=K`) runs each selected expert with its own weight,
-then mixes outputs with the top-k softmax weights — it does not mix parameters.
-Cell execution is weight-only for `additive_channel`; mixed bias is applied
-additively after restore.
+Dense (`top_k=None`) linear execution runs the full activation batch once per
+expert and accumulates weighted outputs; convolution families mix parameters
+before their grouped op. Sparse (`top_k=K`) groups routed activations by expert,
+runs one batch per used expert, then combines outputs with the top-k softmax
+weights. Neither linear path materializes complete expert weights per routed
+token. Dense execution keeps only one `[tokens, output]` accumulator in the
+forward loop; autograd may still retain each expert output while router-weight
+gradients are required, for `O(experts * tokens * output)` saved tensors. Portable
+sparse dispatch reads the expert segment counts from the device once per bank
+call; it does not synchronize or invoke an expert per token-route pair. Cell
+execution is weight-only for `additive_channel`; mixed bias is applied additively
+after restore.
+
+The routing mask is enforced at the expert-bank output boundary. Masked cells
+have zero mixed expert weight and zero additive bias, so they cannot contribute
+through either the weight-only cell path or the post-restore bias path.
+`ConvTranspose1dExpert` overlap coverage counts only active cells; masked cells
+therefore cannot change the overlap-add normalizer for neighboring active cells.
+Native convolution masks follow the batch routing shape. `Grid1d` masks may use
+the logical `[batch, num_segments]` cell shape (including broadcastable forms)
+or the flattened `[batch * num_segments]` routing shape.
 
 ## ADT Integration
 

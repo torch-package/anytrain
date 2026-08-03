@@ -14,6 +14,7 @@ from anytrain.codec import (
     load_semantic_acoustic,
     masked_acoustic_features,
 )
+from anytrain.codec._module import validate_frame_codes
 
 
 def test_codec_enums_have_stable_string_values() -> None:
@@ -68,6 +69,35 @@ def test_masked_acoustic_features_validation_can_be_skipped() -> None:
 
 def test_structured_codec_protocol_is_exported() -> None:
     assert codec_api.SemanticAcousticCodec.__name__ == "SemanticAcousticCodec"
+
+
+@pytest.mark.parametrize(
+    "codes",
+    [
+        torch.tensor([[[-1, 0]]]),
+        torch.tensor([[[0, 3]]]),
+    ],
+)
+def test_frame_code_validation_rejects_ids_outside_each_codebook(codes: torch.Tensor) -> None:
+    with pytest.raises(ValueError, match="outside the configured codebook ranges"):
+        validate_frame_codes(codes, (2, 3))
+
+
+def test_frame_code_validation_requires_positive_integer_codebook_sizes() -> None:
+    codes = torch.zeros((1, 1, 1), dtype=torch.long)
+
+    with pytest.raises(TypeError, match="must be an integer"):
+        validate_frame_codes(codes, (True,))
+    with pytest.raises(ValueError, match="must be positive"):
+        validate_frame_codes(codes, (0,))
+
+
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.uint16, torch.uint32, torch.uint64])
+def test_frame_code_validation_requires_signed_ids(dtype: torch.dtype) -> None:
+    codes = torch.zeros((1, 1, 1), dtype=dtype)
+
+    with pytest.raises(TypeError, match="signed integer ids"):
+        validate_frame_codes(codes, (2,))
 
 
 @pytest.mark.parametrize(

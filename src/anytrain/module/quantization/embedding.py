@@ -14,7 +14,7 @@ from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
 
 
-@dataclass
+@dataclass(frozen=True)
 class VQConfig:
     input_dim: int
     codebook_size: int
@@ -33,14 +33,17 @@ class VQConfig:
             raise ValueError(f"input_dim must be positive, got {self.input_dim}.")
         if self.codebook_size <= 0:
             raise ValueError(f"codebook_size must be positive, got {self.codebook_size}.")
-        codebook_dim = self.input_dim if self.codebook_dim is None else self.codebook_dim
+        codebook_dim = self.resolved_codebook_dim
         if codebook_dim <= 0:
             raise ValueError(f"codebook_dim must be positive, got {codebook_dim}.")
-        self.codebook_dim = codebook_dim
         if not 0 <= self.decay < 1:
             raise ValueError(f"decay must be in [0, 1), got {self.decay}.")
         if self.eps <= 0:
             raise ValueError(f"eps must be positive, got {self.eps}.")
+
+    @property
+    def resolved_codebook_dim(self) -> int:
+        return self.input_dim if self.codebook_dim is None else self.codebook_dim
 
 
 class EmbeddingVectorQuantizer(nn.Module):
@@ -53,10 +56,7 @@ class EmbeddingVectorQuantizer(nn.Module):
 
     def __init__(self, config: VQConfig) -> None:
         super().__init__()
-        codebook_dim = config.codebook_dim
-        if codebook_dim is None:
-            raise RuntimeError("VQConfig.codebook_dim should be resolved in __post_init__.")
-
+        codebook_dim = config.resolved_codebook_dim
         self.config = config
         self.input_dim = config.input_dim
         self.codebook_size = config.codebook_size

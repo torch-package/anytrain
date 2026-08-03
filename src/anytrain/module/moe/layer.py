@@ -135,11 +135,16 @@ class MoE(nn.Module):
             top_k=runtime_top_k,
             **router_kwargs,
         )
-        return self._execute(cells, routing, layout)
+        return self._execute(
+            cells,
+            routing,
+            layout,
+            check_index_bounds=False,
+        )
 
     def forward_manually(self, x: Tensor, routing: ExpertRouting) -> MoEOutput:
         cells, _router_features, layout = self.partitioner.partition(x, mask=routing.mask)
-        return self._execute(cells, routing, layout)
+        return self._execute(cells, routing, layout, check_index_bounds=True)
 
     def route(
         self,
@@ -181,8 +186,14 @@ class MoE(nn.Module):
         cells: Tensor,
         routing: ExpertRouting,
         layout: PartitionLayout,
+        *,
+        check_index_bounds: bool,
     ) -> MoEOutput:
-        cell_outputs = self.expert_bank(cells, routing)
+        cell_outputs = self.expert_bank(
+            cells,
+            routing,
+            check_index_bounds=check_index_bounds,
+        )
         if not isinstance(cell_outputs, Tensor):
             raise TypeError("expert_bank must return a Tensor.")
         restored_obj = layout.restore(cell_outputs)

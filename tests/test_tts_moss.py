@@ -210,6 +210,19 @@ class MossTTSAdapterTest(unittest.TestCase):
         self.assertEqual(tuple(model.calls[0]["input_ids"].shape), (2, 2))
         self.assertEqual(model.calls[0]["max_new_tokens"], 13)
 
+    def test_synthesize_batch_maps_legacy_positional_references_with_warning(self):
+        model = FakeBatchMossModel()
+        processor = FakeMossProcessor()
+        tts = MossTTS(model=model, processor=processor)
+
+        with self.assertWarnsRegex(DeprecationWarning, "reference_audio_paths"):
+            tts.synthesize(["hello", "world"], None, ["assets/one.wav", "assets/two.wav"])
+
+        self.assertEqual(
+            [message["reference"] for message in processor.messages],
+            [["assets/one.wav"], ["assets/two.wav"]],
+        )
+
     def test_synthesize_rejects_empty_text_batch(self):
         tts = MossTTS(model=FakeMossModel(), processor=FakeMossProcessor())
 

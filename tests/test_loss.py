@@ -16,10 +16,12 @@ from anytrain.loss import (
     MaskedCodebookCrossEntropyLoss,
     MaskedCosineAlignmentLoss,
     MaskedFrameMSELoss,
+    PackedCodebookLogits,
     TeacherLoss,
     UncertaintyLossBalancer,
     combine_loss_outputs,
     iter_loss_items,
+    teacher_loss,
 )
 from anytrain.loss.codec import CodecLoss, CodecLossPreset
 from anytrain.loss.spectral import (
@@ -221,6 +223,19 @@ class LossTest(unittest.TestCase):
             with self.subTest(weight=weight), self.assertRaisesRegex(ValueError, "finite"):
                 item.weighted_mean(weight)
 
+    def test_loss_item_weighted_mean_trusted_path_avoids_host_predicates(self):
+        item = LossItem(torch.tensor([1.0, 3.0]))
+        weight = torch.tensor([1.0, 3.0])
+
+        with patch.object(
+            torch.Tensor,
+            "__bool__",
+            side_effect=AssertionError("trusted weights must stay on device"),
+        ):
+            mean = item.weighted_mean(weight, validate=False)
+
+        torch.testing.assert_close(mean, torch.tensor(2.5))
+
     def test_combine_loss_outputs_uses_units_and_weights(self):
         first = {
             "loss": torch.tensor(0.0),
@@ -247,9 +262,32 @@ class LossTest(unittest.TestCase):
             {"token": "tokens", "acoustic": "frames"},
         )
 
-        self.assertEqual([name for name, _ in iter_loss_items(outputs, ["acoustic", "token"])], ["acoustic", "token"])
+        self.assertEqual(
+            [name for name, _ in iter_loss_items(outputs, ["acoustic", "token"])],
+            ["acoustic", "token"],
+        )
         torch.testing.assert_close(outputs["loss"], torch.tensor(5.0))
         torch.testing.assert_close(outputs["token"].loss, torch.tensor([1.0, 3.0]))
+
+    def test_combine_loss_outputs_uses_provided_total_without_reducing_items(self):
+        total = torch.tensor(7.0)
+        item = LossItem(
+            torch.tensor([1.0, 3.0]),
+            {"tokens": torch.tensor([1.0, 3.0])},
+        )
+
+        with patch(
+            "anytrain.loss.output.loss_item_mean",
+            side_effect=AssertionError("provided total must skip item reduction"),
+        ):
+            outputs = combine_loss_outputs(
+                [{"loss": torch.tensor(2.0), "token": item}],
+                {"token": "tokens"},
+                total_loss=total,
+            )
+
+        self.assertIs(outputs["loss"], total)
+        torch.testing.assert_close(outputs["token"].loss, item.loss)
 
     def test_masked_frame_mse_loss_ignores_padding(self):
         prediction = torch.tensor([[[1.0, 2.0], [1000.0, float("nan")]]], requires_grad=True)
@@ -330,6 +368,25 @@ class LossTest(unittest.TestCase):
             self.fail("prediction gradient is unavailable")
         self.assertTrue(torch.equal(gradient[:, 1], torch.zeros_like(gradient[:, 1])))
 
+    def test_teacher_loss_rejects_nonfinite_options_from_function_and_module(self):
+        prediction = torch.ones(1, 1, 2)
+        target = torch.zeros_like(prediction)
+        mask = torch.ones(1, 1, dtype=torch.bool)
+
+        for name, value in (
+            ("smooth_l1_weight", float("nan")),
+            ("smooth_l1_weight", float("inf")),
+            ("beta", float("nan")),
+            ("beta", float("-inf")),
+        ):
+            with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, "finite"):
+                teacher_loss(prediction, target, mask, **{name: value})
+            with (
+                self.subTest(name=f"module_{name}", value=value),
+                self.assertRaisesRegex(ValueError, "finite"),
+            ):
+                TeacherLoss(**{name: value})
+
     def test_masked_codebook_cross_entropy_reports_masked_top1(self):
         labels = torch.tensor(
             [
@@ -387,13 +444,72 @@ class LossTest(unittest.TestCase):
         padded = MaskedCodebookCrossEntropyLoss()(changed, labels, mask)
         torch.testing.assert_close(baseline.loss, padded.loss)
 
+    def test_masked_codebook_cross_entropy_only_runs_ce_for_valid_frames(self):
+        labels = torch.tensor(
+            [
+                [[1, 2], [-1, -1], [-1, -1]],
+                [[0, 1], [2, 3], [-1, -1]],
+            ]
+        )
+        mask = torch.tensor([[True, False, False], [True, True, False]])
+        logits = (
+            torch.randn(2, 3, 3, requires_grad=True),
+            torch.randn(2, 3, 4, requires_grad=True),
+        )
+        observed_shapes: list[tuple[int, ...]] = []
+        cross_entropy = torch.nn.functional.cross_entropy
+
+        def record(value, target, **kwargs):
+            observed_shapes.append(tuple(value.shape))
+            return cross_entropy(value, target, **kwargs)
+
+        with patch("anytrain.loss.codebook.F.cross_entropy", side_effect=record):
+            item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+            item.loss.sum().backward()
+
+        self.assertEqual(observed_shapes, [(3, 3), (3, 4)])
+        for value in logits:
+            self.assertIsNotNone(value.grad)
+            self.assertTrue(torch.equal(value.grad[~mask], torch.zeros_like(value.grad[~mask])))
+
+    def test_packed_codebook_cross_entropy_matches_masked_contract(self):
+        labels = torch.tensor(
+            [
+                [[1, 2], [-1, -1], [-1, -1]],
+                [[0, 1], [2, 3], [-1, -1]],
+            ]
+        )
+        mask = torch.tensor([[True, False, False], [True, True, False]])
+        logits = (torch.randn(2, 3, 3), torch.randn(2, 3, 4))
+        frame_indices = mask.flatten().nonzero().flatten()
+        packed = PackedCodebookLogits(
+            logits=tuple(value.flatten(0, 1).index_select(0, frame_indices) for value in logits),
+            labels=labels.flatten(0, 1).index_select(0, frame_indices),
+            row_indices=torch.tensor([0, 1, 1]),
+            batch_size=2,
+        )
+
+        masked = MaskedCodebookCrossEntropyLoss()(
+            logits,
+            labels,
+            mask,
+            include_top1=True,
+        )
+        direct = MaskedCodebookCrossEntropyLoss().forward_packed(
+            packed,
+            include_top1=True,
+        )
+
+        torch.testing.assert_close(direct.loss, masked.loss)
+        self.assertIsNotNone(masked.details)
+        self.assertIsNotNone(direct.details)
+        for name, value in masked.details.items():
+            torch.testing.assert_close(direct.details[name], value)
+
     def test_masked_codebook_cross_entropy_can_skip_details(self):
         labels = torch.tensor([[[1, 2], [0, 1], [-1, -1]]])
         mask = torch.tensor([[True, True, False]])
-        logits = tuple(
-            torch.randn(1, 3, classes, requires_grad=True)
-            for classes in (3, 4)
-        )
+        logits = tuple(torch.randn(1, 3, classes, requires_grad=True) for classes in (3, 4))
 
         with_details = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
         without_details = MaskedCodebookCrossEntropyLoss()(
@@ -427,6 +543,14 @@ class LossTest(unittest.TestCase):
         item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
 
         self.assertEqual(item.loss.shape, (1,))
+
+    def test_masked_codebook_cross_entropy_requires_one_device(self):
+        labels = torch.tensor([[[1]]])
+        mask = torch.tensor([[True]])
+        logits = (torch.empty((1, 1, 2), device="meta"),)
+
+        with self.assertRaisesRegex(ValueError, "share a device"):
+            MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
 
     def test_loss_group_rejects_ambiguous_names(self):
 
@@ -656,9 +780,7 @@ class LossTest(unittest.TestCase):
         self.assertTrue(torch.allclose(cached_value, expected_value, rtol=1e-5, atol=1e-6))
         cached_value.backward()
         expected_value.backward()
-        self.assertTrue(
-            torch.allclose(estimate.grad, expected_estimate.grad, rtol=1e-5, atol=2e-5)
-        )
+        self.assertTrue(torch.allclose(estimate.grad, expected_estimate.grad, rtol=1e-5, atol=2e-5))
 
     def test_codec_loss_presets(self):
         dac_loss = CodecLoss.from_preset(CodecLossPreset.DAC, backend="torch")

@@ -65,6 +65,14 @@ class ContinuousGRPOLoss(nn.Module):
         old_step_logps = old_step_logps.detach()
         rewards = rewards.detach()
         candidate_mask = _candidate_mask(step_mask, rewards, group_mask)
+        selected_step_mask = step_mask & candidate_mask.unsqueeze(-1)
+        _validate_selected_logps(
+            policy_step_logps,
+            old_step_logps,
+            selected_step_mask,
+        )
+        policy_step_logps = policy_step_logps.masked_fill(~selected_step_mask, 0)
+        old_step_logps = old_step_logps.masked_fill(~selected_step_mask, 0)
         advantages = group_relative_advantages(rewards, candidate_mask, eps=self.eps).detach()
         if self.adv_clip_max is not None:
             advantages = advantages.clamp(-self.adv_clip_max, self.adv_clip_max)
@@ -76,7 +84,7 @@ class ContinuousGRPOLoss(nn.Module):
         policy_loss = -torch.minimum(ratio * step_advantages, clipped_ratio * step_advantages)
         pg_loss = _reduce_step_values(
             policy_loss,
-            step_mask,
+            selected_step_mask,
             candidate_mask,
             self.step_reduction,
         )
@@ -86,10 +94,10 @@ class ContinuousGRPOLoss(nn.Module):
                 raise ValueError("kl_values is required when kl_beta is positive.")
             kl_loss = policy_step_logps.new_zeros(())
         else:
-            _validate_kl_values(policy_step_logps, kl_values, step_mask)
+            _validate_kl_values(policy_step_logps, kl_values, selected_step_mask)
             kl_loss = _reduce_step_values(
-                kl_values.detach(),
-                step_mask,
+                kl_values.detach().masked_fill(~selected_step_mask, 0),
+                selected_step_mask,
                 candidate_mask,
                 self.step_reduction,
             )
@@ -106,17 +114,17 @@ class ContinuousGRPOLoss(nn.Module):
             "approx_kl": 0.5
             * _reduce_step_values(
                 log_ratio.square(),
-                step_mask,
+                selected_step_mask,
                 candidate_mask,
                 self.step_reduction,
             ),
             "clip_fraction": (
                 (torch.abs(ratio - 1.0) > self.clip_range)
-                .masked_select(step_mask)
+                .masked_select(selected_step_mask)
                 .to(dtype=total.dtype)
                 .mean()
             ),
-            "step_count": step_mask.to(dtype=total.dtype).sum(),
+            "step_count": selected_step_mask.to(dtype=total.dtype).sum(),
             "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
         }
         return total, detach_details(details)
@@ -141,9 +149,12 @@ def _validate_step_tensors(policy: Tensor, old: Tensor, step_mask: Tensor) -> No
         raise ValueError("step_mask must be on the same device as step log-probs.")
     if old.device != policy.device:
         raise ValueError("old_step_logps must be on the same device as policy_step_logps.")
-    if not bool(torch.isfinite(policy.masked_select(step_mask)).all()):
+
+
+def _validate_selected_logps(policy: Tensor, old: Tensor, selected_step_mask: Tensor) -> None:
+    if not bool(torch.isfinite(policy.masked_select(selected_step_mask)).all()):
         raise ValueError("selected policy_step_logps must be finite.")
-    if not bool(torch.isfinite(old.masked_select(step_mask)).all()):
+    if not bool(torch.isfinite(old.masked_select(selected_step_mask)).all()):
         raise ValueError("selected old_step_logps must be finite.")
 
 
@@ -172,7 +183,7 @@ def _candidate_mask(
     return group_mask
 
 
-def _validate_kl_values(policy: Tensor, kl_values: Tensor, step_mask: Tensor) -> None:
+def _validate_kl_values(policy: Tensor, kl_values: Tensor, selected_step_mask: Tensor) -> None:
     if not isinstance(kl_values, Tensor):
         raise TypeError("kl_values must be a tensor.")
     if kl_values.shape != policy.shape:
@@ -181,19 +192,18 @@ def _validate_kl_values(policy: Tensor, kl_values: Tensor, step_mask: Tensor) ->
         raise ValueError("kl_values must be on the same device as policy_step_logps.")
     if kl_values.is_complex():
         raise TypeError("kl_values must be real-valued.")
-    if bool((kl_values.masked_select(step_mask) < 0).any()):
+    if bool((kl_values.masked_select(selected_step_mask) < 0).any()):
         raise ValueError("selected kl_values must be non-negative.")
-    if not bool(torch.isfinite(kl_values.masked_select(step_mask)).all()):
+    if not bool(torch.isfinite(kl_values.masked_select(selected_step_mask)).all()):
         raise ValueError("selected kl_values must be finite.")
 
 
 def _reduce_step_values(
     value: Tensor,
-    step_mask: Tensor,
+    selected_step_mask: Tensor,
     candidate_mask: Tensor,
     reduction: StepReduction,
 ) -> Tensor:
-    selected_step_mask = step_mask & candidate_mask.unsqueeze(-1)
     weights = selected_step_mask.to(device=value.device, dtype=value.dtype)
     if reduction == "step_mean":
         step_count = weights.sum()

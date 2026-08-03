@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, overload
+from typing import Any, cast, overload
+from warnings import warn
 
 import torch
 from torch import nn
@@ -113,6 +114,7 @@ class MossTTS:
         self,
         text: str,
         options: TTSOptions | None = None,
+        *,
         reference_audio_path: AudioReference | None = None,
         **runtime_kwargs: Unpack[MossRuntimeKwargs],
     ) -> TTSOutput: ...
@@ -122,6 +124,7 @@ class MossTTS:
         self,
         text: Sequence[str],
         options: TTSOptions | None = None,
+        *,
         reference_audio_paths: Sequence[AudioReference] | None = None,
         **runtime_kwargs: Unpack[MossRuntimeKwargs],
     ) -> list[TTSOutput]: ...
@@ -131,10 +134,26 @@ class MossTTS:
         self,
         text: str | Sequence[str],
         options: TTSOptions | None = None,
+        *legacy_reference: AudioReference | Sequence[AudioReference],
         reference_audio_path: AudioReference | None = None,
         reference_audio_paths: Sequence[AudioReference] | None = None,
         **runtime_kwargs: Unpack[MossRuntimeKwargs],
     ) -> TTSOutput | list[TTSOutput]:
+        if legacy_reference:
+            if len(legacy_reference) != 1:
+                raise TypeError("synthesize accepts at most one legacy reference argument.")
+            if reference_audio_path is not None or reference_audio_paths is not None:
+                raise TypeError("reference audio cannot be passed both positionally and by keyword.")
+            warn(
+                "Passing reference audio positionally is deprecated; use "
+                "reference_audio_path or reference_audio_paths instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if isinstance(text, str):
+                reference_audio_path = cast(AudioReference, legacy_reference[0])
+            else:
+                reference_audio_paths = cast(Sequence[AudioReference], legacy_reference[0])
         resolved = self._options(options, runtime_kwargs)
         validate_v15_options(resolved)
         if isinstance(text, str):

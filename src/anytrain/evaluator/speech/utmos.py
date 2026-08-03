@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 import torch
 from torch import Tensor
@@ -162,10 +163,10 @@ class UTMOSEvaluator(EvaluatorABC):
             values = score.detach().cpu().flatten()
             if values.numel() == 0:
                 raise ValueError("UTMOS backend score tensor must contain at least one value.")
-            return [float(value) for value in values.tolist()]
+            return [self._finite_score(value, name="tensor") for value in values.tolist()]
 
         if self._is_number(score):
-            return [float(score)]
+            return [self._finite_score(score, name="scalar")]
 
         if isinstance(score, (bytes, bytearray, str)) or not isinstance(score, Sequence):
             raise TypeError("UTMOS backend score must be a float or a sequence of floats.")
@@ -177,7 +178,15 @@ class UTMOSEvaluator(EvaluatorABC):
         for index, value in enumerate(scores):
             if not self._is_number(value):
                 raise TypeError(f"UTMOS backend score[{index}] must be a float.")
-        return [float(value) for value in scores]
+        return [self._finite_score(value, name=f"[{index}]") for index, value in enumerate(scores)]
 
-    def _is_number(self, value: object) -> bool:
+    def _finite_score(self, value: object, *, name: str) -> float:
+        if not self._is_number(value):
+            raise TypeError(f"UTMOS backend score {name} must be a float.")
+        resolved = float(value)
+        if not math.isfinite(resolved):
+            raise ValueError(f"UTMOS backend score {name} must be finite.")
+        return resolved
+
+    def _is_number(self, value: object) -> TypeGuard[int | float]:
         return not isinstance(value, bool) and isinstance(value, (float, int))

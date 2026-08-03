@@ -194,6 +194,11 @@ class FlowSampleOutput:
 - `num_steps=10`
 - `return_intermediates=False`
 
+When callers omit `time_grid`, `ODESampler` creates its `[0, 1]` grid on
+`x_0.device` with `x_0.dtype`. An explicit grid is converted to that same device
+and dtype, so solver and model time inputs share the state precision for both
+paths.
+
 离散 sampler 默认封装 `MixtureDiscreteEulerSolver`，内部把 logits 转成概率：
 
 ```python
@@ -240,6 +245,8 @@ LightningModule 训练循环。
 时间约定为 0 < next_t < t < 1，即从更 noisy 的 latent 向更 clean 的 latent 走一步。
 默认 log_prob_reduction="mean" 对 latent 维求均值，贴近 Flow-GRPO 官方实现的高维
 latent 稳定训练做法；需要严格联合 Gaussian log-prob 时可显式使用 "sum"。
+`noise_level` 必须是正且有限的实数，因为该公开 step 总会构造非退化的 Gaussian
+transition；`eps` 必须有限且落在 `(0, 0.5)`，用于在 `noise_std()` 中避开时间端点。
 
 论文引用：Liu et al., “Flow-GRPO: Training Flow Matching Models via Online RL”,
 arXiv:2505.05470。该 helper 对应论文中 ODE-to-SDE transition、transition

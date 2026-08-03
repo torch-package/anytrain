@@ -53,6 +53,14 @@ class GRPOLoss(nn.Module):
         old_token_logps = old_token_logps.detach()
         rewards = rewards.detach()
         candidate_mask = _candidate_mask(response_mask, rewards, group_mask)
+        selected_token_mask = response_mask & candidate_mask.unsqueeze(-1)
+        _validate_selected_logps(
+            policy_token_logps,
+            old_token_logps,
+            selected_token_mask,
+        )
+        policy_token_logps = policy_token_logps.masked_fill(~selected_token_mask, 0)
+        old_token_logps = old_token_logps.masked_fill(~selected_token_mask, 0)
         advantages = group_relative_advantages(rewards, candidate_mask, eps=self.eps).detach()
 
         log_ratio = policy_token_logps - old_token_logps
@@ -60,17 +68,27 @@ class GRPOLoss(nn.Module):
         clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
         token_advantages = advantages.unsqueeze(-1)
         policy_loss = -torch.minimum(ratio * token_advantages, clipped_ratio * token_advantages)
-        pg_loss = _reduce_token_values(policy_loss, response_mask, candidate_mask, self.token_reduction)
+        pg_loss = _reduce_token_values(
+            policy_loss,
+            selected_token_mask,
+            candidate_mask,
+            self.token_reduction,
+        )
 
         if ref_token_logps is None:
             if self.kl_beta > 0:
                 raise ValueError("ref_token_logps is required when kl_beta is positive.")
             kl = policy_token_logps.new_zeros(())
         else:
-            _validate_reference(policy_token_logps, ref_token_logps, response_mask)
-            ref_token_logps = ref_token_logps.detach()
+            _validate_reference(policy_token_logps, ref_token_logps, selected_token_mask)
+            ref_token_logps = ref_token_logps.detach().masked_fill(~selected_token_mask, 0)
             kl_values = _approx_kl(policy_token_logps, ref_token_logps)
-            kl = _reduce_token_values(kl_values, response_mask, candidate_mask, self.token_reduction)
+            kl = _reduce_token_values(
+                kl_values,
+                selected_token_mask,
+                candidate_mask,
+                self.token_reduction,
+            )
 
         total = pg_loss + policy_token_logps.new_tensor(self.kl_beta) * kl
         selected_rewards = rewards.masked_select(candidate_mask)
@@ -83,11 +101,11 @@ class GRPOLoss(nn.Module):
             "advantage_mean": selected_advantages.mean(),
             "clip_fraction": (
                 (torch.abs(ratio - 1.0) > self.clip_range)
-                .masked_select(response_mask)
+                .masked_select(selected_token_mask)
                 .to(dtype=total.dtype)
                 .mean()
             ),
-            "token_count": response_mask.to(dtype=total.dtype).sum(),
+            "token_count": selected_token_mask.to(dtype=total.dtype).sum(),
             "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
         }
         return total, detach_details(details)
@@ -112,9 +130,12 @@ def _validate_rollout_tensors(policy: Tensor, old: Tensor, response_mask: Tensor
         raise ValueError("response_mask must be on the same device as token log-probs.")
     if old.device != policy.device:
         raise ValueError("old_token_logps must be on the same device as policy_token_logps.")
-    if not bool(torch.isfinite(policy.masked_select(response_mask)).all()):
+
+
+def _validate_selected_logps(policy: Tensor, old: Tensor, selected_token_mask: Tensor) -> None:
+    if not bool(torch.isfinite(policy.masked_select(selected_token_mask)).all()):
         raise ValueError("selected policy_token_logps must be finite.")
-    if not bool(torch.isfinite(old.masked_select(response_mask)).all()):
+    if not bool(torch.isfinite(old.masked_select(selected_token_mask)).all()):
         raise ValueError("selected old_token_logps must be finite.")
 
 
@@ -143,7 +164,7 @@ def _candidate_mask(
     return group_mask
 
 
-def _validate_reference(policy: Tensor, reference: Tensor, response_mask: Tensor) -> None:
+def _validate_reference(policy: Tensor, reference: Tensor, selected_token_mask: Tensor) -> None:
     if not isinstance(reference, Tensor):
         raise TypeError("ref_token_logps must be a tensor.")
     if reference.shape != policy.shape:
@@ -152,7 +173,7 @@ def _validate_reference(policy: Tensor, reference: Tensor, response_mask: Tensor
         raise ValueError("ref_token_logps must be on the same device as policy_token_logps.")
     if reference.is_complex():
         raise TypeError("ref_token_logps must be real-valued.")
-    if not bool(torch.isfinite(reference.masked_select(response_mask)).all()):
+    if not bool(torch.isfinite(reference.masked_select(selected_token_mask)).all()):
         raise ValueError("selected ref_token_logps must be finite.")
 
 
@@ -163,12 +184,12 @@ def _approx_kl(policy: Tensor, reference: Tensor) -> Tensor:
 
 def _reduce_token_values(
     value: Tensor,
-    response_mask: Tensor,
+    selected_token_mask: Tensor,
     candidate_mask: Tensor,
     reduction: TokenReduction,
 ) -> Tensor:
     resolved = cast(TokenReduction, reduction)
-    weights = response_mask.to(device=value.device, dtype=value.dtype)
+    weights = selected_token_mask.to(device=value.device, dtype=value.dtype)
     if resolved == "token_mean":
         token_count = weights.sum()
         if bool(token_count <= 0):

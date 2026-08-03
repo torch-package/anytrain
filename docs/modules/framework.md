@@ -12,10 +12,16 @@
 
 - `framework.flow_matching`：Facebook `flow_matching` 的可组合再封装。
 - `framework.gan`：adversarial training loss、feature matching、WGAN-GP 和 DAC discriminator preset。
+- `framework.rl`：DPO、token GRPO、continuous Flow-GRPO、neighbor GRPO 和最小 rollout
+  tensor contract；不拥有 rollout、reward、dataset 或下游 batch schema。
 
 `framework.flow_matching` 的设计见 [`docs/flow-matching-design.md`](../flow-matching-design.md)。它作为 Facebook `flow_matching` 的可组合再封装，提供 source、time sampler、objective 和 sampler 等积木，而不是完整任务框架。
 
 `framework.gan` 的设计见 [`docs/gan-framework-design.md`](../gan-framework-design.md)。当前不提供完整 manual optimization helper；音频只提供 DAC 风格 discriminator preset，不接管 codec 任务训练。
+
+`framework.rl` 的设计见 [`docs/rl-framework-design.md`](../rl-framework-design.md)。它只消费
+下游已计算的 log-prob、reward 和 mask tensor；RL-specific batch record、采样与评分流程
+留在下游项目。
 
 ## 当前结构
 
@@ -34,6 +40,15 @@ src/anytrain/framework/
       __init__.py
       dac.py
     types.py
+  rl/
+    __init__.py
+    dpo.py
+    grpo.py
+    continuous_grpo.py
+    neighbor_grpo.py
+    advantage.py
+    logprob.py
+    types.py
 ```
 
 `anytrain.framework.__init__` 不默认导出 framework 子模块。用户显式导入：
@@ -45,6 +60,12 @@ from anytrain.framework.flow_matching import (
     ContinuousVelocityObjective,
     DiscreteFlowRuntime,
     DiscreteGeneralizedKLObjective,
+)
+from anytrain.framework.rl import (
+    ContinuousGRPOLoss,
+    DPOLoss,
+    GRPOLoss,
+    NeighborGRPOLoss,
 )
 ```
 
@@ -133,3 +154,5 @@ framework 子模块默认不进入 core import。每个子模块需要声明自�
 
 - `framework.flow_matching` 的 continuous/discrete 最小路径。
 - `framework.gan` 的常见公式、判别器输出契约、feature matching detach、D/G 梯度边界、WGAN-GP 和 DAC preset smoke test。
+- `framework.rl` 的 DPO、GRPO、continuous / neighbor GRPO 数学、mask reduction、KL、
+  group selection、非有限值边界和 policy-only 梯度路径。

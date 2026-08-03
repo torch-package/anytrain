@@ -89,20 +89,18 @@ def tokens_per_expert(routing: ExpertRouting) -> Tensor:
     if routing.is_dense:
         flat_probabilities = routing.probabilities.reshape(-1, routing.num_experts)
         selected = active_mask.unsqueeze(-1) & (flat_probabilities != 0)
-        if not bool(selected.any().item()):
-            return counts
         return selected.sum(dim=0).to(dtype=torch.long, device=routing.probabilities.device)
 
     indices, weights, top_k = routing.require_topk()
     flat_indices = indices.reshape(-1, top_k)
     flat_weights = weights.reshape(-1, top_k)
     selected = active_mask.unsqueeze(-1) & (flat_weights != 0)
-    if not bool(selected.any().item()):
-        return counts
-    return torch.bincount(
-        flat_indices[selected],
-        minlength=routing.num_experts,
-    ).to(dtype=torch.long, device=routing.probabilities.device)
+    safe_indices = torch.where(selected, flat_indices, torch.zeros_like(flat_indices))
+    return counts.scatter_add(
+        0,
+        safe_indices.reshape(-1).to(dtype=torch.long),
+        selected.reshape(-1).to(dtype=counts.dtype),
+    )
 
 
 def dropped_token_ratio(

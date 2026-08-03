@@ -109,6 +109,13 @@ GRPOLoss 固定第一版 tensor contract：
 这里 B 是 prompt batch，G 是同一 prompt 下的候选数量，T 是 padded response
 token 数。每个有效 group 至少需要两个候选，用于 group-relative reward normalization。
 
+`group_mask` 是 GRPO objective 的完整候选边界，不只是 reward normalization 的辅助
+掩码。最终参与计算的 token 是 `response_mask & group_mask.unsqueeze(-1)`（未传
+`group_mask` 时使用由 `response_mask` 推导的有效候选）。它统一控制 policy loss、
+reference KL、policy / old / reference log-prob 的有限性校验，以及 `clip_fraction` 和
+`token_count` 等 details。被 `group_mask` 排除的候选即使仍有 response token，也不参与
+这些计算；下游可以在这些位置保留 padding、占位值或未计算的 log-prob。
+
 公式：
 
     advantage = (reward - group_mean) / (group_std + eps)
@@ -151,6 +158,12 @@ group rollout、reward 打分，并能提供每个 denoising / flow step 的 Gau
 这里 `policy_step_logps` / `old_step_logps` / `step_mask` 形状为 `[batch, group, steps]`，
 `rewards` 形状为 `[batch, group]`。默认 `trajectory_mean` 先按有效 step 聚合每条轨迹，
 再在有效候选间平均；`step_mean` 则直接按所有有效 step 平均。
+
+`group_mask` 同样是 Continuous GRPO 的完整 objective 边界。最终 step 选择为
+`step_mask & group_mask.unsqueeze(-1)`（未传时使用由 `step_mask` 推导的有效候选），并
+同时用于 policy loss、外部 `kl_values`、policy / old / KL 值的有限性与非负校验、
+`approx_kl`、`clip_fraction` 和 `step_count`。被排除候选的 step 不参与任何 objective
+或 details 统计，允许下游只为被选 trajectory 物化有效的 transition log-prob / KL。
 
 论文引用：Liu et al., “Flow-GRPO: Training Flow Matching Models via Online RL”,
 arXiv:2505.05470。SDE transition log-prob 和 KL helper 放在

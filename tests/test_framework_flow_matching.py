@@ -299,6 +299,47 @@ class FlowMatchingComponentTest(unittest.TestCase):
         self.assertIn("condition", calls[0])
         self.assertEqual(output.final.shape, (4, 3))
 
+    def test_ode_sampler_default_time_grid_matches_state_dtype(self):
+        from anytrain.framework.flow_matching import ODESampler
+
+        def run(dtype):
+            model_dtypes = []
+            solver_dtypes = []
+            solvers = []
+
+            class RecordingModel(nn.Module):
+                def forward(self, x_t, t):
+                    model_dtypes.append(t.dtype)
+                    return torch.zeros_like(x_t)
+
+            class RecordingSolver:
+                def __init__(self, model):
+                    self.model = model
+
+                def sample(self, x_init, **kwargs):
+                    solver_dtypes.append(kwargs["time_grid"].dtype)
+                    return self.model(x=x_init, t=kwargs["time_grid"][0])
+
+            def factory(model):
+                solver = RecordingSolver(model)
+                solvers.append(solver)
+                return solver
+
+            x_0 = torch.zeros(2, 3, dtype=dtype)
+            output = ODESampler(solver_factory=factory).sample(
+                RecordingModel(),
+                x_0,
+            )
+
+            self.assertEqual(output.time_grid.dtype, dtype)
+            self.assertEqual(solver_dtypes, [dtype])
+            self.assertEqual(model_dtypes, [dtype])
+            self.assertEqual(len(solvers), 1)
+
+        for dtype in (torch.bfloat16, torch.float64):
+            with self.subTest(dtype=dtype):
+                run(dtype)
+
     def test_discrete_loss_backward_and_sample_shape(self):
         from anytrain.framework.flow_matching import (
             DiscreteFlowRuntime,
@@ -456,6 +497,20 @@ class FlowMatchingComponentTest(unittest.TestCase):
                 torch.tensor([0.4, 0.6]),
                 torch.zeros_like(x_t),
             )
+
+    def test_rectified_flow_sde_rejects_invalid_noise_and_eps(self):
+        from anytrain.framework.flow_matching import RectifiedFlowSDE
+
+        for noise_level in (0.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(noise_level=noise_level), self.assertRaisesRegex(
+                ValueError,
+                "noise_level",
+            ):
+                RectifiedFlowSDE(noise_level=noise_level)
+
+        for eps in (0.0, 0.5, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(eps=eps), self.assertRaisesRegex(ValueError, "eps"):
+                RectifiedFlowSDE(eps=eps)
 
     def test_rectified_flow_sde_detaches_next_x_but_keeps_velocity_gradient(self):
         from anytrain.framework.flow_matching import RectifiedFlowSDE

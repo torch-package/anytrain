@@ -90,7 +90,13 @@ class ODESampler:
         adapter = _ModelAdapter(model, call_model, dict(model_extras))
         solver = self.solver_factory(adapter)
         if time_grid is None:
-            time_grid = torch.linspace(0, 1, self.num_steps, device=x_0.device)
+            time_grid = torch.linspace(
+                0,
+                1,
+                self.num_steps,
+                device=x_0.device,
+                dtype=x_0.dtype,
+            )
         elif time_grid.ndim != 1 or time_grid.numel() != self.num_steps:
             raise ValueError("time_grid must have shape (num_steps,).")
         else:

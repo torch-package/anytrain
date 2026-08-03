@@ -121,7 +121,7 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
 - `FiniteScalarQuantizer` 使用 `levels` 描述每个 scalar code dimension 的 level 数；它和普通 VQ 一样是单 codebook 接口，`indices` shape 为 `(...)`，`codebook_vectors` shape 为 `(..., codebook_dim)`。
 - FSQ 默认使用 odd-only `levels` preset，推荐 odd `levels` 以保持 scalar grid 关于 0 对称；even `levels` 会触发 warning，但仍使用保留 0 码点的 zero-friendly grid。
 - FSQ 的 `bound_scale` 控制进入 `tanh` 前的 latent 尺度；调大它可以缓解大幅值 projected latents 的边界饱和。
-- `ResidualFiniteScalarQuantizer` 在共享 FSQ level grid 上做 residual 量化，`scales` 控制每级 residual 的标量范围。量化路径会把 level clamp 到 `[0, levels-1]`，保证 `indices < codebook_size`；`scales` 不必覆盖完整 residual 动态范围。
+- `ResidualFiniteScalarQuantizer` 在共享 FSQ level grid 上做 residual 量化，`scales` 控制每级 residual 的标量范围。量化路径会把 level clamp 到 `[0, levels-1]`，保证 `indices < codebook_size`；`scales` 不必覆盖完整 residual 动态范围。`RFSQConfig.work_dtype=None` 使用自动快速路径：FP16、BF16 和 FP32 projected latents 的 residual math 使用 FP32，FP64 projected latents 保留 FP64。`codebook_vectors` 在暴露前转回 forward 输入 dtype；`latents` 和 `quantized_latents` 的 dtype 遵循投影层与 autocast 语义。旧版 RFSQ 一律使用 FP64；需要在量化边界附近复现旧版离散 `indices` 时显式设置 `work_dtype=torch.float64`。也可显式设置 `torch.float32`，但 FP32 与旧版 FP64 在恰好靠近半格边界时可能选择相邻 level。
 - `EmbeddingVectorQuantizer` 是 embedding table + nearest-neighbor VQ，实现名避免和 protocol 混淆。
 - nearest-neighbor 查找会沿 latent 和 codebook 两个维度自动分块，确保任一临时比较矩阵不
   超过内部元素上限，限制长序列和超大码本组合时的峰值显存。

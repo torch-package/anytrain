@@ -154,13 +154,13 @@ class PerformanceCallback(pl.Callback):
         batch: Any,
         batch_idx: int,
     ) -> None:
-        del pl_module, batch, batch_idx
+        del batch, batch_idx
         if self._step_started_at is not None:
             raise RuntimeError("A training batch started before the previous batch ended.")
         if self._last_global_step is None:
             self._last_global_step = _capability.global_step(trainer)
         _sync_distributed(trainer, self.sync_distributed)
-        _sync_cuda(self.sync_cuda)
+        _sync_cuda(self.sync_cuda, pl_module)
         if self.profile_flops:
             counter = _flop_counter()
             counter.__enter__()
@@ -222,7 +222,7 @@ class PerformanceCallback(pl.Callback):
         batch_idx: int,
     ) -> None:
         profiled_flops = self._stop_flop_counter()
-        _sync_cuda(self.sync_cuda)
+        _sync_cuda(self.sync_cuda, pl_module)
         if self._step_started_at is None:
             raise RuntimeError("Cannot record a performance batch before it starts.")
         batch_time = time.perf_counter() - self._step_started_at
@@ -458,9 +458,10 @@ def _device(pl_module: pl.LightningModule) -> torch.device | None:
         return None
 
 
-def _sync_cuda(sync_cuda: bool) -> None:
-    if sync_cuda and torch.cuda.is_available():
-        torch.cuda.synchronize()
+def _sync_cuda(sync_cuda: bool, pl_module: pl.LightningModule) -> None:
+    device = _device(pl_module)
+    if sync_cuda and device is not None and device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def _sync_distributed(trainer: pl.Trainer, enabled: bool) -> None:

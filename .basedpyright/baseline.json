@@ -266,24 +266,6 @@
                 }
             }
         ],
-        "./src/anytrain/evaluator/speech/utmos.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 31,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 31,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/anytrain/evaluator/text/scores.py": [
             {
                 "code": "reportPrivateImportUsage",
@@ -586,34 +568,6 @@
                 }
             }
         ],
-        "./src/anytrain/tts/moss/tts.py": [
-            {
-                "code": "reportInconsistentOverload",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 18,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/anytrain/tts/protocol.py": [
-            {
-                "code": "reportInconsistentOverload",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 18,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/anytrain/tts/qwen/tts.py": [
             {
                 "code": "reportArgumentType",
@@ -684,14 +638,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportInconsistentOverload",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 18,
                     "lineCount": 1
                 }
             },

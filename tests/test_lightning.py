@@ -620,6 +620,7 @@ class LightningTest(unittest.TestCase):
         }
 
         callback.on_train_batch_end(trainer, SimpleNamespace(), outputs, None, 0)
+        callback.on_train_batch_end(trainer, SimpleNamespace(), outputs, None, 1)
 
         experiment.add_histogram.assert_called_once()
         self.assertEqual(experiment.add_histogram.call_args.args[0], "flow/time")
@@ -678,6 +679,7 @@ class LightningTest(unittest.TestCase):
             GradientComparison,
             GradientProbeLoggerCallback,
             GradientTarget,
+            gradient_loss_groups,
         )
         from anytrain.loss import LossItem
 
@@ -706,6 +708,7 @@ class LightningTest(unittest.TestCase):
                 ),
             ),
             {"parameter": ("weight",)},
+            loss_groups=gradient_loss_groups,
             every_n_steps=2,
         )
 
@@ -729,6 +732,7 @@ class LightningTest(unittest.TestCase):
             GradientComparison,
             GradientProbeLoggerCallback,
             GradientTarget,
+            gradient_loss_groups,
         )
         from anytrain.loss import LossItem
 
@@ -759,6 +763,7 @@ class LightningTest(unittest.TestCase):
                 ),
             ),
             {"block": ("attn", "ffn")},
+            loss_groups=gradient_loss_groups,
             every_n_steps=2,
         )
 
@@ -780,6 +785,7 @@ class LightningTest(unittest.TestCase):
             GradientComparison,
             GradientProbeLoggerCallback,
             GradientTarget,
+            gradient_loss_groups,
         )
         from anytrain.loss import LossItem
 
@@ -812,6 +818,7 @@ class LightningTest(unittest.TestCase):
                 ),
             ),
             probes={"layer0_attn": ("weight",)},
+            loss_groups=gradient_loss_groups,
             every_n_steps=1,
         )
 
@@ -822,6 +829,44 @@ class LightningTest(unittest.TestCase):
             values["grad/token@tts__token@mt/layer0_attn/cosine"],
             0.0,
         )
+
+    def test_gradient_probe_logger_rejects_invalid_loss_group_structure(self):
+        from typing import Any, cast
+
+        import torch
+
+        from anytrain.lightning import (
+            GradientComparison,
+            GradientProbeLoggerCallback,
+            GradientTarget,
+        )
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor([1.0]))
+
+        callback = GradientProbeLoggerCallback(
+            comparisons=(
+                GradientComparison(
+                    GradientTarget("token"),
+                    GradientTarget("flow"),
+                ),
+            ),
+            probes={"parameter": ("weight",)},
+            loss_groups=lambda pl_module: cast(Any, {"batch": object()}),
+            every_n_steps=1,
+        )
+
+        with self.assertRaisesRegex(
+            TypeError,
+            "loss_groups provider group 'batch' must be a mapping",
+        ):
+            callback.on_before_backward(
+                SimpleNamespace(global_step=0),
+                Module(),
+                torch.tensor(0.0),
+            )
 
     def test_lightning_log_mixin_logs_prefixed_dict(self):
         from anytrain.lightning import LightningLogMixin
@@ -959,9 +1004,14 @@ class LightningTest(unittest.TestCase):
         original = inspect.signature(LightningModelCheckpoint.__init__)
         custom = inspect.signature(ModelCheckpoint.__init__)
 
-        self.assertEqual(list(custom.parameters)[:-1], list(original.parameters))
+        self.assertEqual(list(custom.parameters)[:-2], list(original.parameters))
         self.assertEqual(custom.parameters["async_save"].default, True)
         self.assertEqual(custom.parameters["async_save"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertEqual(custom.parameters["max_pending_async_saves"].default, 1)
+        self.assertEqual(
+            custom.parameters["max_pending_async_saves"].kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
 
     def test_model_checkpoint_can_be_pickled_before_async_work(self):
         import pickle
@@ -1146,6 +1196,772 @@ class LightningTest(unittest.TestCase):
 
                 self.assertFalse(target.exists())
         finally:
+            callback._close_async_storage()
+
+    def test_model_checkpoint_backpressure_precedes_next_local_save(self):
+        from tempfile import TemporaryDirectory
+        from threading import Event, Thread
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = ModelCheckpoint(async_save=True, max_pending_async_saves=1)
+        copy_started = Event()
+        release_copy = Event()
+        capacity_wait_started = Event()
+        save_errors = []
+        save_thread = None
+        original_copy = callback._copy_to_target
+        original_capacity_wait = callback._wait_for_async_capacity
+
+        def blocked_copy(source, target):
+            copy_started.set()
+            if not release_copy.wait(timeout=5):
+                raise TimeoutError("test did not release asynchronous checkpoint copy")
+            original_copy(source, target)
+
+        def observed_capacity_wait():
+            capacity_wait_started.set()
+            original_capacity_wait()
+
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                first = Path(tmp_dir) / "nfs" / "first.ckpt"
+                second = Path(tmp_dir) / "nfs" / "second.ckpt"
+                trainer = _CheckpointTrainer(payload=b"saved")
+
+                with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
+                    callback._save_checkpoint(trainer, str(first))
+                    self.assertTrue(copy_started.wait(timeout=2))
+
+                    def save_second():
+                        try:
+                            callback._save_checkpoint(trainer, str(second))
+                        except BaseException as error:
+                            save_errors.append(error)
+
+                    with patch.object(
+                        callback,
+                        "_wait_for_async_capacity",
+                        side_effect=observed_capacity_wait,
+                    ):
+                        save_thread = Thread(target=save_second)
+                        save_thread.start()
+                        self.assertTrue(capacity_wait_started.wait(timeout=2))
+                        self.assertTrue(save_thread.is_alive())
+                        self.assertEqual(len(trainer.saved_paths), 1)
+                        release_copy.set()
+                        save_thread.join(timeout=5)
+
+                    self.assertFalse(save_thread.is_alive())
+                    self.assertEqual(save_errors, [])
+                    self.assertEqual(len(trainer.saved_paths), 2)
+                    callback.wait_async_saves()
+
+                self.assertEqual(first.read_bytes(), b"saved")
+                self.assertEqual(second.read_bytes(), b"saved")
+        finally:
+            release_copy.set()
+            if save_thread is not None:
+                save_thread.join(timeout=5)
+            callback._close_async_storage()
+
+    def test_model_checkpoint_backpressure_propagates_copy_error_before_save(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = ModelCheckpoint(async_save=True, max_pending_async_saves=1)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                trainer = _CheckpointTrainer(payload=b"saved")
+                first = Path(tmp_dir) / "first.ckpt"
+                second = Path(tmp_dir) / "second.ckpt"
+
+                with patch.object(
+                    callback,
+                    "_copy_to_target",
+                    side_effect=OSError("storage unavailable"),
+                ):
+                    callback._save_checkpoint(trainer, str(first))
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Asynchronous checkpoint storage failed",
+                    ):
+                        callback._save_checkpoint(trainer, str(second))
+
+                self.assertEqual(len(trainer.saved_paths), 1)
+                self.assertFalse(second.exists())
+        finally:
+            callback._close_async_storage()
+
+    def test_model_checkpoint_wait_drains_all_futures_after_logger_error(self):
+        from tempfile import TemporaryDirectory
+        from threading import Event
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class Logger:
+            def __init__(self) -> None:
+                self.saved_paths = []
+
+            def after_save_checkpoint(self, callback):
+                self.saved_paths.append(callback._last_checkpoint_saved)
+                if len(self.saved_paths) == 1:
+                    raise RuntimeError("logger unavailable")
+
+        callback = ModelCheckpoint(async_save=True, max_pending_async_saves=2)
+        release_copy = Event()
+        original_copy = callback._copy_to_target
+
+        def blocked_copy(source, target):
+            if not release_copy.wait(timeout=5):
+                raise TimeoutError("test did not release asynchronous checkpoint copy")
+            original_copy(source, target)
+
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                first = Path(tmp_dir) / "nfs" / "first.ckpt"
+                second = Path(tmp_dir) / "nfs" / "second.ckpt"
+                logger = Logger()
+                trainer = _CheckpointTrainer(payload=b"saved")
+                trainer.loggers = [logger]
+
+                with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
+                    callback._save_checkpoint(trainer, str(first))
+                    callback._save_checkpoint(trainer, str(second))
+                    local_paths = [path for path, _ in trainer.saved_paths]
+                    release_copy.set()
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Asynchronous checkpoint storage failed",
+                    ):
+                        callback.wait_async_saves()
+
+                self.assertEqual(logger.saved_paths, [str(first), str(second)])
+                self.assertEqual(callback._last_checkpoint_saved, str(second))
+                self.assertTrue(all(not path.exists() for path in local_paths))
+                self.assertEqual(callback._async_futures, [])
+                self.assertEqual(callback._async_callbacks, {})
+        finally:
+            release_copy.set()
+            callback._close_async_storage()
+
+    def test_model_checkpoint_ddp_propagates_prior_error_before_save_collective(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class BroadcastState:
+            value = None
+
+        class Strategy(_CheckpointStrategy):
+            def __init__(self, state):
+                super().__init__()
+                self.state = state
+
+            def broadcast(self, value, *, src):
+                self.assert_source(src)
+                if value is not None:
+                    self.state.value = value
+                return self.state.value
+
+            @staticmethod
+            def assert_source(src):
+                if src != 0:
+                    raise AssertionError(f"expected broadcast source 0, got {src}")
+
+        callback_zero = ModelCheckpoint(async_save=True)
+        callback_nonzero = ModelCheckpoint(async_save=True)
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                source = Path(tmp_dir) / "source.ckpt"
+                source.write_bytes(b"pending")
+                state = BroadcastState()
+
+                with patch.object(
+                    callback_zero,
+                    "_copy_to_target",
+                    side_effect=OSError("storage unavailable"),
+                ):
+                    callback_zero._submit_async_copy(
+                        source,
+                        Path(tmp_dir) / "failed.ckpt",
+                    )
+                    failed = callback_zero._async_futures[0]
+                    with self.assertRaises(OSError):
+                        failed.result()
+
+                trainer_zero = _CheckpointTrainer(payload=b"rank-zero")
+                trainer_zero.world_size = 2
+                trainer_zero.strategy = Strategy(state)
+                trainer_nonzero = _CheckpointTrainer(payload=b"rank-one")
+                trainer_nonzero.world_size = 2
+                trainer_nonzero.is_global_zero = False
+                trainer_nonzero.strategy = Strategy(state)
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Asynchronous checkpoint storage failed",
+                ) as zero_error:
+                    callback_zero._save_checkpoint(
+                        trainer_zero,
+                        str(Path(tmp_dir) / "next.ckpt"),
+                    )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Asynchronous checkpoint storage failed",
+                ):
+                    callback_nonzero._save_checkpoint(
+                        trainer_nonzero,
+                        str(Path(tmp_dir) / "next.ckpt"),
+                    )
+
+                self.assertIsInstance(zero_error.exception.__cause__, OSError)
+                self.assertEqual(trainer_zero.saved_paths, [])
+                self.assertEqual(trainer_nonzero.saved_paths, [])
+        finally:
+            callback_zero._close_async_storage()
+            callback_nonzero._close_async_storage()
+
+    def test_model_checkpoint_ddp_fit_end_propagates_async_error(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class BroadcastState:
+            value = None
+
+        class Strategy(_CheckpointStrategy):
+            def __init__(self, state):
+                super().__init__()
+                self.state = state
+
+            def broadcast(self, value, *, src):
+                if src != 0:
+                    raise AssertionError(f"expected broadcast source 0, got {src}")
+                if value is not None:
+                    self.state.value = value
+                return self.state.value
+
+        callback_zero = ModelCheckpoint(async_save=True)
+        callback_nonzero = ModelCheckpoint(async_save=True)
+        with TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "source.ckpt"
+            source.write_bytes(b"pending")
+            state = BroadcastState()
+
+            with patch.object(
+                callback_zero,
+                "_copy_to_target",
+                side_effect=OSError("storage unavailable"),
+            ):
+                callback_zero._submit_async_copy(
+                    source,
+                    Path(tmp_dir) / "failed.ckpt",
+                )
+
+            trainer_zero = _CheckpointTrainer(payload=b"rank-zero")
+            trainer_zero.world_size = 2
+            trainer_zero.strategy = Strategy(state)
+            trainer_nonzero = _CheckpointTrainer(payload=b"rank-one")
+            trainer_nonzero.world_size = 2
+            trainer_nonzero.is_global_zero = False
+            trainer_nonzero.strategy = Strategy(state)
+            module = SimpleNamespace()
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Asynchronous checkpoint storage failed",
+            ) as zero_error:
+                callback_zero.on_fit_end(trainer_zero, module)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Asynchronous checkpoint storage failed",
+            ):
+                callback_nonzero.on_fit_end(trainer_nonzero, module)
+
+            self.assertIsInstance(zero_error.exception.__cause__, OSError)
+
+    def test_model_checkpoint_fit_end_drains_callbacks_after_super_error(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from lightning.pytorch.callbacks import ModelCheckpoint as LightningModelCheckpoint
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class Logger:
+            def __init__(self) -> None:
+                self.saved_paths = []
+
+            def after_save_checkpoint(self, callback):
+                self.saved_paths.append(callback._last_checkpoint_saved)
+
+        callback = ModelCheckpoint(async_save=True)
+        with TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "model.ckpt"
+            trainer = _CheckpointTrainer(payload=b"saved")
+            logger = Logger()
+            trainer.loggers = [logger]
+            callback._save_checkpoint(trainer, str(target))
+            local = trainer.saved_paths[0][0]
+
+            with (
+                patch.object(
+                    LightningModelCheckpoint,
+                    "on_fit_end",
+                    side_effect=RuntimeError("parent hook failed"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "parent hook failed"),
+            ):
+                callback.on_fit_end(trainer, SimpleNamespace())
+
+            self.assertEqual(target.read_bytes(), b"saved")
+            self.assertEqual(logger.saved_paths, [str(target)])
+            self.assertFalse(local.exists())
+            self.assertEqual(callback._async_futures, [])
+            self.assertEqual(callback._async_callbacks, {})
+
+    def test_model_checkpoint_reuses_topk_serialization_for_async_last(self):
+        from tempfile import TemporaryDirectory
+        from threading import Event
+        from unittest.mock import patch
+
+        import torch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class Logger:
+            def __init__(self, topk, last) -> None:
+                self.topk = topk
+                self.last = last
+                self.seen = []
+
+            def after_save_checkpoint(self, callback):
+                self.seen.append(
+                    (
+                        callback._last_checkpoint_saved,
+                        self.topk.exists(),
+                        self.last.exists(),
+                    )
+                )
+
+        release_copy = Event()
+        copy_started = Event()
+        callback = None
+
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    filename="step-{step:02d}",
+                    save_last=True,
+                    save_top_k=-1,
+                    auto_insert_metric_name=False,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                checkpoint_dir = Path(callback.dirpath)
+                topk = checkpoint_dir / "step-07.ckpt"
+                last = checkpoint_dir / "last.ckpt"
+                last.write_bytes(b"previous")
+                expected_payload = str(last).encode()
+
+                class StateTrainer(_CheckpointTrainer):
+                    def save_checkpoint(self, filepath, weights_only):
+                        self.payload = callback.last_model_path.encode()
+                        super().save_checkpoint(filepath, weights_only)
+
+                trainer = StateTrainer()
+                logger = Logger(topk, last)
+                trainer.loggers = [logger]
+                candidates = {
+                    "epoch": torch.tensor(1),
+                    "step": torch.tensor(7),
+                }
+                original_copy = callback._copy_to_target
+
+                def blocked_copy(source, target):
+                    if target == topk:
+                        copy_started.set()
+                        if not release_copy.wait(timeout=5):
+                            raise TimeoutError(
+                                "test did not release asynchronous checkpoint copy"
+                            )
+                    original_copy(source, target)
+
+                with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
+                    callback._save_topk_checkpoint(trainer, candidates)
+                    self.assertTrue(copy_started.wait(timeout=2))
+                    local = trainer.saved_paths[0][0]
+                    callback._save_last_checkpoint(trainer, candidates)
+
+                    self.assertEqual(len(trainer.saved_paths), 1)
+                    self.assertEqual(last.read_bytes(), b"previous")
+                    self.assertEqual(logger.seen, [])
+                    release_copy.set()
+                    callback.wait_async_saves()
+
+                self.assertEqual(topk.read_bytes(), expected_payload)
+                self.assertEqual(last.read_bytes(), expected_payload)
+                self.assertEqual(logger.seen, [(str(last), True, True)])
+                self.assertEqual(callback._last_checkpoint_saved, str(last))
+                self.assertFalse(local.exists())
+        finally:
+            release_copy.set()
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_failed_topk_publish_keeps_previous_last(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        import torch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = None
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    filename="step-{step:02d}",
+                    save_last=True,
+                    save_top_k=-1,
+                    auto_insert_metric_name=False,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                topk = Path(tmp_dir) / "step-07.ckpt"
+                last = Path(tmp_dir) / "last.ckpt"
+                topk.write_bytes(b"stale-topk")
+                last.write_bytes(b"previous-last")
+                trainer = _CheckpointTrainer(payload=b"new")
+                candidates = {
+                    "epoch": torch.tensor(1),
+                    "step": torch.tensor(7),
+                }
+
+                with patch.object(
+                    callback,
+                    "_copy_to_target",
+                    side_effect=OSError("storage unavailable"),
+                ):
+                    callback._save_topk_checkpoint(trainer, candidates)
+                    callback._save_last_checkpoint(trainer, candidates)
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Asynchronous checkpoint storage failed",
+                    ):
+                        callback.wait_async_saves()
+
+                self.assertEqual(len(trainer.saved_paths), 1)
+                self.assertEqual(topk.read_bytes(), b"stale-topk")
+                self.assertEqual(last.read_bytes(), b"previous-last")
+        finally:
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_save_top_k_zero_serializes_last_once(self):
+        from tempfile import TemporaryDirectory
+
+        import torch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = None
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last=True,
+                    save_top_k=0,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                trainer = _CheckpointTrainer(payload=b"last-only")
+                candidates = {
+                    "epoch": torch.tensor(1),
+                    "step": torch.tensor(7),
+                }
+
+                callback._save_topk_checkpoint(trainer, candidates)
+                callback._save_last_checkpoint(trainer, candidates)
+                callback.wait_async_saves()
+
+                last = Path(callback.dirpath) / "last.ckpt"
+                self.assertEqual(len(trainer.saved_paths), 1)
+                self.assertEqual(last.read_bytes(), b"last-only")
+                self.assertEqual(callback._last_checkpoint_saved, str(last))
+        finally:
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_exception_reuses_serialization_for_last(self):
+        from tempfile import TemporaryDirectory
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = None
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    filename="step-{step:02d}",
+                    save_last=True,
+                    save_top_k=-1,
+                    save_on_exception=True,
+                    auto_insert_metric_name=False,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                trainer = _CheckpointTrainer(payload=b"exception")
+                trainer.callback_metrics = {}
+                trainer.current_epoch = 1
+                trainer.fast_dev_run = False
+                trainer.sanity_checking = False
+
+                callback.on_exception(
+                    trainer,
+                    SimpleNamespace(),
+                    RuntimeError("training failed"),
+                )
+
+                checkpoint_dir = Path(callback.dirpath)
+                self.assertEqual(len(trainer.saved_paths), 1)
+                self.assertEqual(
+                    (checkpoint_dir / "step-07.ckpt").read_bytes(),
+                    b"exception",
+                )
+                self.assertEqual(
+                    (checkpoint_dir / "last.ckpt").read_bytes(),
+                    b"exception",
+                )
+        finally:
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_link_fallback_uses_reaped_persistent_source(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        import torch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = None
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    filename="step-{step:02d}",
+                    save_last="link",
+                    save_top_k=-1,
+                    auto_insert_metric_name=False,
+                    enable_version_counter=False,
+                    async_save=True,
+                )
+                trainer = _CheckpointTrainer(payload=b"saved")
+                candidates = {
+                    "epoch": torch.tensor(1),
+                    "step": torch.tensor(7),
+                }
+
+                callback._save_topk_checkpoint(trainer, candidates)
+                reused = callback._reused_last_save
+                self.assertIsNotNone(reused)
+                assert reused is not None
+                local = reused[2]
+                prerequisite = reused[4]
+                self.assertIsNotNone(prerequisite)
+                assert prerequisite is not None
+                prerequisite.result()
+                self.assertIsNone(callback._collect_done_async_error())
+                self.assertFalse(local.exists())
+
+                with patch("os.symlink", side_effect=OSError("links unavailable")):
+                    callback._save_last_checkpoint(trainer, candidates)
+                callback.wait_async_saves()
+
+                last = Path(callback.dirpath) / "last.ckpt"
+                self.assertFalse(last.is_symlink())
+                self.assertEqual(last.read_bytes(), b"saved")
+        finally:
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_save_last_link_targets_persistent_checkpoint(self):
+        import os
+        from tempfile import TemporaryDirectory
+        from threading import Event
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        release_copy = Event()
+        copy_started = Event()
+
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    async_save=True,
+                    save_last="link",
+                    enable_version_counter=False,
+                )
+                original_copy = callback._copy_to_target
+
+                def blocked_copy(source, target):
+                    copy_started.set()
+                    if not release_copy.wait(timeout=5):
+                        raise TimeoutError(
+                            "test did not release asynchronous checkpoint copy"
+                        )
+                    original_copy(source, target)
+
+                target = Path(tmp_dir) / "epoch=1.ckpt"
+                link = Path(tmp_dir) / "last.ckpt"
+                link.write_bytes(b"previous")
+                trainer = _CheckpointTrainer(payload=b"saved")
+
+                with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
+                    callback._save_checkpoint(trainer, str(target))
+                    self.assertTrue(copy_started.wait(timeout=2))
+                    local = Path(callback._last_checkpoint_saved)
+
+                    callback._save_last_checkpoint(trainer, {})
+
+                    self.assertTrue(link.is_symlink())
+                    linked = (link.parent / os.readlink(link)).resolve()
+                    self.assertEqual(linked, target.resolve())
+                    release_copy.set()
+                    callback.wait_async_saves()
+
+                self.assertTrue(link.is_symlink())
+                linked = (link.parent / os.readlink(link)).resolve()
+                self.assertEqual(linked, target.resolve())
+                self.assertEqual(link.read_bytes(), b"saved")
+                self.assertFalse(local.exists())
+        finally:
+            release_copy.set()
+            callback._close_async_storage()
+
+    def test_model_checkpoint_save_last_link_falls_back_to_persistent_copy(self):
+        from tempfile import TemporaryDirectory
+        from threading import Event
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        release_copy = Event()
+        copy_started = Event()
+        callback = None
+
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    async_save=True,
+                    save_last="link",
+                    enable_version_counter=False,
+                )
+                original_copy = callback._copy_to_target
+
+                def blocked_copy(source, target):
+                    copy_started.set()
+                    if not release_copy.wait(timeout=5):
+                        raise TimeoutError(
+                            "test did not release asynchronous checkpoint copy"
+                        )
+                    original_copy(source, target)
+
+                target = Path(tmp_dir) / "epoch=1.ckpt"
+                link = Path(tmp_dir) / "last.ckpt"
+                link.write_bytes(b"previous")
+                trainer = _CheckpointTrainer(payload=b"saved")
+
+                with (
+                    patch.object(callback, "_copy_to_target", side_effect=blocked_copy),
+                    patch("os.symlink", side_effect=OSError("links unavailable")),
+                ):
+                    callback._save_checkpoint(trainer, str(target))
+                    self.assertTrue(copy_started.wait(timeout=2))
+                    callback._save_last_checkpoint(trainer, {})
+
+                    self.assertFalse(link.is_symlink())
+                    self.assertEqual(link.read_bytes(), b"saved")
+                    release_copy.set()
+                    callback.wait_async_saves()
+
+                self.assertFalse(link.is_symlink())
+                self.assertEqual(link.read_bytes(), b"saved")
+        finally:
+            release_copy.set()
+            if callback is not None:
+                callback._close_async_storage()
+
+    def test_model_checkpoint_remove_does_not_consume_copy_backpressure(self):
+        from tempfile import TemporaryDirectory
+        from threading import Event, Thread
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        callback = ModelCheckpoint(async_save=True, max_pending_async_saves=1)
+        copy_started = Event()
+        release_copy = Event()
+        remove_submitted = Event()
+        submit_errors = []
+        submit_thread = None
+        original_copy = callback._copy_to_target
+
+        def blocked_copy(source, target):
+            copy_started.set()
+            if not release_copy.wait(timeout=5):
+                raise TimeoutError("test did not release asynchronous checkpoint copy")
+            original_copy(source, target)
+
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                source = Path(tmp_dir) / "source.ckpt"
+                source.write_bytes(b"saved")
+                target = Path(tmp_dir) / "target.ckpt"
+                removed = Path(tmp_dir) / "old.ckpt"
+                removed.write_bytes(b"old")
+
+                with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
+                    callback._submit_async_copy(source, target)
+                    self.assertTrue(copy_started.wait(timeout=2))
+
+                    def submit_remove():
+                        try:
+                            callback._submit_async_remove(removed)
+                        except BaseException as error:
+                            submit_errors.append(error)
+                        finally:
+                            remove_submitted.set()
+
+                    submit_thread = Thread(target=submit_remove)
+                    submit_thread.start()
+                    self.assertTrue(remove_submitted.wait(timeout=2))
+                    self.assertEqual(submit_errors, [])
+                    self.assertEqual(len(callback._async_futures), 2)
+                    self.assertEqual(len(callback._async_copy_futures), 1)
+                    release_copy.set()
+                    submit_thread.join(timeout=5)
+                    callback.wait_async_saves()
+
+                self.assertTrue(target.is_file())
+                self.assertFalse(removed.exists())
+        finally:
+            release_copy.set()
+            if submit_thread is not None:
+                submit_thread.join(timeout=5)
             callback._close_async_storage()
 
 

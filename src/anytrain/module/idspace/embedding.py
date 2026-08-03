@@ -53,14 +53,13 @@ class Embedding(nn.Module):
 
     def _forward_with_adapters(self, input_ids: torch.Tensor) -> torch.Tensor:
         output: torch.Tensor | None = None
-        covered = torch.zeros(input_ids.shape, dtype=torch.bool, device=input_ids.device)
+        selected = _selected_blocks(input_ids, self.layout)
 
         for name, embed in self.embeddings.items():
+            if name not in selected:
+                continue
             start, end = self.layout.blocks[name]
             mask = (input_ids >= start) & (input_ids < end)
-            if not bool(mask.any()):
-                continue
-
             local_ids = input_ids[mask] - start
             local_output = embed(local_ids)
             if name in self.adapters:
@@ -73,11 +72,7 @@ class Embedding(nn.Module):
             elif local_output.shape[-1] != output.shape[-1]:
                 raise ValueError("all selected embedding blocks must produce the same output dim.")
             output[mask] = local_output
-            covered |= mask
 
-        if not bool(covered.all()):
-            bad_id = int(input_ids[~covered].reshape(-1)[0].detach().cpu())
-            raise ValueError(f"input_ids contains id outside space: {bad_id}.")
         if output is None:
             raise RuntimeError("embedding routing produced no output.")
         return output
@@ -147,6 +142,34 @@ def _validate_covered(input_ids: torch.Tensor, covered: torch.Tensor) -> None:
     if not bool(covered.all()):
         bad_id = int(input_ids[~covered].reshape(-1)[0].detach().cpu())
         raise ValueError(f"input_ids contains id outside space: {bad_id}.")
+
+
+def _selected_blocks(input_ids: torch.Tensor, layout: Layout) -> set[str]:
+    covered = torch.zeros(input_ids.shape, dtype=torch.bool, device=input_ids.device)
+    hits: list[torch.Tensor] = []
+    for start, end in layout.blocks.values():
+        mask = (input_ids >= start) & (input_ids < end)
+        hits.append(mask.any())
+        covered |= mask
+
+    # Read all routing predicates together so unselected modules stay out of autograd
+    # without introducing one device synchronization per block.
+    first_uncovered = (~covered).reshape(-1).to(dtype=torch.int64).argmax()
+    first_uncovered_id = input_ids.reshape(-1).gather(0, first_uncovered.reshape(1))
+    summary = torch.cat(
+        (
+            torch.stack((*hits, covered.all())).to(dtype=torch.int64),
+            first_uncovered_id.to(dtype=torch.int64),
+        )
+    ).detach().cpu().tolist()
+    *selected, all_covered, bad_id = summary
+    if not all_covered:
+        raise ValueError(f"input_ids contains id outside space: {bad_id}.")
+    return {
+        name
+        for name, hit in zip(layout.block_names, selected)
+        if hit
+    }
 
 
 def _can_use_homogeneous_path(embeddings: nn.ModuleDict) -> bool:

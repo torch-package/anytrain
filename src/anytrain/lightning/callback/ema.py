@@ -93,7 +93,7 @@ class ParameterEMA:
             "decay": self.decay,
             "names": self._names,
             "num_updates": self.num_updates,
-            "shadow": {name: value.detach().clone() for name, value in self.shadow.items()},
+            "shadow": {name: value.detach() for name, value in self.shadow.items()},
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -119,8 +119,10 @@ class ParameterEMA:
                 raise TypeError(f"EMA shadow {name!r} must be a Tensor.")
             if value.shape != self.shadow[name].shape:
                 raise ValueError(f"EMA shadow {name!r} has incompatible shape.")
-            loaded[name] = value.detach().float().clone()
-        self.shadow = loaded
+            loaded[name] = value
+        with torch.no_grad():
+            for name, value in loaded.items():
+                self.shadow[name].copy_(value.detach())
         self.num_updates = num_updates
         self._backup = None
 
@@ -241,6 +243,15 @@ class EMACallback(pl.Callback):
         del trainer
         self._exit_ema(pl_module)
 
+    def on_exception(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        exception: BaseException,
+    ) -> None:
+        del trainer, exception
+        self._exit_ema(pl_module)
+
     @contextmanager
     def average_parameters(self, pl_module: pl.LightningModule) -> Iterator[None]:
         ema = self._require_ema()
@@ -313,9 +324,14 @@ class EMACallback(pl.Callback):
     def _enter_ema(self, pl_module: pl.LightningModule) -> None:
         if not self.use_ema_weights or self._active:
             return
-        self._require_ema().store(pl_module)
-        self._require_ema().copy_to(pl_module)
+        ema = self._require_ema()
+        ema.store(pl_module)
         self._active = True
+        try:
+            ema.copy_to(pl_module)
+        except BaseException:
+            self._exit_ema(pl_module)
+            raise
 
     def _exit_ema(self, pl_module: pl.LightningModule) -> None:
         if not self._active:

@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from os import PathLike
 from pathlib import Path
-from threading import RLock
+from threading import Lock
 from typing import TypeVar, Union
 
 from ._openrouter import resolve_models
@@ -44,10 +45,9 @@ class Chat:
         self._config = config
         self._client = create_client(self.model_type, self._config)
         self._async_client: object | None = None
-        self._async_lock: asyncio.Lock | None = None
-        self._async_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._async_client_loop: asyncio.AbstractEventLoop | None = None
         self._messages = initial_messages(self.model_type)
-        self._lock = RLock()
+        self._lock = Lock()
         self.last_response: ChatResponse | None = None
 
     @classmethod
@@ -95,6 +95,7 @@ class Chat:
         if prompt == "":
             raise ValueError("prompt must not be empty.")
         async with self._async_text_lock():
+            self._ensure_async_text_loop()
             return (
                 await self._request_detail_async(prompt, images=images, refresh=refresh)
             ).text
@@ -130,6 +131,7 @@ class Chat:
         if prompt == "":
             raise ValueError("prompt must not be empty.")
         async with self._async_text_lock():
+            self._ensure_async_text_loop()
             return await self._request_detail_async(prompt, images=images, refresh=refresh)
 
     @property
@@ -256,6 +258,7 @@ class Chat:
         self._messages = [*messages, {"role": "assistant", "content": response.text}]
 
     def _async_provider_client(self) -> object:
+        self._ensure_async_text_loop()
         if self._async_client is None:
             if self.model_type == ModelType.GLM:
                 self._async_client = self._client
@@ -263,12 +266,35 @@ class Chat:
                 self._async_client = create_async_client(self.model_type, self._config)
         return self._async_client
 
-    def _async_text_lock(self) -> asyncio.Lock:
+    def _ensure_async_text_loop(self) -> None:
         loop = asyncio.get_running_loop()
-        if self._async_lock is None or self._async_lock_loop is not loop:
-            self._async_lock = asyncio.Lock()
-            self._async_lock_loop = loop
-        return self._async_lock
+        if self._async_client_loop is None:
+            self._async_client_loop = loop
+        elif self._async_client_loop is not loop:
+            raise RuntimeError(
+                "Chat async text requests must use the event loop that first used this "
+                "instance. Create a separate Chat instance for another event loop."
+            )
+
+    @asynccontextmanager
+    async def _async_text_lock(self) -> AsyncIterator[None]:
+        # The synchronous API uses the same lock. Wait for it in a worker so
+        # another text request never blocks this event loop while in flight.
+        acquire = asyncio.create_task(asyncio.to_thread(self._lock.acquire))
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(acquire)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            self._lock.release()
+            raise asyncio.CancelledError
+        try:
+            yield
+        finally:
+            self._lock.release()
 
 
 def _content_for_prompt(

@@ -127,6 +127,7 @@ class TTSBackend(Protocol):
         self,
         text: str,
         options: TTSOptions | None = None,
+        *,
         reference_audio_path: AudioReference | None = None,
     ) -> TTSOutput: ...
 
@@ -135,6 +136,7 @@ class TTSBackend(Protocol):
         self,
         text: Sequence[str],
         options: TTSOptions | None = None,
+        *,
         reference_audio_paths: Sequence[AudioReference] | None = None,
     ) -> list[TTSOutput]: ...
 
@@ -142,6 +144,7 @@ class TTSBackend(Protocol):
         self,
         text: str | Sequence[str],
         options: TTSOptions | None = None,
+        *,
         reference_audio_path: AudioReference | None = None,
         reference_audio_paths: Sequence[AudioReference] | None = None,
     ) -> TTSOutput | list[TTSOutput]: ...

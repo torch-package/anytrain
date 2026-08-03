@@ -260,6 +260,41 @@ class GRPOLossTest(unittest.TestCase):
                 group_mask=torch.tensor([[True, True]]),
             )
 
+    def test_grpo_group_mask_excludes_tokens_from_loss_and_validation(self):
+        policy = torch.tensor(
+            [[[math.log(0.8)], [math.log(1.5)], [float("nan")]]]
+        )
+        old = torch.tensor([[[0.0], [0.0], [float("inf")]]])
+        reference = torch.tensor([[[-0.5], [-0.5], [float("nan")]]])
+        rewards = torch.tensor([[1.0, 3.0, 100.0]])
+        response_mask = torch.ones_like(policy, dtype=torch.bool)
+        group_mask = torch.tensor([[True, True, False]])
+
+        loss, details = GRPOLoss(
+            clip_range=0.2,
+            kl_beta=0.5,
+            token_reduction="token_mean",
+        )(
+            policy_token_logps=policy,
+            old_token_logps=old,
+            ref_token_logps=reference,
+            rewards=rewards,
+            response_mask=response_mask,
+            group_mask=group_mask,
+        )
+
+        selected_policy = policy[:, :2]
+        selected_reference = reference[:, :2]
+        log_ratio = selected_reference - selected_policy
+        expected_kl = (torch.exp(log_ratio) - log_ratio - 1).mean()
+        expected_pg = torch.tensor((0.8 - 1.2) / 2)
+        torch.testing.assert_close(details["pg_loss"], expected_pg)
+        torch.testing.assert_close(details["kl_loss"], expected_kl)
+        torch.testing.assert_close(loss, expected_pg + 0.5 * expected_kl)
+        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(details["token_count"], torch.tensor(2.0))
+        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
+
 
 class ContinuousGRPOLossTest(unittest.TestCase):
     def test_continuous_grpo_uses_step_logps_and_clipping(self):
@@ -340,6 +375,37 @@ class ContinuousGRPOLossTest(unittest.TestCase):
                 step_mask=torch.tensor([[[True], [False]]]),
                 group_mask=torch.tensor([[True, True]]),
             )
+
+    def test_continuous_grpo_group_mask_excludes_steps_from_loss_and_validation(self):
+        policy = torch.tensor(
+            [[[math.log(0.8)], [math.log(1.5)], [float("nan")]]]
+        )
+        old = torch.tensor([[[0.0], [0.0], [float("inf")]]])
+        kl_values = torch.tensor([[[0.25], [0.25], [float("nan")]]])
+        rewards = torch.tensor([[1.0, 3.0, 100.0]])
+        step_mask = torch.ones_like(policy, dtype=torch.bool)
+        group_mask = torch.tensor([[True, True, False]])
+
+        loss, details = ContinuousGRPOLoss(
+            clip_range=0.2,
+            kl_beta=0.5,
+            step_reduction="step_mean",
+        )(
+            policy_step_logps=policy,
+            old_step_logps=old,
+            kl_values=kl_values,
+            rewards=rewards,
+            step_mask=step_mask,
+            group_mask=group_mask,
+        )
+
+        expected_pg = torch.tensor((0.8 - 1.2) / 2)
+        torch.testing.assert_close(details["pg_loss"], expected_pg)
+        torch.testing.assert_close(details["kl_loss"], torch.tensor(0.25))
+        torch.testing.assert_close(loss, expected_pg + 0.5 * details["kl_loss"])
+        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(details["step_count"], torch.tensor(2.0))
+        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
 
 
 class NeighborGRPOLossTest(unittest.TestCase):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Protocol
 
 import lightning.pytorch as pl
@@ -82,10 +83,9 @@ def _require_non_negative(value: float, name: str) -> float:
 
 
 def _as_float(value: float, name: str) -> float:
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{name} must be a real number.") from exc
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    resolved = float(value)
     if not math.isfinite(resolved):
         raise ValueError(f"{name} must be finite.")
     return resolved

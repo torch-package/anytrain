@@ -51,6 +51,8 @@ src/anytrain/lightning/
 - `GradientProbe`
 - `GradientTarget`
 - `GradientComparison`
+- `GradientLossGroupsFn`
+- `gradient_loss_groups`
 - `LossItemLoggerCallback`
 - `LossSummaryCallback`
 - `LossTimeBucketLoggerCallback`
@@ -83,12 +85,24 @@ src/anytrain/lightning/
 下游仍显式创建 optimizer，并在 `configure_optimizers()` 中调用
 `runtime.configure_optimizers(optimizer)`。step clock 返回 optimizer + Lightning scheduler；unit
 clock 只返回 optimizer。Trainer callback 列表加入 `*runtime.callbacks()`。unit runtime 在 train
-batch end 读取下游 `UnitProvider`、按 rank sum 得到 global valid/padded units、维护 checkpoint
-state、只在 optimizer step boundary 更新 LR，并在达到 `stop_at` 或 `stop_at_end` 时设置
-`trainer.should_stop=True`。它会拒绝和 Lightning `lr_scheduler` 同时启用，并默认检查 optimizer
-LR 没有被其它 callback 改写。日志使用 `progress/*` 命名，例如 `progress/tokens_total`、
-`progress/tokens_per_second_window`、`progress/padding_ratio` 和 `progress/lr_ratio`。schedule
-runtime 不重建 optimizer、不改变 param group 结构，也不解释 batch schema。
+batch end 读取下游 `UnitProvider`，梯度累积期间只在 host 聚合 local valid/padded units。
+`UnitBatch.valid` / `padded` 必须是 host real number，不接受 bool 或 Tensor；如果下游只有 device
+计数，显式转换及其同步成本由 provider 自己承担。到 optimizer step boundary 才执行一次固定大小
+payload 的 rank all-gather 和一次 device-to-host 读取，提交 global unit total、更新 LR，并检查
+`stop_at` / `stop_at_end`。DDP throughput 的分子是各 rank unit 总和，分母是该 update 最慢 rank
+的 elapsed；窗口则累加每个 update 各自的最慢 rank elapsed。正常 epoch 结束时如果仍有未提交到
+optimizer step 的 unit 会直接报错，不会静默丢弃进度。
+
+`UnitClock.sync_cuda` 默认开启，保证正式 throughput key 包含当前 `pl_module` 的 CUDA work；CPU
+module 即使系统存在其它可用 CUDA device 也不会触发同步。runtime 在训练开始建立一次计时边界，
+之后每个 optimizer step boundary 只同步一次当前 module device，不会在每个 microbatch 首尾同步。
+显式设置 `sync_cuda=False` 可以关闭这项计时同步，但异步 GPU work 的实际等待可能落在计时窗口之外，
+因此只提供低开销近似值。`measure_window_batches` 继续按
+microbatch 数限制窗口，但为保持 optimizer step 原子性只移除完整 update measurement；当一次梯度
+累积窗口本身超过该值时，至少保留最新一次 update。日志使用 `progress/*` 命名，例如
+`progress/tokens_total`、`progress/tokens_per_second_window`、`progress/padding_ratio` 和
+`progress/lr_ratio`。runtime 会拒绝和 Lightning `lr_scheduler` 同时启用，并默认检查 optimizer LR
+没有被其它 callback 改写；它不重建 optimizer、不改变 param group 结构，也不解释 batch schema。
 
 ## Validation
 
@@ -162,16 +176,37 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 
 `EMACallback` 维护可训练浮点参数的 float32 指数滑动平均。它在 `trainer.global_step` 前进时更新
 shadow weights，并在 validation / test / predict 开始时把 EMA 权重 swap 进模块、结束时 restore。
+这些 stage 内抛出异常时，callback 会在 `on_exception` 原位恢复训练权重。Lightning 会把
+`Checkpoint` callback 排到其它 callback 之后，因此 anytrain 或 Lightning 原生
+`ModelCheckpoint(save_on_exception=True)` 会在恢复后保存训练权重，同时 EMA shadow 仍由 callback
+state 独立保存；该顺序保证不适用于在 `on_exception` 中自行保存且不继承 Lightning `Checkpoint`
+的普通自定义 callback。
 下游也可以通过 `find_ema_callback(trainer)` 与 `average_parameters(pl_module)` 在 sample / artifact
 导出等自定义 hook 里临时使用 EMA 权重。callback 把 EMA state 写入 Lightning checkpoint；它不解释
-batch schema，也不自动改写 `state_dict` 里的原始训练权重。Lightning 会在 `on_fit_start` 之前恢复
+batch schema，也不自动改写 `state_dict` 里的原始训练权重。checkpoint state 与 PyTorch module
+state dict 一样使用 detached 浅引用；Lightning 在训练继续前同步完成 checkpoint 序列化，因此无需在
+每个 distributed rank 上额外 clone 或 D2H 一整套 FP32 shadow。恢复时原位写回已有 shadow。
+Lightning 会在 `on_fit_start` 之前恢复
 callback state，因此 `load_state_dict` 会暂存 EMA payload，并在 `on_fit_start` 创建 shadow 后再加载。
 
 `ParameterPolicyCallback` 按下游策略设置参数 `requires_grad`。它在 callback `setup(stage="fit")`
 应用策略，早于 Lightning 调用 `configure_optimizers()`，避免冻结参数仍进入 optimizer、或解冻参数
 未被收集。`on_fit_start` 仍保留为幂等回退，方便单测直接调用。
 
-`ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
+`GradientProbeLoggerCallback` 要求构造时显式传入 `loss_groups: GradientLossGroupsFn`，不在运行时
+隐式猜测 `pl_module` 是否实现特定方法。兼容现有 `current_loss_outputs()` /
+`current_gradient_loss_groups()` 的入口是显式 adapter `gradient_loss_groups`；新下游可以直接传入返回
+`group -> outputs mapping` 的项目 provider。callback 校验 provider 的两层 mapping 结构后，再按
+`GradientTarget.group` 选择 loss graph。
+
+`ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。队列通过
+`max_pending_async_saves` 显式限制持有完整本地 source 的复制任务数，默认值为 1；达到上限时会先
+等待最老复制任务、完成对应 callback 或传播错误，再创建下一份完整本地 checkpoint，因此慢 NFS
+不会造成临时文件无界积压。删除任务不占该容量，但继续在同一 worker 中保持顺序。DDP 保存前由
+global rank 0 完成 backlog/error preflight，并把错误结果同步到所有 rank，避免其它 rank 进入
+`trainer.save_checkpoint()` collective 后挂起；fit-end 和 exception drain 也同步传播 rank 0 的后台
+错误。`save_last="link"` 始终链接持久 target，不链接会被清理的临时 source；后台复制完成前该
+symlink 可能暂时 dangling，显式 wait 或训练结束 drain 后保证可读。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
 
 异步模式要求 `trainer.save_checkpoint()` 产出普通文件，并明确不支持 FSDP/DeepSpeed 的目录型或分片 checkpoint；这类训练应设置 `async_save=False`。异步复制完成后才通知 logger 的 `after_save_checkpoint`。
 
@@ -280,7 +315,7 @@ trainer = pl.Trainer(
 - experiment text/scalar/audio/histogram 能力探测及缺失路径。
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
-- `ModelCheckpoint` 的原生接口兼容、异步复制、同步 opt-out 和删除排队。
+- `ModelCheckpoint` 的原生接口兼容、异步复制、有界背压、同步 opt-out 和删除排队。
 - ADT、quantization 和 MoE callback 的显式 monitor contract、日志 cadence 和 root export。
 - callback 可直接传入 Lightning `Trainer`。
 

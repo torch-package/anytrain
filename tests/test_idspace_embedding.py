@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -48,13 +49,42 @@ class EmbeddingTest(unittest.TestCase):
         optimizer = torch.optim.AdamW(embed.parameters(), lr=0.1, weight_decay=0.1)
         audio_before = audio.weight.detach().clone()
 
-        output = embed(torch.tensor([0, 1]))
+        with patch.object(
+            torch.Tensor,
+            "__bool__",
+            side_effect=AssertionError("embedding routing must not test device tensors in Python"),
+        ):
+            output = embed(torch.tensor([0, 1]))
         output.sum().backward()
 
         self.assertIsNotNone(text.weight.grad)
         self.assertIsNone(audio.weight.grad)
         optimizer.step()
         self.assertTrue(torch.equal(audio.weight, audio_before))
+
+    def test_adapter_path_keeps_unselected_parameters_out_of_autograd(self):
+        layout = Layout(text=(0, 2), audio=(2, 4))
+        text = nn.Embedding(2, 2)
+        audio = nn.Embedding(2, 2)
+        audio_adapter = nn.Linear(2, 2, bias=False)
+        embed = Embedding(
+            layout,
+            adapters={"audio": audio_adapter},
+            text=text,
+            audio=audio,
+        )
+
+        with patch.object(
+            torch.Tensor,
+            "__bool__",
+            side_effect=AssertionError("embedding routing must not test device tensors in Python"),
+        ):
+            output = embed(torch.tensor([0, 1]))
+        output.sum().backward()
+
+        self.assertIsNotNone(text.weight.grad)
+        self.assertIsNone(audio.weight.grad)
+        self.assertIsNone(audio_adapter.weight.grad)
 
     def test_homogeneous_inference_falls_back_for_mixed_dtypes(self):
         layout = Layout(text=(0, 2), audio=(10, 12))
@@ -105,7 +135,16 @@ class EmbeddingTest(unittest.TestCase):
         layout = Layout(text=(0, 2))
         embed = Embedding(layout, text=nn.Embedding(2, 2))
 
-        with self.assertRaisesRegex(ValueError, "outside space"):
+        with (
+            patch.object(
+                torch.Tensor,
+                "__bool__",
+                side_effect=AssertionError(
+                    "embedding routing must not test device tensors in Python"
+                ),
+            ),
+            self.assertRaisesRegex(ValueError, "outside space"),
+        ):
             embed(torch.tensor([2]))
 
     def test_forward_rejects_mixed_output_dims(self):

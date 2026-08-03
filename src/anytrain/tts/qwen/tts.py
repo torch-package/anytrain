@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 from typing_extensions import Unpack
 
-from anytrain.tts import TTSOptions, TTSOutput, validate_text, waveform_duration
+from anytrain.tts import AudioReference, TTSOptions, TTSOutput, validate_text, waveform_duration
 from anytrain.tts._common import config_hash, hashable_mapping, positive_int, validate_mapping
 
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
@@ -135,7 +135,8 @@ class QwenCustomVoiceTTS:
         self,
         text: str,
         options: TTSOptions | None = None,
-        reference_audio_path: object | None = None,
+        *,
+        reference_audio_path: AudioReference | None = None,
     ) -> TTSOutput: ...
 
     @overload
@@ -143,27 +144,30 @@ class QwenCustomVoiceTTS:
         self,
         text: Sequence[str],
         options: TTSOptions | None = None,
-        reference_audio_paths: Sequence[object] | None = None,
+        *,
+        reference_audio_paths: Sequence[AudioReference] | None = None,
     ) -> list[TTSOutput]: ...
 
     def synthesize(
         self,
         text: str | Sequence[str],
         options: TTSOptions | None = None,
-        reference_audio_path: object | None = None,
-        reference_audio_paths: Sequence[object] | None = None,
+        *,
+        reference_audio_path: AudioReference | None = None,
+        reference_audio_paths: Sequence[AudioReference] | None = None,
     ) -> TTSOutput | list[TTSOutput]:
         if reference_audio_path is not None or reference_audio_paths is not None:
             raise ValueError("Qwen CustomVoice TTS does not accept reference audio.")
-        merged = self.config.options().merged(options)
+        self._validate_options(options)
+        merged = self._options(options)
         if merged.speaker is None:
             raise ValueError("Qwen CustomVoice TTS requires a speaker id.")
-        return self.synthesize_custom_voice(
+        return self._synthesize_custom_voice(
             text,
             speakers=merged.speaker,
             languages=merged.language or self.config.language,
             instructs=self.config.instruct,
-            options=options,
+            options=merged,
         )
 
     def synthesize_custom_voice(
@@ -174,6 +178,24 @@ class QwenCustomVoiceTTS:
         languages: str | Sequence[str] | None = None,
         instructs: str | Sequence[str] | None = None,
         options: TTSOptions | None = None,
+    ) -> TTSOutput | list[TTSOutput]:
+        self._validate_options(options)
+        return self._synthesize_custom_voice(
+            text,
+            speakers=speakers,
+            languages=languages,
+            instructs=instructs,
+            options=self._options(options),
+        )
+
+    def _synthesize_custom_voice(
+        self,
+        text: str | Sequence[str],
+        *,
+        speakers: str | Sequence[str] | None,
+        languages: str | Sequence[str] | None,
+        instructs: str | Sequence[str] | None,
+        options: TTSOptions,
     ) -> TTSOutput | list[TTSOutput]:
         single = isinstance(text, str)
         texts = [validate_text(text)] if single else _text_batch(text)
@@ -194,7 +216,7 @@ class QwenCustomVoiceTTS:
         )
         self._validate_speakers(resolved_speakers)
 
-        runtime = _runtime_kwargs(self.config.runtime_kwargs, options)
+        runtime = _runtime_kwargs(options)
         generated = self.model.generate_custom_voice(
             text=text if single else texts,
             language=resolved_languages[0] if single else resolved_languages,
@@ -213,6 +235,18 @@ class QwenCustomVoiceTTS:
             default_sample_rate=self.config.sample_rate,
         )
         return outputs[0] if single else outputs
+
+    def _options(self, options: TTSOptions | None) -> TTSOptions:
+        return self.config.options().merged(options)
+
+    @staticmethod
+    def _validate_options(options: TTSOptions | None) -> None:
+        if options is None:
+            return
+        if options.seed is not None:
+            raise ValueError("Qwen CustomVoice TTS does not support seed.")
+        if options.sample_rate is not None:
+            raise ValueError("Qwen CustomVoice TTS does not support sample_rate overrides.")
 
     def _validate_speakers(self, speakers: Sequence[str]) -> None:
         supported = self.supported_speakers()
@@ -268,19 +302,14 @@ def _optional_value_batch(
     return _value_batch(value, count=count, name=name)
 
 
-def _runtime_kwargs(
-    base: Mapping[str, object],
-    options: TTSOptions | None,
-) -> dict[str, object]:
-    runtime = dict(base)
-    if options is not None:
-        runtime.update(options.extra)
-        if options.max_new_tokens is not None:
-            runtime["max_new_tokens"] = options.max_new_tokens
-        if options.temperature is not None:
-            runtime["temperature"] = options.temperature
-        if options.top_p is not None:
-            runtime["top_p"] = options.top_p
+def _runtime_kwargs(options: TTSOptions) -> dict[str, object]:
+    runtime = dict(options.extra)
+    if options.max_new_tokens is not None:
+        runtime["max_new_tokens"] = options.max_new_tokens
+    if options.temperature is not None:
+        runtime["temperature"] = options.temperature
+    if options.top_p is not None:
+        runtime["top_p"] = options.top_p
     return runtime
 
 

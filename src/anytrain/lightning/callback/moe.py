@@ -24,7 +24,13 @@ from anytrain.module.moe import (
 from anytrain.module.moe.routing import ExpertRouting
 
 from .. import _capability, experiment
-from ._naming import join_tag, module_monitor_names, validate_tag_part
+from ._cadence import StepCadence
+from ._naming import (
+    join_tag,
+    module_monitor_names,
+    unique_tag_items,
+    validate_tag_part,
+)
 
 MoEMonitorsFn = Callable[
     [Union[Tensor, Mapping[str, Any], None], Any, pl.LightningModule],
@@ -75,16 +81,13 @@ class MoELoggerCallback(pl.Callback):
         log_histograms: bool = False,
     ) -> None:
         super().__init__()
-        if every_n_steps is not None:
-            _positive_int(every_n_steps, "every_n_steps")
-        validate_tag_part(tag)
         self.monitors = monitors
         self.metrics = _metrics(metrics)
         self.adt_metrics = _adt_metric_groups(adt_metrics)
         self.every_n_steps = every_n_steps
-        self.tag = tag.strip("/")
+        self._cadence = StepCadence(every_n_steps)
+        self.tag = validate_tag_part(tag)
         self.log_histograms = log_histograms
-        self._last_logged_step: int | None = None
 
     def on_train_batch_end(
         self,
@@ -107,11 +110,10 @@ class MoELoggerCallback(pl.Callback):
 
         moe_modules = _moe_modules_by_monitor_name(pl_module)
         values: dict[str, Tensor] = {}
-        for name, monitor in monitors.items():
+        for name, monitor in unique_tag_items(monitors.items()):
             monitor = _validate_monitor(name, monitor)
-            monitor_name = validate_tag_part(name, "monitor name")
-            prefix = join_tag(self.tag, monitor_name)
-            moe_module = monitor.module or moe_modules.get(monitor_name)
+            prefix = join_tag(self.tag, name)
+            moe_module = monitor.module or moe_modules.get(name)
             values.update(self._scalar_metrics(prefix, monitor, moe_module=moe_module))
             if self.log_histograms:
                 self._log_histograms(trainer, prefix, monitor)
@@ -131,15 +133,7 @@ class MoELoggerCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> bool:
         del pl_module
-        if self.every_n_steps is None:
-            return True
-        step = _capability.global_step(trainer)
-        if step % self.every_n_steps != 0:
-            return False
-        if self._last_logged_step == step:
-            return False
-        self._last_logged_step = step
-        return True
+        return self._cadence.should_log(trainer)
 
     def _scalar_metrics(
         self,
@@ -230,8 +224,7 @@ def _discover_monitors(outputs: object) -> dict[str, MoEMonitor]:
         return {}
 
     result: dict[str, MoEMonitor] = {}
-    for key, value in outputs.items():
-        name = validate_tag_part(key, "monitor name")
+    for name, value in unique_tag_items(outputs.items()):
         if isinstance(value, MoEMonitor):
             result[name] = value
         elif isinstance(value, (MoEOutput, ExpertRouting)):
@@ -313,13 +306,6 @@ def _histogram_values(monitor: MoEMonitor, metrics: Iterable[str]) -> dict[str, 
             assignment_counts if assignment_counts is not None else tokens_per_expert(routing)
         )
     return values
-
-
-def _positive_int(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
 
 __all__ = [
     "MoELoggerCallback",

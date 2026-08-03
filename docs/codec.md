@@ -28,10 +28,12 @@ class FrameCodec(CodecBackend, Protocol):
 
 - `audio` 使用 `[batch, channels, time]`。
 - `encode()` 接收输入 waveform 的真实采样率，wrapper 在需要时内部重采样。
-- `codes` 是整数 Tensor，统一使用 `[batch, frame, codebook]`。
+- `codes` 是有符号整数 Tensor，统一使用 `[batch, frame, codebook]`。
 - `sample_rate` 表示 `decode()` 输出 waveform 的采样率。
-- `codebook_sizes[k]` 是第 `k` 个码本的 local id 数量。
+- `codebook_sizes[k]` 是第 `k` 个码本的 local id 数量，且每个值必须是正整数。
 - `decode()` 接收 codec 实例配置的完整、有序 K 个码本；码本轴不能重排或用任意子集冒充。
+- `decode()` 前，`codes[..., k]` 的每个值必须满足
+  `0 <= codes[..., k] < codebook_sizes[k]`。
 - 当前 concrete wrapper 都是 `nn.Module`，公开只读 `device` 属性；调用 `.to()`、
   `.cuda()` 或 `.cpu()` 时，backend 子模块和该设备属性会一起迁移。设备标记不写入
   `state_dict()`。直接构造 wrapper 时也会把 backend 统一迁移到指定设备；普通

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -20,6 +20,12 @@ class LossOutputProvider(Protocol):
 
 class GradientLossGroupProvider(Protocol):
     def current_gradient_loss_groups(self) -> Mapping[str, Mapping[str, Any]]: ...
+
+
+GradientLossGroupsFn = Callable[
+    [pl.LightningModule],
+    Mapping[str, Mapping[str, Any]],
+]
 
 
 @dataclass
@@ -78,6 +84,8 @@ class GradientProbeLoggerCallback(pl.Callback):
         self,
         comparisons: Sequence[GradientComparison],
         probes: Sequence[GradientProbe] | Mapping[str, Sequence[str]],
+        *,
+        loss_groups: GradientLossGroupsFn,
         every_n_steps: int | None = 5_000,
         eps: float = 1e-12,
         tag: str = "grad",
@@ -90,6 +98,9 @@ class GradientProbeLoggerCallback(pl.Callback):
         _non_empty_string(tag, "tag")
         self.comparisons = _comparisons(comparisons)
         self.probes = _probes(probes)
+        if not callable(loss_groups):
+            raise TypeError("loss_groups must be callable.")
+        self.loss_groups = loss_groups
         self.every_n_steps = every_n_steps
         self.eps = eps
         self.tag = tag.strip("/")
@@ -132,7 +143,10 @@ class GradientProbeLoggerCallback(pl.Callback):
         probe_parameters = {
             probe.name: _resolve_probe(parameters, probe) for probe in self.probes
         }
-        loss_groups = gradient_loss_groups(pl_module)
+        loss_groups = _validate_loss_groups(
+            self.loss_groups(pl_module),
+            source="loss_groups provider",
+        )
 
         for comparison in self.comparisons:
             left_outputs = _loss_group(loss_groups, comparison.left.group)
@@ -209,12 +223,34 @@ def gradient_loss_groups(pl_module: pl.LightningModule) -> Mapping[str, Mapping[
     provider = cast(object, pl_module)
     group_provider = getattr(provider, "current_gradient_loss_groups", None)
     if callable(group_provider):
-        groups = group_provider()
-        if not isinstance(groups, Mapping):
-            raise TypeError("current_gradient_loss_groups() must return a mapping.")
-        return cast(Mapping[str, Mapping[str, Any]], groups)
-    output_provider = cast(LossOutputProvider, provider)
-    return {"batch": output_provider.current_loss_outputs()}
+        return _validate_loss_groups(
+            group_provider(),
+            source="current_gradient_loss_groups()",
+        )
+    output_provider = getattr(provider, "current_loss_outputs", None)
+    if not callable(output_provider):
+        raise TypeError(
+            "gradient_loss_groups() requires current_gradient_loss_groups() "
+            "or current_loss_outputs()."
+        )
+    outputs = output_provider()
+    if not isinstance(outputs, Mapping):
+        raise TypeError("current_loss_outputs() must return a mapping.")
+    return {"batch": cast(Mapping[str, Any], outputs)}
+
+
+def _validate_loss_groups(
+    value: object,
+    *,
+    source: str,
+) -> Mapping[str, Mapping[str, Any]]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{source} must return a mapping.")
+    for name, outputs in value.items():
+        _non_empty_string(name, f"{source} group name")
+        if not isinstance(outputs, Mapping):
+            raise TypeError(f"{source} group {name!r} must be a mapping.")
+    return cast(Mapping[str, Mapping[str, Any]], value)
 
 
 def _loss_group(
@@ -226,7 +262,7 @@ def _loss_group(
     except KeyError as error:
         raise KeyError(
             f"unknown gradient loss group {name!r}; "
-            "use a group returned by current_gradient_loss_groups()"
+            "use a group returned by the configured loss_groups provider"
         ) from error
 
 
@@ -367,7 +403,7 @@ def _probes(
     return result
 
 
-def _non_empty_string(value: str, name: str) -> None:
+def _non_empty_string(value: object, name: str) -> None:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be a string.")
     if not value:
@@ -384,6 +420,7 @@ def _positive_int(value: int, name: str) -> None:
 __all__ = [
     "GradientComparison",
     "GradientLossGroupProvider",
+    "GradientLossGroupsFn",
     "GradientProbe",
     "GradientProbeLoggerCallback",
     "GradientTarget",

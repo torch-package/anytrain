@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -283,6 +284,52 @@ class MoELoggerCallbackTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(TypeError, "MoEMonitor"):
+            callback.on_train_batch_end(
+                SimpleNamespace(global_step=0, world_size=1),
+                _LogModule(),
+                None,
+                None,
+                0,
+            )
+
+    def test_callback_rejects_monitor_names_that_normalize_to_same_tag(self):
+        routing = ExpertRouting(
+            logits=torch.zeros(1, 1),
+            probabilities=torch.ones(1, 1),
+            indices=torch.zeros(1, 1, dtype=torch.long),
+            weights=torch.ones(1, 1),
+        )
+        callback = MoELoggerCallback(
+            lambda outputs, batch, pl_module: {
+                "router": MoEMonitor(routing),
+                "/router/": MoEMonitor(routing),
+            },
+            every_n_steps=1,
+        )
+
+        with self.assertRaisesRegex(ValueError, "normalize to the same tag"):
+            callback.on_train_batch_end(
+                SimpleNamespace(global_step=0, world_size=1),
+                _LogModule(),
+                None,
+                None,
+                0,
+            )
+
+    def test_callback_rejects_non_string_monitor_names(self):
+        routing = ExpertRouting(
+            logits=torch.zeros(1, 1),
+            probabilities=torch.ones(1, 1),
+            indices=torch.zeros(1, 1, dtype=torch.long),
+            weights=torch.ones(1, 1),
+        )
+        monitors = cast(Any, {1: MoEMonitor(routing)})
+        callback = MoELoggerCallback(
+            lambda outputs, batch, pl_module: monitors,
+            every_n_steps=1,
+        )
+
+        with self.assertRaisesRegex(TypeError, "monitor name must be a string"):
             callback.on_train_batch_end(
                 SimpleNamespace(global_step=0, world_size=1),
                 _LogModule(),

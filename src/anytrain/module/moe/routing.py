@@ -302,8 +302,14 @@ def validate_expert_routing(
     num_experts: int,
     device: torch.device,
     require_topk: bool = False,
+    check_index_bounds: bool = True,
 ) -> None:
-    """Validate routing tensors against a routed-cell leading shape."""
+    """Validate routing tensors against a routed-cell leading shape.
+
+    ``check_index_bounds=False`` is reserved for routes materialized internally
+    by :func:`materialize_routing`, whose ``topk`` indices are already known to
+    be in range. External routing records should keep the default strict check.
+    """
 
     expected_probability_shape = (*leading_shape, num_experts)
     if routing.probabilities.shape != expected_probability_shape:
@@ -357,7 +363,7 @@ def validate_expert_routing(
         raise TypeError("routing.indices must be an integer tensor.")
     if not torch.is_floating_point(routing.weights) or torch.is_complex(routing.weights):
         raise TypeError("routing.weights must be real floating-point values.")
-    if routing.indices.numel() > 0:
+    if check_index_bounds and routing.indices.numel() > 0:
         invalid = (routing.indices < 0) | (routing.indices >= num_experts)
         if bool(invalid.any().item()):
             raise ValueError("routing.indices contains expert ids outside [0, num_experts).")

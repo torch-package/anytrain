@@ -87,8 +87,9 @@ dense global weight，也不提前跑 embedding/adapter probe。
 也会显式报错；输入 dtype 错误交给 PyTorch embedding 自身暴露。
 
 没有 adapter、所有 block embedding 输出维、dtype 和 device 一致，并且当前不记录参数梯度时，
-`forward()` 使用不做逐 block host 同步的快速路径。训练可学习 embedding 时仍使用通用路由路径，
-不会为本次未命中的 block materialize 新梯度；配合 optimizer 常用的
+`forward()` 使用不做逐 block host 同步的快速路径。训练可学习 embedding 或使用 adapter 时，
+通用路径也会在设备端汇总全部 block 的命中和覆盖状态，再一次性读取固定大小的路由摘要；它
+不会为本次未命中的 block materialize 新梯度。配合 optimizer 常用的
 `zero_grad(set_to_none=True)`，未命中参数可保持 `grad is None`，避免 AdamW 对它做 weight
 decay。如果调用方保留了已有的零梯度，这一层不会替 optimizer 清理。未知 id 只在所有 block
 路由结束后同步一次并显式报错。带 adapter 或异构输出时也使用通用路径，且只要求本次实际命中

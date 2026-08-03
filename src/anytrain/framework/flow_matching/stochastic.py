@@ -38,9 +38,9 @@ class RectifiedFlowSDE:
         eps: float = 1e-5,
         log_prob_reduction: LogProbReduction = "mean",
     ) -> None:
-        if noise_level < 0:
-            raise ValueError("noise_level must be non-negative.")
-        if eps <= 0 or eps >= 0.5:
+        if not math.isfinite(noise_level) or noise_level <= 0:
+            raise ValueError("noise_level must be finite and positive.")
+        if not math.isfinite(eps) or eps <= 0 or eps >= 0.5:
             raise ValueError("eps must be in (0, 0.5).")
         if log_prob_reduction not in {"mean", "sum"}:
             raise ValueError("log_prob_reduction must be 'mean' or 'sum'.")

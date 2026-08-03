@@ -23,6 +23,14 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         self.assertNotIn("normalize_latents", field_names)
         self.assertEqual(config.codebook_dim, 4)
 
+    def test_config_is_immutable_and_resolves_default_dimension(self):
+        config = VQConfig(input_dim=8, codebook_size=16)
+
+        self.assertIsNone(config.codebook_dim)
+        self.assertEqual(config.resolved_codebook_dim, 8)
+        with self.assertRaises(AttributeError):
+            config.__setattr__("codebook_size", 32)
+
     def test_forward_shapes(self):
         quantizer = EmbeddingVectorQuantizer(
             VQConfig(input_dim=8, codebook_size=16, codebook_dim=4)
@@ -58,6 +66,12 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         round_trip = quantizer.codebook_vectors_to_indices(vectors)
 
         self.assertTrue(torch.equal(round_trip, indices))
+
+    def test_indices_reject_bool_tensor(self):
+        quantizer = EmbeddingVectorQuantizer(VQConfig(input_dim=4, codebook_size=8))
+
+        with self.assertRaisesRegex(TypeError, "bool tensors are not valid indices"):
+            quantizer.indices_to_codebook_vectors(torch.tensor([True, False]))
 
     def test_backward_reaches_input_and_codebook_without_ema(self):
         quantizer = EmbeddingVectorQuantizer(

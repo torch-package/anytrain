@@ -67,6 +67,17 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         self.assertNotIn("temperature_transform", field_names)
         self.assertIn("dispersion_strategy", field_names)
 
+    def test_config_is_immutable(self):
+        config = ADTConfig(num_experts=4, stat_ema_decays=(0.5, 0.6, 0.7))
+
+        self.assertEqual(config.stat_ema_decays, (0.5, 0.6, 0.7))
+        with self.assertRaises(AttributeError):
+            config.__setattr__("num_experts", 8)
+
+    def test_config_rejects_mutable_stat_ema_decays(self):
+        with self.assertRaisesRegex(TypeError, "stat_ema_decays must be a tuple"):
+            ADTConfig(num_experts=4, stat_ema_decays=[0.5, 0.6, 0.7])  # type: ignore[arg-type]
+
     def test_forward_returns_simplex_weights(self):
         adt = AdaptiveDirichletTempering(num_experts=4)
         logits = torch.randn(8, 4)

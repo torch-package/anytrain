@@ -14,7 +14,13 @@ from anytrain.module.dirichlet_tempering import (
 )
 
 from .. import _capability, experiment
-from ._naming import join_tag, module_monitor_names, validate_tag_part
+from ._cadence import StepCadence
+from ._naming import (
+    join_tag,
+    module_monitor_names,
+    unique_tag_items,
+    validate_tag_part,
+)
 
 ADTStatsSource = Union[AdaptiveDirichletTempering, ADTStats]
 ADTStatsMonitorLike = Union["ADTStatsMonitor", ADTStatsSource]
@@ -55,14 +61,12 @@ class ADTStatsLoggerCallback(pl.Callback):
         log_histograms: bool = False,
     ) -> None:
         super().__init__()
-        if every_n_steps is not None:
-            _positive_int(every_n_steps, "every_n_steps")
         self.monitors = monitors
         self.metrics = _metrics(metrics)
         self.every_n_steps = every_n_steps
+        self._cadence = StepCadence(every_n_steps)
         self.tag = validate_tag_part(tag)
         self.log_histograms = log_histograms
-        self._last_logged_step: int | None = None
 
     def on_train_batch_end(
         self,
@@ -107,15 +111,7 @@ class ADTStatsLoggerCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> bool:
         del pl_module
-        if self.every_n_steps is None:
-            return True
-        step = _capability.global_step(trainer)
-        if step % self.every_n_steps != 0:
-            return False
-        if self._last_logged_step == step:
-            return False
-        self._last_logged_step = step
-        return True
+        return self._cadence.should_log(trainer)
 
     def _scalar_metrics(self, prefix: str, stats: ADTStats) -> dict[str, Tensor]:
         values: dict[str, Tensor] = {}
@@ -149,7 +145,7 @@ def _normalize_monitors(
 ) -> list[tuple[str, ADTStatsMonitor]]:
     module_names = module_monitor_names(pl_module, AdaptiveDirichletTempering)
     if isinstance(monitors, Mapping):
-        return [
+        result = [
             (
                 _monitor_name(
                     monitor,
@@ -163,6 +159,7 @@ def _normalize_monitors(
                 (key, _as_monitor(value)) for key, value in monitors.items()
             )
         ]
+        return unique_tag_items(result)
 
     if _is_monitor_like(monitors):
         monitor = _as_monitor(monitors)
@@ -178,7 +175,7 @@ def _normalize_monitors(
                     monitor,
                 )
             )
-        return result
+        return unique_tag_items(result)
 
     raise TypeError(
         "ADTStatsLoggerCallback monitors must return an ADTStatsMonitor, "
@@ -267,14 +264,6 @@ def _histogram_values(stats: ADTStats, metrics: Iterable[str]) -> dict[str, Tens
     if "temperature" in enabled:
         values["temperature"] = stats.temperature
     return values
-
-
-def _positive_int(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
-
 
 __all__ = [
     "ADTStatsLoggerCallback",

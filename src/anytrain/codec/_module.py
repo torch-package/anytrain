@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from numbers import Integral
 from typing import Any
 
 import torch
 from torch import Tensor, nn
 
 from anytrain._buffer import register_buffer
+
+_SIGNED_INTEGER_DTYPES = frozenset(
+    {
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    }
+)
 
 
 def resolve_device(device: str | torch.device | None) -> torch.device:
@@ -18,8 +28,8 @@ def resolve_device(device: str | torch.device | None) -> torch.device:
 def integer_tensor(value: Any, name: str) -> Tensor:
     if not isinstance(value, Tensor):
         raise TypeError(f"{name} must be a Tensor.")
-    if value.dtype == torch.bool or torch.is_floating_point(value) or torch.is_complex(value):
-        raise TypeError(f"{name} must contain integer ids.")
+    if value.dtype not in _SIGNED_INTEGER_DTYPES:
+        raise TypeError(f"{name} must contain signed integer ids.")
     return value
 
 
@@ -31,6 +41,17 @@ def validate_frame_codes(value: Any, codebook_sizes: Sequence[int]) -> Tensor:
         raise ValueError(
             f"codes must contain {len(codebook_sizes)} aligned codebooks."
         )
+    sizes: list[int] = []
+    for index, size in enumerate(codebook_sizes):
+        if isinstance(size, bool) or not isinstance(size, Integral):
+            raise TypeError(f"codebook_sizes[{index}] must be an integer.")
+        resolved = int(size)
+        if resolved <= 0:
+            raise ValueError(f"codebook_sizes[{index}] must be positive.")
+        sizes.append(resolved)
+    limits = torch.tensor(sizes, dtype=torch.long, device=codes.device)
+    if bool(((codes < 0) | (codes >= limits)).any()):
+        raise ValueError("codes contain ids outside the configured codebook ranges.")
     return codes
 
 

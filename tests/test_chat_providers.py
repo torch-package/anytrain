@@ -3,8 +3,10 @@ import base64
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,9 +25,148 @@ from anytrain.chat.config import (
     GLM_BASE_URL_ENV,
     GLM_MODEL_ENV,
 )
+from anytrain.chat.types import ChatResponse, ModelType
 
 
 class ChatProviderTest(unittest.TestCase):
+    def test_async_lock_releases_after_repeated_cancellation_while_acquiring(self):
+        client = _chat_for_request_tests()
+        lock = _BlockingLock()
+        client._lock = lock
+
+        async def run() -> None:
+            task = asyncio.create_task(client.async_call("cancel"))
+            released = False
+            try:
+                await asyncio.wait_for(asyncio.to_thread(lock.waiting.wait), timeout=1)
+                task.cancel()
+                await asyncio.sleep(0)
+                task.cancel()
+                lock.release()
+                released = True
+                await asyncio.wait_for(asyncio.to_thread(lock.acquired.wait), timeout=1)
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            finally:
+                if not released:
+                    lock.release()
+                    await asyncio.wait_for(
+                        asyncio.to_thread(lock.acquired.wait), timeout=1
+                    )
+                if not task.done():
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+                if lock.locked():
+                    lock.release()
+
+        asyncio.run(run())
+        self.assertTrue(lock.acquire(blocking=False))
+        lock.release()
+
+    def test_async_calls_serialize_session_without_blocking_event_loop(self):
+        client = _chat_for_request_tests()
+        messages: list[list[dict[str, object]]] = []
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def request(_model_type, _provider, _model, request_messages, *, models):
+            del _model_type, _provider, _model, models
+            messages.append(list(request_messages))
+            prompt = request_messages[-1]["content"]
+            if prompt == "first":
+                first_started.set()
+                await release_first.wait()
+            return _response(str(prompt))
+
+        async def run() -> list[str]:
+            with patch("anytrain.chat.chat.async_request_detail", side_effect=request):
+                first = asyncio.create_task(client.async_call("first"))
+                await first_started.wait()
+                second = asyncio.create_task(client.async_call("second"))
+                await asyncio.sleep(0)
+                release_first.set()
+                return await asyncio.gather(first, second)
+
+        self.assertEqual(asyncio.run(run()), ["first", "second"])
+        self.assertEqual(
+            messages,
+            [
+                [{"role": "user", "content": "first"}],
+                [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "first"},
+                    {"role": "user", "content": "second"},
+                ],
+            ],
+        )
+
+    def test_sync_call_waits_for_an_in_flight_async_session_request(self):
+        client = _chat_for_request_tests()
+        messages: list[list[dict[str, object]]] = []
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def async_request(_model_type, _provider, _model, request_messages, *, models):
+            del _model_type, _provider, _model, models
+            messages.append(list(request_messages))
+            first_started.set()
+            await release_first.wait()
+            return _response("first")
+
+        def sync_request(_model_type, _provider, _model, request_messages, *, models):
+            del _model_type, _provider, _model, models
+            messages.append(list(request_messages))
+            return _response("second")
+
+        async def run() -> list[str]:
+            with (
+                patch("anytrain.chat.chat.async_request_detail", side_effect=async_request),
+                patch("anytrain.chat.chat.request_detail", side_effect=sync_request),
+            ):
+                first = asyncio.create_task(client.async_call("first"))
+                await first_started.wait()
+                second = asyncio.create_task(asyncio.to_thread(client, "second"))
+                await asyncio.sleep(0)
+                self.assertEqual(len(messages), 1)
+                release_first.set()
+                return await asyncio.gather(first, second)
+
+        self.assertEqual(asyncio.run(run()), ["first", "second"])
+        self.assertEqual(
+            messages,
+            [
+                [{"role": "user", "content": "first"}],
+                [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "first"},
+                    {"role": "user", "content": "second"},
+                ],
+            ],
+        )
+
+    def test_async_calls_reject_a_second_event_loop_without_mutating_session(self):
+        client = _chat_for_request_tests()
+        messages: list[list[dict[str, object]]] = []
+
+        async def request(_model_type, _provider, _model, request_messages, *, models):
+            del _model_type, _provider, _model, models
+            messages.append(list(request_messages))
+            return _response(str(request_messages[-1]["content"]))
+
+        with patch("anytrain.chat.chat.async_request_detail", side_effect=request):
+            self.assertEqual(asyncio.run(client.async_call("first")), "first")
+            with self.assertRaisesRegex(RuntimeError, "separate Chat instance"):
+                asyncio.run(client.async_call("second", refresh=True))
+
+        self.assertEqual(messages, [[{"role": "user", "content": "first"}]])
+        self.assertEqual(
+            client._messages,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first"},
+            ],
+        )
     def test_deepseek_backend_uses_openai_client(self):
         calls = []
 
@@ -640,3 +781,49 @@ class ChatProviderTest(unittest.TestCase):
             self.assertRaisesRegex(ImportError, r"anytrain\.chat"),
         ):
             Chat("glm")("hello")
+
+
+def _chat_for_request_tests() -> Chat:
+    client = Chat.__new__(Chat)
+    client.model_type = ModelType.GLM
+    client._config = types.SimpleNamespace(model="test", models=())
+    client._client = object()
+    client._async_client = None
+    client._async_client_loop = None
+    client._messages = []
+    client._lock = threading.Lock()
+    client.last_response = None
+    return client
+
+
+def _response(text: str) -> ChatResponse:
+    return ChatResponse(
+        text=text,
+        model="test",
+        usage=None,
+        request_id=None,
+        finish_reason="stop",
+        raw=None,
+    )
+
+
+class _BlockingLock:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._lock.acquire()
+        self.waiting = threading.Event()
+        self.acquired = threading.Event()
+
+    def acquire(self, blocking: bool = True) -> bool:
+        if blocking:
+            self.waiting.set()
+        acquired = self._lock.acquire(blocking=blocking)
+        if acquired:
+            self.acquired.set()
+        return acquired
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()

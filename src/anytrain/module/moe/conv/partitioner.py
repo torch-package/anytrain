@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 from einops import rearrange
 from torch import Size, Tensor
 
 from ..grid import Grid1dContext
+from ..routing import broadcast_routing_mask
 from .segment import (
     PaddingMode,
     fold_transposed_segments_1d,
@@ -96,7 +98,6 @@ class Conv1dGridPartitioner:
         *,
         mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None, Conv1dGridLayout]:
-        del mask
         if x.ndim != 3:
             raise ValueError(f"Conv1dGridPartitioner expects (B, C, T), got {tuple(x.shape)}.")
         if self.in_channels is not None and x.size(1) != self.in_channels:
@@ -119,7 +120,7 @@ class Conv1dGridPartitioner:
             )
             output_length = self._conv_output_length(cells.size(-1), conv_padding=0)
             layout = Conv1dGridLayout(
-                mask=None,
+                mask=_cell_mask(mask, batch_size=batch_size, num_segments=1, device=x.device),
                 batch_size=batch_size,
                 num_segments=1,
                 output_length=output_length,
@@ -177,7 +178,12 @@ class Conv1dGridPartitioner:
                 padding_mode="zeros",
             )
         layout = Conv1dGridLayout(
-            mask=None,
+            mask=_cell_mask(
+                mask,
+                batch_size=batch_size,
+                num_segments=num_segments,
+                device=x.device,
+            ),
             batch_size=batch_size,
             num_segments=num_segments,
             output_length=output_length,
@@ -269,7 +275,6 @@ class ConvTranspose1dGridPartitioner:
         *,
         mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None, ConvTranspose1dGridLayout]:
-        del mask
         if x.ndim != 3:
             raise ValueError(
                 f"ConvTranspose1dGridPartitioner expects (B, C, T), got {tuple(x.shape)}."
@@ -289,7 +294,7 @@ class ConvTranspose1dGridPartitioner:
 
         if cell_size_config is None:
             layout = ConvTranspose1dGridLayout(
-                mask=None,
+                mask=_cell_mask(mask, batch_size=batch_size, num_segments=1, device=x.device),
                 batch_size=batch_size,
                 num_segments=1,
                 output_length=output_length,
@@ -312,7 +317,12 @@ class ConvTranspose1dGridPartitioner:
         cells = rearrange(segments, "b c k t -> (b k) c t")
         segment_size = scalar_1d(cell_size_config, name="cell_size")
         layout = ConvTranspose1dGridLayout(
-            mask=None,
+            mask=_cell_mask(
+                mask,
+                batch_size=batch_size,
+                num_segments=num_segments,
+                device=x.device,
+            ),
             batch_size=batch_size,
             num_segments=num_segments,
             output_length=output_length,
@@ -358,7 +368,6 @@ class Conv2dIdentityPartitioner:
         *,
         mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None, Conv2dLayout]:
-        del mask
         if x.ndim != 4:
             raise ValueError(
                 f"Conv2dIdentityPartitioner expects (B, C, H, W), got {tuple(x.shape)}."
@@ -368,7 +377,34 @@ class Conv2dIdentityPartitioner:
                 "input channel mismatch: "
                 f"got {x.size(1)}, expected {self.in_channels}."
             )
-        return x, None, Conv2dLayout()
+        return x, None, Conv2dLayout(
+            mask=_cell_mask(mask, batch_size=x.size(0), num_segments=1, device=x.device)
+        )
+
+
+def _cell_mask(
+    mask: Tensor | None,
+    *,
+    batch_size: int,
+    num_segments: int,
+    device: torch.device,
+) -> Tensor | None:
+    if mask is None:
+        return None
+    cell_count = batch_size * num_segments
+    if mask.ndim == 1 and mask.numel() == cell_count:
+        return broadcast_routing_mask(
+            mask,
+            leading_shape=(cell_count,),
+            device=device,
+            target_name="flattened convolution routing-cell shape",
+        )
+    return broadcast_routing_mask(
+        mask,
+        leading_shape=(batch_size, num_segments),
+        device=device,
+        target_name="convolution routing-cell shape",
+    ).reshape(-1)
 
 
 __all__ = [

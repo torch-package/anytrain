@@ -23,6 +23,7 @@ class RFSQConfig:
     levels: tuple[int, ...] = DEFAULT_FSQ_LEVELS
     scales: tuple[float, ...] = (1.0,)
     projection_bias: bool = True
+    work_dtype: torch.dtype | None = None
 
     def __post_init__(self) -> None:
         # Reuse the public FSQ config validation for the scalar grid. RFSQ uses
@@ -48,6 +49,11 @@ class RFSQConfig:
             scales.append(value)
         self.scales = tuple(scales)
 
+        if self.work_dtype is not None and not isinstance(self.work_dtype, torch.dtype):
+            raise TypeError("work_dtype must be a torch.dtype or None.")
+        if self.work_dtype not in (None, torch.float32, torch.float64):
+            raise ValueError("work_dtype must be torch.float32, torch.float64, or None.")
+
 
 class ResidualFiniteScalarQuantizer(nn.Module):
     """Residual finite scalar quantizer with a shared scalar grid.
@@ -55,7 +61,9 @@ class ResidualFiniteScalarQuantizer(nn.Module):
     Each residual stage quantizes into the same mixed-radix FSQ codebook while
     allowing stage-specific scalar ranges via the configured scales. This keeps
     codec-specific wrapper code thin while exposing the core residual FSQ logic
-    as an ordinary anytrain module.
+    as an ordinary anytrain module. Residual arithmetic defaults to FP32 unless
+    the projected latents are FP64; configure FP64 explicitly to preserve legacy
+    decisions at quantization boundaries.
     """
 
     config: RFSQConfig
@@ -69,6 +77,7 @@ class ResidualFiniteScalarQuantizer(nn.Module):
         super().__init__()
         self.config = config
         self.scales = config.scales
+        self.work_dtype = config.work_dtype
         self.input_dim = config.input_dim
         self.quantize_dim = len(config.levels)
         self.codebook_dim = self.quantize_dim
@@ -106,7 +115,7 @@ class ResidualFiniteScalarQuantizer(nn.Module):
         _checks.input_latents(latents, self.input_dim)
         dtype = latents.dtype
         projected = self.project_in(latents)
-        residual = torch.tanh(projected.to(torch.float64))
+        residual = torch.tanh(projected.to(_work_dtype(projected.dtype, self.work_dtype)))
         vectors: list[Tensor] = []
         indices: list[Tensor] = []
 
@@ -239,3 +248,9 @@ class ResidualFiniteScalarQuantizer(nn.Module):
             raise TypeError("levels must be an integer tensor.")
         if levels.numel() and bool(((levels < 0) | (levels >= self._levels)).any().item()):
             raise ValueError("levels contain values outside the configured FSQ level ranges.")
+
+
+def _work_dtype(dtype: torch.dtype, configured: torch.dtype | None) -> torch.dtype:
+    if configured is not None:
+        return configured
+    return torch.float64 if dtype == torch.float64 else torch.float32

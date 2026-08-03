@@ -5,7 +5,7 @@ import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import lightning.pytorch as pl
 import torch
@@ -20,12 +20,44 @@ class _Measurement:
     elapsed: float
     valid: float
     padded: float | None
+    padded_valid: float | None
+    batches: int
 
 
 @dataclass(frozen=True)
 class _ResolvedUnits:
     valid: float
     padded: float | None
+    padded_valid: float | None
+    batches: int
+
+
+class _AllGatherStrategy(Protocol):
+    def all_gather(self, tensor: torch.Tensor) -> torch.Tensor: ...
+
+
+@dataclass
+class _PendingUnits:
+    valid: float = 0.0
+    padded: float = 0.0
+    padded_valid: float = 0.0
+    batches: int = 0
+    padded_batches: int = 0
+
+    def add(self, units: _ResolvedUnits) -> None:
+        self.valid += units.valid
+        self.batches += 1
+        if units.padded is not None:
+            self.padded += units.padded
+            self.padded_valid += units.valid
+            self.padded_batches += 1
+
+    def clear(self) -> None:
+        self.valid = 0.0
+        self.padded = 0.0
+        self.padded_valid = 0.0
+        self.batches = 0
+        self.padded_batches = 0
 
 
 class UnitScheduleCallback(pl.Callback):
@@ -40,14 +72,15 @@ class UnitScheduleCallback(pl.Callback):
         self._clock = clock
         self.total_valid = 0.0
         self.total_padded = 0.0
-        self._step_started_at: float | None = None
+        self._update_started_at: float | None = None
+        self._batch_active = False
+        self._pending = _PendingUnits()
         self._last_global_step: int | None = None
         self._base_lrs: list[list[float]] | None = None
         self._last_lrs: list[list[float]] | None = None
         self._next_log_at: float | None = None
-        self._measurements: deque[_Measurement] = deque(
-            maxlen=clock.measure_window_batches
-        )
+        self._measurements: deque[_Measurement] = deque()
+        self._measurement_batches = 0
 
     @property
     def state_key(self) -> str:
@@ -67,7 +100,7 @@ class UnitScheduleCallback(pl.Callback):
             self.clock.log_every_n_units,
         )
         self._apply_lr(trainer, self.schedule.lr_ratio(self.total_valid))
-        self._sync_cuda()
+        self._sync_cuda(pl_module)
         del pl_module
 
     def on_train_batch_start(
@@ -78,10 +111,11 @@ class UnitScheduleCallback(pl.Callback):
         batch_idx: int,
     ) -> None:
         del trainer, pl_module, batch, batch_idx
-        if self._step_started_at is not None:
+        if self._batch_active:
             raise RuntimeError("A training batch started before the previous batch ended.")
-        self._sync_cuda()
-        self._step_started_at = time.perf_counter()
+        self._batch_active = True
+        if self._update_started_at is None:
+            self._update_started_at = time.perf_counter()
 
     def on_train_batch_end(
         self,
@@ -91,14 +125,9 @@ class UnitScheduleCallback(pl.Callback):
         batch: Any,
         batch_idx: int,
     ) -> None:
-        if self._step_started_at is None:
+        if not self._batch_active:
             return
-
-        self._sync_cuda()
-        elapsed = time.perf_counter() - self._step_started_at
-        self._step_started_at = None
-        if elapsed <= 0:
-            raise RuntimeError(f"non-positive measured unit schedule time={elapsed}.")
+        self._batch_active = False
 
         units = self.clock.provider(
             trainer=trainer,
@@ -107,30 +136,40 @@ class UnitScheduleCallback(pl.Callback):
             batch=batch,
             batch_idx=batch_idx,
         )
-        resolved = self._resolve_units(trainer, pl_module, units)
-        self.total_valid += resolved.valid
-        if resolved.padded is not None:
-            self.total_padded += resolved.padded
-        measurement = _Measurement(
-            elapsed=elapsed,
-            valid=resolved.valid,
-            padded=resolved.padded,
-        )
-        self._measurements.append(measurement)
+        self._pending.add(self._local_units(units))
 
         global_step = _capability.global_step(trainer)
         optimizer_steps = self._optimizer_steps(global_step)
-        if optimizer_steps > 0:
-            self._apply_lr(trainer, self.schedule.lr_ratio(self.total_valid))
-            self._last_global_step = global_step
+        if optimizer_steps == 0:
+            return
+
+        self._sync_cuda(pl_module)
+        if self._update_started_at is None:
+            raise RuntimeError("unit schedule update timer was not started.")
+        elapsed = time.perf_counter() - self._update_started_at
+        self._update_started_at = None
+        if elapsed <= 0:
+            raise RuntimeError(f"non-positive measured unit schedule time={elapsed}.")
+
+        measurement = self._resolve_pending_update(
+            trainer,
+            pl_module,
+            elapsed=elapsed,
+        )
+        self.total_valid += measurement.valid
+        if measurement.padded is not None:
+            self.total_padded += measurement.padded
+        self._append_measurement(measurement)
+
+        self._apply_lr(trainer, self.schedule.lr_ratio(self.total_valid))
+        self._last_global_step = global_step
 
         stop_at = self.schedule.stop_unit()
         should_stop = stop_at is not None and self.total_valid >= stop_at
         if should_stop:
             trainer.should_stop = True
 
-        if optimizer_steps > 0 or should_stop:
-            self._log_if_due(pl_module, measurement, force=should_stop)
+        self._log_if_due(pl_module, measurement, force=should_stop)
 
     def on_train_epoch_end(
         self,
@@ -138,7 +177,14 @@ class UnitScheduleCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> None:
         del trainer, pl_module
-        self._step_started_at = None
+        if self._batch_active:
+            raise RuntimeError("training epoch ended while a unit batch was still active.")
+        if self._pending.batches > 0:
+            raise RuntimeError(
+                "training epoch ended with unit batches that did not reach an "
+                "optimizer-step boundary."
+            )
+        self._update_started_at = None
 
     def on_exception(
         self,
@@ -147,7 +193,7 @@ class UnitScheduleCallback(pl.Callback):
         exception: BaseException,
     ) -> None:
         del trainer, pl_module, exception
-        self._step_started_at = None
+        self._reset_incomplete_update()
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -180,22 +226,59 @@ class UnitScheduleCallback(pl.Callback):
         if last_lrs is not None:
             self._last_lrs = [[float(value) for value in group] for group in last_lrs]
 
-    def _resolve_units(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        units: object,
-    ) -> _ResolvedUnits:
+    def _local_units(self, units: object) -> _ResolvedUnits:
         if not isinstance(units, UnitBatch):
             raise TypeError(f"unit provider must return UnitBatch, got {type(units)!r}.")
         if units.unit != self.clock.unit:
             raise ValueError(
                 f"unit provider returned unit {units.unit!r}, expected {self.clock.unit!r}."
             )
-        local = _ResolvedUnits(valid=float(units.valid), padded=None if units.padded is None else float(units.padded))
-        if not self.clock.sync_distributed or _capability.world_size(trainer) <= 1:
-            return local
-        return _distributed_units(trainer, pl_module, local)
+        valid = float(units.valid)
+        padded = None if units.padded is None else float(units.padded)
+        return _ResolvedUnits(
+            valid=valid,
+            padded=padded,
+            padded_valid=None if padded is None else valid,
+            batches=1,
+        )
+
+    def _resolve_pending_update(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *,
+        elapsed: float,
+    ) -> _Measurement:
+        if self._pending.batches == 0:
+            raise RuntimeError("optimizer step completed without any pending unit batches.")
+        pending = self._pending
+        local = _ResolvedUnits(
+            valid=pending.valid,
+            padded=None if pending.padded_batches == 0 else pending.padded,
+            padded_valid=(
+                None if pending.padded_batches == 0 else pending.padded_valid
+            ),
+            batches=pending.batches,
+        )
+        try:
+            if not self.clock.sync_distributed or _capability.world_size(trainer) <= 1:
+                return _Measurement(
+                    elapsed=elapsed,
+                    valid=local.valid,
+                    padded=local.padded,
+                    padded_valid=local.padded_valid,
+                    batches=local.batches,
+                )
+            return _distributed_update(
+                trainer,
+                pl_module,
+                local,
+                elapsed=elapsed,
+                batches=pending.batches,
+                padded_batches=pending.padded_batches,
+            )
+        finally:
+            pending.clear()
 
     def _optimizer_steps(self, global_step: int) -> int:
         if self._last_global_step is None:
@@ -205,6 +288,14 @@ class UnitScheduleCallback(pl.Callback):
         if optimizer_steps < 0:
             raise RuntimeError("trainer.global_step moved backwards during unit scheduling.")
         return optimizer_steps
+
+    def _append_measurement(self, measurement: _Measurement) -> None:
+        self._measurements.append(measurement)
+        self._measurement_batches += measurement.batches
+        capacity = self.clock.measure_window_batches
+        while self._measurement_batches > capacity and len(self._measurements) > 1:
+            removed = self._measurements.popleft()
+            self._measurement_batches -= removed.batches
 
     def _apply_lr(self, trainer: pl.Trainer, ratio: float) -> None:
         optimizers = _optimizers(trainer)
@@ -275,6 +366,11 @@ class UnitScheduleCallback(pl.Callback):
             window_padded = math.fsum(
                 item.padded for item in self._measurements if item.padded is not None
             )
+            window_padded_valid = math.fsum(
+                item.padded_valid
+                for item in self._measurements
+                if item.padded_valid is not None
+            )
             metrics.update(
                 {
                     f"progress/{unit}_padded": measurement.padded,
@@ -282,13 +378,15 @@ class UnitScheduleCallback(pl.Callback):
                 }
             )
             if measurement.padded > 0:
+                if measurement.padded_valid is None:
+                    raise RuntimeError("padded measurement is missing its valid unit count.")
                 metrics["progress/padding_ratio"] = padding_ratio(
-                    valid_units=measurement.valid,
+                    valid_units=measurement.padded_valid,
                     padded_units=measurement.padded,
                 )
             if window_padded > 0:
                 metrics["progress/padding_ratio_window"] = padding_ratio(
-                    valid_units=window_valid,
+                    valid_units=window_padded_valid,
                     padded_units=window_padded,
                 )
         pl_module.log_dict(
@@ -307,40 +405,89 @@ class UnitScheduleCallback(pl.Callback):
                 "Return only optimizer from configure_optimizers() for unit-based scheduling."
             )
 
-    def _sync_cuda(self) -> None:
-        if self.clock.sync_cuda and torch.cuda.is_available():
-            torch.cuda.synchronize()
+    def _sync_cuda(self, pl_module: pl.LightningModule) -> None:
+        device = _device(pl_module)
+        if self.clock.sync_cuda and device is not None and device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+    def _reset_incomplete_update(self) -> None:
+        self._batch_active = False
+        self._update_started_at = None
+        self._pending.clear()
 
 
-def _distributed_units(
+def _distributed_update(
     trainer: pl.Trainer,
     pl_module: pl.LightningModule,
     units: _ResolvedUnits,
-) -> _ResolvedUnits:
+    *,
+    elapsed: float,
+    batches: int,
+    padded_batches: int,
+) -> _Measurement:
     world_size = _capability.world_size(trainer)
     payload = torch.tensor(
         [
             units.valid,
             0.0 if units.padded is None else units.padded,
-            float(units.padded is not None),
+            0.0 if units.padded_valid is None else units.padded_valid,
+            float(batches),
+            float(batches * batches),
+            float(padded_batches),
+            float(padded_batches * padded_batches),
+            elapsed,
         ],
         dtype=torch.float64,
         device=_device(pl_module),
     )
-    reduced = _capability.strategy_reduce(
-        trainer,
-        payload,
-        reduce_op="sum",
-        error="Distributed unit scheduling requires trainer.strategy.reduce.",
+    gathered = _strategy_all_gather(trainer, payload)
+    if gathered.numel() != world_size * payload.numel():
+        raise RuntimeError(
+            "trainer.strategy.all_gather returned an invalid distributed unit payload."
+        )
+    rows = gathered.detach().reshape(world_size, payload.numel())
+    aggregated = torch.cat(
+        (rows[:, :-1].sum(dim=0), rows[:, -1].max().reshape(1))
     )
-    values = reduced.detach().cpu().tolist()
-    present = int(values[2])
-    if present not in (0, world_size):
-        raise ValueError("unit provider padded counts must be present on all ranks or none.")
-    return _ResolvedUnits(
+    values = aggregated.cpu().tolist()
+    global_batches = int(values[3])
+    global_batch_squares = int(values[4])
+    if world_size * global_batch_squares != global_batches * global_batches:
+        raise RuntimeError(
+            "distributed unit scheduling observed different accumulation windows across ranks."
+        )
+    global_padded_batches = int(values[5])
+    global_padded_batch_squares = int(values[6])
+    if not 0 <= global_padded_batches <= global_batches:
+        raise RuntimeError("distributed padded batch count is invalid.")
+    if (
+        world_size * global_padded_batch_squares
+        != global_padded_batches * global_padded_batches
+    ):
+        raise ValueError(
+            "unit provider padded counts must be present on the same number of "
+            "batches on all ranks."
+        )
+    return _Measurement(
+        elapsed=float(values[7]),
         valid=float(values[0]),
-        padded=None if present == 0 else float(values[1]),
+        padded=None if global_padded_batches == 0 else float(values[1]),
+        padded_valid=None if global_padded_batches == 0 else float(values[2]),
+        batches=batches,
     )
+
+
+def _strategy_all_gather(
+    trainer: pl.Trainer,
+    tensor: torch.Tensor,
+) -> torch.Tensor:
+    strategy = getattr(trainer, "strategy", None)
+    all_gather = getattr(strategy, "all_gather", None)
+    if not callable(all_gather):
+        raise RuntimeError(
+            "Distributed unit scheduling requires trainer.strategy.all_gather."
+        )
+    return cast(_AllGatherStrategy, strategy).all_gather(tensor)
 
 
 def _optimizers(trainer: pl.Trainer) -> list[torch.optim.Optimizer]:

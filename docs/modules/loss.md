@@ -43,6 +43,7 @@ src/anytrain/loss/
 - `MaskedFrameMSELoss` / `masked_frame_mse_loss`
 - `MaskedCosineAlignmentLoss` / `masked_cosine_alignment_loss`
 - `MaskedCodebookCrossEntropyLoss`
+- `PackedCodebookLogits`
 
 音频相关 loss 通过子模块导出：
 
@@ -86,7 +87,15 @@ loss, details
 `LossItem` 保存按样本/行聚合的 loss 与可选 details。`MaskedFrameMSELoss` 和
 `MaskedCosineAlignmentLoss` 对 `[B, F, D]` 表示执行 frame mask 后的 MSE 或 cosine alignment；
 `MaskedCodebookCrossEntropyLoss` 接收每个 codebook 一个 `[B, F, vocab_q]` logits，支持不同
-vocab size、frame mask、逐 codebook CE 和可选 `codebook_N_top1` 监控。
+vocab size、frame mask、逐 codebook CE 和可选 `codebook_N_top1` 监控。普通入口的 logits、labels
+和 mask 必须在同一设备。decoder 已经压紧有效帧时，可以构造 `PackedCodebookLogits`，通过
+`forward_packed()` 直接传入 `[N, vocab_q]` logits、`[N, Q]` labels 和 `[N]` batch row indices
+(`row_indices`)；packed logits、labels 和 batch row indices 也必须在同一设备，避免重新展开后在
+padding 上执行 CE。
+
+`combine_loss_outputs()` 默认按 `item_units` 归约并组合各个 `LossItem`。调用方已经持有最终
+scalar 主 loss 时，可以传同设备的 `total_loss`；helper 会原样保留该 Tensor，只拼接各 shard
+的 `LossItem` 与 details，不再重复执行 item reduction。
 
 ## 基础 Loss
 

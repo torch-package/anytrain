@@ -160,6 +160,10 @@ batch 只在 rank zero 执行的 sample、媒体或 checkpoint callback 不会�
 顺序：要排除诊断，下游应把 `PerformanceCallback` 放在这些 callback 之前。当下游能保证 callback
 成本完全对称，或希望测量不含额外 barrier 的连续吞吐时，可显式设为 `False`。
 
+默认 `sync_cuda=True` 在每个 train batch 计时边界同步当前 `pl_module` 的 CUDA device，使计时包含
+此前提交的异步 CUDA work。CPU module 即使进程中存在其它可用 CUDA device 也不会触发同步；关闭
+该选项时，异步工作可能落到后续计时窗口。
+
 这个聚合契约面向同步 data-parallel，默认一个训练进程对应一个 accelerator。pipeline/model
 parallel 的 FLOPs 归属和设备峰值分母需要下游另行定义，callback 不猜测并行拓扑。
 

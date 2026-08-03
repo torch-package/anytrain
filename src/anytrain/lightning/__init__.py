@@ -10,10 +10,12 @@ from .callback.ema import EMACallback, ParameterEMA, find_ema_callback
 from .callback.grad import (
     GradientComparison,
     GradientLossGroupProvider,
+    GradientLossGroupsFn,
     GradientProbe,
     GradientProbeLoggerCallback,
     GradientTarget,
     LossOutputProvider,
+    gradient_loss_groups,
 )
 from .callback.loss import (
     LossItemLabelsFn,
@@ -60,6 +62,7 @@ __all__ = [
     "find_ema_callback",
     "GradientComparison",
     "GradientLossGroupProvider",
+    "GradientLossGroupsFn",
     "GradientProbe",
     "GradientProbeLoggerCallback",
     "GradientTarget",
@@ -85,6 +88,7 @@ __all__ = [
     "MoEMonitorsFn",
     "apply_parameter_trainability",
     "experiment",
+    "gradient_loss_groups",
     "prefixed_log_dict",
     "schedule",
     "window_summary",

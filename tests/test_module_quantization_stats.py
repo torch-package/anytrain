@@ -143,6 +143,11 @@ class QuantizationStatsTest(unittest.TestCase):
             codebook_usage(torch.tensor([0, 4]), codebook_sizes=(4,))
         with self.assertRaisesRegex(TypeError, "integer"):
             codebook_usage(torch.tensor([0.0]), codebook_sizes=(4,))
+        with self.assertRaisesRegex(TypeError, "bool tensors are not valid indices"):
+            valid_indices_by_codebook(
+                torch.tensor([True, False]),
+                codebook_sizes=(4,),
+            )
 
     def test_empty_usage_returns_zero_metrics(self):
         usage = codebook_usage(torch.empty(0, dtype=torch.long), codebook_sizes=(4,))

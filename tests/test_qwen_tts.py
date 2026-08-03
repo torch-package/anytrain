@@ -51,6 +51,45 @@ class QwenTTSAdapterTest(unittest.TestCase):
         self.assertEqual(outputs[0].meta["speaker"], "Vivian")
         self.assertEqual(outputs[1].meta["speaker"], "Ryan")
 
+    def test_synthesize_merges_options_and_allows_empty_extra_to_clear_defaults(self):
+        with _fake_qwen_tts():
+            tts = QwenCustomVoiceTTS.from_pretrained(
+                "fake-qwen",
+                speaker="Vivian",
+                runtime_kwargs={"top_k": 5},
+            )
+
+        tts.synthesize("hello", TTSOptions(max_new_tokens=128, extra={}))
+
+        self.assertEqual(
+            FakeQwen3TTSModel.loaded.generate_calls,
+            [
+                {
+                    "text": "hello",
+                    "language": "Auto",
+                    "speaker": "Vivian",
+                    "instruct": None,
+                    "max_new_tokens": 128,
+                }
+            ],
+        )
+
+    def test_synthesize_rejects_unsupported_seed_and_sample_rate(self):
+        with _fake_qwen_tts():
+            tts = QwenCustomVoiceTTS.from_pretrained("fake-qwen", speaker="Vivian")
+
+        with self.assertRaisesRegex(ValueError, "does not support seed"):
+            tts.synthesize("hello", TTSOptions(seed=7))
+        with self.assertRaisesRegex(ValueError, "does not support sample_rate"):
+            tts.synthesize("hello", TTSOptions(sample_rate=16000))
+
+    def test_synthesize_reference_is_keyword_only(self):
+        with _fake_qwen_tts():
+            tts = QwenCustomVoiceTTS.from_pretrained("fake-qwen", speaker="Vivian")
+
+        with self.assertRaises(TypeError):
+            tts.synthesize("hello", None, "assets/reference.wav")
+
     def test_rejects_unsupported_speaker_id(self):
         with _fake_qwen_tts():
             tts = QwenCustomVoiceTTS.from_pretrained("fake-qwen")

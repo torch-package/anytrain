@@ -196,6 +196,50 @@ class _AlternatingSlowRankStrategy:
 
 
 class PerformanceCallbackTest(unittest.TestCase):
+    def test_callback_cuda_timing_syncs_only_the_module_cuda_device(self):
+        import torch
+
+        from anytrain.lightning import PerformanceCallback
+
+        trainer = SimpleNamespace(global_step=0, world_size=1)
+        callback = PerformanceCallback(sync_cuda=True)
+
+        cuda_module = _Module()
+        cuda_module.device = torch.device("cuda", 3)
+        with (
+            patch("torch.cuda.synchronize") as synchronize,
+            patch("time.perf_counter", side_effect=[1.0, 2.0]),
+        ):
+            callback.on_train_batch_start(trainer, cuda_module, batch=None, batch_idx=0)
+            callback.on_train_batch_end(
+                trainer,
+                cuda_module,
+                outputs=None,
+                batch=None,
+                batch_idx=0,
+            )
+
+        self.assertEqual(synchronize.call_count, 2)
+        synchronize.assert_called_with(cuda_module.device)
+
+        cpu_module = _Module()
+        cpu_callback = PerformanceCallback(sync_cuda=True)
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.synchronize") as synchronize,
+            patch("time.perf_counter", side_effect=[3.0, 4.0]),
+        ):
+            cpu_callback.on_train_batch_start(trainer, cpu_module, batch=None, batch_idx=1)
+            cpu_callback.on_train_batch_end(
+                trainer,
+                cpu_module,
+                outputs=None,
+                batch=None,
+                batch_idx=1,
+            )
+
+        synchronize.assert_not_called()
+
     def test_callback_logs_static_metrics_and_mfu(self):
         from anytrain.lightning import PerformanceCallback
 

@@ -7,6 +7,7 @@ from numbers import Integral
 import torch
 from torch import Tensor
 
+from . import _checks
 from .output import QuantizeOutput
 
 
@@ -263,8 +264,7 @@ def _reshape_indices(indices: Tensor, *, num_codebooks: int) -> Tensor:
 
 
 def _validate_index_inputs(indices: Tensor, *, codebook_sizes: tuple[int, ...]) -> None:
-    if torch.is_floating_point(indices) or torch.is_complex(indices):
-        raise TypeError("indices must be an integer tensor.")
+    _checks.index_dtype(indices)
     if not codebook_sizes:
         raise ValueError("codebook_sizes must contain at least one value.")
 

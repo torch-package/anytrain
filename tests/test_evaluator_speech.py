@@ -432,6 +432,23 @@ class SpeechEvaluatorTest(unittest.TestCase):
 
         self.assertEqual(metrics, {"utmos": 4.0})
 
+    def test_utmos_rejects_nonfinite_scalar_sequence_and_tensor_scores(self):
+        for nonfinite in (float("nan"), float("inf")):
+            cases = {
+                "scalar": nonfinite,
+                "sequence": [3.0, nonfinite],
+                "tensor": torch.tensor([3.0, nonfinite]),
+            }
+            for name, score in cases.items():
+                with self.subTest(name=name, nonfinite=nonfinite), self.assertRaisesRegex(
+                    ValueError,
+                    "finite",
+                ):
+                    UTMOSEvaluator(backend=FakeUTMOSBackend(score))(
+                        torch.zeros(16000),
+                        16000,
+                    )
+
     def test_utmos_rejects_boolean_scores(self):
         evaluator = UTMOSEvaluator(backend=FakeUTMOSBackend([True]))
 

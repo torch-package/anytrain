@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 import torch
@@ -63,12 +64,7 @@ def teacher_loss(
     ``torch.nn.functional.smooth_l1_loss``. Details expose per-row
     ``cosine`` (similarity), ``smooth_l1``, and ``frames``.
     """
-    if isinstance(smooth_l1_weight, bool) or not isinstance(smooth_l1_weight, (int, float)):
-        raise TypeError("smooth_l1_weight must be a float.")
-    if smooth_l1_weight < 0:
-        raise ValueError("smooth_l1_weight must be non-negative.")
-    if isinstance(beta, bool) or not isinstance(beta, (int, float)) or beta <= 0:
-        raise ValueError("beta must be a positive float.")
+    smooth_l1_weight, beta = _teacher_options(smooth_l1_weight, beta)
     _validate_frame_tensors(prediction, target, mask, name="teacher")
     safe_prediction, safe_target, _frame_mask = _prepared_pair(
         prediction,
@@ -78,11 +74,11 @@ def teacher_loss(
     )
     cosine_distance = _cosine_distance(safe_prediction, safe_target).masked_fill(~mask, 0)
     smooth_l1 = (
-        F.smooth_l1_loss(safe_prediction, safe_target, reduction="none", beta=float(beta))
+        F.smooth_l1_loss(safe_prediction, safe_target, reduction="none", beta=beta)
         .mean(dim=-1)
         .masked_fill(~mask, 0)
     )
-    frame_loss = cosine_distance + float(smooth_l1_weight) * smooth_l1
+    frame_loss = cosine_distance + smooth_l1_weight * smooth_l1
     dtype = detail_dtype or prediction.dtype
     cosine_rows = _item(cosine_distance, mask, detail_dtype=dtype).loss
     smooth_rows = _item(smooth_l1, mask, detail_dtype=dtype).loss
@@ -145,15 +141,8 @@ class TeacherLoss(nn.Module):
         beta: float = 1.0,
     ) -> None:
         super().__init__()
-        if isinstance(smooth_l1_weight, bool) or not isinstance(smooth_l1_weight, (int, float)):
-            raise TypeError("smooth_l1_weight must be a float.")
-        if smooth_l1_weight < 0:
-            raise ValueError("smooth_l1_weight must be non-negative.")
-        if isinstance(beta, bool) or not isinstance(beta, (int, float)) or beta <= 0:
-            raise ValueError("beta must be a positive float.")
-        self.smooth_l1_weight = float(smooth_l1_weight)
+        self.smooth_l1_weight, self.beta = _teacher_options(smooth_l1_weight, beta)
         self.detach_target = detach_target
-        self.beta = float(beta)
 
     def forward(
         self,
@@ -172,6 +161,27 @@ class TeacherLoss(nn.Module):
             beta=self.beta,
             detail_dtype=detail_dtype,
         )
+
+
+def _teacher_options(smooth_l1_weight: object, beta: object) -> tuple[float, float]:
+    return (
+        _finite_float(smooth_l1_weight, name="smooth_l1_weight", positive=False),
+        _finite_float(beta, name="beta", positive=True),
+    )
+
+
+def _finite_float(value: object, *, name: str, positive: bool) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a float.")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite.")
+    if positive:
+        if result <= 0:
+            raise ValueError(f"{name} must be a positive float.")
+    elif result < 0:
+        raise ValueError(f"{name} must be non-negative.")
+    return result
 
 
 def _prepared_pair(

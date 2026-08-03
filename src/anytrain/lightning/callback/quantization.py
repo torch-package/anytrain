@@ -18,6 +18,8 @@ from anytrain.module.quantization.stats import (
 )
 
 from .. import _capability, experiment
+from ._cadence import StepCadence
+from ._naming import unique_tag_items, validate_tag_part
 
 BatchOutputs = Union[Tensor, Mapping[str, Any], None]
 
@@ -92,15 +94,12 @@ class CodebookUsageLoggerCallback(pl.Callback):
         log_histograms: bool = False,
     ) -> None:
         super().__init__()
-        if every_n_steps is not None:
-            _positive_int(every_n_steps, "every_n_steps")
-        _non_empty_string(tag, "tag")
         self.monitors = monitors
         self.metrics = _usage_metrics(metrics)
         self.every_n_steps = every_n_steps
-        self.tag = tag.strip("/")
+        self._cadence = StepCadence(every_n_steps)
+        self.tag = validate_tag_part(tag)
         self.log_histograms = log_histograms
-        self._last_logged_step: int | None = None
 
     def on_train_batch_end(
         self,
@@ -119,9 +118,9 @@ class CodebookUsageLoggerCallback(pl.Callback):
             raise TypeError("CodebookUsageLoggerCallback monitors must return a mapping.")
 
         values: dict[str, Tensor] = {}
-        for name, monitor in monitors.items():
+        for name, monitor in unique_tag_items(monitors.items()):
             monitor = _validate_usage_monitor(name, monitor)
-            prefix = f"{self.tag}/{_tag_part(name)}"
+            prefix = f"{self.tag}/{name}"
             values.update(_usage_scalar_metrics(trainer, prefix, monitor, self.metrics))
             if self.log_histograms:
                 _log_usage_histograms(trainer, prefix, monitor)
@@ -141,12 +140,7 @@ class CodebookUsageLoggerCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> bool:
         del pl_module
-        should_log, self._last_logged_step = _should_log_step(
-            trainer,
-            every_n_steps=self.every_n_steps,
-            last_logged_step=self._last_logged_step,
-        )
-        return should_log
+        return self._cadence.should_log(trainer)
 
 
 class QuantizationLoggerCallback(pl.Callback):
@@ -160,15 +154,12 @@ class QuantizationLoggerCallback(pl.Callback):
         log_histograms: bool = False,
     ) -> None:
         super().__init__()
-        if every_n_steps is not None:
-            _positive_int(every_n_steps, "every_n_steps")
-        _non_empty_string(tag, "tag")
         self.monitors = monitors
         self.metrics = _metrics(metrics)
         self.every_n_steps = every_n_steps
-        self.tag = tag.strip("/")
+        self._cadence = StepCadence(every_n_steps)
+        self.tag = validate_tag_part(tag)
         self.log_histograms = log_histograms
-        self._last_logged_step: int | None = None
 
     def on_train_batch_end(
         self,
@@ -187,9 +178,9 @@ class QuantizationLoggerCallback(pl.Callback):
             raise TypeError("QuantizationLoggerCallback monitors must return a mapping.")
 
         values: dict[str, Tensor] = {}
-        for name, monitor in monitors.items():
+        for name, monitor in unique_tag_items(monitors.items()):
             monitor = _validate_monitor(name, monitor)
-            prefix = f"{self.tag}/{_tag_part(name)}"
+            prefix = f"{self.tag}/{name}"
             values.update(self._scalar_metrics(trainer, prefix, monitor))
             if self.log_histograms:
                 self._log_histograms(trainer, prefix, monitor)
@@ -209,12 +200,7 @@ class QuantizationLoggerCallback(pl.Callback):
         pl_module: pl.LightningModule,
     ) -> bool:
         del pl_module
-        should_log, self._last_logged_step = _should_log_step(
-            trainer,
-            every_n_steps=self.every_n_steps,
-            last_logged_step=self._last_logged_step,
-        )
-        return should_log
+        return self._cadence.should_log(trainer)
 
     def _scalar_metrics(
         self,
@@ -334,22 +320,6 @@ def _reduce_usage(
     )
 
 
-def _should_log_step(
-    trainer: pl.Trainer,
-    *,
-    every_n_steps: int | None,
-    last_logged_step: int | None,
-) -> tuple[bool, int | None]:
-    if every_n_steps is None:
-        return True, last_logged_step
-    step = _capability.global_step(trainer)
-    if step % every_n_steps != 0:
-        return False, last_logged_step
-    if last_logged_step == step:
-        return False, last_logged_step
-    return True, step
-
-
 def _reduce_scalar(trainer: pl.Trainer, value: Tensor) -> Tensor:
     if not _capability.is_distributed(trainer):
         return value
@@ -424,19 +394,6 @@ def _observed_codebook_sizes(
             f"got {observed}, num_codebooks={configured}."
         )
     return sizes[:observed]
-
-
-def _tag_part(value: object) -> str:
-    text = str(value).strip("/")
-    _non_empty_string(text, "monitor name")
-    return text
-
-
-def _positive_int(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
 
 
 def _positive_int_value(value: object, name: str) -> int:

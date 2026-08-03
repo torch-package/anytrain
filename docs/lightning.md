@@ -314,6 +314,23 @@ observation count 一致，再归约 first/last 窗口。单进程、外部启�
 worker callback hook 调用父类同步后消费 `report()`；启动进程读取会明确报错。`report()` 在训练结束同步
 前同样不可用。`values` 仅保留为有界、按需转到 host 的兼容只读视图，不应用作完整训练历史。
 
+`GradientProbeLoggerCallback` 通过必填的 `loss_groups: GradientLossGroupsFn` 显式获取当前
+loss graph，不会在 callback 内隐式探测 `pl_module` 方法。已有模块若实现了
+`current_loss_outputs()` 或 `current_gradient_loss_groups()`，可以显式传入兼容 adapter：
+
+```python
+from anytrain.lightning import GradientProbeLoggerCallback, gradient_loss_groups
+
+callback = GradientProbeLoggerCallback(
+    comparisons=comparisons,
+    probes=probes,
+    loss_groups=gradient_loss_groups,
+)
+```
+
+新代码也可以直接传入项目自己的 provider；它必须返回 `group -> training outputs mapping`，其中默认
+group 名通常是 `batch`。这样 loss graph 的所有权留在下游装配层，callback 只负责梯度观测。
+
 `DebugCallback` 在调用方显式加入 callback 列表时启用。全部初始参数在 train start 检查一次；每次
 backward 后只重复检查可训练参数与现有梯度，因此冻结参数不会反复扫描。正常路径按 device/dtype 用 foreach norm 聚合后再做一次
 主机判定，只有发现异常时才逐 tensor 定位。
@@ -328,8 +345,10 @@ backward 后只重复检查可训练参数与现有梯度，因此冻结参数�
 
 代表性输入、训练 step FLOPs 口径属于下游任务语义，不由 callback 猜测。有效 audio 秒 / token
 数等 unit 进度由 `anytrain.lightning.schedule` 的 `UnitClock` 显式提供，并由 unit runtime
-记录 `progress/*`、padding 和 `{unit}_per_second`。动态窗口按 `sum(flops) / sum(time) / peak_flops`
-计算；梯度累积按 optimizer `global_step` 形成 measurement。DDP provider 返回 local-rank FLOPs，
+记录 `progress/*`、padding 和 `{unit}_per_second`；DDP unit throughput 使用各 rank valid unit 总和
+除以当前 optimizer update 的最慢 rank elapsed，窗口逐 update 累加最慢 rank elapsed。动态 FLOPs
+窗口按 `sum(flops) / sum(time) / peak_flops` 计算；梯度累积按 optimizer `global_step` 形成
+measurement。DDP provider 返回 local-rank FLOPs，
 callback 统一聚合 rank 工作量、最慢 rank 时间和各 rank 峰值算力。`sync_distributed=True` 时，
 每个 batch timer 启动前先 barrier，使上一 batch 的 rank-local callback 工作不会错开下一步计时
 起点；barrier 自身不计入 step time。完整输入协议和边界见
@@ -339,13 +358,19 @@ callback 统一聚合 rank 工作量、最慢 rank 时间和各 rank 峰值算�
 
 ## Checkpoint 保存
 
-`ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`，构造参数沿用原版接口，并在末尾增加 `async_save: bool = True`。
+`ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`，构造参数沿用原版接口，并在末尾增加
+`async_save: bool = True` 和 `max_pending_async_saves: int = 1`。
 
-默认 `async_save=True` 时，rank 0 会先把 checkpoint 写入本机临时目录，再用后台单线程队列复制到目标路径，适合目标目录挂在 NFS 等慢文件系统上的场景。传入 `async_save=False` 时，它的保存、top-k、`save_last`、删除和 logger 通知行为保持原生同步逻辑。
+默认 `async_save=True` 时，rank 0 会先把 checkpoint 写入本机临时目录，再用后台单线程队列复制到目标路径，适合目标目录挂在 NFS 等慢文件系统上的场景。持有完整本地 source 的复制任务达到
+`max_pending_async_saves` 上限时，下一次保存会先等待最老复制任务；保存路径会在创建下一份完整
+本地文件之前施加该背压。删除任务继续进入同一个单线程队列来保持 top-k 顺序，但不占复制 backlog
+容量，也不会迫使刚提交的复制立刻转为同步等待。默认上限 1，因此慢复制不会让完整 checkpoint 在
+本地无界积压；需要用有限本地空间换取更深 I/O overlap 时可以显式调高。传入 `async_save=False` 时，它的保存、top-k、
+`save_last`、删除和 logger 通知行为保持原生同步逻辑。
 
-异步队列串行处理目标路径复制和 top-k 删除，避免旧 checkpoint 的后台复制晚于删除完成而重新写回。后台复制会先写目标目录下的 `.part` 文件，再 `os.replace()` 到最终路径，减少半写入文件被观察到的风险。`save_last="link"` 保持 Lightning 原生逻辑；如果希望最后一份 checkpoint 也走异步文件复制，优先使用 `save_last=True`。
+异步队列串行处理目标路径复制和 top-k 删除，避免旧 checkpoint 的后台复制晚于删除完成而重新写回。后台复制会先写目标目录下的 `.part` 文件，再 `os.replace()` 到最终路径，减少半写入文件被观察到的风险。`save_last="link"` 会把 `last.ckpt` 指向持久目标 checkpoint，而不是本地临时 source；不能创建 symlink 的平台继续使用 Lightning 的文件复制语义。新目标尚在后台复制时，symlink 可以暂时是 dangling link；`wait_async_saves()`、正常 fit end 和 exception drain 返回后保证目标已原子发布并可读。
 
-第一版只支持本地文件系统路径，包括挂载到本机的 NFS；不支持 `s3://`、`gs://` 等远端 URI。后台任务错误会在下一次 checkpoint 操作、`on_fit_end()`、异常处理保存后或用户显式调用 `wait_async_saves()` 时抛出。
+第一版只支持本地文件系统路径，包括挂载到本机的 NFS；不支持 `s3://`、`gs://` 等远端 URI。后台任务错误会在下一次 checkpoint 操作、`on_fit_end()`、异常处理保存后或用户显式调用 `wait_async_saves()` 时抛出。DDP 下一次保存会先由 global rank 0 完成 backlog/error preflight，再把结果同步给所有 rank；发生 prior async error 时所有 rank 都在进入 `trainer.save_checkpoint()` collective 前失败，rank 0 保留原始异常 cause。`on_fit_end()` 和 `on_exception()` 的后台任务 drain 同样由 rank 0 等待后同步结果，避免训练收尾阶段各 rank 分叉。
 
 Python 入口示例：
 

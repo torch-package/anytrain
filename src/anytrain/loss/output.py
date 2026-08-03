@@ -26,17 +26,19 @@ class LossItem:
             details = {key: value[mask].mean() for key, value in details.items()}
         return LossItem(loss, details)
 
-    def weighted_mean(self, weight: Tensor) -> Tensor:
+    def weighted_mean(self, weight: Tensor, *, validate: bool = True) -> Tensor:
         if weight.shape != self.loss.shape:
             raise ValueError("loss weights must align with loss rows.")
         if weight.device != self.loss.device:
             raise ValueError("loss weights must be on the same device as loss rows.")
         if weight.is_complex():
             raise TypeError("loss weights must be real-valued observation counts.")
-        if not bool(torch.isfinite(weight).all()) or bool((weight < 0).any()):
+        if not isinstance(validate, bool):
+            raise TypeError("validate must be a boolean.")
+        if validate and (not bool(torch.isfinite(weight).all()) or bool((weight < 0).any())):
             raise ValueError("loss weights must be finite and non-negative.")
         total = weight.sum()
-        if bool(total.le(0)):
+        if validate and bool(total.le(0)):
             raise ValueError("loss weights must contain a positive total.")
         safe_loss = self.loss.masked_fill(weight == 0, 0)
         return (safe_loss * weight).sum() / total
@@ -54,27 +56,42 @@ def combine_loss_outputs(
     loss_key: str = "loss",
     loss_weights_key: str = "loss_weights",
     detail_fallback_to_mean: bool = True,
+    validate_item_weights: bool = True,
+    total_loss: Tensor | None = None,
 ) -> dict[str, Any]:
     if not outputs:
         raise ValueError("cannot combine an empty output sequence.")
+    if not isinstance(validate_item_weights, bool):
+        raise TypeError("validate_item_weights must be a boolean.")
 
     first_loss = _loss_tensor(outputs[0], loss_key=loss_key)
-    result: dict[str, Any] = {loss_key: first_loss.new_zeros(())}
+    if total_loss is not None:
+        if not isinstance(total_loss, Tensor):
+            raise TypeError("total_loss must be a tensor.")
+        if total_loss.ndim != 0:
+            raise ValueError("total_loss must be a scalar tensor.")
+        if total_loss.device != first_loss.device:
+            raise ValueError("total_loss must be on the same device as loss outputs.")
+    result: dict[str, Any] = {
+        loss_key: first_loss.new_zeros(()) if total_loss is None else total_loss
+    }
     for name, unit in item_units.items():
         items = [_loss_item(output, name=name) for output in outputs if name in output]
         if not items:
             continue
         item = concatenate_loss_items(items)
         result[name] = item
-        result[loss_key] = result[loss_key] + _loss_weight(
-            outputs,
-            name,
-            weights_key=loss_weights_key,
-        ) * loss_item_mean(
-            item,
-            unit=unit,
-            fallback_to_mean=detail_fallback_to_mean,
-        )
+        if total_loss is None:
+            result[loss_key] = result[loss_key] + _loss_weight(
+                outputs,
+                name,
+                weights_key=loss_weights_key,
+            ) * loss_item_mean(
+                item,
+                unit=unit,
+                fallback_to_mean=detail_fallback_to_mean,
+                validate=validate_item_weights,
+            )
     return result
 
 
@@ -104,13 +121,19 @@ def loss_item_mean(
     *,
     unit: str,
     fallback_to_mean: bool = True,
+    validate: bool = True,
 ) -> Tensor:
+    if not isinstance(validate, bool):
+        raise TypeError("validate must be a boolean.")
     details = item.details
     if details is None or unit not in details:
         if fallback_to_mean:
             return item.loss.mean()
         raise ValueError(f"loss item details must contain unit {unit!r}.")
-    return item.weighted_mean(details[unit].to(device=item.loss.device, dtype=item.loss.dtype))
+    return item.weighted_mean(
+        details[unit].to(device=item.loss.device, dtype=item.loss.dtype),
+        validate=validate,
+    )
 
 
 def _loss_tensor(output: Mapping[str, Any], *, loss_key: str) -> Tensor:
@@ -139,10 +162,7 @@ def _cat_details(values: list[dict[str, Tensor] | None]) -> dict[str, Tensor] | 
     keys = set(present[0])
     if any(set(value) != keys for value in present):
         raise ValueError("loss item details must use consistent keys.")
-    return {
-        key: torch.cat([value[key].reshape(-1) for value in present])
-        for key in sorted(keys)
-    }
+    return {key: torch.cat([value[key].reshape(-1) for value in present]) for key in sorted(keys)}
 
 
 def _loss_weight(
