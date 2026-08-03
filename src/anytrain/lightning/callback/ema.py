@@ -175,6 +175,8 @@ class EMACallback(pl.Callback):
         self.ema: ParameterEMA | None = None
         self._last_global_step: int | None = None
         self._active = False
+        self._pending_ema: Mapping[str, Any] | None = None
+        self._restored_last_global_step = False
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         names = self.parameter_names
@@ -185,7 +187,13 @@ class EMACallback(pl.Callback):
                 if self.parameter_filter(name, parameter)
             )
         self.ema = ParameterEMA(pl_module, decay=self.decay, parameter_names=names)
-        self._last_global_step = _capability.global_step(trainer)
+        pending = self._pending_ema
+        if pending is not None:
+            self.ema.load_state_dict(pending)
+            self._pending_ema = None
+        if not self._restored_last_global_step:
+            self._last_global_step = _capability.global_step(trainer)
+        self._restored_last_global_step = False
         self._active = False
 
     def on_train_batch_end(
@@ -287,14 +295,19 @@ class EMACallback(pl.Callback):
         ):
             raise TypeError("EMACallback last_global_step must be an integer or None.")
         self._last_global_step = last_global_step
+        self._restored_last_global_step = True
         payload = state_dict.get("ema")
         if payload is None:
+            self._pending_ema = None
             return
         if not isinstance(payload, Mapping):
             raise TypeError("EMACallback ema state must be a mapping.")
         ema = self.ema
         if ema is None:
-            raise RuntimeError("EMACallback.load_state_dict requires on_fit_start first.")
+            # Lightning restores callback state before on_fit_start creates EMA.
+            self._pending_ema = payload
+            return
+        self._pending_ema = None
         ema.load_state_dict(payload)
 
     def _enter_ema(self, pl_module: pl.LightningModule) -> None:

@@ -25,6 +25,7 @@ src/anytrain/lightning/
     ema.py
     grad.py
     loss.py
+    parameter_policy.py
     performance.py
     quantization.py
     moe.py
@@ -44,6 +45,8 @@ src/anytrain/lightning/
 - `EMACallback`
 - `ParameterEMA`
 - `find_ema_callback`
+- `ParameterPolicyCallback`
+- `apply_parameter_trainability`
 - `GradientProbeLoggerCallback`
 - `GradientProbe`
 - `GradientTarget`
@@ -161,7 +164,12 @@ device，然后直接抛错。正式运行不需要时仍可从 callback 列表�
 shadow weights，并在 validation / test / predict 开始时把 EMA 权重 swap 进模块、结束时 restore。
 下游也可以通过 `find_ema_callback(trainer)` 与 `average_parameters(pl_module)` 在 sample / artifact
 导出等自定义 hook 里临时使用 EMA 权重。callback 把 EMA state 写入 Lightning checkpoint；它不解释
-batch schema，也不自动改写 `state_dict` 里的原始训练权重。
+batch schema，也不自动改写 `state_dict` 里的原始训练权重。Lightning 会在 `on_fit_start` 之前恢复
+callback state，因此 `load_state_dict` 会暂存 EMA payload，并在 `on_fit_start` 创建 shadow 后再加载。
+
+`ParameterPolicyCallback` 按下游策略设置参数 `requires_grad`。它在 callback `setup(stage="fit")`
+应用策略，早于 Lightning 调用 `configure_optimizers()`，避免冻结参数仍进入 optimizer、或解冻参数
+未被收集。`on_fit_start` 仍保留为幂等回退，方便单测直接调用。
 
 `ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
 

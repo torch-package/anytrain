@@ -25,7 +25,7 @@
 - `anytrain.module.moe.routing`：density-neutral `ExpertRouting`、校验和 mask helper；`DenseExpertWeights` 是 probability-tensor 辅助视图。
 - `anytrain.module.moe.conv`：`ConvRouter1d` / `ConvRouter2d`（只产 logits）、partitioner / shape helpers、`MultiScalePool1d`。
 - `anytrain.module.moe`：统一入口 `MoE(num_experts=..., expert=Expert, weight=(E,...), bias=..., grid=...)`；Expert 对象负责 `__call__` / `bias_kind` / `bind(grid,...)`；`Grid1d` 表达 1D segment intent，`NativeGrid` 表示不切分的 native-resolution 路径；`expand_param` 做 E 轴扩维；`expand_expert` 仅便利 stock `Linear/Conv*`，不是通用 Module→Expert 推断。另有 `CallableExpert`、`linear` / `Conv*Expert`、`LinearRouter`、`NativeGrid`、`MoEOutput`、`ExpertRouting`、MoE aux-loss / metrics helpers。
-- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
+- `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`RFSQConfig`、`ResidualFiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
 - `anytrain.module.idspace`：`Layout` 和 `Embedding`。
 
@@ -116,11 +116,12 @@ codec 逻辑：
 - `forward_with_features()` 可返回指定中间层投影，供下游 REPA、蒸馏或诊断目标使用；具体
   loss 仍由下游或 `anytrain.framework.flow_matching` 组合。
 
-Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ 和 AGRVQ：
+Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFSQ 和 AGRVQ：
 
 - `FiniteScalarQuantizer` 使用 `levels` 描述每个 scalar code dimension 的 level 数；它和普通 VQ 一样是单 codebook 接口，`indices` shape 为 `(...)`，`codebook_vectors` shape 为 `(..., codebook_dim)`。
 - FSQ 默认使用 odd-only `levels` preset，推荐 odd `levels` 以保持 scalar grid 关于 0 对称；even `levels` 会触发 warning，但仍使用保留 0 码点的 zero-friendly grid。
 - FSQ 的 `bound_scale` 控制进入 `tanh` 前的 latent 尺度；调大它可以缓解大幅值 projected latents 的边界饱和。
+- `ResidualFiniteScalarQuantizer` 在共享 FSQ level grid 上做 residual 量化，`scales` 控制每级 residual 的标量范围。量化路径会把 level clamp 到 `[0, levels-1]`，保证 `indices < codebook_size`；`scales` 不必覆盖完整 residual 动态范围。
 - `EmbeddingVectorQuantizer` 是 embedding table + nearest-neighbor VQ，实现名避免和 protocol 混淆。
 - nearest-neighbor 查找会沿 latent 和 codebook 两个维度自动分块，确保任一临时比较矩阵不
   超过内部元素上限，限制长序列和超大码本组合时的峰值显存。

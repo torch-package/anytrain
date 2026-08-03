@@ -56,6 +56,60 @@ class ParameterPolicyTest(unittest.TestCase):
         self.assertFalse(module[0].weight.requires_grad)
         self.assertFalse(module[0].bias.requires_grad)
 
+    def test_parameter_policy_callback_setup_runs_before_optimizer(self):
+        from lightning.pytorch import LightningModule, Trainer
+        from torch.utils.data import DataLoader, TensorDataset
+
+        class Tiny(LightningModule):
+            def __init__(self) -> None:
+                super().__init__()
+                self.net = torch.nn.Linear(2, 2)
+                self.net.bias.requires_grad_(False)
+                self.opt_names: list[str] | None = None
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                x, y = batch
+                return torch.nn.functional.mse_loss(self.net(x), y)
+
+            def configure_optimizers(self):
+                trainable = [
+                    (name, parameter)
+                    for name, parameter in self.named_parameters()
+                    if parameter.requires_grad
+                ]
+                self.opt_names = [name for name, _ in trainable]
+                return torch.optim.SGD([parameter for _, parameter in trainable], lr=0.1)
+
+        def trainable(_module, name, _parameter):
+            return name.endswith("bias")
+
+        model = Tiny()
+        callback = ParameterPolicyCallback(trainable)
+        loader = DataLoader(
+            TensorDataset(torch.randn(8, 2), torch.randn(8, 2)),
+            batch_size=4,
+        )
+        trainer = Trainer(
+            accelerator="cpu",
+            max_epochs=1,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+            callbacks=[callback],
+        )
+        trainer.fit(model, loader)
+
+        self.assertTrue(callback.applied)
+        self.assertEqual(model.opt_names, ["net.bias"])
+        self.assertFalse(model.net.weight.requires_grad)
+        self.assertTrue(model.net.bias.requires_grad)
+        optimizer = trainer.optimizers[0]
+        opt_ids = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+        self.assertNotIn(id(model.net.weight), opt_ids)
+        self.assertIn(id(model.net.bias), opt_ids)
+
     def test_lightning_exports_parameter_policy_api(self):
         self.assertIn("ParameterPolicyCallback", lightning_exports)
         self.assertIn("apply_parameter_trainability", lightning_exports)

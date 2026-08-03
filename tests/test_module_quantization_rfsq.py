@@ -121,6 +121,20 @@ class ResidualFiniteScalarQuantizerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "active dimension"):
             quantizer.indices_to_codebook_vectors(torch.zeros(1, 3, dtype=torch.long))
 
+    def test_quantize_clamps_levels_outside_scale_range(self):
+        quantizer = ResidualFiniteScalarQuantizer(
+            RFSQConfig(input_dim=1, levels=(5,), scales=(0.25,))
+        )
+        # tanh saturates near ±1, which is outside the scale=0.25 grid.
+        x = torch.tensor([[10.0], [100.0], [-10.0]])
+
+        output = quantizer(x)
+
+        self.assertEqual(quantizer.codebook_size, 5)
+        self.assertTrue((output.indices >= 0).all())
+        self.assertTrue((output.indices < quantizer.codebook_size).all())
+        self.assertTrue(torch.equal(output.indices.view(-1), torch.tensor([4, 4, 0])))
+
 
 def _legacy_residual_fsq(
     quantizer: ResidualFiniteScalarQuantizer,
@@ -138,7 +152,9 @@ def _legacy_residual_fsq(
     for scale in quantizer.config.scales:
         step = (2 * scale / (levels - 1)).to(device=latents.device, dtype=residual.dtype)
         raw_levels = (residual + scale) / step
-        rounded = raw_levels + (raw_levels.round() - raw_levels).detach()
+        max_level = (levels - 1).to(dtype=raw_levels.dtype)
+        bounded = torch.minimum(raw_levels.clamp_min(0), max_level)
+        rounded = bounded + (bounded.round() - bounded).detach()
         vector = rounded * step - scale
         index = (rounded.long() * basis).sum(dim=-1)
         vectors.append(vector)

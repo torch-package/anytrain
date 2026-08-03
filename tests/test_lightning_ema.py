@@ -90,6 +90,92 @@ class EMACallbackTests(unittest.TestCase):
             self.assertTrue(torch.allclose(module.weight, torch.full((2, 2), 7.0)))
         self.assertTrue(torch.allclose(module.weight, torch.ones(2, 2)))
 
+    def test_load_state_dict_before_on_fit_start_defers_ema(self) -> None:
+        module = _LinearModule()
+        source = EMACallback(decay=0.5)
+        trainer = SimpleNamespace(global_step=0, callbacks=[source])
+        source.on_fit_start(trainer, module)  # type: ignore[arg-type]
+        module.weight.data.fill_(3.0)
+        trainer.global_step = 1
+        source.on_train_batch_end(trainer, module, None, None, 0)  # type: ignore[arg-type]
+        state = source.state_dict()
+        assert source.ema is not None
+
+        restored = EMACallback(decay=0.5)
+        restored.load_state_dict(state)
+        self.assertIsNone(restored.ema)
+        self.assertEqual(restored._last_global_step, 1)
+
+        trainer = SimpleNamespace(global_step=0, callbacks=[restored])
+        restored.on_fit_start(trainer, module)  # type: ignore[arg-type]
+        assert restored.ema is not None
+        self.assertEqual(restored.ema.num_updates, source.ema.num_updates)
+        self.assertTrue(
+            torch.equal(restored.ema.shadow["weight"], source.ema.shadow["weight"])
+        )
+        self.assertEqual(restored._last_global_step, 1)
+        self.assertIsNone(restored._pending_ema)
+
+    def test_trainer_checkpoint_roundtrip_restores_ema(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from lightning.pytorch import LightningModule, Trainer
+        from torch.utils.data import DataLoader, TensorDataset
+
+        class Tiny(LightningModule):
+            def __init__(self) -> None:
+                super().__init__()
+                self.net = nn.Linear(2, 2)
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                x, y = batch
+                return nn.functional.mse_loss(self.net(x), y)
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.1)
+
+        dataset = TensorDataset(torch.randn(8, 2), torch.randn(8, 2))
+        loader = DataLoader(dataset, batch_size=4)
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = Path(tmp) / "ema.ckpt"
+            source_callback = EMACallback(decay=0.9)
+            trainer = Trainer(
+                accelerator="cpu",
+                max_epochs=1,
+                enable_checkpointing=False,
+                enable_progress_bar=False,
+                enable_model_summary=False,
+                logger=False,
+                callbacks=[source_callback],
+            )
+            trainer.fit(Tiny(), loader)
+            trainer.save_checkpoint(ckpt)
+            assert source_callback.ema is not None
+            expected_updates = source_callback.ema.num_updates
+            expected_weight = source_callback.ema.shadow["net.weight"].detach().cpu().clone()
+
+            restored_callback = EMACallback(decay=0.9)
+            restored = Trainer(
+                accelerator="cpu",
+                max_epochs=1,
+                enable_checkpointing=False,
+                enable_progress_bar=False,
+                enable_model_summary=False,
+                logger=False,
+                callbacks=[restored_callback],
+            )
+            restored.fit(Tiny(), loader, ckpt_path=str(ckpt))
+            assert restored_callback.ema is not None
+            self.assertEqual(restored_callback.ema.num_updates, expected_updates)
+            self.assertTrue(
+                torch.equal(
+                    restored_callback.ema.shadow["net.weight"].detach().cpu(),
+                    expected_weight,
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

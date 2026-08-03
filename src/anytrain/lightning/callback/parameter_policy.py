@@ -95,17 +95,39 @@ class ParameterPolicyCallback(pl.Callback):
         self.summary: ParameterTrainabilitySummary | None = None
         self.applied = False
 
+    def setup(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        stage: object | None = None,
+    ) -> None:
+        del trainer
+        if not _is_fit_stage(stage):
+            return
+        self._apply(pl_module)
+
     def on_fit_start(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
         del trainer
+        # Fallback for callers that invoke the hook directly without setup().
+        self._apply(pl_module)
+
+    def _apply(self, pl_module: pl.LightningModule) -> None:
         if self.applied:
             return
         module = self.module(pl_module) if self.module is not None else pl_module
         self.summary = apply_parameter_trainability(module, self.trainable)
         self.applied = True
+
+
+def _is_fit_stage(stage: object | None) -> bool:
+    if stage is None:
+        return False
+    value = getattr(stage, "value", stage)
+    return value == "fit"
 
 
 __all__ = [

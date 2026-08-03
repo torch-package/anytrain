@@ -187,7 +187,9 @@ class ResidualFiniteScalarQuantizer(nn.Module):
     def _quantize_residual_stage(self, residual: Tensor, scale: float) -> tuple[Tensor, Tensor]:
         step = self._step(scale, residual)
         levels = (residual + scale) / step
-        rounded = levels + (levels.round() - levels).detach()
+        max_level = (self._levels - 1).to(device=levels.device, dtype=levels.dtype)
+        bounded = torch.minimum(levels.clamp_min(0), max_level)
+        rounded = bounded + (bounded.round() - bounded).detach()
         vector = rounded * step - scale
         index = (rounded.long() * self._basis).sum(dim=-1)
         return vector, index
