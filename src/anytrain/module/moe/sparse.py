@@ -47,17 +47,45 @@ def sparse_dispatch(
         device=hidden_states.device,
     )
 
-    for expert_index, expert in enumerate(experts):
-        selected = (flat_indices == expert_index) & active_mask.unsqueeze(-1) & (flat_weights != 0)
-        if not bool(selected.any().item()):
-            continue
+    route_token_indices = torch.arange(
+        flat_hidden.size(0),
+        device=hidden_states.device,
+    ).unsqueeze(-1)
+    route_token_indices = route_token_indices.expand_as(flat_indices).reshape(-1)
+    route_expert_indices = flat_indices.reshape(-1)
+    route_weights = flat_weights.reshape(-1)
+    valid_routes = active_mask.unsqueeze(-1).expand_as(flat_indices).reshape(-1)
+    valid_routes = valid_routes & (route_weights != 0)
 
-        token_indices, choice_indices = selected.nonzero(as_tuple=True)
+    route_expert_indices = route_expert_indices[valid_routes]
+    route_token_indices = route_token_indices[valid_routes]
+    route_weights = route_weights[valid_routes]
+
+    sorted_order = route_expert_indices.argsort(stable=True)
+    route_expert_indices = route_expert_indices.index_select(0, sorted_order)
+    route_token_indices = route_token_indices.index_select(0, sorted_order)
+    route_weights = route_weights.index_select(0, sorted_order)
+    tokens_per_expert = torch.bincount(
+        route_expert_indices,
+        minlength=len(experts),
+    )
+    # Python dispatch to distinct nn.Module experts needs segment lengths on the
+    # host. Keep that to one synchronization instead of probing every expert.
+    token_counts = tokens_per_expert.tolist()
+
+    start = 0
+    for expert_index, (expert, token_count) in enumerate(zip(experts, token_counts)):
+        if token_count == 0:
+            continue
+        end = start + token_count
+        token_indices = route_token_indices[start:end]
+        expert_weights = route_weights[start:end]
+        start = end
         expert_input = flat_hidden.index_select(0, token_indices)
         expert_output = expert(expert_input)
         _validate_expert_output(
             expert_output,
-            token_count=token_indices.numel(),
+            token_count=token_count,
             expert_index=expert_index,
         )
 
@@ -74,11 +102,10 @@ def sparse_dispatch(
                     f"expert {expert_index} returned {tuple(expert_output.shape[1:])}."
                 )
 
-        combine_weight = flat_weights[token_indices, choice_indices].to(dtype=expert_output.dtype)
+        combine_weight = expert_weights.to(dtype=expert_output.dtype)
         combine_weight = combine_weight.reshape(-1, *([1] * (expert_output.ndim - 1)))
         assert output is not None
         output = output.index_add(0, token_indices, expert_output * combine_weight)
-        tokens_per_expert[expert_index] = token_indices.numel()
 
     if output is None:
         output = _empty_output(flat_hidden, experts[0])

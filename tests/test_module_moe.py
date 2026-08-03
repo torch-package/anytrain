@@ -92,6 +92,61 @@ class MoETest(unittest.TestCase):
         self.assertTrue(torch.allclose(output.hidden_states, expected))
         self.assertTrue(torch.equal(output.tokens_per_expert.cpu(), torch.tensor([1, 2, 2])))
 
+    def test_sparse_dispatch_skips_unused_experts(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+        routing = ExpertRouting(
+            logits=torch.zeros(2, 4),
+            probabilities=torch.full((2, 4), 0.25),
+            indices=torch.tensor([[0], [2]], dtype=torch.long),
+            weights=torch.ones(2, 1),
+        )
+        experts = nn.ModuleList(
+            [
+                nn.Linear(2, 2, bias=False),
+                nn.Linear(2, 2, bias=False),
+                nn.Linear(2, 2, bias=False),
+                nn.Linear(2, 2, bias=False),
+            ]
+        )
+        with torch.no_grad():
+            for expert in experts:
+                expert.weight.copy_(torch.eye(2))
+
+        output, counts = sparse_dispatch(hidden, routing, experts)
+
+        self.assertTrue(torch.allclose(output, hidden))
+        self.assertTrue(torch.equal(counts.cpu(), torch.tensor([1, 0, 1, 0])))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_sparse_dispatch_unused_experts_match_on_cuda(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        device = torch.device("cuda")
+        hidden = torch.randn(32, 8, device=device)
+        indices = torch.zeros(32, 1, dtype=torch.long, device=device)
+        # Only experts 0 and 2 receive tokens; 1 and 3 stay empty.
+        indices[16:] = 2
+        routing = ExpertRouting(
+            logits=torch.zeros(32, 4, device=device),
+            probabilities=torch.full((32, 4), 0.25, device=device),
+            indices=indices,
+            weights=torch.ones(32, 1, device=device),
+        )
+        experts = nn.ModuleList(
+            [nn.Linear(8, 8, bias=False).to(device) for _ in range(4)]
+        )
+        with torch.no_grad():
+            for expert in experts:
+                expert.weight.copy_(torch.eye(8, device=device))
+
+        output, counts = sparse_dispatch(hidden, routing, experts)
+        torch.cuda.synchronize()
+
+        self.assertTrue(torch.allclose(output, hidden))
+        self.assertTrue(torch.equal(counts.cpu(), torch.tensor([16, 0, 16, 0])))
+
     def test_forward_ignores_masked_tokens(self):
         hidden = torch.ones(1, 3, 2)
         routing = ExpertRouting(
