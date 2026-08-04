@@ -32,6 +32,9 @@ def _rvq_config(
     decay: float = 0.99,
     eps: float = 1e-5,
     projection_bias: bool = True,
+    kmeans_init: bool = False,
+    kmeans_iters: int = 10,
+    dead_code_threshold: float = 0.0,
     dropout: float | None = None,
 ) -> RVQConfig:
     return RVQConfig(
@@ -48,6 +51,9 @@ def _rvq_config(
                 decay=decay,
                 eps=eps,
                 projection_bias=projection_bias,
+                kmeans_init=kmeans_init,
+                kmeans_iters=kmeans_iters,
+                dead_code_threshold=dead_code_threshold,
             )
             for _ in range(num_codebooks)
         ),
@@ -72,6 +78,9 @@ def _distributed_ema_dropout_worker(rank: int, world_size: int, init_method: str
                 codebook_size=8,
                 codebook_dim=2,
                 use_ema=True,
+                kmeans_init=True,
+                kmeans_iters=2,
+                dead_code_threshold=1.0,
                 dropout=1.0,
             )
         )

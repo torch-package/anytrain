@@ -133,6 +133,13 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
   counts/sums 参与 collective；如果该 stage 在所有 rank 都没有 assignment，则保持 EMA
   state/codebook 不变。如果可能被整 stage dropout 的 quantizer 含可训练参数，PyTorch DDP
   还需要设置 `find_unused_parameters=True`，因为该 rank 的参数不会进入本次 autograd graph。
+- EMA VQ 可用 `kmeans_init=True` 在第一次有训练样本的 forward 上运行分布式 k-means；
+  `kmeans_iters` 控制迭代次数。DDP ranks 共同提供初始候选，并对每轮 cluster counts/sums
+  全局求和；没有本地 assignment 的 rank 仍参与相同 collective。初始化状态复用现有 EMA
+  counts/sums 表达，不增加 checkpoint tensor，eval forward 不触发初始化。
+- `dead_code_threshold > 0` 会在查找前把 EMA count 低于阈值的 code 替换为当前训练样本，
+  同时重置对应 counts/sums。DDP 下 replacement 候选由有样本的 ranks 共同提供；全局没有
+  assignment 时不修改 codebook。EMA codebook 只应由 EMA / recycling 更新，不能加入 optimizer。
 - `GroupedVectorQuantizer` 是 learned product codebook，例如 `group_sizes=(90, 90)` 对外表现为 `codebook_size=8100` 的单 codebook，但内部只搜索两个 90-size group。
 - `ResidualVectorQuantizer` 组合多个 embedding VQ，第一版要求统一 `input_dim`、`codebook_dim` 和 `codebook_size`；`latents_to_codebook_vectors()` 不触发 dropout、loss 或 EMA 更新。
 - `AutoGroupResidualVectorQuantizer` 从 `anytrain.module.quantization` 显式导入。每个 residual

@@ -366,10 +366,11 @@ FSQ `indices` 语义会从 per-dimension levels 修正为 flat ids。这是刻�
 
 ### 训练稳定性功能
 
-K-means 初始化和 dead code reset 仍是后续增强，不进入第一版迁移闭环。EMA VQ 已在
-distributed 初始化后对每次更新的 counts/sums 做全局求和，并以 FP32 保存统计；这项能力不需要
-下游额外开启配置，但要求所有 rank 使用相同的 train/eval mode 和 active stage 数。RVQ 的
-per-vector dropout 允许各 rank 使用不同的 local mask；本地空 stage 仍以零统计参与
+EMA VQ 支持第一次训练 forward 的分布式 k-means 初始化和基于 EMA count 的 dead code
+recycling；分别由 `kmeans_init` / `kmeans_iters` 和 `dead_code_threshold` 控制。distributed
+初始化后，k-means、recycling 和每次 EMA 更新都保持 rank collective 对齐，counts/sums 以
+FP32 保存。所有 rank 仍必须使用相同的 train/eval mode 和 active stage 数。RVQ 的
+per-vector dropout 允许各 rank 使用不同的 local mask；本地空 stage 以零统计参与
 collective，全局空 stage 不更新 EMA state/codebook。含可训练参数的 stage 可能在单个 rank
 完全未使用，因此下游 PyTorch DDP 需要设置 `find_unused_parameters=True`。
 

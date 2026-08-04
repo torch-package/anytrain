@@ -1,5 +1,8 @@
 import unittest
 from dataclasses import fields
+from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 import torch
@@ -12,6 +15,56 @@ from anytrain.module.quantization import (
 from anytrain.module.quantization.lookup import nearest_codebook_indices
 
 
+def _distributed_kmeans_worker(rank: int, world_size: int, init_method: str) -> None:
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=init_method,
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=30),
+    )
+    try:
+        torch.manual_seed(0)
+        quantizer = EmbeddingVectorQuantizer(
+            VQConfig(
+                input_dim=2,
+                codebook_size=4,
+                use_ema=True,
+                kmeans_init=True,
+                kmeans_iters=2,
+                dead_code_threshold=1.0,
+            )
+        )
+        if rank == 0:
+            _ = quantizer(torch.tensor([[2.0, 0.0], [-2.0, 0.0]]))
+        else:
+            quantizer._update_ema_without_assignments()
+
+        if not bool(quantizer.ema_counts.sum().item() > 0):
+            raise AssertionError("distributed k-means did not initialize EMA state.")
+        with torch.no_grad():
+            quantizer._ema_counts[0] = 0
+            quantizer._ema_sums[0].zero_()
+        before_recycle = quantizer.codebook.weight[0].clone()
+        if rank == 0:
+            _ = quantizer(torch.tensor([[0.0, 3.0], [0.0, -3.0]]))
+        else:
+            quantizer._update_ema_without_assignments()
+        if torch.equal(quantizer.codebook.weight[0], before_recycle):
+            raise AssertionError("distributed dead-code recycling did not replace the code.")
+        for value in (
+            quantizer._ema_counts,
+            quantizer._ema_sums,
+            quantizer.codebook.weight,
+        ):
+            gathered = [torch.empty_like(value) for _ in range(world_size)]
+            torch.distributed.all_gather(gathered, value)
+            for peer in gathered[1:]:
+                torch.testing.assert_close(gathered[0], peer)
+    finally:
+        torch.distributed.destroy_process_group()
+
+
 class EmbeddingVectorQuantizerTest(unittest.TestCase):
     def test_config_is_plain_data(self):
         config = VQConfig(input_dim=8, codebook_size=16, codebook_dim=4)
@@ -20,6 +73,8 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
         self.assertIn("normalize_lookup", field_names)
         self.assertIn("lookup_in_float32", field_names)
+        self.assertIn("kmeans_init", field_names)
+        self.assertIn("dead_code_threshold", field_names)
         self.assertNotIn("normalize_latents", field_names)
         self.assertEqual(config.codebook_dim, 4)
 
@@ -112,6 +167,114 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
         self.assertIsInstance(output.loss, QuantizationLoss)
         self.assertTrue(torch.isfinite(quantizer.codebook.weight).all())
+
+    def test_kmeans_initializes_ema_codebook_from_first_training_batch(self):
+        torch.manual_seed(0)
+        quantizer = EmbeddingVectorQuantizer(
+            VQConfig(
+                input_dim=2,
+                codebook_size=2,
+                use_ema=True,
+                decay=0.5,
+                kmeans_init=True,
+                kmeans_iters=4,
+            )
+        )
+        latents = torch.tensor(
+            [[-2.0, 0.0], [-1.9, 0.0], [1.9, 0.0], [2.0, 0.0]]
+        ).repeat(8, 1)
+
+        self.assertFalse(quantizer.ema_counts.any())
+        _ = quantizer(latents)
+
+        centers = quantizer.codebook.weight.detach()
+        ordered = centers[centers[:, 0].argsort()]
+        torch.testing.assert_close(
+            ordered,
+            torch.tensor([[-1.95, 0.0], [1.95, 0.0]]),
+            atol=0.1,
+            rtol=0,
+        )
+        self.assertTrue(quantizer.ema_counts.all())
+
+    def test_eval_does_not_trigger_kmeans_initialization(self):
+        quantizer = EmbeddingVectorQuantizer(
+            VQConfig(
+                input_dim=2,
+                codebook_size=4,
+                use_ema=True,
+                kmeans_init=True,
+            )
+        )
+        before = quantizer.codebook.weight.clone()
+        quantizer.eval()
+
+        _ = quantizer(torch.randn(8, 2))
+
+        self.assertFalse(quantizer.ema_counts.any())
+        self.assertTrue(torch.equal(quantizer.codebook.weight, before))
+
+    def test_kmeans_initialization_resumes_from_existing_ema_state(self):
+        config = VQConfig(
+            input_dim=2,
+            codebook_size=4,
+            use_ema=True,
+            kmeans_init=True,
+            kmeans_iters=2,
+        )
+        quantizer = EmbeddingVectorQuantizer(config)
+        _ = quantizer(torch.randn(16, 2))
+        state = quantizer.state_dict()
+        restored = EmbeddingVectorQuantizer(config)
+        restored.load_state_dict(state, strict=True)
+        before = restored.codebook.weight.clone()
+
+        restored._prepare_ema(torch.randn(8, 2))
+
+        self.assertTrue(torch.equal(restored.codebook.weight, before))
+        self.assertNotIn("_ema_initialized", state)
+
+    def test_dead_codes_are_recycled_from_current_latents(self):
+        quantizer = EmbeddingVectorQuantizer(
+            VQConfig(
+                input_dim=2,
+                codebook_size=4,
+                use_ema=True,
+                dead_code_threshold=2.0,
+            )
+        )
+        with torch.no_grad():
+            quantizer._ema_counts.copy_(torch.tensor([3.0, 0.0, 3.0, 0.0]))
+            quantizer._ema_sums.copy_(
+                quantizer.codebook.weight * quantizer._ema_counts[:, None]
+            )
+        candidates = torch.tensor([[10.0, 0.0], [0.0, 10.0]])
+
+        quantizer._prepare_ema(candidates)
+
+        dead = torch.tensor([1, 3])
+        replacements = quantizer.codebook.weight[dead]
+        distances = torch.cdist(replacements, candidates)
+        self.assertTrue((distances.min(dim=1).values == 0).all())
+        torch.testing.assert_close(quantizer.ema_counts[dead], torch.full((2,), 2.0))
+        torch.testing.assert_close(
+            quantizer._ema_sums[dead],
+            replacements * 2.0,
+        )
+
+    @unittest.skipUnless(
+        torch.distributed.is_available() and torch.distributed.is_gloo_available(),
+        "Gloo distributed backend is unavailable",
+    )
+    def test_distributed_kmeans_allows_a_rank_without_assignments(self):
+        with TemporaryDirectory() as tmp_dir:
+            init_method = (Path(tmp_dir) / "init").as_uri()
+            torch.multiprocessing.spawn(
+                _distributed_kmeans_worker,
+                args=(2, init_method),
+                nprocs=2,
+                join=True,
+            )
 
     def test_ema_update_synchronizes_counts_and_sums_when_distributed(self):
         quantizer = EmbeddingVectorQuantizer(
@@ -278,6 +441,12 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
             VQConfig(input_dim=4, codebook_size=0)
         with self.assertRaisesRegex(ValueError, "decay"):
             VQConfig(input_dim=4, codebook_size=8, decay=1.0)
+        with self.assertRaisesRegex(ValueError, "kmeans_iters"):
+            VQConfig(input_dim=4, codebook_size=8, kmeans_iters=0)
+        with self.assertRaisesRegex(ValueError, "dead_code_threshold"):
+            VQConfig(input_dim=4, codebook_size=8, dead_code_threshold=-1.0)
+        with self.assertRaisesRegex(ValueError, "require use_ema"):
+            VQConfig(input_dim=4, codebook_size=8, kmeans_init=True)
 
 
 if __name__ == "__main__":
