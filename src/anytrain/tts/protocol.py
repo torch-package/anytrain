@@ -10,7 +10,55 @@ from typing_extensions import Unpack
 
 from ._common import positive_int, validate_mapping
 
-AudioReference = Union[str, PathLike[str]]
+PathAudioReference = Union[str, PathLike[str]]
+
+
+@dataclass(frozen=True, eq=False)
+class WaveformReference:
+    """In-memory reference audio with an explicit sample rate."""
+
+    waveform: Tensor
+    sample_rate: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.waveform, Tensor):
+            raise TypeError("waveform must be a torch.Tensor.")
+        if self.waveform.ndim != 2:
+            raise ValueError("waveform must have shape [channels, time].")
+        if self.waveform.shape[0] <= 0 or self.waveform.shape[-1] <= 0:
+            raise ValueError("waveform must not be empty.")
+        positive_int(self.sample_rate, "sample_rate")
+
+
+@dataclass(frozen=True, eq=False)
+class EncodedAudioReference:
+    """Encoded reference audio bytes and their file suffix."""
+
+    data: bytes = field(repr=False)
+    suffix: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data, bytes):
+            raise TypeError("data must be bytes.")
+        if not self.data:
+            raise ValueError("data must not be empty.")
+        if not isinstance(self.suffix, str):
+            raise TypeError("suffix must be a string.")
+        if (
+            not self.suffix.startswith(".")
+            or self.suffix == "."
+            or "." in self.suffix[1:]
+            or "/" in self.suffix
+            or "\\" in self.suffix
+        ):
+            raise ValueError("suffix must be a file suffix such as '.wav' or '.flac'.")
+
+
+AudioReference = Union[
+    PathAudioReference,
+    WaveformReference,
+    EncodedAudioReference,
+]
 
 
 class TTSKwargs(TypedDict, total=False):
@@ -128,7 +176,8 @@ class TTSBackend(Protocol):
         text: str,
         options: TTSOptions | None = None,
         *,
-        reference_audio_path: AudioReference | None = None,
+        reference_audio: AudioReference | None = None,
+        reference_audio_path: PathAudioReference | None = None,
     ) -> TTSOutput: ...
 
     @overload
@@ -137,7 +186,8 @@ class TTSBackend(Protocol):
         text: Sequence[str],
         options: TTSOptions | None = None,
         *,
-        reference_audio_paths: Sequence[AudioReference] | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
     ) -> list[TTSOutput]: ...
 
     def synthesize(
@@ -145,8 +195,10 @@ class TTSBackend(Protocol):
         text: str | Sequence[str],
         options: TTSOptions | None = None,
         *,
-        reference_audio_path: AudioReference | None = None,
-        reference_audio_paths: Sequence[AudioReference] | None = None,
+        reference_audio: AudioReference | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_path: PathAudioReference | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
     ) -> TTSOutput | list[TTSOutput]: ...
 
 

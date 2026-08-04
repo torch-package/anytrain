@@ -11,7 +11,14 @@ import torch
 from torch import Tensor
 from typing_extensions import Unpack
 
-from anytrain.tts import AudioReference, TTSOptions, TTSOutput, validate_text, waveform_duration
+from anytrain.tts import (
+    AudioReference,
+    PathAudioReference,
+    TTSOptions,
+    TTSOutput,
+    validate_text,
+    waveform_duration,
+)
 from anytrain.tts._common import config_hash, hashable_mapping, positive_int, validate_mapping
 
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
@@ -136,7 +143,8 @@ class QwenCustomVoiceTTS:
         text: str,
         options: TTSOptions | None = None,
         *,
-        reference_audio_path: AudioReference | None = None,
+        reference_audio: AudioReference | None = None,
+        reference_audio_path: PathAudioReference | None = None,
     ) -> TTSOutput: ...
 
     @overload
@@ -145,7 +153,8 @@ class QwenCustomVoiceTTS:
         text: Sequence[str],
         options: TTSOptions | None = None,
         *,
-        reference_audio_paths: Sequence[AudioReference] | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
     ) -> list[TTSOutput]: ...
 
     def synthesize(
@@ -153,10 +162,20 @@ class QwenCustomVoiceTTS:
         text: str | Sequence[str],
         options: TTSOptions | None = None,
         *,
-        reference_audio_path: AudioReference | None = None,
-        reference_audio_paths: Sequence[AudioReference] | None = None,
+        reference_audio: AudioReference | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_path: PathAudioReference | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
     ) -> TTSOutput | list[TTSOutput]:
-        if reference_audio_path is not None or reference_audio_paths is not None:
+        if any(
+            value is not None
+            for value in (
+                reference_audio,
+                reference_audios,
+                reference_audio_path,
+                reference_audio_paths,
+            )
+        ):
             raise ValueError("Qwen CustomVoice TTS does not accept reference audio.")
         self._validate_options(options)
         merged = self._options(options)

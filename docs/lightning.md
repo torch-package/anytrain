@@ -63,6 +63,40 @@ class MyPLModule(pl.LightningModule):
 
 会改变训练行为或文件系统状态的能力通过显式 callback、helper 或组件暴露；non-finite loss 检查等调试规则通过 callback 配置。
 
+## Background materialization
+
+`BackgroundMaterialization` 提供 task-agnostic 的 publish/load 生命周期：global owner 在 spawn
+进程中调用 producer，发布完成后每个训练进程重新 `load()` 已发布资产。producer、request id 和
+产物类型由下游定义；anytrain 不解释 dataset、sample schema、manifest 或 shard。
+
+```python
+from anytrain.lightning import BackgroundMaterialization
+
+job = BackgroundMaterialization(
+    request_id="filtered-codec-v1",
+    producer=producer,
+)
+job.start(owner=trainer.is_global_zero)
+# epoch boundary: owner waits for publication
+if trainer.is_global_zero:
+    job.finish(owner=True)
+trainer.strategy.barrier("filtered_codec_published")
+# every rank records that the shared asset is now visible
+job.finish(owner=False)
+dataset = job.load_ready()
+```
+
+worker 默认 `daemon=False`，因为 materializer 往往还要启动 DataLoader、writer 或设备 worker
+子进程。只有能够保证 producer 不再 spawn 子进程时才显式使用 `daemon=True`。
+`load_ready()` 只允许在同步发布完成后调用；跨 rank 直接使用时，调用方必须按上例在 owner
+完成后执行 barrier，再在各 rank 调用 `finish(owner=False)`。训练异常或提前结束时应调用
+`close()`；使用 `MaterializationCallback` 时由 callback 负责失败路径回收。
+
+`MaterializationCallback` 通过下游提供的窄 `Materialization` controller 接入 Lightning。它在
+train start 同步各 rank 的 active 状态并启动 owner worker，在 epoch end 执行 owner finish、
+错误广播、barrier 和 all-rank refresh。业务 datamodule 的方法名和 fallback/schema 仍由下游薄
+适配层拥有。
+
 配置形状和运行目录属于下游入口约定，不能藏进 `LightningModule` 继承链里。
 
 ## 下游用法

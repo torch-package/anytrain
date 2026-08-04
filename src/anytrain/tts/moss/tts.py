@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from os import PathLike
 from pathlib import Path
 from typing import Any, cast, overload
 from warnings import warn
@@ -16,7 +17,13 @@ import torch
 from torch import nn
 from typing_extensions import Unpack
 
-from anytrain.tts import AudioReference, TTSOptions, TTSOutput, validate_text
+from anytrain.tts import (
+    AudioReference,
+    PathAudioReference,
+    TTSOptions,
+    TTSOutput,
+    validate_text,
+)
 from anytrain.tts._common import config_hash
 
 from ._config import (
@@ -30,7 +37,6 @@ from ._config import (
 from ._loading import load_pretrained_pair
 from ._output import processor_outputs
 from ._runtime import (
-    audio_reference,
     audio_references,
     generate_for_texts,
     move_processor,
@@ -115,7 +121,8 @@ class MossTTS:
         text: str,
         options: TTSOptions | None = None,
         *,
-        reference_audio_path: AudioReference | None = None,
+        reference_audio: AudioReference | None = None,
+        reference_audio_path: PathAudioReference | None = None,
         **runtime_kwargs: Unpack[MossRuntimeKwargs],
     ) -> TTSOutput: ...
 
@@ -125,7 +132,8 @@ class MossTTS:
         text: Sequence[str],
         options: TTSOptions | None = None,
         *,
-        reference_audio_paths: Sequence[AudioReference] | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
         **runtime_kwargs: Unpack[MossRuntimeKwargs],
     ) -> list[TTSOutput]: ...
 
@@ -135,45 +143,61 @@ class MossTTS:
         text: str | Sequence[str],
         options: TTSOptions | None = None,
         *legacy_reference: AudioReference | Sequence[AudioReference],
-        reference_audio_path: AudioReference | None = None,
-        reference_audio_paths: Sequence[AudioReference] | None = None,
+        reference_audio: AudioReference | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_path: PathAudioReference | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
         **runtime_kwargs: Unpack[MossRuntimeKwargs],
     ) -> TTSOutput | list[TTSOutput]:
         if legacy_reference:
             if len(legacy_reference) != 1:
                 raise TypeError("synthesize accepts at most one legacy reference argument.")
-            if reference_audio_path is not None or reference_audio_paths is not None:
+            if any(
+                value is not None
+                for value in (
+                    reference_audio,
+                    reference_audios,
+                    reference_audio_path,
+                    reference_audio_paths,
+                )
+            ):
                 raise TypeError("reference audio cannot be passed both positionally and by keyword.")
             warn(
                 "Passing reference audio positionally is deprecated; use "
-                "reference_audio_path or reference_audio_paths instead.",
+                "reference_audio or reference_audios instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
             if isinstance(text, str):
-                reference_audio_path = cast(AudioReference, legacy_reference[0])
+                reference_audio = cast(AudioReference, legacy_reference[0])
             else:
-                reference_audio_paths = cast(Sequence[AudioReference], legacy_reference[0])
+                reference_audios = cast(Sequence[AudioReference], legacy_reference[0])
+        reference_audio, reference_audios = _resolve_reference_aliases(
+            reference_audio=reference_audio,
+            reference_audios=reference_audios,
+            reference_audio_path=reference_audio_path,
+            reference_audio_paths=reference_audio_paths,
+        )
         resolved = self._options(options, runtime_kwargs)
         validate_v15_options(resolved)
         if isinstance(text, str):
-            if reference_audio_paths is not None:
-                raise TypeError("single text requires reference_audio_path.")
-            return self._synthesize_one(text, resolved, reference_audio_path)
-        if reference_audio_path is not None:
-            raise TypeError("text batches require reference_audio_paths.")
-        return self._synthesize_batch(text, resolved, reference_audio_paths)
+            if reference_audios is not None:
+                raise TypeError("single text requires reference_audio.")
+            return self._synthesize_one(text, resolved, reference_audio)
+        if reference_audio is not None:
+            raise TypeError("text batches require reference_audios.")
+        return self._synthesize_batch(text, resolved, reference_audios)
 
     def _synthesize_one(
         self,
         text: str,
         options: TTSOptions,
-        reference_audio_path: AudioReference | None,
+        reference_audio: AudioReference | None,
     ) -> TTSOutput:
         decoded = self._generate_for_texts(
             [validate_text(text)],
             options,
-            [None if reference_audio_path is None else audio_reference(reference_audio_path)],
+            [reference_audio],
         )
         return processor_outputs(
             decoded,
@@ -189,13 +213,13 @@ class MossTTS:
         self,
         text: Sequence[str],
         options: TTSOptions,
-        reference_audio_paths: Sequence[AudioReference] | None,
+        reference_audios: Sequence[AudioReference] | None,
     ) -> list[TTSOutput]:
         texts = validate_text_batch(text)
         decoded = self._generate_for_texts(
             texts,
             options,
-            audio_references(reference_audio_paths, expected_count=len(texts)),
+            audio_references(reference_audios, expected_count=len(texts)),
         )
         return processor_outputs(
             decoded,
@@ -211,7 +235,7 @@ class MossTTS:
         self,
         texts: Sequence[str],
         options: TTSOptions,
-        references: Sequence[str | None],
+        references: Sequence[AudioReference | None],
     ) -> object:
         return generate_for_texts(
             model=self.model,
@@ -231,3 +255,40 @@ class MossTTS:
         if runtime_kwargs:
             resolved = resolved.merged(TTSOptions(extra={**resolved.extra, **runtime_kwargs}))
         return resolved
+
+
+def _resolve_reference_aliases(
+    *,
+    reference_audio: AudioReference | None,
+    reference_audios: Sequence[AudioReference] | None,
+    reference_audio_path: PathAudioReference | None,
+    reference_audio_paths: Sequence[PathAudioReference] | None,
+) -> tuple[AudioReference | None, Sequence[AudioReference] | None]:
+    if reference_audio is not None and reference_audio_path is not None:
+        raise TypeError("reference_audio and reference_audio_path cannot both be passed.")
+    if reference_audios is not None and reference_audio_paths is not None:
+        raise TypeError("reference_audios and reference_audio_paths cannot both be passed.")
+    if reference_audio_path is not None:
+        if not isinstance(reference_audio_path, (str, PathLike)):
+            raise TypeError("reference_audio_path must be a string or path-like object.")
+        warn(
+            "reference_audio_path is deprecated; use reference_audio instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        reference_audio = reference_audio_path
+    if reference_audio_paths is not None:
+        if isinstance(reference_audio_paths, (str, bytes, PathLike)):
+            raise TypeError("reference_audio_paths must be a sequence of paths.")
+        for index, value in enumerate(reference_audio_paths):
+            if not isinstance(value, (str, PathLike)):
+                raise TypeError(
+                    f"reference_audio_paths[{index}] must be a string or path-like object."
+                )
+        warn(
+            "reference_audio_paths is deprecated; use reference_audios instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        reference_audios = reference_audio_paths
+    return reference_audio, reference_audios

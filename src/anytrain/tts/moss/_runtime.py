@@ -3,13 +3,21 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from os import PathLike
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 import torch
 from torch import Tensor
 
 from anytrain._compat import strict_zip
-from anytrain.tts import AudioReference, TTSOptions, validate_text
+from anytrain.tts import (
+    AudioReference,
+    EncodedAudioReference,
+    TTSOptions,
+    WaveformReference,
+    validate_text,
+)
 from anytrain.tts._common import positive_int, validate_mapping
 
 from ._config import MossRuntimeKwargs
@@ -23,17 +31,18 @@ def generate_for_texts(
     device: torch.device,
     texts: Sequence[str],
     options: TTSOptions,
-    references: Sequence[str | None],
+    references: Sequence[AudioReference | None],
 ) -> object:
-    conversations = [
-        [processor.build_user_message(**processor_message_kwargs(text, options, reference))]
-        for text, reference in strict_zip(texts, references)
-    ]
-    batch = processor(conversations, mode="generation")
-    inputs = processor_batch_inputs(batch, device)
-    with seeded_rng(options.seed, device):
-        raw = model.generate(**inputs, **processor_generation_kwargs(options))
-    return processor.decode(raw)
+    with materialized_audio_references(references) as paths:
+        conversations = [
+            [processor.build_user_message(**processor_message_kwargs(text, options, reference))]
+            for text, reference in strict_zip(texts, paths)
+        ]
+        batch = processor(conversations, mode="generation")
+        inputs = processor_batch_inputs(batch, device)
+        with seeded_rng(options.seed, device):
+            raw = model.generate(**inputs, **processor_generation_kwargs(options))
+        return processor.decode(raw)
 
 
 def processor_message_kwargs(
@@ -52,27 +61,73 @@ def processor_message_kwargs(
     return kwargs
 
 
-def audio_reference(value: AudioReference) -> str:
-    if not isinstance(value, (str, PathLike)):
-        raise TypeError("reference audio path must be a string or path-like object.")
-    return str(value)
-
-
 def audio_references(
     values: Sequence[AudioReference] | None,
     *,
     expected_count: int,
-) -> list[str | None]:
+) -> list[AudioReference | None]:
     if values is None:
         return [None] * expected_count
     if isinstance(values, (str, bytes, PathLike)):
-        raise TypeError("reference_audio_paths must be a sequence of paths.")
+        raise TypeError("reference_audios must be a sequence of audio references.")
     if len(values) != expected_count:
         raise ValueError(
-            "reference_audio_paths length must match text batch length: "
+            "reference_audios length must match text batch length: "
             f"got {len(values)}, expected {expected_count}."
         )
-    return [audio_reference(value) for value in values]
+    return list(values)
+
+
+@contextmanager
+def materialized_audio_references(
+    values: Sequence[AudioReference | None],
+) -> Iterator[list[str | None]]:
+    """Expose references as paths for the complete MOSS generation lifecycle."""
+
+    temporary: TemporaryDirectory[str] | None = None
+    paths: list[str | None] = []
+    try:
+        for index, value in enumerate(values):
+            if value is None:
+                paths.append(None)
+                continue
+            if isinstance(value, (str, PathLike)):
+                paths.append(str(value))
+                continue
+            if temporary is None:
+                temporary = TemporaryDirectory(prefix="anytrain-moss-reference-")
+            root = Path(temporary.name)
+            if isinstance(value, WaveformReference):
+                path = root / f"reference-{index}.wav"
+                _save_waveform_reference(value, path)
+            elif isinstance(value, EncodedAudioReference):
+                path = root / f"reference-{index}{value.suffix}"
+                path.write_bytes(value.data)
+            else:
+                raise TypeError(
+                    "reference audio must be a path, WaveformReference, "
+                    "or EncodedAudioReference."
+                )
+            paths.append(str(path))
+        yield paths
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+
+
+def _save_waveform_reference(value: WaveformReference, path: Path) -> None:
+    try:
+        import torchaudio
+    except ImportError as error:
+        raise ImportError(
+            "WaveformReference requires torchaudio; install it with "
+            "`python -m pip install \"torchaudio>=2.0\"`."
+        ) from error
+    torchaudio.save(
+        str(path),
+        value.waveform.detach().to(device="cpu", dtype=torch.float32).clamp(-1.0, 1.0),
+        value.sample_rate,
+    )
 
 
 def validate_text_batch(text: Sequence[str]) -> list[str]:

@@ -1,10 +1,17 @@
 import sys
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
 
-from anytrain.tts import TTSOptions, TTSOutput
+from anytrain.tts import (
+    EncodedAudioReference,
+    TTSOptions,
+    TTSOutput,
+    WaveformReference,
+)
 from anytrain.tts.moss import DEFAULT_CODEC_MODEL, MossTTS, MossTTSConfig
 
 
@@ -33,6 +40,23 @@ class TTSProtocolTest(unittest.TestCase):
         self.assertIsNone(merged.speaker)
         self.assertEqual(merged.language, "English")
         self.assertEqual(merged.seed, 7)
+
+    def test_waveform_reference_requires_nonempty_channel_time_audio(self):
+        with self.assertRaisesRegex(ValueError, "channels, time"):
+            WaveformReference(torch.zeros(8), 24000)
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            WaveformReference(torch.zeros(1, 0), 24000)
+        with self.assertRaisesRegex(TypeError, "sample_rate"):
+            WaveformReference(torch.zeros(1, 8), True)
+
+    def test_encoded_reference_validates_one_suffix_and_hides_bytes(self):
+        reference = EncodedAudioReference(b"secret-audio", ".flac")
+
+        self.assertNotIn("secret-audio", repr(reference))
+        with self.assertRaisesRegex(ValueError, "one filename suffix|file suffix"):
+            EncodedAudioReference(b"audio", ".tar.gz")
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            EncodedAudioReference(b"", ".wav")
 
 
 class MossTTSImportTest(unittest.TestCase):
@@ -159,7 +183,7 @@ class MossTTSAdapterTest(unittest.TestCase):
                 top_p=0.95,
                 seed=7,
             ),
-            reference_audio_path="assets/audio/zh_1.wav",
+            reference_audio="assets/audio/zh_1.wav",
         )
 
         self.assertEqual(tuple(output.waveform.shape), (1, 5))
@@ -195,7 +219,7 @@ class MossTTSAdapterTest(unittest.TestCase):
         outputs = tts.synthesize(
             ["hello", "world"],
             TTSOptions(max_new_tokens=13),
-            reference_audio_paths=["assets/source.wav", "assets/target.wav"],
+            reference_audios=["assets/source.wav", "assets/target.wav"],
         )
 
         self.assertEqual(len(outputs), 2)
@@ -215,7 +239,7 @@ class MossTTSAdapterTest(unittest.TestCase):
         processor = FakeMossProcessor()
         tts = MossTTS(model=model, processor=processor)
 
-        with self.assertWarnsRegex(DeprecationWarning, "reference_audio_paths"):
+        with self.assertWarnsRegex(DeprecationWarning, "reference_audios"):
             tts.synthesize(["hello", "world"], None, ["assets/one.wav", "assets/two.wav"])
 
         self.assertEqual(
@@ -249,8 +273,74 @@ class MossTTSAdapterTest(unittest.TestCase):
     def test_synthesize_batch_rejects_reference_length_mismatch(self):
         tts = MossTTS(model=FakeBatchMossModel(), processor=FakeMossProcessor())
 
-        with self.assertRaisesRegex(ValueError, "reference_audio_paths length"):
-            tts.synthesize(["hello", "world"], reference_audio_paths=["assets/one.wav"])
+        with self.assertRaisesRegex(ValueError, "reference_audios length"):
+            tts.synthesize(["hello", "world"], reference_audios=["assets/one.wav"])
+
+    def test_path_alias_warns_and_conflicts_with_canonical_reference(self):
+        tts = MossTTS(model=FakeMossModel(), processor=FakeMossProcessor())
+
+        with self.assertWarnsRegex(DeprecationWarning, "reference_audio_path"):
+            tts.synthesize("hello", reference_audio_path="assets/prompt.wav")
+        with self.assertRaisesRegex(TypeError, "cannot both be passed"):
+            tts.synthesize(
+                "hello",
+                reference_audio="assets/canonical.wav",
+                reference_audio_path="assets/compat.wav",
+            )
+
+    def test_encoded_reference_exists_through_decode_then_is_removed(self):
+        processor = ReferenceCheckingProcessor(expected=b"encoded-audio", suffix=".flac")
+        model = ReferenceCheckingModel(processor.reference_paths)
+        tts = MossTTS(model=model, processor=processor)
+
+        tts.synthesize(
+            "hello",
+            reference_audio=EncodedAudioReference(b"encoded-audio", ".flac"),
+        )
+
+        self.assertEqual(len(processor.reference_paths), 1)
+        self.assertFalse(processor.reference_paths[0].exists())
+
+    def test_waveform_reference_is_saved_as_clamped_cpu_float32(self):
+        processor = ReferenceCheckingProcessor(expected=b"waveform", suffix=".wav")
+        model = ReferenceCheckingModel(processor.reference_paths)
+        tts = MossTTS(model=model, processor=processor)
+        saved: dict[str, object] = {}
+
+        def save(path: str, waveform: torch.Tensor, sample_rate: int) -> None:
+            saved["waveform"] = waveform
+            saved["sample_rate"] = sample_rate
+            Path(path).write_bytes(b"waveform")
+
+        torchaudio = SimpleNamespace(save=save)
+        with patch.dict(sys.modules, {"torchaudio": torchaudio}):
+            tts.synthesize(
+                "hello",
+                reference_audio=WaveformReference(
+                    torch.tensor([[-2.0, 0.5, 2.0]], dtype=torch.bfloat16),
+                    16000,
+                ),
+            )
+
+        waveform = saved["waveform"]
+        self.assertIsInstance(waveform, torch.Tensor)
+        self.assertEqual(waveform.device.type, "cpu")
+        self.assertEqual(waveform.dtype, torch.float32)
+        self.assertTrue(torch.equal(waveform, torch.tensor([[-1.0, 0.5, 1.0]])))
+        self.assertEqual(saved["sample_rate"], 16000)
+        self.assertFalse(processor.reference_paths[0].exists())
+
+    def test_reference_temp_file_is_removed_when_generation_fails(self):
+        processor = ReferenceCheckingProcessor(expected=b"encoded-audio", suffix=".wav")
+        tts = MossTTS(model=FailingReferenceModel(processor.reference_paths), processor=processor)
+
+        with self.assertRaisesRegex(RuntimeError, "generation failed"):
+            tts.synthesize(
+                "hello",
+                reference_audio=EncodedAudioReference(b"encoded-audio", ".wav"),
+            )
+
+        self.assertFalse(processor.reference_paths[0].exists())
 
     def test_runtime_kwargs_do_not_leak_load_kwargs(self):
         model = FakeMossModel()
@@ -408,6 +498,53 @@ class FakeMossProcessor:
         if isinstance(value, torch.Tensor) and value.ndim == 2 and value.shape[-1] == 4:
             return [FakeProcessorMessage(row) for row in value]
         return [FakeProcessorMessage(torch.arange(5, dtype=torch.float32))]
+
+
+class ReferenceCheckingProcessor(FakeMossProcessor):
+    def __init__(self, *, expected: bytes, suffix: str) -> None:
+        super().__init__()
+        self.expected = expected
+        self.suffix = suffix
+        self.reference_paths: list[Path] = []
+
+    def build_user_message(self, **kwargs):
+        path = Path(kwargs["reference"][0])
+        self._assert_reference(path)
+        self.reference_paths.append(path)
+        return super().build_user_message(**kwargs)
+
+    def __call__(self, conversations, **kwargs):
+        for path in self.reference_paths:
+            self._assert_reference(path)
+        return super().__call__(conversations, **kwargs)
+
+    def decode(self, value):
+        for path in self.reference_paths:
+            self._assert_reference(path)
+        return super().decode(value)
+
+    def _assert_reference(self, path: Path) -> None:
+        if path.suffix != self.suffix:
+            raise AssertionError(f"unexpected reference suffix: {path.suffix}")
+        if path.read_bytes() != self.expected:
+            raise AssertionError("unexpected reference contents")
+
+
+class ReferenceCheckingModel(FakeMossModel):
+    def __init__(self, reference_paths: list[Path]) -> None:
+        super().__init__()
+        self.reference_paths = reference_paths
+
+    def generate(self, **kwargs):
+        if not self.reference_paths or not all(path.is_file() for path in self.reference_paths):
+            raise AssertionError("reference file did not survive through generate")
+        return super().generate(**kwargs)
+
+
+class FailingReferenceModel(ReferenceCheckingModel):
+    def generate(self, **kwargs):
+        super().generate(**kwargs)
+        raise RuntimeError("generation failed")
 
 
 if __name__ == "__main__":

@@ -46,12 +46,21 @@ from .callback.quantization import (
     QuantizationMonitor,
     QuantizationMonitorsFn,
 )
+from .materialization import (
+    BackgroundMaterialization,
+    Materialization,
+    MaterializationCallback,
+    MaterializationPhase,
+    MaterializationProducer,
+    MaterializationProvider,
+)
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
 
 __all__ = [
     "ADTStatsLoggerCallback",
     "ADTStatsMonitor",
     "ADTStatsMonitorsFn",
+    "BackgroundMaterialization",
     "CodebookUsageLoggerCallback",
     "CodebookUsageMonitor",
     "CodebookUsageMonitorsFn",
@@ -73,6 +82,11 @@ __all__ = [
     "LossSummaryCallback",
     "LossTimeBucketLoggerCallback",
     "LightningLogMixin",
+    "Materialization",
+    "MaterializationCallback",
+    "MaterializationPhase",
+    "MaterializationProducer",
+    "MaterializationProvider",
     "ModuleSelector",
     "ModelCheckpoint",
     "ParameterPolicyCallback",

@@ -20,7 +20,9 @@ python -m pip install git+https://github.com/QwenLM/Qwen3-TTS.git
 The stable public boundary is:
 
 ```python
-from anytrain.tts import TTSOptions
+import torch
+
+from anytrain.tts import EncodedAudioReference, TTSOptions, WaveformReference
 from anytrain.tts.moss import MossTTS
 
 tts = MossTTS.from_pretrained(
@@ -42,7 +44,8 @@ The MOSS adapter intentionally targets only MOSS-TTS v1.5. It loads the
 Hugging Face remote-code model and processor, then runs the v1.5 processor
 generation path. Keyword arguments passed to `from_pretrained()` are load-time
 options, generation settings belong in `TTSOptions` or `runtime_kwargs`, and
-reference audio paths are passed directly to `synthesize()`:
+reference audio is passed through the canonical `reference_audio` /
+`reference_audios` parameters:
 
 ```python
 tts = MossTTS.from_pretrained(
@@ -54,12 +57,31 @@ tts = MossTTS.from_pretrained(
 audio = tts.synthesize(
     "你好",
     TTSOptions(seed=7),
-    reference_audio_path="assets/audio/zh_1.wav",
+    reference_audio="assets/audio/zh_1.wav",
+)
+
+waveform_prompt = tts.synthesize(
+    "你好",
+    reference_audio=WaveformReference(
+        waveform=torch.zeros(1, 24000),
+        sample_rate=24000,
+    ),
+)
+encoded_prompt = tts.synthesize(
+    "你好",
+    reference_audio=EncodedAudioReference(flac_bytes, ".flac"),
 )
 ```
 
+`WaveformReference` and `EncodedAudioReference` stay in memory at the public
+boundary. A path-only backend such as MOSS materializes them into a private
+temporary directory for the complete processor/generate/decode call and removes
+the files afterward. `reference_audio_path` / `reference_audio_paths` remain as
+deprecated path-only compatibility aliases; do not pass an alias together with
+its canonical parameter.
+
 The v1.5 adapter returns audio in memory and does not support legacy
-`prompt_audio_path`, `reference_audio_path` as a runtime kwarg,
+`prompt_audio_path`, reference audio as a runtime kwarg,
 `output_audio_path`, `speaker`, `model.inference()`, or `tokenize -> generate ->
 decode` compatibility paths.
 
