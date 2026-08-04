@@ -73,6 +73,11 @@ structured codec 的 acoustic feature training boundary 把 feature tensor 保�
 `FRAME_ALIGNED` codec。BiCodec 的 feature target 是 32 个 global slot 的 speaker latent，
 不是 semantic frame 的广播副本。
 
+需要在不持有 backend 权重的层之间传递结构时，使用
+`SemanticAcousticCodecSpec`。`semantic_acoustic_spec(codec)` 从已实例化 backend 读取并严格校验
+sample/frame rate、semantic codebook、acoustic codebook、feature dim 和 unit layout；spec 不包含
+backend 名称、checkpoint、加载参数或实际 codebook Tensor，因此不能替代 codec 实例和 registry。
+
 这些 protocol 是可重叠的 capability，不是 concrete class 继承树：
 
 | Codec | registry name | `FrameCodec` | `SemanticAcousticCodec` | feature target | acoustic layout |

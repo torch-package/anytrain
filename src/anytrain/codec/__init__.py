@@ -8,6 +8,7 @@ from .protocol import (
     SemanticAcousticCodes,
 )
 from .registry import capabilities, load_frame, load_semantic_acoustic
+from .spec import SemanticAcousticCodecSpec, semantic_acoustic_spec
 
 __all__ = [
     "AcousticLayout",
@@ -15,8 +16,10 @@ __all__ = [
     "CodecCapability",
     "FrameCodec",
     "SemanticAcousticCodec",
+    "SemanticAcousticCodecSpec",
     "SemanticAcousticCodes",
     "masked_acoustic_features",
+    "semantic_acoustic_spec",
     "capabilities",
     "load_frame",
     "load_semantic_acoustic",

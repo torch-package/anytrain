@@ -8,11 +8,13 @@ import anytrain.codec as codec_api
 from anytrain.codec import (
     AcousticLayout,
     CodecCapability,
+    SemanticAcousticCodecSpec,
     SemanticAcousticCodes,
     capabilities,
     load_frame,
     load_semantic_acoustic,
     masked_acoustic_features,
+    semantic_acoustic_spec,
 )
 from anytrain.codec._module import validate_frame_codes
 
@@ -69,6 +71,58 @@ def test_masked_acoustic_features_validation_can_be_skipped() -> None:
 
 def test_structured_codec_protocol_is_exported() -> None:
     assert codec_api.SemanticAcousticCodec.__name__ == "SemanticAcousticCodec"
+
+
+class _StructuredCodec:
+    name = "fake"
+    sample_rate = 16_000
+    frame_rate = 50.0
+    semantic_frame_rate = 50.0
+    semantic_codebook_sizes = (4,)
+    semantic_codebook = torch.zeros((4, 3))
+    acoustic_codebook_sizes = (5, 7)
+    acoustic_feature_dim = 6
+    acoustic_layout = AcousticLayout.FRAME_ALIGNED
+    acoustic_unit_length = None
+
+
+def test_semantic_acoustic_spec_inspects_backend_structure() -> None:
+    spec = semantic_acoustic_spec(_StructuredCodec())  # type: ignore[arg-type]
+
+    assert spec == SemanticAcousticCodecSpec(
+        sample_rate=16_000,
+        frame_rate=50.0,
+        semantic_frame_rate=50.0,
+        semantic_codebook_sizes=(4,),
+        semantic_embedding_dim=3,
+        acoustic_codebook_sizes=(5, 7),
+        acoustic_feature_dim=6,
+        acoustic_layout=AcousticLayout.FRAME_ALIGNED,
+        acoustic_unit_length=None,
+    )
+
+
+def test_semantic_acoustic_spec_requires_codebook_vocab_match() -> None:
+    codec = _StructuredCodec()
+    codec.semantic_codebook = torch.zeros((3, 3))
+
+    with pytest.raises(ValueError, match="vocab axis"):
+        semantic_acoustic_spec(codec)  # type: ignore[arg-type]
+
+
+def test_semantic_acoustic_spec_requires_fixed_unit_length() -> None:
+    with pytest.raises(ValueError, match="requires acoustic_unit_length"):
+        SemanticAcousticCodecSpec(
+            sample_rate=16_000,
+            frame_rate=50.0,
+            semantic_frame_rate=50.0,
+            semantic_codebook_sizes=(4,),
+            semantic_embedding_dim=3,
+            acoustic_codebook_sizes=(5,),
+            acoustic_feature_dim=6,
+            acoustic_layout=AcousticLayout.FIXED_LENGTH,
+            acoustic_unit_length=None,
+        )
 
 
 @pytest.mark.parametrize(
