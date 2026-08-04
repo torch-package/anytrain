@@ -54,6 +54,11 @@ Spark-TTS BiCodec 的主边界不是 `FrameCodec` 的单个 codes Tensor，而�
 - `acoustic_layout` 是 `FIXED_LENGTH`；32 表示整段 reference 的固定 slot 数，不是
   `32 token/s`，也不是 32 个 codebook。
 
+released Spark-TTS-0.5B 的 semantic quantizer 使用 8192 个 token，因此 semantic ID
+范围是 `[0, 8192)`。speaker acoustic quantizer 使用一组 `levels=[4, 4, 4, 4, 4, 4]`
+的 FSQ，因此 `acoustic_codebook_sizes == (4096,)`，acoustic ID 范围是 `[0, 4096)`。
+两个字段属于独立 ID space，不能用 acoustic 的 4096 上界校验 semantic token。
+
 上游原生 global tensor 是 `[batch, quantizer, slot]`。wrapper 在 `tokenize()` 边界转换为
 `[batch, slot, codebook]`，在 `detokenize()` 时转回上游布局。released config 使用一个 FSQ
 quantizer，因此 `acoustic_codebook_sizes` 只有一项。reference 配置当前裁成 6 秒，再压缩成固定

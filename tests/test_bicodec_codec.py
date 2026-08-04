@@ -87,8 +87,8 @@ class BiCodecCodecTest(unittest.TestCase):
         self.assertEqual(codec.ref_segment_length, 8000)
         self.assertEqual(codec.name, "bicodec")
         self.assertEqual(codec.acoustic_layout, AcousticLayout.FIXED_LENGTH)
-        self.assertEqual(codec.semantic_codebook_sizes, (4096,))
-        self.assertEqual(codec.acoustic_codebook_sizes, (8192,))
+        self.assertEqual(codec.semantic_codebook_sizes, (8192,))
+        self.assertEqual(codec.acoustic_codebook_sizes, (4096,))
         self.assertTrue(codec.feature_extractor.config.output_hidden_states)
         self.assertTrue(codec.model.eval_called)
 
@@ -263,9 +263,9 @@ class FakeBiCodecModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
-        self.quantizer = SimpleNamespace(codebook_size=4096)
+        self.quantizer = SimpleNamespace(codebook_size=8192)
         self.speaker_encoder = SimpleNamespace(
-            quantizer=SimpleNamespace(codebook_size=8192, num_quantizers=1),
+            quantizer=SimpleNamespace(codebook_size=4096, num_quantizers=1),
             perceiver_sampler=SimpleNamespace(latents=torch.zeros(3, 128)),
         )
         self.eval_called = False
