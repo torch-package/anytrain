@@ -406,6 +406,12 @@ callback 统一聚合 rank 工作量、最慢 rank 时间和各 rank 峰值算�
 
 当同一次回调既保存 top-k checkpoint 又设置 `save_last` 时，异步模式只调用一次 `trainer.save_checkpoint()`：先发布持久 top-k 文件，再从该文件原子更新或链接 `last.ckpt`。这同样适用于 `save_on_exception=True`；`save_top_k=0` 则只序列化 `last.ckpt` 一次。
 
+使用 `async_save=True, save_last="link"` 从当前 `last.ckpt`（或它指向的同一文件）恢复时，如果本次
+fit 没有进入任何 train batch，callback 会继续复用这个仍然存在的 `last.ckpt`，不在 train end 再
+序列化一份完全相同的 checkpoint。只要进入过一个 train batch，就恢复原有的 train-end 保存语义；
+从其它 checkpoint 恢复、恢复路径缺失、目录发生变化、`async_save=False` 或使用布尔 `save_last` 时
+也保持 Lightning 原有行为。DDP 下是否复用由 global rank 0 检查并广播，所有 rank 进入相同分支。
+
 第一版只支持本地文件系统路径，包括挂载到本机的 NFS；不支持 `s3://`、`gs://` 等远端 URI。后台任务错误会在下一次 checkpoint 操作、`on_fit_end()`、异常处理保存后或用户显式调用 `wait_async_saves()` 时抛出。DDP 下一次保存会先由 global rank 0 完成 backlog/error preflight，再把结果同步给所有 rank；发生 prior async error 时所有 rank 都在进入 `trainer.save_checkpoint()` collective 前失败，rank 0 保留原始异常 cause。`on_fit_end()` 和 `on_exception()` 的后台任务 drain 同样由 rank 0 等待后同步结果，避免训练收尾阶段各 rank 分叉。
 
 Python 入口示例：
