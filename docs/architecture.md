@@ -154,7 +154,10 @@ general 算法层；CodecBPE 需要 `tokenizer` extra，不进入 package root i
 
 ### `codec` / `tts`
 
-`codec` 顶层只提供轻量 protocol、structured unit 类型和 lazy registry；具体 audio codec wrapper 从 `anytrain.codec.*` 子模块导入。`tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。两者都不接管数据集、训练 step 或模型组合。
+`codec` 顶层只提供轻量 protocol、structured unit 类型、静态 audio preset spec 和 lazy registry；
+tokenizer / detokenizer 是同一 backend 的方向 capability view，相同 resolved preset identity 和 device
+共享 backend 实例。具体 audio codec wrapper 从 `anytrain.codec.*` 子模块导入。`tts` 的协议和输出
+类型保持轻量，具体 backend adapter 按依赖 extra 隔离。两者都不接管数据集、训练 step 或模型组合。
 
 ### `chat`
 

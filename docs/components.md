@@ -193,6 +193,9 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
 - `import anytrain.optim` 可以假设 torch 已安装。
 - `import anytrain.chat` 不应要求 chat extra；真实 provider 请求路径可以要求 `chat` extra。
 - `import anytrain.tokenizer` 不加载 `tokenizers`；构造或训练 `CodecBPE` 时要求 `tokenizer` extra。
-- `import anytrain.codec` 只暴露轻量 protocol 和 lazy registry，不加载具体 backend；加载模型时从具体 backend 子模块导入，或使用 capability 约束的默认 loader，并要求对应 extra。
+- `import anytrain.codec` 只暴露轻量 protocol、静态 audio preset spec 和 lazy registry，不加载具体
+  backend；默认 tokenizer / detokenizer capability view 按 resolved preset identity 和 device 共享底层
+  backend，加载模型时要求对应 extra。只有 metadata、没有通用 online adapter 的 preset 必须明确
+  报告 loader 不可用。
 - `import anytrain.tts` 不加载具体 backend；加载模型时要求对应 extra。
 - optional 缺依赖时抛出明确错误，包含实际缺失的包和可执行安装命令。

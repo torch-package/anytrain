@@ -7,12 +7,23 @@ import torch
 import anytrain.codec as codec_api
 from anytrain.codec import (
     AcousticLayout,
+    AudioCapability,
+    AudioCodeSchema,
+    AudioCodeSpec,
     CodecCapability,
     SemanticAcousticCodecSpec,
     SemanticAcousticCodes,
     SemanticGlobalCodecSpec,
     SemanticGlobalCodes,
+    audio_backend_identity,
+    audio_capabilities,
+    audio_spec,
+    can_load_audio_detokenizer,
+    can_load_audio_tokenizer,
     capabilities,
+    clear_audio_backend_cache,
+    load_audio_detokenizer,
+    load_audio_tokenizer,
     load_frame,
     load_semantic_acoustic,
     load_semantic_global,
@@ -23,12 +34,22 @@ from anytrain.codec import (
 from anytrain.codec._module import validate_frame_codes
 
 
+@pytest.fixture(autouse=True)
+def _isolated_audio_backend_cache():
+    clear_audio_backend_cache()
+    yield
+    clear_audio_backend_cache()
+
+
 def test_codec_enums_have_stable_string_values() -> None:
     assert AcousticLayout.FRAME_ALIGNED.value == "frame_aligned"
     assert AcousticLayout.FIXED_LENGTH.value == "fixed_length"
     assert CodecCapability.FRAME_CODES.value == "frame_codes"
     assert CodecCapability.SEMANTIC_ACOUSTIC.value == "semantic_acoustic"
     assert CodecCapability.SEMANTIC_GLOBAL.value == "semantic_global"
+    assert AudioCapability.TOKENIZER.value == "tokenizer"
+    assert AudioCapability.DETOKENIZER.value == "detokenizer"
+    assert AudioCodeSchema.FRAME.value == "frame"
 
 
 def test_frame_codec_has_no_legacy_codec_alias() -> None:
@@ -246,6 +267,85 @@ def test_registry_rejects_unknown_codec() -> None:
         capabilities("missing")
 
 
+def test_audio_specs_are_static_for_default_presets() -> None:
+    assert audio_spec("glm4") == AudioCodeSpec(
+        view="glm4",
+        schema=AudioCodeSchema.FRAME,
+        sample_rate=16_000,
+        frame_rate=12.5,
+        frame_codebook_sizes=(16_384,),
+    )
+    assert audio_spec("bicodec") == AudioCodeSpec(
+        view="bicodec",
+        schema=AudioCodeSchema.SEMANTIC_GLOBAL,
+        sample_rate=16_000,
+        frame_rate=50.0,
+        semantic_codebook_sizes=(8192,),
+        global_codebook_sizes=(4096,),
+        global_unit_length=32,
+    )
+    assert audio_spec("longcat") == AudioCodeSpec(
+        view="longcat",
+        schema=AudioCodeSchema.SEMANTIC_ACOUSTIC,
+        sample_rate=16_000,
+        frame_rate=16_000 / 960,
+        frame_codebook_sizes=(8192, 8100, 8100, 8100),
+        semantic_codebook_sizes=(8192,),
+        acoustic_codebook_sizes=(8100, 8100, 8100),
+        acoustic_layout=AcousticLayout.FRAME_ALIGNED,
+    )
+    assert audio_spec("stable_codec") == AudioCodeSpec(
+        view="stable",
+        schema=AudioCodeSchema.FRAME,
+        sample_rate=16_000,
+        frame_rate=25.0,
+        frame_codebook_sizes=(46_656,),
+    )
+    assert audio_spec("unicodec") == AudioCodeSpec(
+        view="unicodec",
+        schema=AudioCodeSchema.FRAME,
+        sample_rate=24_000,
+        frame_rate=75.0,
+        frame_codebook_sizes=(16_384,),
+    )
+    assert audio_spec("dac") == AudioCodeSpec(
+        view="dac",
+        schema=AudioCodeSchema.FRAME,
+        sample_rate=44_100,
+        frame_rate=44_100 / 512,
+        frame_codebook_sizes=(1024,) * 9,
+    )
+
+
+def test_audio_specs_expose_primary_token_space_without_loading() -> None:
+    assert audio_spec("glm4").primary_codebook_sizes == (16_384,)
+    assert audio_spec("bicodec").primary_codebook_sizes == (8192,)
+    assert audio_spec("longcat").primary_codebook_sizes == (8192,)
+
+
+def test_glm4_declares_tokenizer_only_online_capability() -> None:
+    assert audio_capabilities("glm4") == frozenset({AudioCapability.TOKENIZER})
+    assert can_load_audio_tokenizer("glm4")
+    assert not can_load_audio_detokenizer("glm4")
+    assert not can_load_audio_tokenizer("missing")
+    assert not can_load_audio_detokenizer("missing")
+
+    with pytest.raises(ValueError, match="does not provide.*detokenizer"):
+        load_audio_detokenizer("glm4", device="cpu")
+
+
+def test_bicodec_declares_both_directions_and_pinned_identity() -> None:
+    assert audio_capabilities("bicodec") == frozenset(
+        {AudioCapability.TOKENIZER, AudioCapability.DETOKENIZER}
+    )
+    assert can_load_audio_tokenizer("bicodec")
+    assert can_load_audio_detokenizer("bicodec")
+    identity = audio_backend_identity("bicodec")
+    assert identity.preset == "bicodec"
+    assert identity.artifact == "SparkAudio/Spark-TTS-0.5B"
+    assert identity.revision == "642071559bfc6346c2359d19dcb6be3f9dd8a05d"
+
+
 def test_semantic_acoustic_loader_rejects_frame_only_codec_before_loading() -> None:
     with pytest.raises(ValueError, match="does not provide.*semantic_acoustic"):
         load_semantic_acoustic("dac", device="cpu")
@@ -294,3 +394,89 @@ def test_frame_loader_uses_lazy_longcat_loader() -> None:
 
     assert loaded is backend
     load.assert_called_once_with(device="cpu")
+
+
+class _FrameBackend:
+    name = "unicodec"
+    sample_rate = 24_000
+    frame_rate = 75.0
+    codebook_sizes = (16_384,)
+
+    def __init__(self) -> None:
+        self.encoded: tuple[torch.Tensor, int] | None = None
+        self.decoded: torch.Tensor | None = None
+
+    def encode(self, audio: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        self.encoded = (audio, sample_rate)
+        return torch.ones((audio.size(0), 2, 1), dtype=torch.long)
+
+    def decode(self, codes: torch.Tensor) -> torch.Tensor:
+        self.decoded = codes
+        return torch.zeros((codes.size(0), 1, 4))
+
+
+def test_audio_views_and_legacy_loader_share_one_backend_instance() -> None:
+    backend = _FrameBackend()
+    with patch(
+        "anytrain.codec.unicodec.UniCodec.from_pretrained",
+        return_value=backend,
+    ) as load:
+        tokenizer = load_audio_tokenizer("unicodec", device="cpu")
+        detokenizer = load_audio_detokenizer("unicodec", device=torch.device("cpu"))
+        legacy = load_frame("unicodec", device="cpu")
+
+    assert tokenizer.backend is backend
+    assert detokenizer.backend is backend
+    assert legacy is backend
+    assert tokenizer.identity == detokenizer.identity
+    load.assert_called_once_with(device="cpu")
+
+    audio = torch.zeros((2, 1, 8))
+    codes = tokenizer.tokenize(audio, 16_000)
+    waveform = detokenizer.detokenize(codes)
+
+    assert backend.encoded == (audio, 16_000)
+    assert backend.decoded is codes
+    assert waveform.shape == (2, 1, 4)
+
+
+class _SemanticGlobalBackend:
+    name = "bicodec"
+    sample_rate = 16_000
+    frame_rate = 50.0
+
+    def __init__(self) -> None:
+        self.detokenized: SemanticGlobalCodes | None = None
+
+    def tokenize(self, audio: torch.Tensor, sample_rate: int) -> SemanticGlobalCodes:
+        del sample_rate
+        return SemanticGlobalCodes(
+            semantic=torch.zeros((audio.size(0), 2, 1), dtype=torch.long),
+            global_codes=torch.zeros((audio.size(0), 32, 1), dtype=torch.long),
+        )
+
+    def detokenize(self, codes: SemanticGlobalCodes) -> torch.Tensor:
+        self.detokenized = codes
+        return torch.zeros((codes.semantic.size(0), 1, 4))
+
+
+def test_bicodec_capability_views_dispatch_structured_codes() -> None:
+    backend = _SemanticGlobalBackend()
+    with patch(
+        "anytrain.codec.bicodec.BiCodec.from_pretrained",
+        return_value=backend,
+    ) as load:
+        tokenizer = load_audio_tokenizer("bicodec", device="cpu")
+        detokenizer = load_audio_detokenizer("bicodec", device="cpu")
+        legacy = load_semantic_global("bicodec", device="cpu")
+
+    assert tokenizer.backend is detokenizer.backend is legacy is backend
+    load.assert_called_once_with(
+        device="cpu",
+        revision="642071559bfc6346c2359d19dcb6be3f9dd8a05d",
+    )
+
+    codes = tokenizer.tokenize(torch.zeros((1, 1, 8)), 16_000)
+    assert isinstance(codes, SemanticGlobalCodes)
+    detokenizer.detokenize(codes)
+    assert backend.detokenized is codes

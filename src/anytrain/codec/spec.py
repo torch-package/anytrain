@@ -2,10 +2,140 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import auto
 
 from torch import Tensor
 
+from anytrain._compat import StrEnum
+
 from .protocol import AcousticLayout, SemanticAcousticCodec, SemanticGlobalCodec
+
+
+class AudioCodeSchema(StrEnum):
+    """Portable layouts used by audio tokenizer and detokenizer capability views."""
+
+    FRAME = auto()
+    SEMANTIC_ACOUSTIC = auto()
+    SEMANTIC_GLOBAL = auto()
+
+
+@dataclass(frozen=True)
+class AudioBackendIdentity:
+    """Resolved backend resource identity, independent from its token schema."""
+
+    preset: str
+    artifact: str | None = None
+    revision: str | None = None
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.preset, name="preset")
+        if self.artifact is not None:
+            _non_empty_string(self.artifact, name="artifact")
+        if self.revision is not None:
+            _non_empty_string(self.revision, name="revision")
+
+
+@dataclass(frozen=True)
+class AudioCodeSpec:
+    """Static token layout metadata for one registered audio backend preset."""
+
+    view: str
+    schema: AudioCodeSchema
+    sample_rate: int | None
+    frame_rate: float
+    frame_codebook_sizes: tuple[int, ...] = ()
+    semantic_codebook_sizes: tuple[int, ...] = ()
+    acoustic_codebook_sizes: tuple[int, ...] = ()
+    global_codebook_sizes: tuple[int, ...] = ()
+    acoustic_layout: AcousticLayout | None = None
+    acoustic_unit_length: int | None = None
+    global_unit_length: int | None = None
+
+    def __post_init__(self) -> None:
+        _non_empty_string(self.view, name="view")
+        if not isinstance(self.schema, AudioCodeSchema):
+            raise TypeError("schema must be an AudioCodeSchema.")
+        if self.sample_rate is not None:
+            _positive_int(self.sample_rate, name="sample_rate")
+        _positive_float(self.frame_rate, name="frame_rate")
+        _optional_codebook_sizes(
+            self.frame_codebook_sizes,
+            name="frame_codebook_sizes",
+        )
+        _optional_codebook_sizes(
+            self.semantic_codebook_sizes,
+            name="semantic_codebook_sizes",
+        )
+        _optional_codebook_sizes(
+            self.acoustic_codebook_sizes,
+            name="acoustic_codebook_sizes",
+        )
+        _optional_codebook_sizes(
+            self.global_codebook_sizes,
+            name="global_codebook_sizes",
+        )
+        self._validate_schema()
+
+    @property
+    def primary_codebook_sizes(self) -> tuple[int, ...]:
+        """Codebooks occupying the preset's primary temporal token axis."""
+
+        if self.schema is AudioCodeSchema.FRAME:
+            return self.frame_codebook_sizes
+        return self.semantic_codebook_sizes
+
+    def _validate_schema(self) -> None:
+        if self.schema is AudioCodeSchema.FRAME:
+            if not self.frame_codebook_sizes:
+                raise ValueError("frame schema requires frame_codebook_sizes.")
+            if (
+                self.semantic_codebook_sizes
+                or self.acoustic_codebook_sizes
+                or self.global_codebook_sizes
+            ):
+                raise ValueError("frame schema must not declare structured codebooks.")
+            if (
+                self.acoustic_layout is not None
+                or self.acoustic_unit_length is not None
+                or self.global_unit_length is not None
+            ):
+                raise ValueError("frame schema must not declare structured unit metadata.")
+            return
+
+        if not self.semantic_codebook_sizes:
+            raise ValueError("structured schema requires semantic_codebook_sizes.")
+        if self.schema is AudioCodeSchema.SEMANTIC_ACOUSTIC:
+            if not self.acoustic_codebook_sizes:
+                raise ValueError("semantic-acoustic schema requires acoustic_codebook_sizes.")
+            if self.global_codebook_sizes or self.global_unit_length is not None:
+                raise ValueError("semantic-acoustic schema must not declare global unit metadata.")
+            if not isinstance(self.acoustic_layout, AcousticLayout):
+                raise TypeError(
+                    "semantic-acoustic schema requires acoustic_layout to be an AcousticLayout."
+                )
+            if self.acoustic_layout is AcousticLayout.FIXED_LENGTH:
+                if self.acoustic_unit_length is None:
+                    raise ValueError(
+                        "fixed-length semantic-acoustic schema requires acoustic_unit_length."
+                    )
+                _positive_int(self.acoustic_unit_length, name="acoustic_unit_length")
+            elif self.acoustic_unit_length is not None:
+                raise ValueError(
+                    "frame-aligned semantic-acoustic schema must not set acoustic_unit_length."
+                )
+            return
+
+        if not self.global_codebook_sizes:
+            raise ValueError("semantic-global schema requires global_codebook_sizes.")
+        if self.global_unit_length is None:
+            raise ValueError("semantic-global schema requires global_unit_length.")
+        _positive_int(self.global_unit_length, name="global_unit_length")
+        if (
+            self.acoustic_codebook_sizes
+            or self.acoustic_layout is not None
+            or self.acoustic_unit_length is not None
+        ):
+            raise ValueError("semantic-global schema must not declare acoustic unit metadata.")
 
 
 @dataclass(frozen=True)
@@ -119,12 +249,25 @@ def _semantic_codebook(value: object, sizes: tuple[int, ...]) -> None:
 
 
 def _codebook_sizes(value: object, *, name: str) -> None:
+    if not _optional_codebook_sizes(value, name=name):
+        raise ValueError(f"{name} must not be empty.")
+
+
+def _optional_codebook_sizes(value: object, *, name: str) -> tuple[int, ...]:
     if not isinstance(value, tuple):
         raise TypeError(f"{name} must be a tuple of integers.")
-    if not value:
-        raise ValueError(f"{name} must not be empty.")
+    resolved: list[int] = []
     for index, size in enumerate(value):
         _positive_int(size, name=f"{name}[{index}]")
+        resolved.append(int(size))
+    return tuple(resolved)
+
+
+def _non_empty_string(value: object, *, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string.")
+    if not value:
+        raise ValueError(f"{name} must not be empty.")
 
 
 def _positive_int(value: object, *, name: str) -> None:
@@ -142,6 +285,9 @@ def _positive_float(value: object, *, name: str) -> None:
 
 
 __all__ = [
+    "AudioBackendIdentity",
+    "AudioCodeSchema",
+    "AudioCodeSpec",
     "SemanticAcousticCodecSpec",
     "SemanticGlobalCodecSpec",
     "semantic_acoustic_spec",

@@ -4,45 +4,44 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .protocol import CodecCapability
+from .protocol import AudioCapability, CodecCapability
+from .spec import AudioBackendIdentity, AudioCodeSpec
 
 CodecLoader = Callable[..., Any]
 
 
 @dataclass(frozen=True)
 class CodecEntry:
-    """Static registry descriptor declared by each codec wrapper."""
+    """Static preset descriptor backed by at most one shared model loader."""
 
     name: str
     capabilities: frozenset[CodecCapability]
-    frame_loader: CodecLoader | None = None
-    semantic_acoustic_loader: CodecLoader | None = None
-    semantic_global_loader: CodecLoader | None = None
+    loader: CodecLoader | None = None
+    audio_capabilities: frozenset[AudioCapability] = frozenset()
+    audio_spec: AudioCodeSpec | None = None
+    identity: AudioBackendIdentity | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("codec registry entry name must not be empty.")
-        if not self.capabilities:
+        if not self.capabilities and not self.audio_capabilities:
             raise ValueError(f"codec registry entry {self.name!r} must declare capabilities.")
-        if (
-            CodecCapability.FRAME_CODES in self.capabilities
-            and self.frame_loader is None
-        ):
-            raise ValueError(f"codec registry entry {self.name!r} is missing frame_loader.")
-        if (
-            CodecCapability.SEMANTIC_ACOUSTIC in self.capabilities
-            and self.semantic_acoustic_loader is None
-        ):
+        if self.capabilities and self.loader is None:
             raise ValueError(
-                f"codec registry entry {self.name!r} is missing semantic_acoustic_loader."
+                f"codec registry entry {self.name!r} with legacy codec capabilities "
+                "must provide one backend loader."
             )
-        if (
-            CodecCapability.SEMANTIC_GLOBAL in self.capabilities
-            and self.semantic_global_loader is None
-        ):
+        if self.audio_capabilities and self.audio_spec is None:
             raise ValueError(
-                f"codec registry entry {self.name!r} is missing semantic_global_loader."
+                f"codec registry entry {self.name!r} with audio capabilities must "
+                "provide static audio_spec metadata."
             )
+
+    @property
+    def resolved_identity(self) -> AudioBackendIdentity:
+        if self.identity is not None:
+            return self.identity
+        return AudioBackendIdentity(preset=self.name)
 
 
 __all__ = ["CodecEntry", "CodecLoader"]

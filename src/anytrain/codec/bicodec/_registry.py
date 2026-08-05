@@ -3,7 +3,10 @@ from __future__ import annotations
 from torch import device as TorchDevice
 
 from anytrain.codec._registry import CodecEntry
-from anytrain.codec.protocol import CodecCapability
+from anytrain.codec.protocol import AudioCapability, CodecCapability
+from anytrain.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
+
+from .assets import DEFAULT_HF_REPO_ID
 
 DEFAULT_BICODEC_REVISION = "642071559bfc6346c2359d19dcb6be3f9dd8a05d"
 
@@ -17,7 +20,27 @@ def _load_semantic_global(*, device: str | TorchDevice | None = None):
 ENTRY = CodecEntry(
     name="bicodec",
     capabilities=frozenset({CodecCapability.SEMANTIC_GLOBAL}),
-    semantic_global_loader=_load_semantic_global,
+    loader=_load_semantic_global,
+    audio_capabilities=frozenset(
+        {
+            AudioCapability.TOKENIZER,
+            AudioCapability.DETOKENIZER,
+        }
+    ),
+    audio_spec=AudioCodeSpec(
+        view="bicodec",
+        schema=AudioCodeSchema.SEMANTIC_GLOBAL,
+        sample_rate=16_000,
+        frame_rate=50.0,
+        semantic_codebook_sizes=(8192,),
+        global_codebook_sizes=(4096,),
+        global_unit_length=32,
+    ),
+    identity=AudioBackendIdentity(
+        preset="bicodec",
+        artifact=DEFAULT_HF_REPO_ID,
+        revision=DEFAULT_BICODEC_REVISION,
+    ),
 )
 
 __all__ = ["DEFAULT_BICODEC_REVISION", "ENTRY"]

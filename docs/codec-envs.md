@@ -5,6 +5,30 @@
 可以放进 extra；如果上游 pin 旧版 torch、Python 或 pip，就使用独立环境先离线生成
 codes/cache，再由主训练环境读取产物。
 
+## GLM-4 online tokenizer
+
+`anytrain.codec.glm4.GLM4Tokenizer` 采用目前经过 exact token-ID 审计的官方 API 和数值契约：
+
+- source：通过 `GLM4_VOICE_SOURCE_ROOT` 显式传入 GLM-4-Voice checkout 或用户 fork。loader 不读取
+  Git remote/HEAD，也不限制 commit；它校验 `speech_tokenizer` 必需文件、导入来源和
+  `WhisperVQEncoder.from_pretrained()` API，随后用实际模型和 feature extractor 校验数值契约；
+- weights：`zai-org/glm-4-voice-tokenizer` commit
+  `a5f2404e63c84e92f5238908e1706316324ebafa`；
+- runtime：严格 `transformers==4.44.1`，官方
+  `speech_tokenizer.modeling_whisper.WhisperVQEncoder` 加
+  `transformers.WhisperFeatureExtractor`；
+- contract：16 kHz mono waveform，CPU float32 fbank、禁用 TF32、STFT 200-sample guard、
+  1280-sample padding multiple，输出 `torch.long [batch, frame, 1]`，ID 范围 `[0, 16384)`；
+- batch：为避免已观察到的 batch-shape token 漂移，wrapper 对 batch 内每条 waveform 运行同一个
+  canonical single-sample extraction，再堆叠等长结果。
+
+默认 `anytrain` py312/py39 环境当前使用 Transformers 4.57.6，且 BiCodec extra 要求
+`transformers>=4.46`、module extra 要求 `transformers>=4.51.0`。因此不要为 GLM-4 增加一个会让
+resolver 产生冲突的组合 extra，也不要把 fake 单测当作新版本兼容性证据。推荐部署是独立
+Transformers 4.44.1 GLM producer 持续生成/publish raw GLM codes，主训练环境同时消费这些 codes
+并运行 BiCodec target。若需要训练进程内 fallback，必须先在候选联合环境用固定真实音频完成
+prepared/online exact ID parity、batch-single parity 和吞吐/显存 gate。
+
 ## Fudan smoke 2026-07-11
 
 测试目录：
@@ -48,6 +72,9 @@ codes/cache，再由主训练环境读取产物。
 - UniCodec wrapper 保持 optional；不要让 pip 在主环境里自由解析 `fairseq` 和 torch。
 - Stable Codec wrapper 保持 optional；文档要求用户在独立兼容环境中安装上游包和
   FlashAttention。
+- GLM-4 wrapper 保持 tokenizer-only；允许 source fork，但必须满足已验证 API/数值契约；HF 权重
+  revision 和 Transformers 版本继续固定。与主环境依赖冲突时使用独立 producer，不为方便安装
+  静默放宽版本约束。
 
 ## UniCodec smoke 2026-07-13
 

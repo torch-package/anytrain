@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import auto
+from typing import TYPE_CHECKING, TypeVar, Union
 
 from torch import Tensor
 from typing_extensions import Protocol
 
 from anytrain._compat import StrEnum
+
+if TYPE_CHECKING:
+    from .spec import AudioBackendIdentity, AudioCodeSpec
 
 
 class AcousticLayout(StrEnum):
@@ -22,6 +26,13 @@ class CodecCapability(StrEnum):
     FRAME_CODES = auto()
     SEMANTIC_ACOUSTIC = auto()
     SEMANTIC_GLOBAL = auto()
+
+
+class AudioCapability(StrEnum):
+    """Waveform conversion directions exposed by an audio backend preset."""
+
+    TOKENIZER = auto()
+    DETOKENIZER = auto()
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,12 @@ class SemanticGlobalCodes:
     global_codes: Tensor
 
 
+AudioCodes = Union[Tensor, SemanticAcousticCodes, SemanticGlobalCodes]
+CodesT_co = TypeVar("CodesT_co", covariant=True)
+CodesT_contra = TypeVar("CodesT_contra", contravariant=True)
+CodesT = TypeVar("CodesT")
+
+
 class CodecBackend(Protocol):
     """Identity and output-audio contract shared by codec backends."""
 
@@ -65,8 +82,42 @@ class CodecBackend(Protocol):
         ...
 
 
-class FrameCodec(CodecBackend, Protocol):
-    """Codec whose complete units share one frame axis."""
+class AudioTokenizer(Protocol[CodesT_co]):
+    """Capability view that converts waveform batches into one audio code schema."""
+
+    @property
+    def backend(self) -> CodecBackend: ...
+
+    @property
+    def identity(self) -> AudioBackendIdentity: ...
+
+    @property
+    def spec(self) -> AudioCodeSpec: ...
+
+    def tokenize(self, audio: Tensor, sample_rate: int) -> CodesT_co: ...
+
+
+class AudioDetokenizer(Protocol[CodesT_contra]):
+    """Capability view that converts one audio code schema back into waveform batches."""
+
+    @property
+    def backend(self) -> CodecBackend: ...
+
+    @property
+    def identity(self) -> AudioBackendIdentity: ...
+
+    @property
+    def spec(self) -> AudioCodeSpec: ...
+
+    def detokenize(self, codes: CodesT_contra) -> Tensor: ...
+
+
+class AudioCodec(AudioTokenizer[CodesT], AudioDetokenizer[CodesT], Protocol[CodesT]):
+    """Backend view providing both waveform tokenization directions."""
+
+
+class FrameTokenizerBackend(CodecBackend, Protocol):
+    """Directional backend that converts waveform batches to frame codes."""
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]: ...
@@ -75,9 +126,20 @@ class FrameCodec(CodecBackend, Protocol):
         """Encode [batch, channels, time] audio as [batch, frame, codebook] ids."""
         ...
 
+
+class FrameDetokenizerBackend(CodecBackend, Protocol):
+    """Directional backend that converts complete frame codes to waveforms."""
+
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]: ...
+
     def decode(self, codes: Tensor) -> Tensor:
         """Decode [batch, frame, codebook] ids at ``self.sample_rate``."""
         ...
+
+
+class FrameCodec(FrameTokenizerBackend, FrameDetokenizerBackend, Protocol):
+    """Codec providing both directions for units on one shared frame axis."""
 
 
 class SemanticAcousticCodec(CodecBackend, Protocol):
@@ -174,9 +236,16 @@ class SemanticGlobalCodec(CodecBackend, Protocol):
 
 __all__ = [
     "AcousticLayout",
+    "AudioCapability",
+    "AudioCodec",
+    "AudioCodes",
+    "AudioDetokenizer",
+    "AudioTokenizer",
     "CodecBackend",
     "CodecCapability",
     "FrameCodec",
+    "FrameDetokenizerBackend",
+    "FrameTokenizerBackend",
     "SemanticAcousticCodec",
     "SemanticAcousticCodes",
     "SemanticGlobalCodec",
