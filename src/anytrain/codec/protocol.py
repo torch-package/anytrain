@@ -21,6 +21,7 @@ class CodecCapability(StrEnum):
 
     FRAME_CODES = auto()
     SEMANTIC_ACOUSTIC = auto()
+    SEMANTIC_GLOBAL = auto()
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,19 @@ class SemanticAcousticCodes:
 
     semantic: Tensor
     acoustic: Tensor
+
+
+@dataclass(frozen=True)
+class SemanticGlobalCodes:
+    """Semantic time units plus a separate fixed global unit set.
+
+    ``semantic`` has shape ``[batch, time, semantic_codebook]`` and
+    ``global_codes`` has shape ``[batch, global_unit, global_codebook]``.
+    The global axis is independent of the semantic time axis.
+    """
+
+    semantic: Tensor
+    global_codes: Tensor
 
 
 class CodecBackend(Protocol):
@@ -116,6 +130,48 @@ class SemanticAcousticCodec(CodecBackend, Protocol):
         ...
 
 
+class SemanticGlobalCodec(CodecBackend, Protocol):
+    """Codec exposing semantic time units and independent global units."""
+
+    @property
+    def semantic_codebook_sizes(self) -> tuple[int, ...]: ...
+
+    @property
+    def global_codebook_sizes(self) -> tuple[int, ...]: ...
+
+    @property
+    def semantic_codebook(self) -> Tensor: ...
+
+    @property
+    def semantic_frame_rate(self) -> float: ...
+
+    @property
+    def global_feature_dim(self) -> int: ...
+
+    @property
+    def global_unit_length(self) -> int: ...
+
+    def tokenize(
+        self,
+        audio: Tensor,
+        sample_rate: int,
+    ) -> SemanticGlobalCodes:
+        """Tokenize audio into semantic time units and global units."""
+        ...
+
+    def detokenize(self, codes: SemanticGlobalCodes) -> Tensor:
+        """Decode semantic and global units at ``self.sample_rate``."""
+        ...
+
+    def global_codes_to_features(self, global_codes: Tensor) -> Tensor:
+        """Convert ``[batch, global_unit, codebook]`` ids to global features."""
+        ...
+
+    def decode_features(self, semantic_codes: Tensor, global_features: Tensor) -> Tensor:
+        """Decode semantic ids and ``[batch, global_unit, feature]`` features."""
+        ...
+
+
 __all__ = [
     "AcousticLayout",
     "CodecBackend",
@@ -123,4 +179,6 @@ __all__ = [
     "FrameCodec",
     "SemanticAcousticCodec",
     "SemanticAcousticCodes",
+    "SemanticGlobalCodec",
+    "SemanticGlobalCodes",
 ]

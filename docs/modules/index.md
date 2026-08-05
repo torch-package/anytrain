@@ -17,7 +17,7 @@
 - `anytrain.module.moe.conv`：conv router、causal `Conv1d` 模板；归入 [`anytrain.module.moe`](moe.md)。
 - [`anytrain.module.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。
 - [`anytrain.tokenizer`](tokenizer.md)：int BPE。
-- [`anytrain.codec`](../codec.md)：optional audio codec wrapper、frame codes 与 semantic-acoustic capability 契约。
+- [`anytrain.codec`](../codec.md)：optional audio codec wrapper，以及 frame、semantic-acoustic 与 semantic-global capability 契约。
 - [`anytrain.tts`](../tts.md)：TTS 公共协议和 optional backend adapter。
 - [`anytrain.chat`](chat.md)：环境变量驱动的可选大模型调用入口。
 - [`anytrain.framework`](framework.md)：可选研究框架层。

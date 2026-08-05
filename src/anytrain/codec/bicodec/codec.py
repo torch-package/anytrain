@@ -10,7 +10,7 @@ from torch import Tensor, nn
 
 from .._audio import resample
 from .._module import DeviceModule, integer_tensor, resolve_device
-from ..protocol import AcousticLayout, SemanticAcousticCodes
+from ..protocol import SemanticGlobalCodes
 from .assets import BiCodecAssets, ensure_bicodec_assets
 
 SAMPLE_RATE = 16_000
@@ -26,7 +26,6 @@ BICODEC_INSTALL_COMMAND = (
 class BiCodec(DeviceModule):
     name = "bicodec"
     num_channels: int = NUM_CHANNELS
-    acoustic_layout = AcousticLayout.FIXED_LENGTH
 
     def __init__(
         self,
@@ -56,15 +55,15 @@ class BiCodec(DeviceModule):
         self.ref_segment_length = _ref_segment_length(self.config)
         self.semantic_codebook_sizes = _codebook_sizes(getattr(model, "quantizer", None))
         speaker_encoder = getattr(model, "speaker_encoder", None)
-        self.acoustic_codebook_sizes = _codebook_sizes(getattr(speaker_encoder, "quantizer", None))
+        self.global_codebook_sizes = _codebook_sizes(getattr(speaker_encoder, "quantizer", None))
         if not self.semantic_codebook_sizes:
             raise TypeError("BiCodec semantic quantizer must expose codebook sizes.")
-        if not self.acoustic_codebook_sizes:
-            raise TypeError("BiCodec speaker quantizer must expose codebook sizes.")
-        self._acoustic_unit_length = _unit_length(speaker_encoder)
-        self._acoustic_feature_dim = _feature_dim(speaker_encoder)
-        if self.acoustic_layout is AcousticLayout.FIXED_LENGTH and self._acoustic_unit_length is None:
-            raise TypeError("BiCodec speaker encoder must expose its fixed acoustic unit length.")
+        if not self.global_codebook_sizes:
+            raise TypeError("BiCodec global quantizer must expose codebook sizes.")
+        self._global_unit_length = _unit_length(speaker_encoder)
+        self._global_feature_dim = _feature_dim(speaker_encoder)
+        if self._global_unit_length is None:
+            raise TypeError("BiCodec speaker encoder must expose its global unit length.")
 
         extractor_config = getattr(self.feature_extractor, "config", None)
         if extractor_config is not None:
@@ -76,15 +75,18 @@ class BiCodec(DeviceModule):
         return _quantizer_codebook(self.model.quantizer, device=self.device)
 
     @property
-    def acoustic_feature_dim(self) -> int:
-        value = self._acoustic_feature_dim
+    def global_feature_dim(self) -> int:
+        value = self._global_feature_dim
         if value is None:
-            raise TypeError("BiCodec speaker encoder must expose its acoustic feature dimension.")
+            raise TypeError("BiCodec speaker encoder must expose its global feature dimension.")
         return value
 
     @property
-    def acoustic_unit_length(self) -> int | None:
-        return self._acoustic_unit_length
+    def global_unit_length(self) -> int:
+        value = self._global_unit_length
+        if value is None:
+            raise TypeError("BiCodec speaker encoder must expose its global unit length.")
+        return value
 
     @property
     def semantic_frame_rate(self) -> float:
@@ -157,7 +159,7 @@ class BiCodec(DeviceModule):
         *,
         ref_audio: Tensor | None = None,
         ref_sample_rate: int | None = None,
-    ) -> SemanticAcousticCodes:
+    ) -> SemanticGlobalCodes:
         wav = self._audio(audio, sample_rate)
         ref_wav = (
             self._audio(ref_audio, ref_sample_rate or sample_rate)
@@ -178,11 +180,11 @@ class BiCodec(DeviceModule):
             }
         )
         if not isinstance(result, tuple) or len(result) != 2:
-            raise TypeError("BiCodec tokenize() must return semantic and acoustic tensors.")
-        semantic, backend_acoustic = result
-        codes = SemanticAcousticCodes(
+            raise TypeError("BiCodec tokenize() must return semantic and global tensors.")
+        semantic, backend_global = result
+        codes = SemanticGlobalCodes(
             semantic=_semantic_tokens(semantic).unsqueeze(-1),
-            acoustic=_acoustic_tokens(backend_acoustic).transpose(1, 2).contiguous(),
+            global_codes=_global_tokens(backend_global).transpose(1, 2).contiguous(),
         )
         self._validate_codes(codes)
         return codes
@@ -222,39 +224,39 @@ class BiCodec(DeviceModule):
         return features
 
     @torch.no_grad()
-    def detokenize(self, codes: SemanticAcousticCodes) -> Tensor:
+    def detokenize(self, codes: SemanticGlobalCodes) -> Tensor:
         self._validate_codes(codes)
         return self._detokenize(
             codes.semantic[..., 0],
-            codes.acoustic.transpose(1, 2).contiguous(),
+            codes.global_codes.transpose(1, 2).contiguous(),
         )
 
     @torch.no_grad()
-    def acoustic_codes_to_features(self, acoustic_codes: Tensor) -> Tensor:
+    def global_codes_to_features(self, global_codes: Tensor) -> Tensor:
         """Convert global token ids to the per-slot speaker latent representation."""
-        self._validate_acoustic_codes(acoustic_codes)
+        self._validate_global_codes(global_codes)
         quantizer = getattr(self.model.speaker_encoder, "quantizer", None)
         convert = getattr(quantizer, "get_output_from_indices", None)
         if not callable(convert):
             raise TypeError("BiCodec speaker quantizer must provide get_output_from_indices().")
-        features = convert(acoustic_codes.to(self.device))
+        features = convert(global_codes.to(self.device))
         if not isinstance(features, Tensor):
-            raise TypeError("BiCodec acoustic feature conversion must return a Tensor.")
-        if features.dim() != 3 or features.shape[:2] != acoustic_codes.shape[:2]:
+            raise TypeError("BiCodec global feature conversion must return a Tensor.")
+        if features.dim() != 3 or features.shape[:2] != global_codes.shape[:2]:
             raise ValueError(
-                "BiCodec acoustic features must have shape [batch, acoustic_unit, feature]."
+                "BiCodec global features must have shape [batch, global_unit, feature]."
             )
         if not torch.is_floating_point(features) or torch.is_complex(features):
-            raise TypeError("BiCodec acoustic features must be floating point tensors.")
+            raise TypeError("BiCodec global features must be floating point tensors.")
         return features
 
     @torch.no_grad()
-    def decode_features(self, semantic_codes: Tensor, acoustic_features: Tensor) -> Tensor:
+    def decode_features(self, semantic_codes: Tensor, global_features: Tensor) -> Tensor:
         """Decode semantic ids and continuous global speaker features."""
         semantic = _semantic_codes(semantic_codes)
         if bool((semantic[..., 0] >= self.semantic_codebook_sizes[0]).any()):
             raise ValueError("semantic codes contain an ID outside the semantic codebook.")
-        self._validate_acoustic_features(acoustic_features, batch_size=semantic.size(0))
+        self._validate_global_features(global_features, batch_size=semantic.size(0))
         quantizer = getattr(self.model, "quantizer", None)
         detokenize = getattr(quantizer, "detokenize", None)
         if not callable(detokenize):
@@ -268,7 +270,7 @@ class BiCodec(DeviceModule):
         if not callable(project):
             raise TypeError("BiCodec speaker encoder must provide project().")
         d_vector = project(
-            acoustic_features.to(self.device)
+            global_features.to(self.device)
             .transpose(1, 2)
             .reshape(semantic.size(0), -1)
         )
@@ -284,14 +286,14 @@ class BiCodec(DeviceModule):
         audio = decoder(x + d_vector.unsqueeze(-1))
         return _audio_tensor(audio)
 
-    def _detokenize(self, semantic: Tensor, acoustic_tokens: Tensor) -> Tensor:
+    def _detokenize(self, semantic: Tensor, global_tokens: Tensor) -> Tensor:
         detokenize = getattr(self.model, "detokenize", None)
         if not callable(detokenize):
             raise TypeError("BiCodec model must provide detokenize().")
         return _audio_tensor(
             detokenize(
                 semantic.to(self.device),
-                acoustic_tokens.to(self.device),
+                global_tokens.to(self.device),
             )
         )
 
@@ -315,54 +317,52 @@ class BiCodec(DeviceModule):
             wav = wav.repeat(1, repeats)
         return wav[:, :length]
 
-    def _validate_codes(self, codes: SemanticAcousticCodes) -> None:
+    def _validate_codes(self, codes: SemanticGlobalCodes) -> None:
         semantic = _semantic_codes(codes.semantic)
-        acoustic = self._validate_acoustic_codes(codes.acoustic)
+        global_codes = self._validate_global_codes(codes.global_codes)
         semantic_size = self.semantic_codebook_sizes[0]
         if bool((semantic[..., 0] >= semantic_size).any()):
             raise ValueError("semantic codes contain an ID outside the semantic codebook.")
-        if semantic.size(0) != acoustic.size(0):
-            raise ValueError("semantic and acoustic codes must align on batch.")
+        if semantic.size(0) != global_codes.size(0):
+            raise ValueError("semantic and global codes must align on batch.")
 
-    def _validate_acoustic_codes(self, acoustic_codes: Tensor) -> Tensor:
-        acoustic = integer_tensor(acoustic_codes, "acoustic codes")
-        if acoustic.dim() != 3:
-            raise ValueError("acoustic codes must have shape [batch, slot, codebook].")
-        if acoustic.size(-1) != len(self.acoustic_codebook_sizes):
-            raise ValueError("acoustic codes must match acoustic_codebook_sizes.")
-        if acoustic.size(1) <= 0:
-            raise ValueError("acoustic codes must not be empty.")
-        if self.acoustic_unit_length is not None and acoustic.size(1) != self.acoustic_unit_length:
+    def _validate_global_codes(self, global_codes: Tensor) -> Tensor:
+        codes = integer_tensor(global_codes, "global codes")
+        if codes.dim() != 3:
+            raise ValueError("global codes must have shape [batch, unit, codebook].")
+        if codes.size(-1) != len(self.global_codebook_sizes):
+            raise ValueError("global codes must match global_codebook_sizes.")
+        if codes.size(1) != self.global_unit_length:
             raise ValueError(
-                "BiCodec acoustic codes must use the configured fixed acoustic unit length "
-                f"{self.acoustic_unit_length}, got {acoustic.size(1)}."
+                "BiCodec global codes must use the configured global unit length "
+                f"{self.global_unit_length}, got {codes.size(1)}."
             )
-        if bool((acoustic < 0).any()):
-            raise ValueError("acoustic codes must not contain negative IDs.")
-        for index, size in enumerate(self.acoustic_codebook_sizes):
-            if bool((acoustic[..., index] >= size).any()):
-                raise ValueError(f"acoustic codes contain an ID outside codebook {index}.")
-        return acoustic
+        if bool((codes < 0).any()):
+            raise ValueError("global codes must not contain negative IDs.")
+        for index, size in enumerate(self.global_codebook_sizes):
+            if bool((codes[..., index] >= size).any()):
+                raise ValueError(f"global codes contain an ID outside codebook {index}.")
+        return codes
 
-    def _validate_acoustic_features(self, features: Tensor, *, batch_size: int) -> None:
+    def _validate_global_features(self, features: Tensor, *, batch_size: int) -> None:
         if features.dim() != 3:
             raise ValueError(
-                "BiCodec acoustic features must have shape [batch, acoustic_unit, feature]."
+                "BiCodec global features must have shape [batch, global_unit, feature]."
             )
         if features.size(0) != batch_size:
-            raise ValueError("BiCodec semantic and acoustic features must align on batch.")
-        if self.acoustic_unit_length is not None and features.size(1) != self.acoustic_unit_length:
+            raise ValueError("BiCodec semantic and global features must align on batch.")
+        if features.size(1) != self.global_unit_length:
             raise ValueError(
-                "BiCodec acoustic features must use the configured fixed acoustic unit length "
-                f"{self.acoustic_unit_length}, got {features.size(1)}."
+                "BiCodec global features must use the configured global unit length "
+                f"{self.global_unit_length}, got {features.size(1)}."
             )
-        if features.size(-1) != self.acoustic_feature_dim:
+        if features.size(-1) != self.global_feature_dim:
             raise ValueError(
-                "BiCodec acoustic features must match acoustic_feature_dim "
-                f"{self.acoustic_feature_dim}, got {features.size(-1)}."
+                "BiCodec global features must match global_feature_dim "
+                f"{self.global_feature_dim}, got {features.size(-1)}."
             )
         if not torch.is_floating_point(features) or torch.is_complex(features):
-            raise TypeError("BiCodec acoustic features must be floating point tensors.")
+            raise TypeError("BiCodec global features must be floating point tensors.")
 
 
 def _ref_segment_length(config: dict[str, Any]) -> int | None:
@@ -408,10 +408,10 @@ def _semantic_tokens(value: Any) -> Tensor:
     return tokens.contiguous()
 
 
-def _acoustic_tokens(value: Any) -> Tensor:
-    tokens = integer_tensor(value, "acoustic tokens")
+def _global_tokens(value: Any) -> Tensor:
+    tokens = integer_tensor(value, "global tokens")
     if tokens.dim() != 3:
-        raise ValueError("acoustic tokens must have shape [batch, codebook, slot].")
+        raise ValueError("global tokens must have shape [batch, codebook, unit].")
     return tokens.contiguous()
 
 

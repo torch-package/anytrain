@@ -8,7 +8,12 @@ from ._registry import CodecEntry
 from .bicodec._registry import ENTRY as BICODEC_ENTRY
 from .dac._registry import ENTRY as DAC_ENTRY
 from .longcat._registry import ENTRY as LONGCAT_ENTRY
-from .protocol import CodecCapability, FrameCodec, SemanticAcousticCodec
+from .protocol import (
+    CodecCapability,
+    FrameCodec,
+    SemanticAcousticCodec,
+    SemanticGlobalCodec,
+)
 from .stable_codec._registry import ENTRY as STABLE_CODEC_ENTRY
 from .unicodec._registry import ENTRY as UNICODEC_ENTRY
 
@@ -58,6 +63,18 @@ def load_semantic_acoustic(
     return cast(SemanticAcousticCodec, entry.semantic_acoustic_loader(device=device))
 
 
+def load_semantic_global(
+    name: str,
+    *,
+    device: str | torch.device | None = None,
+) -> SemanticGlobalCodec:
+    """Load a default codec implementing the semantic-global contract."""
+    entry = _require_capability(name, CodecCapability.SEMANTIC_GLOBAL)
+    if entry.semantic_global_loader is None:
+        raise RuntimeError(f"Codec {name!r} has no semantic-global loader.")
+    return cast(SemanticGlobalCodec, entry.semantic_global_loader(device=device))
+
+
 def load_frame(
     name: str,
     *,
@@ -70,4 +87,9 @@ def load_frame(
     return cast(FrameCodec, entry.frame_loader(device=device))
 
 
-__all__ = ["capabilities", "load_frame", "load_semantic_acoustic"]
+__all__ = [
+    "capabilities",
+    "load_frame",
+    "load_semantic_acoustic",
+    "load_semantic_global",
+]

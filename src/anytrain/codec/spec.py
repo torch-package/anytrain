@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from torch import Tensor
 
-from .protocol import AcousticLayout, SemanticAcousticCodec
+from .protocol import AcousticLayout, SemanticAcousticCodec, SemanticGlobalCodec
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,30 @@ class SemanticAcousticCodecSpec:
             raise ValueError("frame-aligned acoustic layout must not set acoustic_unit_length.")
 
 
+@dataclass(frozen=True)
+class SemanticGlobalCodecSpec:
+    """Portable structure exposed by a semantic-global codec backend."""
+
+    sample_rate: int
+    frame_rate: float
+    semantic_frame_rate: float
+    semantic_codebook_sizes: tuple[int, ...]
+    semantic_embedding_dim: int
+    global_codebook_sizes: tuple[int, ...]
+    global_feature_dim: int
+    global_unit_length: int
+
+    def __post_init__(self) -> None:
+        _positive_int(self.sample_rate, name="sample_rate")
+        _positive_float(self.frame_rate, name="frame_rate")
+        _positive_float(self.semantic_frame_rate, name="semantic_frame_rate")
+        _codebook_sizes(self.semantic_codebook_sizes, name="semantic_codebook_sizes")
+        _positive_int(self.semantic_embedding_dim, name="semantic_embedding_dim")
+        _codebook_sizes(self.global_codebook_sizes, name="global_codebook_sizes")
+        _positive_int(self.global_feature_dim, name="global_feature_dim")
+        _positive_int(self.global_unit_length, name="global_unit_length")
+
+
 def semantic_acoustic_spec(codec: SemanticAcousticCodec) -> SemanticAcousticCodecSpec:
     """Inspect and validate the portable structure of an instantiated codec."""
 
@@ -56,6 +80,24 @@ def semantic_acoustic_spec(codec: SemanticAcousticCodec) -> SemanticAcousticCode
         acoustic_feature_dim=codec.acoustic_feature_dim,
         acoustic_layout=codec.acoustic_layout,
         acoustic_unit_length=codec.acoustic_unit_length,
+    )
+
+
+def semantic_global_spec(codec: SemanticGlobalCodec) -> SemanticGlobalCodecSpec:
+    """Inspect and validate the portable structure of a semantic-global codec."""
+
+    semantic_codebook_sizes = codec.semantic_codebook_sizes
+    semantic_codebook = codec.semantic_codebook
+    _semantic_codebook(semantic_codebook, semantic_codebook_sizes)
+    return SemanticGlobalCodecSpec(
+        sample_rate=codec.sample_rate,
+        frame_rate=codec.frame_rate,
+        semantic_frame_rate=codec.semantic_frame_rate,
+        semantic_codebook_sizes=semantic_codebook_sizes,
+        semantic_embedding_dim=int(semantic_codebook.size(1)),
+        global_codebook_sizes=codec.global_codebook_sizes,
+        global_feature_dim=codec.global_feature_dim,
+        global_unit_length=codec.global_unit_length,
     )
 
 
@@ -99,4 +141,9 @@ def _positive_float(value: object, *, name: str) -> None:
         raise ValueError(f"{name} must be finite and positive.")
 
 
-__all__ = ["SemanticAcousticCodecSpec", "semantic_acoustic_spec"]
+__all__ = [
+    "SemanticAcousticCodecSpec",
+    "SemanticGlobalCodecSpec",
+    "semantic_acoustic_spec",
+    "semantic_global_spec",
+]

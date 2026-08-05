@@ -10,11 +10,15 @@ from anytrain.codec import (
     CodecCapability,
     SemanticAcousticCodecSpec,
     SemanticAcousticCodes,
+    SemanticGlobalCodecSpec,
+    SemanticGlobalCodes,
     capabilities,
     load_frame,
     load_semantic_acoustic,
+    load_semantic_global,
     masked_acoustic_features,
     semantic_acoustic_spec,
+    semantic_global_spec,
 )
 from anytrain.codec._module import validate_frame_codes
 
@@ -24,6 +28,7 @@ def test_codec_enums_have_stable_string_values() -> None:
     assert AcousticLayout.FIXED_LENGTH.value == "fixed_length"
     assert CodecCapability.FRAME_CODES.value == "frame_codes"
     assert CodecCapability.SEMANTIC_ACOUSTIC.value == "semantic_acoustic"
+    assert CodecCapability.SEMANTIC_GLOBAL.value == "semantic_global"
 
 
 def test_frame_codec_has_no_legacy_codec_alias() -> None:
@@ -39,6 +44,18 @@ def test_semantic_acoustic_codes_preserve_tensor_boundaries() -> None:
     assert codes.acoustic is acoustic
     with pytest.raises(FrozenInstanceError):
         codes.semantic = acoustic  # type: ignore[misc]
+
+
+def test_semantic_global_codes_preserve_tensor_boundaries() -> None:
+    semantic = torch.zeros((2, 3, 1), dtype=torch.long)
+    global_codes = torch.ones((2, 4, 2), dtype=torch.long)
+    codes = SemanticGlobalCodes(semantic=semantic, global_codes=global_codes)
+
+    assert codes.semantic is semantic
+    assert codes.global_codes is global_codes
+    assert not hasattr(codes, "acoustic")
+    with pytest.raises(FrozenInstanceError):
+        codes.global_codes = semantic  # type: ignore[misc]
 
 
 class _FeatureCodec:
@@ -71,6 +88,7 @@ def test_masked_acoustic_features_validation_can_be_skipped() -> None:
 
 def test_structured_codec_protocol_is_exported() -> None:
     assert codec_api.SemanticAcousticCodec.__name__ == "SemanticAcousticCodec"
+    assert codec_api.SemanticGlobalCodec.__name__ == "SemanticGlobalCodec"
 
 
 class _StructuredCodec:
@@ -84,6 +102,18 @@ class _StructuredCodec:
     acoustic_feature_dim = 6
     acoustic_layout = AcousticLayout.FRAME_ALIGNED
     acoustic_unit_length = None
+
+
+class _GlobalCodec:
+    name = "fake-global"
+    sample_rate = 16_000
+    frame_rate = 50.0
+    semantic_frame_rate = 50.0
+    semantic_codebook_sizes = (4,)
+    semantic_codebook = torch.zeros((4, 3))
+    global_codebook_sizes = (5, 7)
+    global_feature_dim = 6
+    global_unit_length = 32
 
 
 def test_semantic_acoustic_spec_inspects_backend_structure() -> None:
@@ -122,6 +152,35 @@ def test_semantic_acoustic_spec_requires_fixed_unit_length() -> None:
             acoustic_feature_dim=6,
             acoustic_layout=AcousticLayout.FIXED_LENGTH,
             acoustic_unit_length=None,
+        )
+
+
+def test_semantic_global_spec_inspects_backend_structure() -> None:
+    spec = semantic_global_spec(_GlobalCodec())  # type: ignore[arg-type]
+
+    assert spec == SemanticGlobalCodecSpec(
+        sample_rate=16_000,
+        frame_rate=50.0,
+        semantic_frame_rate=50.0,
+        semantic_codebook_sizes=(4,),
+        semantic_embedding_dim=3,
+        global_codebook_sizes=(5, 7),
+        global_feature_dim=6,
+        global_unit_length=32,
+    )
+
+
+def test_semantic_global_spec_requires_positive_unit_length() -> None:
+    with pytest.raises(ValueError, match="global_unit_length must be positive"):
+        SemanticGlobalCodecSpec(
+            sample_rate=16_000,
+            frame_rate=50.0,
+            semantic_frame_rate=50.0,
+            semantic_codebook_sizes=(4,),
+            semantic_embedding_dim=3,
+            global_codebook_sizes=(5,),
+            global_feature_dim=6,
+            global_unit_length=0,
         )
 
 
@@ -170,7 +229,7 @@ def test_frame_code_validation_requires_signed_ids(dtype: torch.dtype) -> None:
         (
             "bicodec",
             {
-                CodecCapability.SEMANTIC_ACOUSTIC,
+                CodecCapability.SEMANTIC_GLOBAL,
             },
         ),
     ],
@@ -201,10 +260,20 @@ def test_semantic_acoustic_loader_uses_lazy_longcat_loader() -> None:
     load.assert_called_once_with(device="cpu")
 
 
-def test_semantic_acoustic_loader_uses_lazy_bicodec_loader() -> None:
+def test_semantic_acoustic_loader_rejects_semantic_global_codec() -> None:
+    with pytest.raises(ValueError, match="does not provide.*semantic_acoustic"):
+        load_semantic_acoustic("bicodec", device="cpu")
+
+
+def test_semantic_global_loader_rejects_semantic_acoustic_codec() -> None:
+    with pytest.raises(ValueError, match="does not provide.*semantic_global"):
+        load_semantic_global("longcat", device="cpu")
+
+
+def test_semantic_global_loader_uses_lazy_bicodec_loader() -> None:
     backend = object()
     with patch("anytrain.codec.bicodec.BiCodec.from_pretrained", return_value=backend) as load:
-        loaded = load_semantic_acoustic("bicodec", device="cpu")
+        loaded = load_semantic_global("bicodec", device="cpu")
 
     assert loaded is backend
     load.assert_called_once_with(

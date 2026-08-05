@@ -1,9 +1,9 @@
 # Codec
 
 `anytrain.codec` 为 optional audio codec wrapper 提供轻量 runtime protocol 和加载前的
-capability 分类。anytrain 只提供两种 backend 能力：完整 frame-code codec，以及显式拆分
-semantic/acoustic units 的 structured codec。semantic-only waveform decoder 属于下游
-`semantic-acoustic-codec` runtime，不属于 backend。
+capability 分类。anytrain 区分三种 backend 能力：完整 frame-code codec、显式拆分且仍表达
+声学时间结构的 semantic/acoustic codec，以及语义时间轴外另带全局 unit 的 semantic/global
+codec。semantic-only waveform decoder 属于下游 `semantic-acoustic-codec` runtime，不属于 backend。
 
 ## Protocol
 
@@ -68,41 +68,63 @@ class SemanticAcousticCodec(CodecBackend, Protocol):
 padding code 置零，再调用 backend，并对输出特征重新应用 unit mask，避免 padding 泄漏到
 下游 loss；已经由上游 batch 契约验证过的内部热路径可以传 `validate=False`。
 
-structured codec 的 acoustic feature training boundary 把 feature tensor 保持为
+semantic/acoustic codec 的 feature training boundary 把 feature tensor 保持为
 `[batch, acoustic_unit, feature_dim]`；`acoustic_unit_length=None` 只适用于可变长度的
-`FRAME_ALIGNED` codec。BiCodec 的 feature target 是 32 个 global slot 的 speaker latent，
-不是 semantic frame 的广播副本。
+`FRAME_ALIGNED` codec。
 
-需要在不持有 backend 权重的层之间传递结构时，使用
-`SemanticAcousticCodecSpec`。`semantic_acoustic_spec(codec)` 从已实例化 backend 读取并严格校验
-sample/frame rate、semantic codebook、acoustic codebook、feature dim 和 unit layout；spec 不包含
-backend 名称、checkpoint、加载参数或实际 codebook Tensor，因此不能替代 codec 实例和 registry。
+语义时间轴外另带全局 unit 的 codec 使用独立契约：
+
+```python
+class SemanticGlobalCodec(CodecBackend, Protocol):
+    semantic_codebook_sizes: tuple[int, ...]
+    global_codebook_sizes: tuple[int, ...]
+    semantic_codebook: Tensor
+    semantic_frame_rate: float
+    global_feature_dim: int
+    global_unit_length: int
+
+    def tokenize(self, audio: Tensor, sample_rate: int) -> SemanticGlobalCodes: ...
+    def detokenize(self, codes: SemanticGlobalCodes) -> Tensor: ...
+
+    def global_codes_to_features(self, global_codes: Tensor) -> Tensor: ...
+    def decode_features(self, semantic_codes: Tensor, global_features: Tensor) -> Tensor: ...
+```
+
+`SemanticGlobalCodes.semantic` 使用 `[batch, time, codebook]`，`global_codes` 使用
+`[batch, global_unit, codebook]`。`global_unit_length` 是严格正整数；global axis 与 semantic
+time axis 独立，不使用 `AcousticLayout`，也不能广播成逐帧声学 stream。BiCodec 的 32 个 speaker
+slot 属于这个契约。
+
+需要在不持有 backend 权重的层之间传递结构时，分别使用 `SemanticAcousticCodecSpec` 或
+`SemanticGlobalCodecSpec`。`semantic_acoustic_spec(codec)` 与 `semantic_global_spec(codec)` 从已实例化
+backend 读取并严格校验对应的 rate、codebook、feature dim 和 unit 结构；spec 不包含 backend 名称、
+checkpoint、加载参数或实际 codebook Tensor，因此不能替代 codec 实例和 registry。
 
 这些 protocol 是可重叠的 capability，不是 concrete class 继承树：
 
-| Codec | registry name | `FrameCodec` | `SemanticAcousticCodec` | feature target | acoustic layout |
+| Codec | registry name | `FrameCodec` | `SemanticAcousticCodec` | `SemanticGlobalCodec` | feature target |
 |---|---|---:|---:|---:|---|
-| DAC | `dac` | 是 | 否 | - | - |
-| Stable Codec | `stable_codec` | 是 | 否 | - | - |
-| UniCodec | `unicodec` | 是 | 否 | - | - |
-| LongCat | `longcat` | 是 | 是 | 是 | `FRAME_ALIGNED` |
-| BiCodec | `bicodec` | 否 | 是 | 是 | `FIXED_LENGTH` |
+| DAC | `dac` | 是 | 否 | 否 | - |
+| Stable Codec | `stable_codec` | 是 | 否 | 否 | - |
+| UniCodec | `unicodec` | 是 | 否 | 否 | - |
+| LongCat | `longcat` | 是 | 是 | 否 | frame-aligned acoustic |
+| BiCodec | `bicodec` | 否 | 否 | 是 | independent global units |
 
 Stable Codec 的 latent 可以被语义目标增强，DAC 的早期 RVQ codebook 也可能包含较粗信息；但它们
-没有公开独立 semantic stream，因此不声明 `SEMANTIC_ACOUSTIC` capability。LongCat 同时保留完整
-frame codes 和显式拆分接口。BiCodec 的 semantic/global unit 不能无损拼成一个共享 frame 轴，
-因此只满足 structured protocol。
+没有公开独立 semantic stream，因此不声明 structured capability。LongCat 同时保留完整 frame codes
+和 semantic/acoustic 接口。BiCodec 的 semantic/global unit 不能无损拼成一个共享 frame 轴，因此只
+声明 `SEMANTIC_GLOBAL`；它不会通过 semantic/acoustic loader 暴露。
 
 ## Registry
 
-配置只保存 registry name。加载前可以查询 capability；semantic-acoustic 调用方使用窄 loader，
-传入 Stable Codec 或 DAC 时会在下载权重前明确报错：
+配置只保存 registry name。加载前可以查询 capability；调用方使用对应的窄 loader，传入不匹配的
+codec 时会在下载权重前明确报错：
 
 ```python
-from anytrain.codec import CodecCapability, capabilities, load_frame, load_semantic_acoustic
+from anytrain.codec import CodecCapability, capabilities, load_frame, load_semantic_global
 
-assert CodecCapability.SEMANTIC_ACOUSTIC in capabilities("bicodec")
-codec = load_semantic_acoustic("bicodec", device="cuda")
+assert CodecCapability.SEMANTIC_GLOBAL in capabilities("bicodec")
+codec = load_semantic_global("bicodec", device="cuda")
 frame_codec = load_frame("longcat", device="cuda")
 ```
 
@@ -113,9 +135,9 @@ registry 只保存稳定名称、capability 和默认 lazy loader，不保存 sa
 Stable Codec 的 posthoc bottleneck、LongCat decoder、UniCodec domain / bandwidth 和 DAC
 `n_quantizers` 在构造 codec 时固定，不进入公共 encode/decode 参数。
 
-完整 frame-code 路径由 `load_frame()` 提供；structured 路径由
-`load_semantic_acoustic()` 提供。两者是可重叠的 capability：LongCat 同时支持两者，
-BiCodec 只支持 structured，DAC/Stable/UniCodec 只支持 frame codes。
+完整 frame-code 路径由 `load_frame()` 提供；semantic/acoustic 与 semantic/global 路径分别由
+`load_semantic_acoustic()` 和 `load_semantic_global()` 提供。LongCat 同时支持 frame 和
+semantic/acoustic；BiCodec 只支持 semantic/global；DAC、Stable Codec 和 UniCodec 只支持 frame codes。
 
 具体 wrapper：
 

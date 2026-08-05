@@ -109,7 +109,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 
 | 模块 | 作用 |
 | --- | --- |
-| `anytrain.lightning` | Lightning logging mixin、loss summary / loss item / gradient / time-bucket logging、task-agnostic debug callback 和性能观测 callback。 |
+| `anytrain.lightning` | Lightning logging mixin、task-agnostic background materialization、loss/gradient logging、debug 和性能观测 callback。 |
 | `anytrain.lightning.schedule` | 统一 step/unit LR schedule spec、unit progress、unit LR runtime 和按 unit 停止训练。 |
 | `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
 | `anytrain.stats` | 纯 tensor 统计 helper，例如按 time bucket 聚合 loss。 |
@@ -123,7 +123,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
 | `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
 | `anytrain.tokenizer` | 依赖 `tokenizer` extra 的 codec frame BPE。 |
-| `anytrain.codec` | codec protocol、structured semantic-acoustic units、feature helper 和 lazy capability registry；具体 backend 从 `anytrain.codec.*` 子模块导入。 |
+| `anytrain.codec` | frame、semantic-acoustic 与 semantic-global codec protocol、feature helper 和 lazy capability registry；具体 backend 从 `anytrain.codec.*` 子模块导入。 |
 | `anytrain.tts` | TTS 公共协议和可选 backend adapter。 |
 | `anytrain.chat` | 可选 LLM provider 调用入口。 |
 | `anytrain.framework` | 可选研究训练范式组件。 |

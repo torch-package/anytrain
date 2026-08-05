@@ -27,7 +27,7 @@ BiCodec runtime 不依赖该 UI。
     audio_out = codec.detokenize(codes)
 
     semantic = codes.semantic
-    acoustic = codes.acoustic
+    global_codes = codes.global_codes
 
 `audio` 使用 `[batch, 1, time]` 单声道 waveform。wrapper 会重采样到 Spark-TTS 的
 16 kHz，并用上游 Wav2Vec2 特征抽取器生成 BiCodec 所需的 `feat`。默认把同一段音频裁成
@@ -45,31 +45,32 @@ reference clip 来提取说话人全局 token；如果目标音频和参考音�
 Spark-TTS BiCodec 的主边界不是 `FrameCodec` 的单个 codes Tensor，而是：
 
 - `semantic`：随时间变化的语义 token，由 BiCodec quantizer 产生。
-- `acoustic`：reference audio 产生的固定长度全局声学 token。
+- `global_codes`：reference audio 产生的固定数量全局 speaker token。
 
-规范 `SemanticAcousticCodec` 接口中，`tokenize()` 返回 `SemanticAcousticCodes`：
+规范 `SemanticGlobalCodec` 接口中，`tokenize()` 返回 `SemanticGlobalCodes`：
 
 - `semantic` 使用 `[batch, time, 1]`。
-- `acoustic` 使用 `[batch, slot, 1]`，released Spark-TTS-0.5B 固定为 32 个 slot。
-- `acoustic_layout` 是 `FIXED_LENGTH`；32 表示整段 reference 的固定 slot 数，不是
-  `32 token/s`，也不是 32 个 codebook。
+- `global_codes` 使用 `[batch, unit, 1]`，released Spark-TTS-0.5B 的
+  `global_unit_length == 32`。32 表示整段 reference 的全局 unit 数，不是 `32 token/s`，
+  也不是 32 个 codebook。
 
 released Spark-TTS-0.5B 的 semantic quantizer 使用 8192 个 token，因此 semantic ID
-范围是 `[0, 8192)`。speaker acoustic quantizer 使用一组 `levels=[4, 4, 4, 4, 4, 4]`
-的 FSQ，因此 `acoustic_codebook_sizes == (4096,)`，acoustic ID 范围是 `[0, 4096)`。
-两个字段属于独立 ID space，不能用 acoustic 的 4096 上界校验 semantic token。
+范围是 `[0, 8192)`。speaker global quantizer 使用一组 `levels=[4, 4, 4, 4, 4, 4]`
+的 FSQ，因此 `global_codebook_sizes == (4096,)`，global ID 范围是 `[0, 4096)`。
+两个字段属于独立 ID space，不能用 global 的 4096 上界校验 semantic token。
 
 上游原生 global tensor 是 `[batch, quantizer, slot]`。wrapper 在 `tokenize()` 边界转换为
 `[batch, slot, codebook]`，在 `detokenize()` 时转回上游布局。released config 使用一个 FSQ
-quantizer，因此 `acoustic_codebook_sizes` 只有一项。reference 配置当前裁成 6 秒，再压缩成固定
-32 slots；slot 数不随 reference 秒数变化。
+quantizer，因此 `global_codebook_sizes` 只有一项。reference 配置当前裁成 6 秒，再压缩成 32 个
+global units；unit 数不随 reference 秒数变化。
 
 BiCodec 提供 `tokenize()` / `detokenize(codes)` structured 接口，以及同一
-`SemanticAcousticCodec` 契约中的 acoustic feature boundary：`acoustic_codes_to_features()` 返回 `[batch, 32, latent]`
-的 global slot 特征，`decode_features()` 接收同样的独立 acoustic 轴。不要把 global slot
-广播到 semantic frame，也不要把 slot 解释成 codebook 轴。FM 因此可以在 32 个 slot 上做 flow matching；
-acoustic generator 需要为每个固定 slot 构造 condition，例如让 learned slot query 通过 masked
-cross-attention 读取完整 semantic memory。BiCodec wrapper 本身不规定训练侧 condition 结构。
+`SemanticGlobalCodec` 契约中的 global feature boundary：`global_codes_to_features()` 返回
+`[batch, 32, latent]` 的 global unit 特征，`decode_features()` 接收同样的独立 global 轴。
+不要把 global unit 广播到 semantic frame，也不要把 unit 解释成 codebook 轴。FM 因此可以在
+32 个 global units 上做 flow matching；global feature generator 需要为每个 unit 构造 condition，
+例如让 learned unit query 通过 masked cross-attention 读取完整 semantic memory。BiCodec wrapper
+本身不规定训练侧 condition 结构。
 
 ## Checkpoint 与缓存
 
