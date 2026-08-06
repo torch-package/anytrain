@@ -6,13 +6,13 @@ from anytrain.codec._registry import CodecEntry
 from anytrain.codec.protocol import AcousticLayout, AudioCapability, CodecCapability
 from anytrain.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
 
-from .assets import DEFAULT_HF_REPO_ID
+from .assets import DEFAULT_HF_REPO_ID, DEFAULT_LONGCAT_REVISION
 
 
 def _load_codec(*, device: str | TorchDevice | None = None):
     from .codec import LongCat
 
-    return LongCat.from_pretrained(device=device)
+    return LongCat.from_pretrained(device=device, revision=DEFAULT_LONGCAT_REVISION)
 
 
 ENTRY = CodecEntry(
@@ -43,7 +43,8 @@ ENTRY = CodecEntry(
     identity=AudioBackendIdentity(
         preset="longcat",
         artifact=DEFAULT_HF_REPO_ID,
+        revision=DEFAULT_LONGCAT_REVISION,
     ),
 )
 
-__all__ = ["ENTRY"]
+__all__ = ["DEFAULT_LONGCAT_REVISION", "ENTRY"]

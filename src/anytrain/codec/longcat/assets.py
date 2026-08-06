@@ -9,6 +9,7 @@ from typing import Literal
 from .._cache import hf_cache_dir, hf_file
 
 DEFAULT_HF_REPO_ID = "meituan-longcat/LongCat-Audio-Codec"
+DEFAULT_LONGCAT_REVISION = "5c2493c6c68959bd9ad4b06cc3df9292fc1d670f"
 
 LongCatDecoderName = Literal[
     "16k_4codebooks",

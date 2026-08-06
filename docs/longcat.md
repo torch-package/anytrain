@@ -36,6 +36,7 @@ checkpoint 自动下载到缓存目录。路径优先级：
 
 远程下载默认要求显式传入 Hugging Face `revision=<commit-sha>`；若需要沿用旧的浮动分支
 下载行为，必须显式传入 `allow_unpinned_revision=True`。
+内置 `longcat` preset 使用 `DEFAULT_LONGCAT_REVISION` 固定权重版本。
 
 远程服务器上推荐：
 
@@ -49,11 +50,12 @@ config 在 `$HF_HOME/longcat-audio-codec/configs`。
 ## 使用
 
 ```python
-from anytrain.codec.longcat import LongCat
+from anytrain.codec.longcat import DEFAULT_LONGCAT_REVISION, LongCat
 
 codec = LongCat.from_pretrained(
     device="cuda",
     decoder="24k_4codebooks",
+    revision=DEFAULT_LONGCAT_REVISION,
 )
 
 codes = codec.encode(

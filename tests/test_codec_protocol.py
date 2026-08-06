@@ -32,6 +32,7 @@ from anytrain.codec import (
     semantic_global_spec,
 )
 from anytrain.codec._module import validate_frame_codes
+from anytrain.codec.longcat import DEFAULT_LONGCAT_REVISION
 
 
 @pytest.fixture(autouse=True)
@@ -346,6 +347,19 @@ def test_bicodec_declares_both_directions_and_pinned_identity() -> None:
     assert identity.revision == "642071559bfc6346c2359d19dcb6be3f9dd8a05d"
 
 
+def test_longcat_declares_both_directions_and_pinned_identity() -> None:
+    assert audio_capabilities("longcat") == frozenset(
+        {AudioCapability.TOKENIZER, AudioCapability.DETOKENIZER}
+    )
+    assert can_load_audio_tokenizer("longcat")
+    assert can_load_audio_detokenizer("longcat")
+    identity = audio_backend_identity("longcat")
+    assert identity.preset == "longcat"
+    assert identity.artifact == "meituan-longcat/LongCat-Audio-Codec"
+    assert identity.revision == DEFAULT_LONGCAT_REVISION
+    assert DEFAULT_LONGCAT_REVISION == "5c2493c6c68959bd9ad4b06cc3df9292fc1d670f"
+
+
 def test_semantic_acoustic_loader_rejects_frame_only_codec_before_loading() -> None:
     with pytest.raises(ValueError, match="does not provide.*semantic_acoustic"):
         load_semantic_acoustic("dac", device="cpu")
@@ -357,7 +371,7 @@ def test_semantic_acoustic_loader_uses_lazy_longcat_loader() -> None:
         loaded = load_semantic_acoustic("longcat", device="cpu")
 
     assert loaded is backend
-    load.assert_called_once_with(device="cpu")
+    load.assert_called_once_with(device="cpu", revision=DEFAULT_LONGCAT_REVISION)
 
 
 def test_semantic_acoustic_loader_rejects_semantic_global_codec() -> None:
@@ -393,7 +407,7 @@ def test_frame_loader_uses_lazy_longcat_loader() -> None:
         loaded = load_frame("longcat", device="cpu")
 
     assert loaded is backend
-    load.assert_called_once_with(device="cpu")
+    load.assert_called_once_with(device="cpu", revision=DEFAULT_LONGCAT_REVISION)
 
 
 class _FrameBackend:
