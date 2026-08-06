@@ -57,23 +57,37 @@ class ContinuousGRPOLoss(nn.Module):
         step_mask: Tensor,
         kl_values: Tensor | None = None,
         group_mask: Tensor | None = None,
+        validate: bool = True,
     ) -> tuple[Tensor, LossDetails]:
-        _validate_step_tensors(policy_step_logps, old_step_logps, step_mask)
-        if rewards.shape != policy_step_logps.shape[:2]:
-            raise ValueError("rewards must have shape [batch, group].")
+        """Compute continuous GRPO loss.
+
+        Set ``validate=False`` only for batches whose tensor contracts have
+        already been checked by their owner.
+        """
+
+        if validate:
+            _validate_step_tensors(policy_step_logps, old_step_logps, step_mask)
+            if rewards.shape != policy_step_logps.shape[:2]:
+                raise ValueError("rewards must have shape [batch, group].")
 
         old_step_logps = old_step_logps.detach()
         rewards = rewards.detach()
-        candidate_mask = _candidate_mask(step_mask, rewards, group_mask)
+        candidate_mask = _candidate_mask(step_mask, rewards, group_mask, validate=validate)
         selected_step_mask = step_mask & candidate_mask.unsqueeze(-1)
-        _validate_selected_logps(
-            policy_step_logps,
-            old_step_logps,
-            selected_step_mask,
-        )
+        if validate:
+            _validate_selected_logps(
+                policy_step_logps,
+                old_step_logps,
+                selected_step_mask,
+            )
         policy_step_logps = policy_step_logps.masked_fill(~selected_step_mask, 0)
         old_step_logps = old_step_logps.masked_fill(~selected_step_mask, 0)
-        advantages = group_relative_advantages(rewards, candidate_mask, eps=self.eps).detach()
+        advantages = group_relative_advantages(
+            rewards,
+            candidate_mask,
+            eps=self.eps,
+            validate=validate,
+        ).detach()
         if self.adv_clip_max is not None:
             advantages = advantages.clamp(-self.adv_clip_max, self.adv_clip_max)
 
@@ -87,6 +101,7 @@ class ContinuousGRPOLoss(nn.Module):
             selected_step_mask,
             candidate_mask,
             self.step_reduction,
+            validate=validate,
         )
 
         if kl_values is None:
@@ -94,12 +109,14 @@ class ContinuousGRPOLoss(nn.Module):
                 raise ValueError("kl_values is required when kl_beta is positive.")
             kl_loss = policy_step_logps.new_zeros(())
         else:
-            _validate_kl_values(policy_step_logps, kl_values, selected_step_mask)
+            if validate:
+                _validate_kl_values(policy_step_logps, kl_values, selected_step_mask)
             kl_loss = _reduce_step_values(
                 kl_values.detach().masked_fill(~selected_step_mask, 0),
                 selected_step_mask,
                 candidate_mask,
                 self.step_reduction,
+                validate=validate,
             )
 
         total = pg_loss + policy_step_logps.new_tensor(self.kl_beta) * kl_loss
@@ -117,6 +134,7 @@ class ContinuousGRPOLoss(nn.Module):
                 selected_step_mask,
                 candidate_mask,
                 self.step_reduction,
+                validate=validate,
             ),
             "clip_fraction": (
                 (torch.abs(ratio - 1.0) > self.clip_range)
@@ -162,24 +180,28 @@ def _candidate_mask(
     step_mask: Tensor,
     rewards: Tensor,
     group_mask: Tensor | None,
+    *,
+    validate: bool,
 ) -> Tensor:
-    if rewards.device != step_mask.device:
-        raise ValueError("rewards must be on the same device as step_mask.")
-    if rewards.is_complex() or rewards.dtype == torch.bool:
-        raise TypeError("rewards must be real-valued.")
+    if validate:
+        if rewards.device != step_mask.device:
+            raise ValueError("rewards must be on the same device as step_mask.")
+        if rewards.is_complex() or rewards.dtype == torch.bool:
+            raise TypeError("rewards must be real-valued.")
     derived = step_mask.any(dim=-1)
     if group_mask is None:
         return derived
-    if not isinstance(group_mask, Tensor):
-        raise TypeError("group_mask must be a tensor.")
-    if group_mask.dtype != torch.bool:
-        raise TypeError("group_mask must be boolean.")
-    if group_mask.shape != rewards.shape:
-        raise ValueError("group_mask must have the same shape as rewards.")
-    if group_mask.device != rewards.device:
-        raise ValueError("group_mask must be on the same device as rewards.")
-    if bool((group_mask & ~derived).any()):
-        raise ValueError("group_mask cannot select candidates with no rollout steps.")
+    if validate:
+        if not isinstance(group_mask, Tensor):
+            raise TypeError("group_mask must be a tensor.")
+        if group_mask.dtype != torch.bool:
+            raise TypeError("group_mask must be boolean.")
+        if group_mask.shape != rewards.shape:
+            raise ValueError("group_mask must have the same shape as rewards.")
+        if group_mask.device != rewards.device:
+            raise ValueError("group_mask must be on the same device as rewards.")
+        if bool((group_mask & ~derived).any()):
+            raise ValueError("group_mask cannot select candidates with no rollout steps.")
     return group_mask
 
 
@@ -203,22 +225,24 @@ def _reduce_step_values(
     selected_step_mask: Tensor,
     candidate_mask: Tensor,
     reduction: StepReduction,
+    *,
+    validate: bool,
 ) -> Tensor:
     weights = selected_step_mask.to(device=value.device, dtype=value.dtype)
     if reduction == "step_mean":
         step_count = weights.sum()
-        if bool(step_count <= 0):
+        if validate and bool(step_count <= 0):
             raise ValueError("step_mask must select at least one step.")
         return (value * weights).sum() / step_count
     if reduction == "trajectory_mean":
         step_counts = weights.sum(dim=-1)
-        if bool((step_counts.masked_select(candidate_mask) <= 0).any()):
+        if validate and bool((step_counts.masked_select(candidate_mask) <= 0).any()):
             raise ValueError("selected candidates must contain at least one rollout step.")
         trajectory_value = (value * weights).sum(dim=-1) / step_counts.clamp_min(1)
-        selected = trajectory_value.masked_select(candidate_mask)
-        if not bool(selected.numel()):
+        candidate_weights = candidate_mask.to(dtype=trajectory_value.dtype)
+        if validate and bool(candidate_weights.sum() <= 0):
             raise ValueError("group_mask must select at least one candidate.")
-        return selected.mean()
+        return (trajectory_value * candidate_weights).sum() / candidate_weights.sum().clamp_min(1)
     raise ValueError("step_reduction must be 'step_mean' or 'trajectory_mean'.")
 
 

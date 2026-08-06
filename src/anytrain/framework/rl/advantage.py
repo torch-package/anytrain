@@ -9,23 +9,29 @@ def group_relative_advantages(
     group_mask: Tensor | None = None,
     *,
     eps: float = 1e-8,
+    validate: bool = True,
 ) -> Tensor:
-    """Normalize rewards within each prompt group."""
+    """Normalize rewards within each prompt group.
 
-    if not isinstance(rewards, Tensor):
-        raise TypeError("rewards must be a tensor.")
-    if rewards.ndim != 2:
-        raise ValueError("rewards must have shape [batch, group].")
-    if rewards.is_complex() or rewards.dtype == torch.bool:
-        raise TypeError("rewards must be real-valued.")
-    if eps <= 0:
-        raise ValueError("eps must be positive.")
-    mask = _candidate_mask(rewards, group_mask)
-    if not bool(torch.isfinite(rewards.masked_select(mask)).all()):
+    Set ``validate=False`` only when the caller owns the reward and mask
+    contracts for a trusted training batch.
+    """
+
+    if validate:
+        if not isinstance(rewards, Tensor):
+            raise TypeError("rewards must be a tensor.")
+        if rewards.ndim != 2:
+            raise ValueError("rewards must have shape [batch, group].")
+        if rewards.is_complex() or rewards.dtype == torch.bool:
+            raise TypeError("rewards must be real-valued.")
+        if eps <= 0:
+            raise ValueError("eps must be positive.")
+    mask = _candidate_mask(rewards, group_mask, validate=validate)
+    if validate and not bool(torch.isfinite(rewards.masked_select(mask)).all()):
         raise ValueError("selected rewards must be finite.")
 
     counts = mask.to(dtype=rewards.dtype).sum(dim=1)
-    if bool((counts < 2).any()):
+    if validate and bool((counts < 2).any()):
         raise ValueError("each reward group must contain at least two valid candidates.")
 
     safe_rewards = rewards.masked_fill(~mask, 0)
@@ -37,17 +43,18 @@ def group_relative_advantages(
     return advantages.masked_fill(~mask, 0)
 
 
-def _candidate_mask(rewards: Tensor, group_mask: Tensor | None) -> Tensor:
+def _candidate_mask(rewards: Tensor, group_mask: Tensor | None, *, validate: bool) -> Tensor:
     if group_mask is None:
         return torch.ones_like(rewards, dtype=torch.bool)
-    if not isinstance(group_mask, Tensor):
-        raise TypeError("group_mask must be a tensor.")
-    if group_mask.dtype != torch.bool:
-        raise TypeError("group_mask must be boolean.")
-    if group_mask.shape != rewards.shape:
-        raise ValueError("group_mask must have the same shape as rewards.")
-    if group_mask.device != rewards.device:
-        raise ValueError("group_mask must be on the same device as rewards.")
+    if validate:
+        if not isinstance(group_mask, Tensor):
+            raise TypeError("group_mask must be a tensor.")
+        if group_mask.dtype != torch.bool:
+            raise TypeError("group_mask must be boolean.")
+        if group_mask.shape != rewards.shape:
+            raise ValueError("group_mask must have the same shape as rewards.")
+        if group_mask.device != rewards.device:
+            raise ValueError("group_mask must be on the same device as rewards.")
     return group_mask
 
 

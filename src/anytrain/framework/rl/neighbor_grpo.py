@@ -66,30 +66,51 @@ class NeighborGRPOLoss(nn.Module):
         kl_values: Tensor | None = None,
         group_mask: Tensor | None = None,
         anchor_mask: Tensor | None = None,
+        validate: bool = True,
     ) -> tuple[Tensor, LossDetails]:
-        _validate_neighbor_tensors(policy_neighbor_logps, old_neighbor_logps, neighbor_mask)
-        if rewards.shape != _candidate_shape(policy_neighbor_logps):
-            raise ValueError("rewards must have shape [batch, group].")
+        """Compute neighbor GRPO loss.
+
+        Set ``validate=False`` only for batches whose tensor contracts have
+        already been checked by their owner.
+        """
+
+        if validate:
+            _validate_neighbor_tensors(policy_neighbor_logps, old_neighbor_logps, neighbor_mask)
+            if rewards.shape != _candidate_shape(policy_neighbor_logps):
+                raise ValueError("rewards must have shape [batch, group].")
 
         old_neighbor_logps = old_neighbor_logps.detach()
         rewards = rewards.detach()
-        candidate_mask = _candidate_mask(neighbor_mask, rewards, group_mask)
-        selected_anchor_mask = _anchor_mask(neighbor_mask, anchor_mask)
+        candidate_mask = _candidate_mask(neighbor_mask, rewards, group_mask, validate=validate)
+        selected_anchor_mask = _anchor_mask(neighbor_mask, anchor_mask, validate=validate)
         selected_neighbor_mask = _selected_neighbor_mask(
             neighbor_mask,
             candidate_mask,
             selected_anchor_mask,
+            validate=validate,
         )
-        _validate_selected_logps(
-            policy_neighbor_logps,
-            old_neighbor_logps,
-            selected_neighbor_mask,
+        if validate:
+            _validate_selected_logps(
+                policy_neighbor_logps,
+                old_neighbor_logps,
+                selected_neighbor_mask,
+            )
+        # Padding entries may be non-finite. Keep them out of ratio arithmetic
+        # and preserve zero gradients for candidates excluded by the masks.
+        policy_neighbor_logps = policy_neighbor_logps.masked_fill(
+            ~selected_neighbor_mask,
+            0,
+        )
+        old_neighbor_logps = old_neighbor_logps.masked_fill(
+            ~selected_neighbor_mask,
+            0,
         )
         advantages = _advantages(
             rewards,
             candidate_mask,
             eps=self.eps,
             norm_p=self.advantage_norm_p,
+            validate=validate,
         ).detach()
         if self.adv_clip_max is not None:
             advantages = advantages.clamp(-self.adv_clip_max, self.adv_clip_max)
@@ -106,6 +127,7 @@ class NeighborGRPOLoss(nn.Module):
             policy_loss,
             selected_neighbor_mask,
             self.neighbor_reduction,
+            validate=validate,
         )
 
         if kl_values is None:
@@ -113,11 +135,13 @@ class NeighborGRPOLoss(nn.Module):
                 raise ValueError("kl_values is required when kl_beta is positive.")
             kl_loss = policy_neighbor_logps.new_zeros(())
         else:
-            _validate_kl_values(policy_neighbor_logps, kl_values, selected_neighbor_mask)
+            if validate:
+                _validate_kl_values(policy_neighbor_logps, kl_values, selected_neighbor_mask)
             kl_loss = _reduce_neighbor_values(
-                kl_values.detach(),
+                kl_values.detach().masked_fill(~selected_neighbor_mask, 0),
                 selected_neighbor_mask,
                 self.neighbor_reduction,
+                validate=validate,
             )
 
         total = pg_loss + policy_neighbor_logps.new_tensor(self.kl_beta) * kl_loss
@@ -134,6 +158,7 @@ class NeighborGRPOLoss(nn.Module):
                 log_ratio.square(),
                 selected_neighbor_mask,
                 self.neighbor_reduction,
+                validate=validate,
             ),
             "clip_fraction": (
                 (torch.abs(ratio - 1.0) > self.clip_range)
@@ -222,41 +247,51 @@ def _candidate_mask(
     neighbor_mask: Tensor,
     rewards: Tensor,
     group_mask: Tensor | None,
+    *,
+    validate: bool,
 ) -> Tensor:
-    if rewards.device != neighbor_mask.device:
-        raise ValueError("rewards must be on the same device as neighbor_mask.")
-    if rewards.is_complex() or rewards.dtype == torch.bool:
-        raise TypeError("rewards must be real-valued.")
+    if validate:
+        if rewards.device != neighbor_mask.device:
+            raise ValueError("rewards must be on the same device as neighbor_mask.")
+        if rewards.is_complex() or rewards.dtype == torch.bool:
+            raise TypeError("rewards must be real-valued.")
     derived = neighbor_mask.any(dim=(1, 2))
     if group_mask is None:
         return derived
-    if not isinstance(group_mask, Tensor):
-        raise TypeError("group_mask must be a tensor.")
-    if group_mask.dtype != torch.bool:
-        raise TypeError("group_mask must be boolean.")
-    if group_mask.shape != rewards.shape:
-        raise ValueError("group_mask must have the same shape as rewards.")
-    if group_mask.device != rewards.device:
-        raise ValueError("group_mask must be on the same device as rewards.")
-    if bool((group_mask & ~derived).any()):
-        raise ValueError("group_mask cannot select candidates with no neighbor comparisons.")
+    if validate:
+        if not isinstance(group_mask, Tensor):
+            raise TypeError("group_mask must be a tensor.")
+        if group_mask.dtype != torch.bool:
+            raise TypeError("group_mask must be boolean.")
+        if group_mask.shape != rewards.shape:
+            raise ValueError("group_mask must have the same shape as rewards.")
+        if group_mask.device != rewards.device:
+            raise ValueError("group_mask must be on the same device as rewards.")
+        if bool((group_mask & ~derived).any()):
+            raise ValueError("group_mask cannot select candidates with no neighbor comparisons.")
     return group_mask
 
 
-def _anchor_mask(neighbor_mask: Tensor, anchor_mask: Tensor | None) -> Tensor:
+def _anchor_mask(
+    neighbor_mask: Tensor,
+    anchor_mask: Tensor | None,
+    *,
+    validate: bool,
+) -> Tensor:
     derived = neighbor_mask.any(dim=(2, 3))
     if anchor_mask is None:
         return derived
-    if not isinstance(anchor_mask, Tensor):
-        raise TypeError("anchor_mask must be a tensor.")
-    if anchor_mask.dtype != torch.bool:
-        raise TypeError("anchor_mask must be boolean.")
-    if anchor_mask.shape != derived.shape:
-        raise ValueError("anchor_mask must have shape [batch, anchors].")
-    if anchor_mask.device != neighbor_mask.device:
-        raise ValueError("anchor_mask must be on the same device as neighbor_mask.")
-    if bool((anchor_mask & ~derived).any()):
-        raise ValueError("anchor_mask cannot select anchors with no neighbor comparisons.")
+    if validate:
+        if not isinstance(anchor_mask, Tensor):
+            raise TypeError("anchor_mask must be a tensor.")
+        if anchor_mask.dtype != torch.bool:
+            raise TypeError("anchor_mask must be boolean.")
+        if anchor_mask.shape != derived.shape:
+            raise ValueError("anchor_mask must have shape [batch, anchors].")
+        if anchor_mask.device != neighbor_mask.device:
+            raise ValueError("anchor_mask must be on the same device as neighbor_mask.")
+        if bool((anchor_mask & ~derived).any()):
+            raise ValueError("anchor_mask cannot select anchors with no neighbor comparisons.")
     return anchor_mask
 
 
@@ -264,11 +299,14 @@ def _selected_neighbor_mask(
     neighbor_mask: Tensor,
     candidate_mask: Tensor,
     anchor_mask: Tensor,
+    *,
+    validate: bool,
 ) -> Tensor:
-    if bool((neighbor_mask & ~candidate_mask[:, None, None, :]).any()):
-        raise ValueError("neighbor_mask cannot select candidates outside group_mask.")
-    if bool((neighbor_mask & ~anchor_mask[:, :, None, None]).any()):
-        raise ValueError("neighbor_mask cannot select anchors outside anchor_mask.")
+    if validate:
+        if bool((neighbor_mask & ~candidate_mask[:, None, None, :]).any()):
+            raise ValueError("neighbor_mask cannot select candidates outside group_mask.")
+        if bool((neighbor_mask & ~anchor_mask[:, :, None, None]).any()):
+            raise ValueError("neighbor_mask cannot select anchors outside anchor_mask.")
     return neighbor_mask & candidate_mask[:, None, None, :] & anchor_mask[:, :, None, None]
 
 
@@ -289,14 +327,15 @@ def _advantages(
     *,
     eps: float,
     norm_p: float,
+    validate: bool,
 ) -> Tensor:
     if norm_p == 2.0:
-        return group_relative_advantages(rewards, group_mask, eps=eps)
+        return group_relative_advantages(rewards, group_mask, eps=eps, validate=validate)
 
-    if not bool(torch.isfinite(rewards.masked_select(group_mask)).all()):
+    if validate and not bool(torch.isfinite(rewards.masked_select(group_mask)).all()):
         raise ValueError("selected rewards must be finite.")
     counts = group_mask.to(dtype=rewards.dtype).sum(dim=1)
-    if bool((counts < 2).any()):
+    if validate and bool((counts < 2).any()):
         raise ValueError("each reward group must contain at least two valid candidates.")
     safe_rewards = rewards.masked_fill(~group_mask, 0)
     mean = safe_rewards.sum(dim=1, keepdim=True) / counts.unsqueeze(1)
@@ -329,22 +368,28 @@ def _reduce_neighbor_values(
     value: Tensor,
     selected_mask: Tensor,
     reduction: NeighborReduction,
+    *,
+    validate: bool,
 ) -> Tensor:
     resolved = cast(NeighborReduction, reduction)
     weights = selected_mask.to(device=value.device, dtype=value.dtype)
+    safe_value = value.masked_fill(~selected_mask, 0)
     if resolved == "neighbor_mean":
         neighbor_count = weights.sum()
-        if bool(neighbor_count <= 0):
+        if validate and bool(neighbor_count <= 0):
             raise ValueError("neighbor_mask must select at least one neighbor comparison.")
-        return (value * weights).sum() / neighbor_count
+        return (safe_value * weights).sum() / neighbor_count
     if resolved == "anchor_step_mean":
         neighbor_counts = weights.sum(dim=-1)
         valid_anchor_steps = neighbor_counts > 0
-        anchor_step_value = (value * weights).sum(dim=-1) / neighbor_counts.clamp_min(1)
+        anchor_step_value = (safe_value * weights).sum(dim=-1) / neighbor_counts.clamp_min(1)
         selected = anchor_step_value.masked_select(valid_anchor_steps)
-        if not bool(selected.numel()):
+        if validate and not bool(selected.numel()):
             raise ValueError("neighbor_mask must select at least one anchor-step comparison.")
-        return selected.mean()
+        # ``valid_anchor_steps`` is a device mask; use a weighted reduction so
+        # trusted calls do not materialize a dynamic host-side predicate.
+        weights = valid_anchor_steps.to(dtype=anchor_step_value.dtype)
+        return (anchor_step_value * weights).sum() / weights.sum().clamp_min(1)
     raise ValueError("neighbor_reduction must be 'neighbor_mean' or 'anchor_step_mean'.")
 
 

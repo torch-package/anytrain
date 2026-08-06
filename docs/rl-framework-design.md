@@ -33,6 +33,14 @@ anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate�
 anytrain.framework.__init__ 不默认导出 RL 子模块，用户需要显式导入
 anytrain.framework.rl。
 
+## Trusted training path
+
+`DPOLoss`、`GRPOLoss`、`ContinuousGRPOLoss` 和 `NeighborGRPOLoss` 的 forward 都默认
+`validate=True`：它们会检查 tensor 形状、device、dtype、mask 约束和有效位置的有限性。
+下游 datamodule / objective 已在进入 loss 前建立同一契约时，可显式传
+`validate=False`。该可信路径跳过这些重复检查，避免训练热路径把 GPU 标量带回主机；它
+不是容错模式，错误形状、非法 mask 或非有限值的结果未定义，必须由调用方负责拒绝。
+
 ## Rollout tensor contracts
 
 `RolloutBatch`、`ContinuousRolloutBatch` 和 `NeighborRolloutBatch` 只描述进入 loss
@@ -256,10 +264,11 @@ anytrain.framework.rl
 ```
 
 `anytrain.framework.rl` 只保留 tensor-level objective 和最小 typed contract，不出现
-semantic code、acoustic code、source speech、ASR、speaker 或任务 prompt 字段。
+semantic code、acoustic/global code、source speech、ASR、speaker 或任务 prompt 字段。
 
-`semantic-acoustic-codec.rl` 拥有 semantic/acoustic codec rollout source。它可以定义
-SAC 自己的 request、candidate、reward components 和 adapter，例如：
+`semantic-acoustic-codec.rl` 拥有 structured codec rollout source，包括 frame-aligned
+semantic/acoustic 与 independent semantic/global contract。它可以定义 SAC 自己的 request、
+candidate、reward components 和 adapter，例如：
 
 ```python
 class SACRLAdapter:
@@ -274,7 +283,7 @@ class SACRLAdapter:
     def to_neighbor_grpo_batch(self, candidates, rewards) -> NeighborRolloutBatch: ...
 ```
 
-SAC adapter 可以知道 structured codec 的 semantic ids、acoustic ids/features、decode
+SAC adapter 可以知道 structured codec 的 semantic ids、acoustic/global ids/features、decode
 audio、decode_ok、old log-prob / old distance、codec metadata 和 codec-specific reward。
 它最终只把这些领域对象降维成 `anytrain.framework.rl` 的 tensor batch。
 

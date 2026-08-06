@@ -35,17 +35,26 @@ class DPOLoss(nn.Module):
         policy_rejected_logps: Tensor,
         ref_chosen_logps: Tensor | None = None,
         ref_rejected_logps: Tensor | None = None,
+        validate: bool = True,
     ) -> tuple[Tensor, LossDetails]:
-        _validate_pair(policy_chosen_logps, policy_rejected_logps, name="policy")
+        """Compute DPO loss.
+
+        Set ``validate=False`` only when the caller has already established the
+        tensor shape, device, dtype, and finiteness contracts for this batch.
+        """
+
+        if validate:
+            _validate_pair(policy_chosen_logps, policy_rejected_logps, name="policy")
         policy_margin = policy_chosen_logps - policy_rejected_logps
         if self.reference_free:
             reference_margin = torch.zeros_like(policy_margin)
         else:
             if ref_chosen_logps is None or ref_rejected_logps is None:
                 raise ValueError("reference log-probs are required unless reference_free=True.")
-            _validate_pair(ref_chosen_logps, ref_rejected_logps, name="reference")
-            if ref_chosen_logps.shape != policy_chosen_logps.shape:
-                raise ValueError("reference and policy log-probs must have the same shape.")
+            if validate:
+                _validate_pair(ref_chosen_logps, ref_rejected_logps, name="reference")
+                if ref_chosen_logps.shape != policy_chosen_logps.shape:
+                    raise ValueError("reference and policy log-probs must have the same shape.")
             reference_margin = (ref_chosen_logps - ref_rejected_logps).detach()
 
         logits = self.beta * (policy_margin - reference_margin)
