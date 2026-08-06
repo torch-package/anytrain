@@ -312,6 +312,7 @@ observation.registry.register(
         observation.OutputObservation(
             name="routing",
             collect=_collect_observation,
+            reduction=observation.Reduction.Mean,
             recommended=True,
         ),
     ),

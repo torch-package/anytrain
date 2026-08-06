@@ -16,7 +16,8 @@ registry + `ObservationCallback` 是 anytrain 内 module 中间量 logging 的�
 logger callback、monitor adapter、training-output 自动发现或额外 forward。声明必须只读，不修改 output/state、
 不保留 autograd graph，并按来源选择：module 自然持有的跨 forward 状态用 `StateObservation`；能从
 inputs/kwargs/output 提取的调用边界值用 `OutputObservation`；forward 局部量用 `ForwardEvent` 并在产生处
-调用 `observation.emit()`。不得为了 logging 增加 `self.last_*` 缓存。值类型使用稳定 name/schema：scalar →
+调用 `observation.emit()`。Output/Event 注册时必须显式选择 `Last`、`Mean` 或 `Merge` reduction，不能由
+callback 猜测。不得为了 logging 增加 `self.last_*` 缓存。值类型使用稳定 name/schema：scalar →
 `Curve`，明确的一维连续 view → `Distribution`，离散 codes → `Bins`；二维图使用 `Heatmap`，但 module 必须
 先显式选择 sample/head/crop，任意高维连续值仍不得自动 flatten。module aux loss 属 task/loss 组合，不作为
 中间量自动接入训练目标或日志。
@@ -86,7 +87,7 @@ observation EMA。
 
 - Token MoE：`MoE(..., expert=linear, weight=(N, out, in), top_k=2)`；需要对齐某个 `nn.Linear` 时可用 `expand_expert` 便利构造。
 - Dynamic conv：`MoE(..., expert=Conv1dExpert(...), weight=..., grid=Grid1d(...), top_k=None)`；对齐某个 `nn.Conv1d` 时可用 `expand_expert`，自定义 cell 算子用 `CallableExpert`（native-resolution）或自实现 `Expert.bind`。
-- `MoE` 在定义旁注册 `OutputObservation` routing observation；普通 `moe(...)` 调用由 `ObservationCallback` 记录
+- `MoE` 在定义旁注册 `Reduction.Mean` 的 `OutputObservation` routing observation；普通 `moe(...)` 调用由 `ObservationCallback` 记录
   effective experts、usage、gate probability、route weight、tokens 和 dropped ratio 的 scalar summary。
   `moe_loss()` 仍是显式 helper，MoE forward 不自动修改训练目标；aux loss 由下游 loss/self.log 处理。
 
@@ -173,7 +174,7 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
   和 `quantization_loss_metrics()` 负责生成稳定相对 metric key。它们不依赖 Lightning，也不会触发
   quantizer forward；需要手工统计时由调用方直接使用这些纯 helper。
 - 六个公开 quantizer 都在 class 定义旁通过 `anytrain.observation.registry` 声明推荐
-  `OutputObservation`。普通
+  `OutputObservation`：codes 使用 `Reduction.Merge + EMAHistory`，loss scalar 使用 `Reduction.Mean`。普通
   `quantizer(...)` 调用可由 `ObservationCallback` 自动记录 quantization loss curve，以及 codes
   的 step/EMA bins、occupied/dead、entropy、perplexity 和 active ratio；residual 外层声明覆盖内部 stage，
   避免重复统计。被观测的训练路径必须走 `quantizer(...)`；直接调用 `.quantize()` 或 `.forward()`

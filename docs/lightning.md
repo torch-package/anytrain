@@ -284,10 +284,25 @@ trainer = pl.Trainer(
 )
 ```
 
+同一个 module 同时用于 train/validation 或同一步存在多个语义调用时，用 observation context 给整棵调用树
+增加公共前缀：
+
+```python
+from anytrain import observation
+
+with observation.context("reconstruction"):
+    loss = self.reconstruction_loss(prediction, target)
+```
+
+父 loss、child term 和 forward event 会共享前缀；callback 根据当前 stage 记录为
+`train/reconstruction/...` 或 `val/reconstruction/...`。validation observation 在 validation epoch 结束时
+独立归约；没有显式 context 时使用 `val/...`。context 不写入 module state。
+
 值类型和历史语义固定为：
 
-- `Curve` 接受 scalar Tensor；同一个 optimizer step 内多次 State/Output/Event observation 取 mean，
-  只记录曲线，不维护跨 step EMA。
+- `Curve` 接受 scalar Tensor；`OutputObservation` / `ForwardEvent` 注册时必须显式选择
+  `Reduction.Last` 或 `Reduction.Mean`，分别表示保留提交窗口最后一次或按 emission 等权平均。它只记录
+  曲线，不维护跨窗口 EMA。
 - `Distribution` 接受 1-D floating Tensor 和固定 edges；多维连续 Tensor 必须由 module 先选择明确
   view，不能隐式 flatten。
 - `Profile` 接受等长的 1-D floating values/coordinates 和固定 coordinate edges，记录各 interval 的
@@ -295,10 +310,16 @@ trainer = pl.Trainer(
 - `Bins` 接受任意 rank 的离散 Tensor。多 codebook 时用 `group_dim` 指出 codebook 轴，bin 数可以
   大于 1，也可以在不同 group 间不同。
 - `Heatmap` 接受 module 已明确选择 sample/head/crop 后的非空 2-D floating Tensor，不维护 EMA，所属 spec
-  必须 `history=None`；固定 `value_range` 时不同 step 的颜色可比较。同一步同一 key 多次产生时保留第一次。
+  必须使用 `Reduction.Last` 且 `history=None`；固定 `value_range` 时不同 step 的颜色可比较。同一提交窗口
+  同一 key 多次产生时保留最后一次。
 - `Distribution` / `Profile` / `Bins` 每个 optimizer step 都先形成固定大小的 sufficient stats，再维护
   EMA；派生指标从 step/EMA state 现算。`Distribution` / `Bins` 输出 entropy、perplexity 和 active ratio，
   `Bins` 额外输出 occupied/dead count 与 ratio，`Profile` 输出各 coordinate bin 的 count/mean/std。
+
+这里的提交窗口在 train 是一个 optimizer step，在 validation 是一个 epoch；不是 `every_n_steps` render
+interval。`OutputObservation` / `ForwardEvent` 的 histogram 类型使用 `Reduction.Merge + EMAHistory`。
+`Mean` 不推断 batch/count 权重；一个 mapping spec 的所有 value 必须兼容同一个 reduction。`StateObservation`
+每个边界只 poll 一次，按值类型自然采用 snapshot 或 merge。
 
 callback 默认只在 global rank 0 的 `on_fit_start` 扫描 `pl_module.named_modules()`；
 `sync_distributed=True` 时才在所有 rank 扫描和注册。module class 在实现旁通过唯一
@@ -331,10 +352,12 @@ Heatmap 只在 render step 由 global rank 0 生成独立 CPU image，并通过 
 和 histogram backend 错误。`max_heatmap_elements` 超限时要求 module 选择更小的二维语义 view，不自动
 flatten、resize 或 sample。
 
-默认 `sync_distributed=False`，只维护并输出 global-zero rank 的本地诊断。开启后 callback 会先同步
+默认 `sync_distributed=False`，只维护并输出 global-zero rank 的本地诊断。train 和 validation 分别维护
+pending state 与归约时钟；开启 distributed 同步后 callback 会先同步
 collector/record 错误，再确认所有 rank 拥有相同累计 observation key/schema/source identity，并在该
 optimizer step 产生相同 emitted key 集合，之后才 sum sufficient stats；条件 module 调用或动态 mapping
-必须在各 rank 保持一致，否则同步失败并显式报错。
+必须在各 rank 保持一致，否则同步失败并显式报错。reduction 也是 distributed schema 的一部分；
+`Last` Curve 先保留各 rank 的本地最后一次，再对 rank-local last 求均值。
 内部 state key 与 Curve、step/EMA histogram scalar、raw histogram 的最终 logger tag 都要求全局唯一；
 不同 module/spec 路径归一化到同一个实际 tag 时会立即报错，不会静默覆盖。
 

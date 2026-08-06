@@ -50,9 +50,13 @@ observation.registry.register(
         observation.OutputObservation(
             "routing",
             _collect_router,
+            reduction=observation.Reduction.Mean,
             recommended=True,
         ),
-        observation.ForwardEvent("attention"),
+        observation.ForwardEvent(
+            "attention",
+            reduction=observation.Reduction.Last,
+        ),
     ),
 )
 ```
@@ -71,16 +75,52 @@ logger callback、monitor adapter、training-output 自动发现或额外 forwar
 - 只存在于 forward 局部作用域、没有出现在调用边界的值用 `ForwardEvent`，并在产生处调用
   `observation.emit(self, name, value)`。
 
+`OutputObservation` 和 `ForwardEvent` 注册时必须显式选择 `reduction`，不能由 callback 根据 tensor shape
+猜测。`StateObservation` 每个提交边界只 poll 一次，因此不增加 reduction 字段。
+
+调用方可以用动态 context 给一次完整 module 调用树增加公共前缀：
+
+```python
+from anytrain import observation
+
+with observation.context("reconstruction"):
+    loss = loss_fn(prediction, target)
+```
+
+context 使用 `ContextVar` 传播并支持嵌套；父 module、child module 的 `OutputObservation` 和 forward
+内部发布的 `ForwardEvent` 都读取同一个调用上下文。Lightning transport 再添加 stage 前缀，因此上例在
+train/validation 分别记录到 `train/reconstruction/...` 和 `val/reconstruction/...`。context 在退出
+`with` 后立即恢复，不写入 module 状态，也不保存所谓“上一次 forward”值。validation 没有显式 context
+时默认使用 `val/...`。
+
 collector 和 event 都必须只读，不修改 output/state，也不能参与 forward 返回值。scalar 使用 `Curve`，明确的
 一维连续 view 使用 `Distribution`，一维数值按另一条连续坐标分段统计时使用 `Profile`，离散 codes 使用
 `Bins`。多维连续 tensor 不能自动 flatten；真正需要看图时，module 必须先选定 sample/head/crop，得到语义明确的
 二维 `Heatmap`。module 外计算的 aux loss、最终 evaluator、性能指标和 loss-to-parameter gradient 不属于
 中间变量入口。
 
+## Reduction
+
+reduction 折叠的是同一 source 在一个提交窗口内的重复 observation：train 窗口是一个 optimizer step，包含
+gradient accumulation 的多次 forward；validation 窗口是一个 validation epoch。它不是
+`every_n_steps` 控制的 render interval，也不是 DDP rank 间的 reduction。
+
+- `Reduction.Last`：只支持 `Curve` / `Heatmap`，保留窗口内最后一次 emission。
+- `Reduction.Mean`：只支持 `Curve`，按 emission 等权求算术平均；不根据 batch size、mask count 或 tensor
+  shape 推断权重。
+- `Reduction.Merge`：只支持 `Distribution` / `Profile` / `Bins`，合并 fixed-size sufficient statistics。
+
+`Merge` 必须同时声明 `EMAHistory`；`Last` / `Mean` 不允许 history。一个 spec 返回 mapping 时，reduction
+分别作用于每个 item，但整个 spec 只有一个 reduction，因此所有 value 都必须与它兼容；同一窗口内 mapping
+keys 应保持稳定。需要同时记录 scalar 和 histogram 时拆成两个 spec。
+
+`StateObservation` 在边界只读取一次：`Curve` / `Heatmap` 自然按 snapshot 处理，
+`Distribution` / `Profile` / `Bins` 自然 merge；history 约束仍在首次读到值时校验。
+
 ## 日志值
 
-- `Curve`：0-D real Tensor。一个 optimizer step 内多次调用取 mean，跨 step 的历史由 logger
-  曲线本身保存，不维护 EMA。
+- `Curve`：0-D real Tensor。重复值由 spec 显式选择 `Last` 或 `Mean`；跨提交窗口的历史由 logger 曲线本身
+  保存，不维护 EMA。
 - `Distribution`：1-D floating Tensor，并显式提供固定 histogram edges。多维连续 tensor 不会
   自动 flatten；调用方必须先选择明确的 view。
 - `Profile`：等长、非空、同 device 的 1-D floating `values` / `coordinates`，并显式提供固定 coordinate
@@ -94,8 +134,8 @@ collector 和 event 都必须只读，不修改 output/state，也不能参与 f
 - `Heatmap`：非空 2-D floating Tensor。module 必须先选择 sample、head 和空间范围，不能把任意高维
   tensor 直接交给 logger。`value_range` 固定时不同 step 的颜色可比较；传 `None` 时每张图按自身有限
   min/max 缩放。同一 key 的 shape、dtype 和 `value_range` 在一次运行内必须稳定。Heatmap 不维护 EMA，
-  所属 spec 的 `history` 必须为 `None`，需要同时记录 histogram 时拆成另一个 spec。同一个 optimizer step
-  同一 key 多次产生时固定保留第一次。
+  所属 spec 使用 `Reduction.Last` 且 `history` 必须为 `None`，需要同时记录 histogram 时拆成另一个 spec。
+  同一提交窗口同一 key 多次产生时保留最后一次。
 
 `Distribution`、`Profile` 和 `Bins` 在 callback 消费时立即转换成固定大小的 sufficient statistics，
 不保留 forward output 或 autograd graph。历史使用 `EMAHistory(half_life_steps=...)`，日志明确区分
@@ -148,15 +188,16 @@ trainer = pl.Trainer(
 
 callback 在 `on_fit_start` 遍历 `pl_module.named_modules()`，按 concrete type 查询 registry，并用完整
 module path 绑定 state/output/event collector。默认只有 global rank 0 绑定；`sync_distributed=True` 时才在
-所有 rank 绑定并同步状态。每个需要 EMA history 的 Distribution/Profile/Bins 每个 train batch 都收集；无 history 的
-State/Output collector 只在即将 render 的 optimizer step 调用。`ForwardEvent` 的 `emit()` 仍由 module 在
-所有 rank 无条件执行，但 callback 在非 render step 直接丢弃 payload，不做 detach、统计或图片转换。
-只有 `trainer.global_step` 前进时才提交
-optimizer-step snapshot 和更新 EMA；`every_n_steps` 控制 render，默认每 100 个 optimizer step 输出一次，
-传 `None` 完全关闭 render 和无 history collector。EMA state 随 callback checkpoint 保存，
-pending microbatch state、Curve、Heatmap 和 runtime binding 不保存。每个 histogram 同时保存稳定的
-`module_path/spec_name/item` source identity，恢复时不靠 slash prefix 猜测 collector；`tag` 是 callback
-identity。render cadence 可以改变，half-life 和 distributed 语义必须兼容。
+所有 rank 绑定并同步状态。train observation 按 optimizer step 归约，`every_n_steps` 控制 render；validation
+observation 在 validation epoch 结束时独立归约并使用独立 EMA clock，不会和 train pending state 混合；
+`every_n_steps` 只控制 train render，validation 始终按 epoch 提交。
+每个需要 EMA history 的 Distribution/Profile/Bins 在对应 stage 的每次调用中收集；train 下无 history 的
+State/Output collector 只在即将 render 的 optimizer step 调用，validation 则在当前 validation epoch 收集。
+`ForwardEvent` 的 `emit()` 仍由 module 在所有 rank 无条件执行，callback 不采集时直接丢弃 payload。
+EMA state 随 callback checkpoint 保存，pending microbatch/validation state、Curve、Heatmap 和 runtime binding
+不保存。每个 histogram 同时保存稳定的 `stage/context/module_path/spec_name/item` source identity，恢复时不靠
+slash prefix 猜测 collector；`tag` 是 callback identity。render cadence 可以改变，half-life 和 distributed
+语义必须兼容。
 
 每次 render 还会在同一次 `log_dict()` 中输出 callback 自身的 `module/observation_time` 曲线（`module`
 由 `tag` 参数决定）。它累计该 render interval 内所有 module collector、state/EMA 更新、distributed
@@ -167,12 +208,13 @@ checkpoint；`sync_distributed=True` 时各 rank 各自计时，默认可见的�
 
 `sync_distributed=False` 默认只维护并输出 global-zero rank 的本地诊断。显式开启时，每个已发现 observer 必须
 在所有 rank 以一致结构调用；callback 先同步 collector/record 错误，再 all-gather 累计 key/schema、稳定 source
-identity 和当前 optimizer step 实际 emitted key 集合的 signature，确认一致后再 sum sufficient stats、更新相同
-EMA 和计算派生指标。这样单 rank collector 失败不会让其它 rank 继续进入不同的 collective；也避免历史上曾
+identity、reduction 和当前 optimizer step 实际 emitted key 集合的 signature，确认一致后再 sum sufficient
+stats、更新相同 EMA 和计算派生指标。`Last` Curve 先在每个 rank 保留本地最后一次，再对各 rank 的 last
+求均值。这样单 rank collector 失败不会让其它 rank 继续进入不同的 collective；也避免历史上曾
 出现过的 key 在当前 step 只由部分 rank 再次产生，或不同 source 恰好拼成同一 state key 时静默通过。
 
 Heatmap 的 key、shape、dtype 和 `value_range` 也进入 distributed schema；像素不跨 rank 归约，只由
-global rank 0 在首次有效 observation 时转换为 detached、独立的 CPU float image，并通过 logger experiment 的
+global rank 0 将提交窗口内最后一次有效 observation 转换为 detached、独立的 CPU float image，并通过 logger experiment 的
 `add_image(..., dataformats="HW")` 写出。实际有 Heatmap 需要 render 但 backend 不提供 `add_image()` 时明确
 报错；distributed 模式会先完成 schema preflight，再把 image/histogram writer 的 discovery、materialization
 和 write 错误同步给所有 rank，避免单 rank 提前退出 collective。`max_heatmap_elements` 限制二维 view 的总元素数，超限时要求 module 显式选择

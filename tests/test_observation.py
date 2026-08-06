@@ -36,6 +36,28 @@ def _curve(
 
 
 class ObservationTypeTest(unittest.TestCase):
+    def test_context_prefix_is_nested_and_restored(self):
+        self.assertEqual(observation.context_prefix(), ())
+
+        with observation.context("/train/"):
+            self.assertEqual(observation.context_prefix(), ("train",))
+            with observation.context("reconstruction/codec"):
+                self.assertEqual(
+                    observation.context_prefix(),
+                    ("train", "reconstruction", "codec"),
+                )
+            self.assertEqual(observation.context_prefix(), ("train",))
+
+        self.assertEqual(observation.context_prefix(), ())
+
+    def test_context_prefix_requires_a_non_empty_string(self):
+        with self.assertRaisesRegex(TypeError, "must be a string"):
+            observation.context(1).__enter__()
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            observation.context("/").__enter__()
+        with self.assertRaisesRegex(ValueError, "empty path parts"):
+            observation.context("train//loss").__enter__()
+
     def test_curve_requires_scalar(self):
         with self.assertRaisesRegex(ValueError, "must be scalar"):
             observation.Curve(torch.ones(2))
@@ -110,6 +132,28 @@ class ObservationTypeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite and positive"):
             observation.EMAHistory(float("inf"))
 
+    def test_repeated_forward_observations_require_an_explicit_reduction(self):
+        with self.assertRaisesRegex(TypeError, "required positional argument: 'reduction'"):
+            observation.OutputObservation("value", _curve)
+        with self.assertRaisesRegex(TypeError, "required positional argument: 'reduction'"):
+            observation.ForwardEvent("value")
+
+    def test_observation_reduction_requires_the_enum_and_compatible_history(self):
+        with self.assertRaisesRegex(TypeError, "must be a Reduction"):
+            observation.OutputObservation("value", _curve, reduction="mean")
+        with self.assertRaisesRegex(ValueError, "requires EMAHistory"):
+            observation.OutputObservation(
+                "value",
+                _curve,
+                reduction=observation.Reduction.Merge,
+            )
+        with self.assertRaisesRegex(ValueError, "only Merge"):
+            observation.ForwardEvent(
+                "value",
+                reduction=observation.Reduction.Last,
+                history=observation.EMAHistory(),
+            )
+
     def test_bins_accept_multidimensional_codes_with_group_axis(self):
         value = observation.Bins(
             torch.tensor([[[0, 1], [1, -1]]]),
@@ -149,6 +193,7 @@ class ObservationTypeTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "value",
                     _curve,
+                    reduction=observation.Reduction.Mean,
                     recommended=True,
                 ),
             ),
@@ -190,6 +235,8 @@ class ObservationTypeTest(unittest.TestCase):
             )
             self.assertTrue(specs[0].recommended)
             self.assertTrue(specs[0].covers_descendants)
+            self.assertEqual(specs[0].reduction, observation.Reduction.Merge)
+            self.assertEqual(specs[1].reduction, observation.Reduction.Mean)
             self.assertIsNone(specs[1].history)
 
     def test_recommendation_hint_never_requires_a_process_group(self):
@@ -207,6 +254,7 @@ class ObservationTypeTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "value",
                     _curve,
+                    reduction=observation.Reduction.Mean,
                     recommended=True,
                 ),
             ),
@@ -246,6 +294,7 @@ class ObservationTypeTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "value",
                     _curve,
+                    reduction=observation.Reduction.Mean,
                     recommended=True,
                 ),
             ),
@@ -256,6 +305,7 @@ class ObservationTypeTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "value",
                     _curve,
+                    reduction=observation.Reduction.Mean,
                     recommended=True,
                     covers_descendants=True,
                 ),
@@ -299,6 +349,7 @@ class ObservationTypeTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "value",
                     _curve,
+                    reduction=observation.Reduction.Mean,
                     recommended=True,
                 ),
             ),
@@ -338,7 +389,13 @@ class ObservationTypeTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "must not be bound"):
             observation.registry.register(
                 Registered,
-                (observation.ForwardObservation("value", module._collect),),
+                (
+                    observation.ForwardObservation(
+                        "value",
+                        module._collect,
+                        reduction=observation.Reduction.Mean,
+                    ),
+                ),
             )
 
     def test_quantizer_observation_declaration_survives_deepcopy(self):
@@ -362,8 +419,16 @@ class ObservationTypeTest(unittest.TestCase):
             observation.registry.register(
                 Registered,
                 (
-                    observation.ForwardObservation("value", _curve),
-                    observation.ForwardObservation("/value/", _curve),
+                    observation.ForwardObservation(
+                        "value",
+                        _curve,
+                        reduction=observation.Reduction.Mean,
+                    ),
+                    observation.ForwardObservation(
+                        "/value/",
+                        _curve,
+                        reduction=observation.Reduction.Mean,
+                    ),
                 ),
             )
 
@@ -373,12 +438,24 @@ class ObservationTypeTest(unittest.TestCase):
 
         observation.registry.register(
             Registered,
-            (observation.ForwardObservation("value", _curve),),
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         with self.assertRaisesRegex(RuntimeError, "already registered"):
             observation.registry.register(
                 Registered,
-                (observation.ForwardObservation("other", _curve),),
+                (
+                    observation.ForwardObservation(
+                        "other",
+                        _curve,
+                        reduction=observation.Reduction.Mean,
+                    ),
+                ),
             )
 
     def test_registry_requires_explicit_concrete_subclass_registration(self):
@@ -390,7 +467,13 @@ class ObservationTypeTest(unittest.TestCase):
 
         observation.registry.register(
             Registered,
-            (observation.ForwardObservation("value", _curve),),
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         self.assertEqual(len(observation.registry.specs(Registered())), 1)
         self.assertEqual(observation.registry.specs(Child()), ())

@@ -18,7 +18,7 @@
 `framework.flow_matching` 的设计见 [`docs/flow-matching-design.md`](../flow-matching-design.md)。它作为 Facebook `flow_matching` 的可组合再封装，提供 source、time sampler、objective 和 sampler 等积木，而不是完整任务框架。
 
 `ContinuousVelocityObjective` 和 `DiscreteGeneralizedKLObjective` 固定返回 0-D Tensor，并按
-concrete type 注册推荐的 `OutputObservation("loss")`；自定义 continuous loss 只观察其已归约
+concrete type 注册推荐的 `OutputObservation("loss", reduction=observation.Reduction.Mean)`；自定义 continuous loss 只观察其已归约
 输出，不重算或猜测 per-item 统计。
 
 `framework.gan` 的设计见 [`docs/gan-framework-design.md`](../gan-framework-design.md)。当前不提供完整 manual optimization helper；音频只提供 DAC 风格 discriminator preset，不接管 codec 任务训练。

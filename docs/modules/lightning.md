@@ -218,6 +218,9 @@ claim 所有已发现 declaration，
 `StateObservation` 在 optimizer step 提交边界读取 module 已维护状态，`ForwardEvent` 则消费 forward 内
 显式 `observation.emit()` 的局部值。复制一个正在被观察的 module 时，
 复制体上的 runtime forward hook 会在首次调用时自行移除，不能反向写入原 callback。
+`observation.context(...)` 使用动态调用上下文给父子 module 的所有 observation 增加公共前缀；train 按
+optimizer step 提交，validation 按 validation epoch 独立提交并默认使用 `val` 前缀，两者不共享 pending
+state 或 EMA clock。
 
 `BackwardObservation` 当前是 TODO 占位。callback 发现后只发出一次
 `BackwardObservationWarning` 并跳过，不注册 backward hook、不替换 output，也不改变 autograd graph。
@@ -226,19 +229,23 @@ claim 所有已发现 declaration，
 
 运行状态按值类型分开：
 
-- `Curve` 在一个 optimizer interval 内累加 sum/count，提交时记录 mean，不维护 EMA，也不进入
-  callback checkpoint；没有 history 的 State/Output/Event collector 只在即将 render 的 optimizer step
-  执行，cadence 之外不计算派生 Curve。
+- `OutputObservation` / `ForwardEvent` 注册时显式声明 reduction：`Last` 只支持 Curve/Heatmap，`Mean`
+  只支持 Curve，`Merge` 只支持 Distribution/Profile/Bins。train 提交窗口是一个 optimizer step，validation
+  提交窗口是一个 epoch；它不是 render interval。`Mean` 按 emission 等权，不推断 batch/count。
+- `Curve` 按 `Last` 保留窗口最后一次，或按 `Mean` 累加 sum/count；不维护 EMA，也不进入 callback
+  checkpoint。没有 history 的 State/Output/Event collector 只在即将 render 的 optimizer step 执行，
+  cadence 之外不计算派生 Curve。`StateObservation` 每个边界只 poll 一次，自然按 snapshot 处理。
 - `Distribution` / `Bins` 在 callback 消费时立即转成固定 histogram state；`Profile` 把等长的一维 value /
   coordinate pair 转成每个 coordinate bin 的 count、sum 和 sum-squares。它们都不保存完整 output 或
-  autograd graph；每次 `global_step` 前进时提交 step snapshot，并按 optimizer-step half-life 更新 EMA。
-- `Heatmap` 只接受 module 已选好的 2-D floating view，不维护 EMA，且所属 spec 必须 `history=None`；同一
-  optimizer step 同一 key 只保留第一次，并只由 global rank 0 转成独立 CPU image。shape/dtype/range
+  autograd graph；train 每次 `global_step` 前进时提交 step snapshot，validation 每个 epoch 提交自己的
+  snapshot，并分别按各自时钟更新 EMA。Output/Event 必须声明 `Merge + EMAHistory`。
+- `Heatmap` 只接受 module 已选好的 2-D floating view，不维护 EMA，且所属 spec 必须声明 `Last`、
+  `history=None`；同一提交窗口同一 key 保留最后一次，并只由 global rank 0 转成独立 CPU image。shape/dtype/range
   跨 step 必须稳定。
-- `every_n_steps` 控制 render 和无 history collector，默认每 100 个 optimizer step 输出一次；State/Output
-  collector 在 cadence 外不调用，ForwardEvent 的 `emit()` 仍执行但 payload 会被 callback 直接丢弃。`None`
-  完全关闭两者。需要 EMA history 的 Distribution/Profile/Bins 仍在所有 step 提交状态，非法 finite/range 值也
-  在 step boundary 立即失败，不受 render cadence 影响。
+- `every_n_steps` 控制 train render 和 train 无 history collector，默认每 100 个 optimizer step 输出一次；
+  train cadence 外的 State/Output collector 不调用，ForwardEvent payload 直接丢弃。`None` 关闭 train render，
+  validation 仍按 epoch 归约。需要 EMA history 的 Distribution/Profile/Bins 仍在对应 stage 的每个提交边界更新，
+  非法 finite/range 值也会立即失败。
 - spec 的 `EMAHistory.half_life_steps` 是默认值；callback 构造参数 `half_life_steps` 非 `None` 时统一
   覆盖。
 
@@ -259,8 +266,9 @@ module 选择更小的语义 view，不自动 resize 或 sample。
 默认 `sync_distributed=False`，只在 global rank 0 保留 rank-local 诊断。开启后每个 optimizer step 先用固定 signature
 all-gather 确认所有 rank 的累计 observation keys/schema 和本 step emitted key 集合一致，再 sum
 sufficient stats，最后从全局 counts 计算派生指标；signature 同时包含稳定的
-`module_path/spec_name/item` source identity，不会把不同 source 恰好拼成的同名 key 归约在一起。派生
-ratio 不跨 rank 求平均。条件执行 module、动态 mapping key 和动态 schema 必须保持 rank 对齐，否则在
+`module_path/spec_name/item` source identity 和 reduction，不会把不同 source 或 reducer 恰好拼成的同名
+key 归约在一起。`Last` Curve 先保留各 rank 的本地最后一次，再对 rank-local last 求均值。派生 ratio
+不跨 rank 求平均。条件执行 module、动态 mapping key 和动态 schema 必须保持 rank 对齐，否则在
 进入逐 state reduce 前显式失败。
 
 callback 同时校验内部 state key 和所有实际输出 logger tag 的全局唯一性。检查范围包含 Curve tag、

@@ -3,11 +3,14 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import auto
 from numbers import Real
 from typing import Any, Optional, Union
 
 import torch
 from torch import Tensor, nn
+
+from anytrain._compat import StrEnum
 
 
 @dataclass(frozen=True, eq=False)
@@ -184,6 +187,14 @@ class EMAHistory:
             raise ValueError("EMAHistory.half_life_steps must be finite and positive.")
 
 
+class Reduction(StrEnum):
+    """How repeated observations from one source are folded in a commit window."""
+
+    Last = auto()
+    Mean = auto()
+    Merge = auto()
+
+
 Observation = Union[Curve, Distribution, Profile, Bins, Heatmap]
 ObservationResult = Union[Observation, Mapping[str, Observation], None]
 OutputCollector = Callable[
@@ -205,12 +216,14 @@ class BackwardObservationWarning(UserWarning):
 class OutputObservation:
     name: str
     collect: OutputCollector
+    reduction: Reduction
     history: EMAHistory | None = None
     recommended: bool = False
     covers_descendants: bool = False
 
     def __post_init__(self) -> None:
         _spec(self.name, self.collect)
+        _reduction(self.reduction, self.history)
 
 
 @dataclass(frozen=True)
@@ -248,12 +261,14 @@ class ForwardEvent:
     """A named local value published explicitly from ``module.forward``."""
 
     name: str
+    reduction: Reduction
     history: EMAHistory | None = None
     recommended: bool = False
     covers_descendants: bool = False
 
     def __post_init__(self) -> None:
         _name(self.name)
+        _reduction(self.reduction, self.history)
 
 
 # Compatibility aliases. The canonical names describe where the value lives:
@@ -316,6 +331,17 @@ def _spec(name: str, collect: object) -> None:
         raise TypeError("observation collector must be callable.")
 
 
+def _reduction(reduction: Reduction, history: EMAHistory | None) -> None:
+    if not isinstance(reduction, Reduction):
+        raise TypeError("observation reduction must be a Reduction.")
+    if reduction == Reduction.Merge:
+        if history is None:
+            raise ValueError("Merge observation reduction requires EMAHistory.")
+        return
+    if history is not None:
+        raise ValueError("only Merge observation reduction supports EMAHistory.")
+
+
 def _name(name: str) -> None:
     if not isinstance(name, str) or not name.strip("/"):
         raise ValueError("observation name must be a non-empty string.")
@@ -335,5 +361,6 @@ __all__ = [
     "ObservationSpec",
     "OutputObservation",
     "Profile",
+    "Reduction",
     "StateObservation",
 ]

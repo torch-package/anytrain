@@ -1,4 +1,4 @@
-from ._binding import RecommendationWarning, emit, registry
+from ._binding import RecommendationWarning, context, context_prefix, emit, registry
 from ._types import (
     BackwardObservation,
     BackwardObservationWarning,
@@ -13,6 +13,7 @@ from ._types import (
     ObservationSpec,
     OutputObservation,
     Profile,
+    Reduction,
     StateObservation,
 )
 
@@ -34,7 +35,10 @@ __all__ = [
     "OutputObservation",
     "Profile",
     "RecommendationWarning",
+    "Reduction",
     "StateObservation",
+    "context",
+    "context_prefix",
     "emit",
     "registry",
 ]

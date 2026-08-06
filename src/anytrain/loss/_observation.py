@@ -105,9 +105,13 @@ def _collect_uncertainty_weights(module: nn.Module) -> dict[str, observation.Obs
 _LOSS = observation.OutputObservation(
     "loss",
     _collect_loss,
+    reduction=observation.Reduction.Mean,
     recommended=True,
 )
-_DIAGNOSTICS = observation.ForwardEvent("diagnostics")
+_DIAGNOSTICS = observation.ForwardEvent(
+    "diagnostics",
+    reduction=observation.Reduction.Mean,
+)
 
 
 __all__ = [

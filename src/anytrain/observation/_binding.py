@@ -3,7 +3,9 @@ from __future__ import annotations
 import inspect
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from weakref import WeakKeyDictionary, WeakSet
 
@@ -49,6 +51,10 @@ _SPEC_TYPES = (
 _RECOMMENDATION_TYPES = (OutputObservation, StateObservation, ForwardEvent)
 _runtimes: WeakKeyDictionary[nn.Module, _Runtime] = WeakKeyDictionary()
 _warned_types: WeakSet[type[nn.Module]] = WeakSet()
+_context: ContextVar[tuple[str, ...]] = ContextVar(
+    "anytrain_observation_context",
+    default=(),
+)
 
 
 class _Registry:
@@ -96,6 +102,31 @@ class _Registry:
 
 
 registry = _Registry()
+
+
+@contextmanager
+def context(prefix: str) -> Iterator[None]:
+    """Prefix every observation produced inside this dynamic call context."""
+
+    if not isinstance(prefix, str):
+        raise TypeError("observation context prefix must be a string.")
+    normalized = prefix.strip("/")
+    if not normalized:
+        raise ValueError("observation context prefix must be non-empty.")
+    parts = tuple(normalized.split("/"))
+    if any(not part for part in parts):
+        raise ValueError("observation context prefix must not contain empty path parts.")
+    token = _context.set((*_context.get(), *parts))
+    try:
+        yield
+    finally:
+        _context.reset(token)
+
+
+def context_prefix() -> tuple[str, ...]:
+    """Return the active immutable observation context path."""
+
+    return _context.get()
 
 
 def emit(module: nn.Module, name: str, value: ObservationResult) -> None:

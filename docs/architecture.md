@@ -34,7 +34,7 @@
 
 - `anytrain.lightning`：LightningModule logging mixin、debug callback、schedule runtime 和性能观测 callback。
 - `anytrain.observation`：普通 `nn.Module` 的 concrete-type observation registry，以及
-  Curve/Distribution/Profile/Bins/Heatmap 值契约和 State/Output/Event 来源声明；这是 module 中间量 logging 的
+  Curve/Distribution/Profile/Bins/Heatmap 值契约、State/Output/Event 来源声明和重复值 reduction；这是 module 中间量 logging 的
   唯一声明入口，不依赖 Lightning logger。
 - `anytrain.lightning.schedule`：step/unit LR schedule spec、unit progress、unit LR runtime 和 unit stop。
 - `anytrain.lightning.perf`：训练效率观测 helper，包括参数量、FLOPs、硬件峰值算力和 MFU。

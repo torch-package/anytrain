@@ -24,8 +24,9 @@ core 提供：
 - `GradientProbeLoggerCallback`：从显式 provider 取得仍连接 autograd graph 的命名 0-D loss Tensor，
   比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `ObservationCallback`：module 中间量 logging 的唯一 transport。它从
-  `anytrain.observation.registry` 自动发现 concrete module 的只读 State/Output/Event 声明，记录 Curve、
-  Heatmap，以及 Distribution/Profile/Bins 的 optimizer-step 和 EMA state；默认只在 global rank 0 注册。ADT、MoE
+  `anytrain.observation.registry` 自动发现 concrete module 的只读 State/Output/Event 声明及显式 reduction，记录 Curve、
+  Heatmap，以及 Distribution/Profile/Bins 的 train optimizer-step、validation-epoch 和 EMA state；动态
+  observation context 为一次父子 module 调用树提供公共 tag 前缀。callback 默认只在 global rank 0 注册。ADT、MoE
   和公开 quantizer 已声明推荐 observation。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并
   建议改用 `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。`every_n_steps` 控制统一输出间隔，
   每次 render 同时记录 interval 平均的 `module/observation_time`。

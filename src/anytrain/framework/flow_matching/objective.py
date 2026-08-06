@@ -125,7 +125,14 @@ def _collect_loss(
 for _objective_type in (ContinuousVelocityObjective, DiscreteGeneralizedKLObjective):
     observation.registry.register(
         _objective_type,
-        (observation.OutputObservation("loss", _collect_loss, recommended=True),),
+        (
+            observation.OutputObservation(
+                "loss",
+                _collect_loss,
+                reduction=observation.Reduction.Mean,
+                recommended=True,
+            ),
+        ),
     )
 
 

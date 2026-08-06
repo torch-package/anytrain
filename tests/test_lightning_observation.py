@@ -62,7 +62,7 @@ class _Observed(nn.Module):
         return values
 
     @staticmethod
-    def _collect(module, inputs, kwargs, output):
+    def _collect_codes(module, inputs, kwargs, output):
         del inputs, kwargs
         if not isinstance(module, _Observed):
             raise TypeError("test observation requires _Observed.")
@@ -75,16 +75,15 @@ class _Observed(nn.Module):
                     f"book_{index}" for index in range(len(module.sizes))
                 ),
             ),
-            "mean": observation.Curve(output.float().mean()),
         }
-
 
 observation.registry.register(
     _Observed,
     (
         observation.ForwardObservation(
             "stats",
-            _Observed._collect,
+            _Observed._collect_codes,
+            reduction=observation.Reduction.Merge,
             history=observation.EMAHistory(half_life_steps=1),
             recommended=True,
             covers_descendants=True,
@@ -125,6 +124,7 @@ observation.registry.register(
         observation.ForwardObservation(
             "profile",
             _ProfileObserved._collect,
+            reduction=observation.Reduction.Merge,
             history=observation.EMAHistory(half_life_steps=1),
         ),
     ),
@@ -151,7 +151,13 @@ class _RankFailObserved(nn.Module):
 
 observation.registry.register(
     _RankFailObserved,
-    (observation.OutputObservation("stats", _RankFailObserved._collect),),
+    (
+        observation.OutputObservation(
+            "stats",
+            _RankFailObserved._collect,
+            reduction=observation.Reduction.Mean,
+        ),
+    ),
 )
 
 
@@ -338,6 +344,218 @@ def _distributed_error_worker(
 
 
 class ObservationCallbackTest(unittest.TestCase):
+    def test_curve_reduction_folds_one_train_commit_window(self):
+        class Curves(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            Curves,
+            (
+                observation.OutputObservation(
+                    "last",
+                    collect,
+                    reduction=observation.Reduction.Last,
+                ),
+                observation.OutputObservation(
+                    "mean",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(Curves())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0]))
+        callback.on_train_batch_end(trainer, module, None, None, 0)
+        callback.on_train_batch_start(trainer, module, None, 1)
+        module.observed(torch.tensor([3.0]))
+        trainer.global_step = 1
+        callback.on_train_batch_end(trainer, module, None, None, 1)
+
+        values, _kwargs = module.log_dict_calls[-1]
+        self.assertEqual(values["module/observed/last/value"].item(), 3.0)
+        self.assertEqual(values["module/observed/mean/value"].item(), 2.0)
+
+    def test_curve_reduction_folds_one_validation_epoch(self):
+        class Curves(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            Curves,
+            (
+                observation.OutputObservation(
+                    "last",
+                    collect,
+                    reduction=observation.Reduction.Last,
+                ),
+                observation.OutputObservation(
+                    "mean",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(Curves())
+        callback = ObservationCallback(every_n_steps=None)
+        _start(callback, trainer, module)
+
+        callback.on_validation_epoch_start(trainer, module)
+        module.observed(torch.tensor([1.0]))
+        module.observed(torch.tensor([3.0]))
+        callback.on_validation_epoch_end(trainer, module)
+
+        values, _kwargs = module.log_dict_calls[-1]
+        self.assertEqual(values["val/module/observed/last/value"].item(), 3.0)
+        self.assertEqual(values["val/module/observed/mean/value"].item(), 2.0)
+
+    def test_context_prefix_is_shared_by_parent_and_child_observations(self):
+        class Parent(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.child = _Observed()
+
+            def forward(self, values):
+                return self.child(values)
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            Parent,
+            (
+                observation.OutputObservation(
+                    "total",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(Parent())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        with observation.context("train/reconstruction"):
+            module.observed(torch.tensor([0, 1]))
+        trainer.global_step = 1
+        callback.on_train_batch_end(trainer, module, None, None, 0)
+
+        values, _kwargs = module.log_dict_calls[-1]
+        prefix = "train/reconstruction/module/observed"
+        self.assertEqual(values[f"{prefix}/total/value"].item(), 0.5)
+        self.assertEqual(
+            values[
+                "train/reconstruction/module/observed.child/stats/codes/book_0/"
+                "step/observations"
+            ].item(),
+            2.0,
+        )
+
+    def test_validation_observations_use_an_independent_context(self):
+        trainer = _trainer(_Writer())
+        module = _Module(_Observed(sizes=(4,)))
+        callback = ObservationCallback(every_n_steps=10)
+        _start(callback, trainer, module)
+
+        callback.on_validation_epoch_start(trainer, module)
+        module.observed(torch.tensor([1]))
+        module.observed(torch.tensor([3]))
+        callback.on_validation_epoch_end(trainer, module)
+
+        values, kwargs = module.log_dict_calls[-1]
+        self.assertEqual(
+            values[
+                "val/module/observed/stats/codes/book_0/step/observations"
+            ].item(),
+            2.0,
+        )
+        self.assertFalse(kwargs["on_step"])
+        self.assertTrue(kwargs["on_epoch"])
+
+        state = callback.state_dict()
+        self.assertEqual(state["validation_step"], 1)
+        self.assertIn("val/observed/stats/codes", state["histograms"])
+
+        restored = ObservationCallback(every_n_steps=10)
+        restored.load_state_dict(state)
+        restored_module = _Module(_Observed(sizes=(4,)))
+        _start(restored, trainer, restored_module)
+        restored.on_validation_epoch_start(trainer, restored_module)
+        restored_module.observed(torch.tensor([2]))
+        restored.on_validation_epoch_end(trainer, restored_module)
+        self.assertEqual(restored.state_dict()["validation_step"], 2)
+
+    def test_real_lightning_validation_logs_contextual_observations(self):
+        class CurveObserved(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            CurveObserved,
+            (
+                observation.OutputObservation(
+                    "value",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+
+        class Tiny(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.tensor(1.0))
+                self.observed = CurveObserved()
+
+            def training_step(self, batch, batch_idx):
+                del batch, batch_idx
+                return self.weight.square()
+
+            def validation_step(self, batch, batch_idx):
+                del batch_idx
+                with observation.context("reconstruction"):
+                    self.observed(batch[0])
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.1)
+
+        loader = DataLoader(TensorDataset(torch.tensor([[1.0], [3.0]])), batch_size=2)
+        callback = ObservationCallback(every_n_steps=None)
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            max_epochs=1,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            enable_progress_bar=False,
+            logger=False,
+            callbacks=[callback],
+            num_sanity_val_steps=0,
+        )
+        trainer.fit(Tiny(), loader, loader)
+
+        key = "val/reconstruction/module/observed/value/value"
+        self.assertEqual(trainer.callback_metrics[key].item(), 2.0)
+
     def test_cadence_only_controls_render_and_ema_includes_skipped_step(self):
         writer = _Writer()
         trainer = _trainer(writer)
@@ -357,7 +575,12 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
         values, kwargs = module.log_dict_calls[-1]
         self.assertEqual(kwargs["sync_dist"], False)
-        self.assertEqual(values["module/observed/stats/mean"].item(), 1.0)
+        self.assertEqual(
+            values[
+                "module/observed/stats/codes/book_0/step/observations"
+            ].item(),
+            4.0,
+        )
         self.assertEqual(
             values[
                 "module/observed/stats/codes/book_0/step/occupied_count"
@@ -422,7 +645,13 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             Curved,
-            (observation.ForwardObservation("curve", collect),),
+            (
+                observation.ForwardObservation(
+                    "curve",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         trainer = _trainer(_Writer())
         module = _Module(Curved())
@@ -485,11 +714,10 @@ class ObservationCallbackTest(unittest.TestCase):
             def forward(self, value):
                 return value
 
-        def collect(module, inputs, kwargs, output):
+        def collect_histograms(module, inputs, kwargs, output):
             del module, inputs, kwargs
             values = output.float()
             return {
-                "curve": observation.Curve(values.mean()),
                 "distribution": observation.Distribution(
                     values,
                     edges=(-0.5, 0.5, 1.5),
@@ -502,13 +730,23 @@ class ObservationCallbackTest(unittest.TestCase):
                 ),
             }
 
+        def collect_scalars(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"curve": observation.Curve(output.float().mean())}
+
         observation.registry.register(
             ReplayObserved,
             (
                 observation.OutputObservation(
                     "replay",
-                    collect,
+                    collect_histograms,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
+                ),
+                observation.OutputObservation(
+                    "replay/scalars",
+                    collect_scalars,
+                    reduction=observation.Reduction.Mean,
                 ),
             ),
         )
@@ -528,7 +766,7 @@ class ObservationCallbackTest(unittest.TestCase):
 
         metrics, _ = module.log_dict_calls[-1]
         prefix = "module/observed/replay"
-        self.assertEqual(metrics[f"{prefix}/curve"].item(), 0.25)
+        self.assertEqual(metrics[f"{prefix}/scalars/curve"].item(), 0.25)
         self.assertEqual(
             metrics[f"{prefix}/distribution/step/observations"].item(),
             4.0,
@@ -579,14 +817,14 @@ class ObservationCallbackTest(unittest.TestCase):
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
 
-    def test_profile_checkpoint_roundtrip_uses_v3_state(self):
+    def test_profile_checkpoint_roundtrip_uses_v4_state(self):
         trainer = _trainer(_Writer())
         module = _Module(_ProfileObserved())
         source = ObservationCallback(every_n_steps=1, half_life_steps=1)
         _start(source, trainer, module)
         _run_step(source, trainer, module, torch.tensor([1.0, 3.0]), batch_idx=0)
         state = source.state_dict()
-        self.assertEqual(state["version"], 3)
+        self.assertEqual(state["version"], 4)
         self.assertIn("profiles", state)
         source.on_fit_end(trainer, module)
 
@@ -620,7 +858,7 @@ class ObservationCallbackTest(unittest.TestCase):
 
         restored = ObservationCallback(every_n_steps=None, half_life_steps=1)
         restored.load_state_dict(state)
-        self.assertEqual(restored.state_dict()["version"], 3)
+        self.assertEqual(restored.state_dict()["version"], 4)
         self.assertIn("histograms", restored.state_dict())
 
     def test_callback_suppresses_nested_quantizer_observers(self):
@@ -877,7 +1115,13 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             BrokenOutput,
-            (observation.OutputObservation("stats", collect),),
+            (
+                observation.OutputObservation(
+                    "stats",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         trainer = _trainer(_Writer())
         module = _Module(BrokenOutput())
@@ -898,7 +1142,13 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             BrokenOutput,
-            (observation.OutputObservation("stats", collect),),
+            (
+                observation.OutputObservation(
+                    "stats",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         strategy = _ErrorStrategy()
         trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
@@ -927,7 +1177,12 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             BrokenEvent,
-            (observation.ForwardEvent("distribution"),),
+            (
+                observation.ForwardEvent(
+                    "distribution",
+                    reduction=observation.Reduction.Last,
+                ),
+            ),
         )
         strategy = _ErrorStrategy()
         trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
@@ -940,7 +1195,7 @@ class ObservationCallbackTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "distributed module observation") as error:
             callback.on_train_batch_end(trainer, module, None, None, 0)
-        self.assertIn("requires EMAHistory", str(error.exception))
+        self.assertIn("does not support Distribution", str(error.exception))
         self.assertEqual(strategy.all_gather_calls, 1)
         self.assertEqual(strategy.reduce_calls, 0)
 
@@ -985,6 +1240,128 @@ class ObservationCallbackTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "failed on another rank"):
             callback.on_train_batch_end(trainer, module, None, None, 0)
         self.assertEqual(strategy.all_gather_calls, 1)
+        self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_distributed_last_averages_each_rank_local_last_value(self):
+        class LastCurve(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            LastCurve,
+            (
+                observation.OutputObservation(
+                    "curve",
+                    collect,
+                    reduction=observation.Reduction.Last,
+                ),
+            ),
+        )
+
+        class Strategy:
+            def __init__(self):
+                self.reduce_calls = 0
+
+            def all_gather(self, tensor):
+                return torch.stack((tensor, tensor))
+
+            def reduce(self, tensor, *, reduce_op):
+                del reduce_op
+                self.reduce_calls += 1
+                remote = 5.0 if self.reduce_calls == 1 else 1.0
+                return tensor + tensor.new_tensor(remote)
+
+        strategy = Strategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module(LastCurve())
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0]))
+        callback.on_train_batch_end(trainer, module, None, None, 0)
+        callback.on_train_batch_start(trainer, module, None, 1)
+        module.observed(torch.tensor([3.0]))
+        trainer.global_step = 1
+        callback.on_train_batch_end(trainer, module, None, None, 1)
+
+        values, _kwargs = module.log_dict_calls[-1]
+        self.assertEqual(values["module/observed/curve/value"].item(), 4.0)
+        self.assertEqual(strategy.reduce_calls, 2)
+
+    def test_distributed_schema_includes_curve_reduction(self):
+        class LastCurve(nn.Module):
+            def forward(self, value):
+                return value
+
+        class MeanCurve(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            LastCurve,
+            (
+                observation.OutputObservation(
+                    "curve",
+                    collect,
+                    reduction=observation.Reduction.Last,
+                ),
+            ),
+        )
+        observation.registry.register(
+            MeanCurve,
+            (
+                observation.OutputObservation(
+                    "curve",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+        first_trainer = _trainer(_Writer(), world_size=2)
+        first_module = _Module(LastCurve())
+        first = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(first, first_trainer, first_module)
+        first.on_train_batch_start(first_trainer, first_module, None, 0)
+        first_module.observed(torch.tensor([1.0]))
+
+        second_trainer = _trainer(_Writer(), world_size=2)
+        second_module = _Module(MeanCurve())
+        second = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(second, second_trainer, second_module)
+        second.on_train_batch_start(second_trainer, second_module, None, 0)
+        second_module.observed(torch.tensor([1.0]))
+
+        class Strategy:
+            def __init__(self):
+                self.reduce_calls = 0
+
+            def all_gather(self, tensor):
+                other = observation_callback._schema_signature(
+                    second._states,
+                    emitted_keys=second._emitted_keys,
+                    device=tensor.device,
+                )
+                return torch.stack((tensor, other))
+
+            def reduce(self, tensor, *, reduce_op):
+                del reduce_op
+                self.reduce_calls += 1
+                return tensor
+
+        strategy = Strategy()
+        first_trainer.strategy = strategy
+        first_trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "same observation keys and schemas"):
+            first.on_train_batch_end(first_trainer, first_module, None, None, 0)
         self.assertEqual(strategy.reduce_calls, 0)
 
     def test_real_gloo_synchronizes_observation_and_writer_errors(self):
@@ -1076,6 +1453,7 @@ class ObservationCallbackTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "a",
                     collect_a,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
             ),
@@ -1086,6 +1464,7 @@ class ObservationCallbackTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "a/b",
                     collect_b,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
             ),
@@ -1149,6 +1528,7 @@ class ObservationCallbackTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "stats",
                     collect,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(half_life_steps=1),
                 ),
             ),
@@ -1306,6 +1686,7 @@ class ObservationCallbackTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "profile",
                     collect,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
             ),
@@ -1318,6 +1699,97 @@ class ObservationCallbackTest(unittest.TestCase):
         module.observed(torch.tensor([1.0, 2.0]))
         trainer.global_step = 1
         with self.assertRaisesRegex(ValueError, "out-of-range profile pairs"):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+
+    def test_output_reduction_must_support_every_mapping_value(self):
+        class Mixed(nn.Module):
+            def forward(self, values):
+                return values
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {
+                "curve": observation.Curve(output.float().mean()),
+                "codes": observation.Bins(output, sizes=(2,)),
+            }
+
+        observation.registry.register(
+            Mixed,
+            (
+                observation.OutputObservation(
+                    "mixed",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(Mixed())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+
+        with self.assertRaisesRegex(ValueError, "does not support Bins"):
+            module.observed(torch.tensor([0, 1]))
+
+    def test_state_observation_validates_implicit_reduction_against_history(self):
+        class State(nn.Module):
+            def forward(self, value):
+                return value
+
+        observation.registry.register(
+            State,
+            (
+                observation.StateObservation(
+                    "curve",
+                    lambda module: observation.Curve(torch.tensor(1.0)),
+                    history=observation.EMAHistory(),
+                ),
+                observation.StateObservation(
+                    "distribution",
+                    lambda module: observation.Distribution(
+                        torch.tensor([0.5]),
+                        edges=(0.0, 1.0),
+                    ),
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(State())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(ValueError, "only Merge"):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+
+        class HistogramState(nn.Module):
+            def forward(self, value):
+                return value
+
+        observation.registry.register(
+            HistogramState,
+            (
+                observation.StateObservation(
+                    "distribution",
+                    lambda module: observation.Distribution(
+                        torch.tensor([0.5]),
+                        edges=(0.0, 1.0),
+                    ),
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(HistogramState())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(ValueError, "requires EMAHistory"):
             callback.on_train_batch_end(trainer, module, None, None, 0)
 
     def test_invalid_bins_fail_at_step_boundary_even_without_render(self):
@@ -1445,7 +1917,13 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             Colliding,
-            (observation.ForwardObservation("stats", collect),),
+            (
+                observation.ForwardObservation(
+                    "stats",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
 
         trainer = _trainer(_Writer())
@@ -1506,7 +1984,13 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             Root,
-            (observation.ForwardObservation("root", collect_root),),
+            (
+                observation.ForwardObservation(
+                    "root",
+                    collect_root,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         trainer = _trainer(_Writer())
         module = Root()
@@ -1518,7 +2002,10 @@ class ObservationCallbackTest(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 0)
         values, _ = module.log_dict_calls[-1]
         self.assertIn("module/root/value", values)
-        self.assertIn("module/module/stats/mean", values)
+        self.assertIn(
+            "module/module/stats/codes/book_0/step/observations",
+            values,
+        )
 
     def test_root_and_child_logger_tag_collision_fails_fast(self):
         class Child(nn.Module):
@@ -1539,11 +2026,23 @@ class ObservationCallbackTest(unittest.TestCase):
 
         observation.registry.register(
             Child,
-            (observation.ForwardObservation("stats", collect),),
+            (
+                observation.ForwardObservation(
+                    "stats",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         observation.registry.register(
             Root,
-            (observation.ForwardObservation("module/stats", collect),),
+            (
+                observation.ForwardObservation(
+                    "module/stats",
+                    collect,
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
         )
         trainer = _trainer(_Writer())
         module = Root()
@@ -1572,11 +2071,13 @@ class ObservationCallbackTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "histogram",
                     histogram,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
                 observation.ForwardObservation(
                     "histogram/codes/step",
                     curve,
+                    reduction=observation.Reduction.Mean,
                 ),
             ),
         )
@@ -1605,8 +2106,16 @@ class ObservationCallbackTest(unittest.TestCase):
         observation.registry.register(
             Colliding,
             (
-                observation.ForwardObservation("a", first),
-                observation.ForwardObservation("a/b", second),
+                observation.ForwardObservation(
+                    "a",
+                    first,
+                    reduction=observation.Reduction.Mean,
+                ),
+                observation.ForwardObservation(
+                    "a/b",
+                    second,
+                    reduction=observation.Reduction.Mean,
+                ),
             ),
         )
 
@@ -1643,11 +2152,13 @@ class ObservationCallbackTest(unittest.TestCase):
                 observation.ForwardObservation(
                     "a",
                     first,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
                 observation.ForwardObservation(
                     "a/b",
                     second,
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
             ),

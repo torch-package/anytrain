@@ -44,8 +44,8 @@ anytrain.framework.rl。
 ## Scalar 与 observation 契约
 
 四个 objective 的 forward 都固定返回一个 0-D Tensor，并在内部完成 mask、权重和归约。
-它们按 concrete type 注册 `OutputObservation("loss")` 和
-`ForwardEvent("diagnostics")`：总 loss 由 forward output 采集，只用于日志的本次统计走
+它们按 concrete type 注册 `OutputObservation("loss", reduction=observation.Reduction.Mean)` 和
+`ForwardEvent("diagnostics", reduction=observation.Reduction.Mean)`：总 loss 由 forward output 采集，只用于日志的本次统计走
 event，不进入返回值，也不保存为 module 的 `last_*` 属性。挂载
 `anytrain.lightning.ObservationCallback` 后会自动发现；未挂载时首次 training +
 grad-enabled 调用会给出一次推荐提示。

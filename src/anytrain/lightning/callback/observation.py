@@ -29,6 +29,7 @@ from anytrain.observation import (
     ObservationSpec,
     OutputObservation,
     Profile,
+    Reduction,
     StateObservation,
 )
 from anytrain.observation._binding import claim, release, subscribe_event
@@ -114,17 +115,24 @@ _ObservationError = tuple[str, str]
 
 
 class _CurveState:
-    def __init__(self, value: Curve) -> None:
+    def __init__(self, value: Curve, *, reduction: Reduction) -> None:
         scalar = value.value.detach().float()
+        self.reduction = reduction
         self.pending_sum = torch.zeros_like(scalar)
         self.pending_count = torch.zeros_like(scalar)
         self.last_sum = torch.zeros_like(scalar)
         self.last_count = torch.zeros_like(scalar)
-        self.update(value)
+        self.update(value, reduction=reduction)
 
-    def update(self, value: Curve) -> None:
+    def update(self, value: Curve, *, reduction: Reduction) -> None:
+        if reduction != self.reduction:
+            raise ValueError("observation Curve reduction changed during training.")
         scalar = value.value.detach().float()
         self._to(scalar.device)
+        if reduction == Reduction.Last:
+            self.pending_sum.copy_(scalar)
+            self.pending_count.fill_(1)
+            return
         self.pending_sum.add_(scalar)
         self.pending_count.add_(1)
 
@@ -185,13 +193,14 @@ class _HeatmapState:
         keep_image: bool,
         max_elements: int,
     ) -> None:
-        # Keep the first emission in an optimizer step. This is deterministic
-        # under gradient accumulation and ignores backward checkpoint replay.
-        if self.pending:
-            return
+        # A Heatmap is a snapshot. Repeated forward emissions replace the
+        # pending snapshot, while backward checkpoint replay is disabled by the
+        # callback lifecycle.
         schema = _heatmap_schema(value)
         self.pending = True
         self.pending_schema = schema
+        self.pending_image = None
+        self.pending_error = None
         if schema != self.schema:
             self.pending_error = (
                 "value",
@@ -638,6 +647,8 @@ class _ProfileState:
 
 @dataclass(frozen=True)
 class _StateOwner:
+    stage: Literal["train", "validation"]
+    context: str
     module_path: str
     spec_name: str
     item: str
@@ -768,12 +779,44 @@ class ObservationCallback(pl.Callback):
         self._observation_time_sum = 0.0
         self._observation_time_steps = 0
         self._last_global_step: int | None = None
+        self._validation_step = 0
         self._restored_last_global_step: int | None = None
+        self._active_stage: Literal["train", "validation"] | None = None
         self.observed_modules: tuple[str, ...] = ()
 
     @property
     def state_key(self) -> str:
         return f"{type(self).__qualname__}[tag={self.tag}]"
+
+    def _require_active_stage(self) -> Literal["train", "validation"]:
+        if self._active_stage is None:
+            raise RuntimeError("observation forward has no active Trainer stage.")
+        return self._active_stage
+
+    def _context(self, stage: Literal["train", "validation"]) -> str:
+        prefix = join_tag(*observation.context_prefix())
+        stage_prefix = "train" if stage == "train" else "val"
+        if not prefix:
+            return "" if stage == "train" else stage_prefix
+        if prefix == stage_prefix or prefix.startswith(f"{stage_prefix}/"):
+            return prefix
+        return join_tag(stage_prefix, prefix)
+
+    def _stage_keys(self, stage: Literal["train", "validation"]) -> tuple[str, ...]:
+        return tuple(
+            key for key, entry in self._states.items() if entry.owner.stage == stage
+        )
+
+    def _pending_heatmaps(
+        self,
+        stage: Literal["train", "validation"],
+    ) -> tuple[_HeatmapState, ...]:
+        pending: list[_HeatmapState] = []
+        for key in self._stage_keys(stage):
+            state = self._states[key].state
+            if isinstance(state, _HeatmapState) and state.pending:
+                pending.append(state)
+        return tuple(pending)
 
     def on_fit_start(
         self,
@@ -814,7 +857,11 @@ class ObservationCallback(pl.Callback):
             ema_steps: list[int] = []
             for entry in self._states.values():
                 state = entry.state
-                if isinstance(state, (_HistogramState, _ProfileState)) and state.ema_step is not None:
+                if (
+                    entry.owner.stage == "train"
+                    and isinstance(state, (_HistogramState, _ProfileState))
+                    and state.ema_step is not None
+                ):
                     ema_steps.append(state.ema_step)
             if ema_steps and step < max(ema_steps):
                 raise ValueError(
@@ -837,6 +884,7 @@ class ObservationCallback(pl.Callback):
         del pl_module, batch, batch_idx
         if not self._enabled:
             return
+        self._active_stage = "train"
         self._forward_active = True
         step = _capability.global_step(trainer)
         self._render_active = (
@@ -861,21 +909,23 @@ class ObservationCallback(pl.Callback):
         previous = self._last_global_step
         if previous is None:
             self._last_global_step = step
+            self._active_stage = None
             return
         optimizer_steps = step - previous
         if optimizer_steps < 0:
             raise RuntimeError("trainer.global_step moved backwards during observation.")
         if optimizer_steps == 0:
             self._add_observation_time(started_at)
+            self._active_stage = None
             return
         if optimizer_steps != 1:
             raise RuntimeError(
                 "ObservationCallback cannot partition one train batch across multiple "
                 "optimizer steps."
             )
-        self._poll()
+        self._poll("train")
         self._validate_distributed_schema(trainer, pl_module)
-        for key in sorted(self._states):
+        for key in sorted(self._stage_keys("train")):
             state = self._states[key].state
             if isinstance(state, _CurveState):
                 state.finalize(trainer, sync_distributed=self.sync_distributed)
@@ -888,12 +938,69 @@ class ObservationCallback(pl.Callback):
         self._last_global_step = step
         self._emitted_keys.clear()
         self._render_active = False
+        self._active_stage = None
         _validate_histograms(self._states, device=pl_module.device)
         _validate_profiles(self._states, device=pl_module.device)
         if self.every_n_steps is None or step % self.every_n_steps != 0:
             self._finish_observation_step(started_at)
             return
-        self._log(trainer, pl_module, step=step, started_at=started_at)
+        self._log(
+            trainer,
+            pl_module,
+            stage="train",
+            step=step,
+            started_at=started_at,
+            on_step=True,
+            on_epoch=False,
+        )
+
+    def on_validation_epoch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        del pl_module
+        if not self._enabled or bool(getattr(trainer, "sanity_checking", False)):
+            return
+        self._active_stage = "validation"
+        self._forward_active = True
+        self._render_active = True
+
+    def on_validation_epoch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        if not self._enabled or self._active_stage != "validation":
+            return
+        self._forward_active = False
+        self._poll("validation")
+        self._validate_distributed_schema(trainer, pl_module)
+        self._validation_step += 1
+        for key in sorted(self._stage_keys("validation")):
+            state = self._states[key].state
+            if isinstance(state, _CurveState):
+                state.finalize(trainer, sync_distributed=self.sync_distributed)
+            elif isinstance(state, (_HistogramState, _ProfileState)):
+                state.finalize(
+                    trainer,
+                    step=self._validation_step,
+                    sync_distributed=self.sync_distributed,
+                )
+        self._emitted_keys.clear()
+        self._render_active = False
+        self._active_stage = None
+        _validate_histograms(self._states, device=pl_module.device)
+        _validate_profiles(self._states, device=pl_module.device)
+        self._log(
+            trainer,
+            pl_module,
+            stage="validation",
+            step=_capability.global_step(trainer),
+            started_at=None,
+            on_step=False,
+            on_epoch=True,
+        )
 
     def on_before_backward(
         self,
@@ -915,7 +1022,7 @@ class ObservationCallback(pl.Callback):
         del trainer, pl_module
         if not self._enabled:
             return
-        self._forward_active = True
+        self._forward_active = self._active_stage == "train"
 
     def on_train_epoch_end(
         self,
@@ -976,7 +1083,7 @@ class ObservationCallback(pl.Callback):
                 profiles[key] = state.state_dict()
             owners[key] = _owner_state(entry.owner)
         return {
-            "version": 3,
+            "version": 4,
             "tag": self.tag,
             "every_n_steps": self.every_n_steps,
             "half_life_steps": self.half_life_steps,
@@ -984,6 +1091,7 @@ class ObservationCallback(pl.Callback):
             "max_dense_bins": self.max_dense_bins,
             "max_heatmap_elements": self.max_heatmap_elements,
             "last_global_step": self._last_global_step,
+            "validation_step": self._validation_step,
             "histograms": histograms,
             "profiles": profiles,
             "owners": owners,
@@ -991,7 +1099,7 @@ class ObservationCallback(pl.Callback):
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         version = state_dict.get("version")
-        if version not in {2, 3}:
+        if version not in {2, 3, 4}:
             raise ValueError("unsupported ObservationCallback state version.")
         if state_dict.get("tag") != self.tag:
             raise ValueError("ObservationCallback state tag mismatch.")
@@ -1008,6 +1116,14 @@ class ObservationCallback(pl.Callback):
                 last_global_step,
                 "ObservationCallback last_global_step",
             )
+        validation_step = (
+            0
+            if version < 4
+            else _non_negative_int(
+                state_dict.get("validation_step"),
+                "ObservationCallback validation_step",
+            )
+        )
         histograms = state_dict.get("histograms")
         if not isinstance(histograms, Mapping):
             raise TypeError("ObservationCallback histograms state must be a mapping.")
@@ -1036,14 +1152,18 @@ class ObservationCallback(pl.Callback):
                     f"{histogram.schema.dense_bins} dense bins, exceeding "
                     f"max_dense_bins={self.max_dense_bins}."
                 )
-            if last_global_step is None or histogram.ema_step != last_global_step:
+            owner = _owner_from_state(owners[key], legacy=version < 4)
+            expected_step = (
+                last_global_step if owner.stage == "train" else validation_step
+            )
+            if expected_step is None or histogram.ema_step != expected_step:
                 raise ValueError(
                     f"restored observation {key!r} EMA step does not match callback step."
                 )
             loaded[key] = _StateEntry(
                 histogram,
                 tag="",
-                owner=_owner_from_state(owners[key]),
+                owner=owner,
             )
         for key, payload in profiles.items():
             if not isinstance(key, str) or not key:
@@ -1057,16 +1177,21 @@ class ObservationCallback(pl.Callback):
                     f"{profile.schema.bins} dense bins, exceeding "
                     f"max_dense_bins={self.max_dense_bins}."
                 )
-            if last_global_step is None or profile.ema_step != last_global_step:
+            owner = _owner_from_state(owners[key], legacy=version < 4)
+            expected_step = (
+                last_global_step if owner.stage == "train" else validation_step
+            )
+            if expected_step is None or profile.ema_step != expected_step:
                 raise ValueError(
                     f"restored observation {key!r} EMA step does not match callback step."
                 )
             loaded[key] = _StateEntry(
                 profile,
                 tag="",
-                owner=_owner_from_state(owners[key]),
+                owner=owner,
             )
         self._states = loaded
+        self._validation_step = validation_step
         self._output_tag_owners.clear()
         self._emitted_keys.clear()
         self._restored_last_global_step = last_global_step
@@ -1150,6 +1275,7 @@ class ObservationCallback(pl.Callback):
     ) -> None:
         if not self._forward_active:
             return
+        stage = self._require_active_stage()
         spec = cast(OutputObservation, collector.spec)
         if spec.history is None and not self._render_active:
             return
@@ -1158,6 +1284,7 @@ class ObservationCallback(pl.Callback):
             self._collect_and_record(
                 collector,
                 lambda: spec.collect(module, inputs, kwargs, output),
+                stage=stage,
             )
         finally:
             self._add_observation_time(started_at)
@@ -1169,16 +1296,17 @@ class ObservationCallback(pl.Callback):
     ) -> None:
         if not self._forward_active:
             return
+        stage = self._require_active_stage()
         spec = cast(ForwardEvent, collector.spec)
         if spec.history is None and not self._render_active:
             return
         started_at = self._start_observation_timer()
         try:
-            self._collect_and_record(collector, lambda: value)
+            self._collect_and_record(collector, lambda: value, stage=stage)
         finally:
             self._add_observation_time(started_at)
 
-    def _poll(self) -> None:
+    def _poll(self, stage: Literal["train", "validation"]) -> None:
         for collector in self._collectors:
             spec = collector.spec
             if isinstance(spec, StateObservation):
@@ -1187,17 +1315,20 @@ class ObservationCallback(pl.Callback):
                 self._collect_and_record(
                     collector,
                     lambda spec=spec, module=collector.module: spec.collect(module),
+                    stage=stage,
                 )
 
     def _collect_and_record(
         self,
         collector: _Collector,
         collect: Callable[[], ObservationResult],
+        *,
+        stage: Literal["train", "validation"],
     ) -> None:
         if self._pending_observation_error is not None:
             return
         try:
-            self._record(collector, collect())
+            self._record(collector, collect(), stage=stage)
         except Exception as error:
             if not self._defer_observation_errors:
                 raise
@@ -1207,7 +1338,13 @@ class ObservationCallback(pl.Callback):
                 f"{type(error).__name__}: {error}",
             )
 
-    def _record(self, collector: _Collector, result: ObservationResult) -> None:
+    def _record(
+        self,
+        collector: _Collector,
+        result: ObservationResult,
+        *,
+        stage: Literal["train", "validation"],
+    ) -> None:
         if result is None:
             return
         if isinstance(result, (Curve, Distribution, Profile, Bins, Heatmap)):
@@ -1230,14 +1367,20 @@ class ObservationCallback(pl.Callback):
                     )
                 if not self._render_active:
                     continue
-            key = join_tag(collector.state_prefix, item)
-            tag = join_tag(self.tag, collector.tag_prefix, item)
+            context = self._context(stage)
+            key = join_tag(context, collector.state_prefix, item)
+            tag = join_tag(context, self.tag, collector.tag_prefix, item)
             self._update_state(
                 key,
                 tag,
                 value,
                 collector.spec,
-                owner=_collector_owner(collector, item),
+                owner=_collector_owner(
+                    collector,
+                    item,
+                    stage=stage,
+                    context=context,
+                ),
             )
 
     def _update_state(
@@ -1250,9 +1393,10 @@ class ObservationCallback(pl.Callback):
         owner: _StateOwner,
     ) -> None:
         entry = self._states.get(key)
+        reduction = _observation_reduction(spec, value)
         if isinstance(value, Curve):
             if entry is None:
-                state = _CurveState(value)
+                state = _CurveState(value, reduction=reduction)
                 self._bind_state_identity(key, tag, state, owner)
                 self._states[key] = _StateEntry(state, tag, owner)
                 self._emitted_keys.add(key)
@@ -1260,7 +1404,7 @@ class ObservationCallback(pl.Callback):
             if not isinstance(entry.state, _CurveState):
                 raise TypeError(f"observation {key!r} changed value type.")
             self._bind_state_identity(key, tag, entry.state, owner)
-            entry.state.update(value)
+            entry.state.update(value, reduction=reduction)
             self._emitted_keys.add(key)
             return
 
@@ -1376,14 +1520,15 @@ class ObservationCallback(pl.Callback):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         *,
+        stage: Literal["train", "validation"],
         step: int,
         started_at: float | None,
+        on_step: bool,
+        on_epoch: bool,
     ) -> None:
         metrics: dict[str, Tensor] = {}
-        has_pending_heatmap = any(
-            isinstance(entry.state, _HeatmapState) and entry.state.pending
-            for entry in self._states.values()
-        )
+        stage_keys = self._stage_keys(stage)
+        has_pending_heatmap = bool(self._pending_heatmaps(stage))
         image_writer: experiment.Image | None = None
         image_error: tuple[Literal["runtime"], str] | None = None
         if has_pending_heatmap and _capability.is_global_zero(trainer):
@@ -1398,11 +1543,13 @@ class ObservationCallback(pl.Callback):
         self._validate_heatmap_logging(
             trainer,
             pl_module,
+            stage=stage,
             image_writer=image_writer,
             image_error=image_error,
         )
         write_error = self._write_heatmaps(
             trainer,
+            stage=stage,
             image_writer=image_writer,
             step=step,
         )
@@ -1415,8 +1562,9 @@ class ObservationCallback(pl.Callback):
         raw_writer: experiment.HistogramRaw | None = None
         raw_error: _ObservationError | None = None
         has_raw_histogram = any(
-            isinstance(entry.state, _HistogramState) and bool(entry.tag)
-            for entry in self._states.values()
+            isinstance(self._states[key].state, _HistogramState)
+            and bool(self._states[key].tag)
+            for key in stage_keys
         )
         if has_raw_histogram and _capability.is_global_zero(trainer):
             try:
@@ -1428,7 +1576,7 @@ class ObservationCallback(pl.Callback):
                     f"{type(error).__name__}: {error}",
                 )
         write_error = raw_error
-        for key in sorted(self._states):
+        for key in sorted(stage_keys):
             entry = self._states[key]
             if not entry.tag:
                 continue
@@ -1476,8 +1624,9 @@ class ObservationCallback(pl.Callback):
                 "rank-local diagnostics."
             ),
         )
-        self._finish_observation_step(started_at)
-        if self._observation_time_steps > 0:
+        if stage == "train":
+            self._finish_observation_step(started_at)
+        if stage == "train" and self._observation_time_steps > 0:
             _merge_metrics(
                 metrics,
                 {
@@ -1493,8 +1642,8 @@ class ObservationCallback(pl.Callback):
         if metrics:
             pl_module.log_dict(
                 metrics,
-                on_step=True,
-                on_epoch=False,
+                on_step=on_step,
+                on_epoch=on_epoch,
                 logger=True,
                 sync_dist=False,
             )
@@ -1503,11 +1652,12 @@ class ObservationCallback(pl.Callback):
         self,
         trainer: pl.Trainer,
         *,
+        stage: Literal["train", "validation"],
         image_writer: experiment.Image | None,
         step: int,
     ) -> tuple[Literal["runtime"], str] | None:
         error: tuple[Literal["runtime"], str] | None = None
-        for key in sorted(self._states):
+        for key in sorted(self._stage_keys(stage)):
             entry = self._states[key]
             state = entry.state
             if not isinstance(state, _HeatmapState) or not state.pending:
@@ -1551,7 +1701,7 @@ class ObservationCallback(pl.Callback):
                 raise ValueError(
                     f"restored observation {key!r} does not match the current module tree."
                 )
-            expected_key = join_tag(collector.state_prefix, owner.item)
+            expected_key = join_tag(owner.context, collector.state_prefix, owner.item)
             if expected_key != key:
                 raise ValueError(
                     f"restored observation {key!r} has incompatible source identity."
@@ -1571,7 +1721,7 @@ class ObservationCallback(pl.Callback):
                     raise ValueError(
                         f"restored observation {key!r} EMA half-life changed."
                     )
-            tag = join_tag(self.tag, collector.tag_prefix, owner.item)
+            tag = join_tag(owner.context, self.tag, collector.tag_prefix, owner.item)
             self._bind_state_identity(
                 key,
                 tag,
@@ -1648,14 +1798,11 @@ class ObservationCallback(pl.Callback):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         *,
+        stage: Literal["train", "validation"],
         image_writer: experiment.Image | None,
         image_error: tuple[Literal["runtime"], str] | None,
     ) -> None:
-        pending = [
-            entry.state
-            for entry in self._states.values()
-            if isinstance(entry.state, _HeatmapState) and entry.state.pending
-        ]
+        pending = self._pending_heatmaps(stage)
         if not pending:
             return
         errors = [state.pending_error for state in pending if state.pending_error]
@@ -1762,6 +1909,7 @@ class ObservationCallback(pl.Callback):
             raise RuntimeError(f"{context} failed: {error[1]}")
 
     def _discard_pending(self) -> None:
+        self._active_stage = None
         self._forward_active = False
         self._render_active = False
         self._pending_observation_time = 0.0
@@ -1775,6 +1923,7 @@ class ObservationCallback(pl.Callback):
         self._warning_rank = False
         self._defer_observation_errors = False
         self._pending_observation_error = None
+        self._active_stage = None
         self._forward_active = False
         self._render_active = False
         self._pending_observation_time = 0.0
@@ -1790,7 +1939,11 @@ class ObservationCallback(pl.Callback):
         self._emitted_keys.clear()
 
     def _start_observation_timer(self) -> float | None:
-        if self.every_n_steps is None or not self._collectors:
+        if (
+            self._active_stage != "train"
+            or self.every_n_steps is None
+            or not self._collectors
+        ):
             return None
         return time.perf_counter()
 
@@ -1986,6 +2139,37 @@ def _state_output_tags(
     if len(set(result)) != len(result):
         raise RuntimeError("observation state produced duplicate logger tags.")
     return tuple(result)
+
+
+def _observation_reduction(
+    spec: ObservationSpec,
+    value: Observation,
+) -> Reduction:
+    if isinstance(spec, (OutputObservation, ForwardEvent)):
+        reduction = spec.reduction
+    elif isinstance(value, (Curve, Heatmap)):
+        reduction = Reduction.Last
+    else:
+        reduction = Reduction.Merge
+
+    if reduction == Reduction.Merge and spec.history is None:
+        raise ValueError("Merge observation reduction requires EMAHistory.")
+    if reduction != Reduction.Merge and spec.history is not None:
+        raise ValueError("only Merge observation reduction supports EMAHistory.")
+
+    if reduction == Reduction.Last and isinstance(value, (Curve, Heatmap)):
+        return reduction
+    if reduction == Reduction.Mean and isinstance(value, Curve):
+        return reduction
+    if reduction == Reduction.Merge and isinstance(
+        value,
+        (Distribution, Profile, Bins),
+    ):
+        return reduction
+    raise ValueError(
+        f"observation reduction {reduction.value!r} does not support "
+        f"{type(value).__name__}."
+    )
 
 
 def _merge_metrics(target: dict[str, Tensor], values: Mapping[str, Tensor]) -> None:
@@ -2263,7 +2447,9 @@ def _schema_signature(
         entry = states[key]
         state = entry.state
         if isinstance(state, _CurveState):
-            schema.append((key, "curve", _owner_state(entry.owner)))
+            schema.append(
+                (key, "curve", state.reduction.value, _owner_state(entry.owner))
+            )
         elif isinstance(state, _HeatmapState):
             if key in emitted_keys and (
                 not state.pending or state.pending_schema is None
@@ -2348,8 +2534,16 @@ def _is_descendant(path: str, parent: str) -> bool:
     return path.startswith(f"{parent}.")
 
 
-def _collector_owner(collector: _Collector, item: str) -> _StateOwner:
+def _collector_owner(
+    collector: _Collector,
+    item: str,
+    *,
+    stage: Literal["train", "validation"],
+    context: str,
+) -> _StateOwner:
     return _StateOwner(
+        stage=stage,
+        context=context,
         module_path=collector.module_path,
         spec_name=collector.spec.name.strip("/"),
         item=item,
@@ -2358,21 +2552,42 @@ def _collector_owner(collector: _Collector, item: str) -> _StateOwner:
 
 def _owner_state(owner: _StateOwner) -> dict[str, str]:
     return {
+        "stage": owner.stage,
+        "context": owner.context,
         "module_path": owner.module_path,
         "spec_name": owner.spec_name,
         "item": owner.item,
     }
 
 
-def _owner_from_state(value: object) -> _StateOwner:
+def _owner_from_state(value: object, *, legacy: bool = False) -> _StateOwner:
     if not isinstance(value, Mapping):
         raise TypeError("observation owner state must be a mapping.")
-    if set(value) != {"module_path", "spec_name", "item"}:
+    required = {"module_path", "spec_name", "item"}
+    if legacy:
+        if not required.issubset(value):
+            raise ValueError("observation owner state fields are invalid.")
+        stage: Literal["train", "validation"] = "train"
+        context = ""
+    else:
+        if set(value) != {*required, "stage", "context"}:
+            raise ValueError("observation owner state fields are invalid.")
+        raw_stage = value.get("stage")
+        if raw_stage not in {"train", "validation"}:
+            raise ValueError("observation owner stage is invalid.")
+        stage = cast(Literal["train", "validation"], raw_stage)
+        raw_context = value.get("context")
+        if not isinstance(raw_context, str):
+            raise TypeError("observation owner context must be a string.")
+        context = raw_context
+    if not legacy and context != context.strip("/"):
         raise ValueError("observation owner state fields are invalid.")
     module_path = value.get("module_path")
     if not isinstance(module_path, str):
         raise TypeError("observation owner module_path must be a string.")
     return _StateOwner(
+        stage=stage,
+        context=context,
         module_path=module_path,
         spec_name=validate_tag_part(
             value.get("spec_name"),

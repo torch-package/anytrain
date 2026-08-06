@@ -106,7 +106,9 @@ frame/codebook 的有效 reduction domain 为空时，loss 会抛出 `ValueError
 诊断的唯一入口是 `anytrain.observation` registry；不再有 loss-specific logger callback
 或 `details` mapping。
 
-已注册 loss module 的最终输出通过 `OutputObservation("loss", ...)` 记录为 `Curve`。
+已注册 loss module 的最终输出通过
+`OutputObservation("loss", ..., reduction=observation.Reduction.Mean)` 记录为 `Curve`；logging-only scalar
+diagnostics 的 `ForwardEvent` 同样显式使用 `Mean`。
 `LossGroup` 只声明自己的 total；嵌套 child 若有稳定诊断，则由 child 自己声明，避免
 group 复制或缓存 child 的中间状态。
 

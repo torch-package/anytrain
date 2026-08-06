@@ -16,8 +16,16 @@ def register(module_type: type[_ModuleT]) -> type[_ModuleT]:
     observation.registry.register(
         module_type,
         (
-            observation.OutputObservation("loss", _collect_loss, recommended=True),
-            observation.ForwardEvent("diagnostics"),
+            observation.OutputObservation(
+                "loss",
+                _collect_loss,
+                reduction=observation.Reduction.Mean,
+                recommended=True,
+            ),
+            observation.ForwardEvent(
+                "diagnostics",
+                reduction=observation.Reduction.Mean,
+            ),
         ),
     )
     return module_type

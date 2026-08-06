@@ -143,12 +143,12 @@ loss_fn = Loss.from_preset(
 
 `Loss` 在定义旁注册以下推荐 observation：
 
-- `OutputObservation("discriminator/loss")`：D objective 的总 scalar。
-- `ForwardEvent("discriminator/components")`：`real`、`fake`。
-- `ForwardEvent("discriminator/gradient_penalty")`：启用 GP 时的 `gp`。
-- `OutputObservation("generator/loss")`：G objective 的总 scalar。
-- `ForwardEvent("generator/components")`：`adv`。
-- `ForwardEvent("generator/feature_matching")`：启用 feature matching 时的 `feature`。
+- `OutputObservation("discriminator/loss", reduction=observation.Reduction.Mean)`：D objective 的总 scalar。
+- `ForwardEvent("discriminator/components", reduction=observation.Reduction.Mean)`：`real`、`fake`。
+- `ForwardEvent("discriminator/gradient_penalty", reduction=observation.Reduction.Mean)`：启用 GP 时的 `gp`。
+- `OutputObservation("generator/loss", reduction=observation.Reduction.Mean)`：G objective 的总 scalar。
+- `ForwardEvent("generator/components", reduction=observation.Reduction.Mean)`：`adv`。
+- `ForwardEvent("generator/feature_matching", reduction=observation.Reduction.Mean)`：启用 feature matching 时的 `feature`。
 - `StateObservation("weights")`：只读记录 `feature_weight` 和解析后的 `gp_weight`。
 
 events 中的 tensor 在发出时 detach，只用于日志，不保存到 module 属性；

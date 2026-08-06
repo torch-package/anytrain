@@ -206,17 +206,31 @@ observation.registry.register(
         observation.OutputObservation(
             "discriminator/loss",
             _collect_discriminator_loss,
+            reduction=observation.Reduction.Mean,
             recommended=True,
         ),
-        observation.ForwardEvent("discriminator/components"),
-        observation.ForwardEvent("discriminator/gradient_penalty"),
+        observation.ForwardEvent(
+            "discriminator/components",
+            reduction=observation.Reduction.Mean,
+        ),
+        observation.ForwardEvent(
+            "discriminator/gradient_penalty",
+            reduction=observation.Reduction.Mean,
+        ),
         observation.OutputObservation(
             "generator/loss",
             _collect_generator_loss,
+            reduction=observation.Reduction.Mean,
             recommended=True,
         ),
-        observation.ForwardEvent("generator/components"),
-        observation.ForwardEvent("generator/feature_matching"),
+        observation.ForwardEvent(
+            "generator/components",
+            reduction=observation.Reduction.Mean,
+        ),
+        observation.ForwardEvent(
+            "generator/feature_matching",
+            reduction=observation.Reduction.Mean,
+        ),
         observation.StateObservation(
             "weights",
             _collect_weights,

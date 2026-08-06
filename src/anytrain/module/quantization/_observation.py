@@ -6,7 +6,7 @@ from typing import Any, Protocol, TypeVar, cast
 from torch import nn
 
 from anytrain import observation
-from anytrain.observation import Bins, Curve, EMAHistory, OutputObservation
+from anytrain.observation import Bins, Curve, EMAHistory, OutputObservation, Reduction
 
 from .output import QuantizeOutput
 
@@ -72,6 +72,7 @@ _QUANTIZATION_OBSERVATIONS = (
     OutputObservation(
         name="quantization",
         collect=collect_codes,
+        reduction=Reduction.Merge,
         history=EMAHistory(half_life_steps=1_000),
         recommended=True,
         covers_descendants=True,
@@ -79,6 +80,7 @@ _QUANTIZATION_OBSERVATIONS = (
     OutputObservation(
         name="quantization/loss",
         collect=collect_loss,
+        reduction=Reduction.Mean,
     ),
 )
 

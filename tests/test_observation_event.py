@@ -117,7 +117,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("known"),),
+            (observation.ForwardEvent("known", reduction=observation.Reduction.Mean),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(EventModule())
@@ -144,7 +144,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("stats"),),
+            (observation.ForwardEvent("stats", reduction=observation.Reduction.Mean),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(EventModule())
@@ -180,6 +180,7 @@ class ObservationEventTest(unittest.TestCase):
             (
                 observation.ForwardEvent(
                     "codes",
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(half_life_steps=1),
                 ),
             ),
@@ -200,7 +201,57 @@ class ObservationEventTest(unittest.TestCase):
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
 
-    def test_heatmap_keeps_first_emit_and_materializes_a_standalone_cpu_image(self):
+    def test_forward_event_reduction_must_match_the_emitted_value_type(self):
+        class MeanHeatmap(nn.Module):
+            def forward(self, value):
+                observation.emit(self, "map", observation.Heatmap(value))
+                return value
+
+        observation.registry.register(
+            MeanHeatmap,
+            (
+                observation.ForwardEvent(
+                    "map",
+                    reduction=observation.Reduction.Mean,
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _PLModule(MeanHeatmap())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        with self.assertRaisesRegex(ValueError, "does not support Heatmap"):
+            module.observed(torch.zeros(2, 2))
+
+        class MergeCurve(nn.Module):
+            def forward(self, value):
+                observation.emit(
+                    self,
+                    "curve",
+                    observation.Curve(value.float().mean()),
+                )
+                return value
+
+        observation.registry.register(
+            MergeCurve,
+            (
+                observation.ForwardEvent(
+                    "curve",
+                    reduction=observation.Reduction.Merge,
+                    history=observation.EMAHistory(),
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _PLModule(MergeCurve())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        with self.assertRaisesRegex(ValueError, "does not support Curve"):
+            module.observed(torch.tensor([1.0]))
+
+    def test_heatmap_keeps_last_emit_and_materializes_a_standalone_cpu_image(self):
         class EventModule(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -219,7 +270,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("attention"),),
+            (observation.ForwardEvent("attention", reduction=observation.Reduction.Last),),
         )
         writer = _Writer()
         trainer = _trainer(writer)
@@ -242,12 +293,7 @@ class ObservationEventTest(unittest.TestCase):
         self.assertEqual(image.device.type, "cpu")
         self.assertEqual(image.dtype, torch.float32)
         self.assertNotEqual(image.data_ptr(), module.observed.emitted_pointer)
-        self.assertTrue(
-            torch.allclose(
-                image,
-                torch.tensor([[0.0, 1.0 / 3.0], [2.0 / 3.0, 1.0]]),
-            )
-        )
+        self.assertTrue(torch.equal(image, torch.ones(2, 2)))
 
     def test_heatmap_rejects_history_schema_changes_and_oversized_views(self):
         class HistoryModule(nn.Module):
@@ -260,6 +306,7 @@ class ObservationEventTest(unittest.TestCase):
             (
                 observation.ForwardEvent(
                     "map",
+                    reduction=observation.Reduction.Merge,
                     history=observation.EMAHistory(),
                 ),
             ),
@@ -284,7 +331,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             MapModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(MapModule())
@@ -315,7 +362,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
         trainer = _trainer(object())
         module = _PLModule(EventModule())
@@ -336,7 +383,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
 
         class Strategy:
@@ -377,7 +424,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
 
         class Strategy:
@@ -411,7 +458,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
 
         class Strategy:
@@ -457,7 +504,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
 
         class Strategy:
@@ -556,7 +603,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
 
         class Strategy:
@@ -600,7 +647,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(EventModule())
@@ -625,7 +672,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("map"),),
+            (observation.ForwardEvent("map", reduction=observation.Reduction.Last),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(EventModule())
@@ -664,7 +711,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("stats"),),
+            (observation.ForwardEvent("stats", reduction=observation.Reduction.Mean),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(EventModule())
@@ -705,7 +752,7 @@ class ObservationEventTest(unittest.TestCase):
 
         observation.registry.register(
             EventModule,
-            (observation.ForwardEvent("stats"),),
+            (observation.ForwardEvent("stats", reduction=observation.Reduction.Mean),),
         )
         trainer = _trainer(_Writer())
         module = _PLModule(EventModule())
