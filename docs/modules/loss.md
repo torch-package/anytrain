@@ -2,230 +2,166 @@
 
 ## 定位
 
-`anytrain.loss` 提供下游 LightningModule 可直接组合使用的通用 loss 组件。core loss 不绑定具体任务领域；audio/text/speech 等领域 loss 应放在 optional 子模块。GAN adversarial training 属于 `anytrain.framework.gan`，不放在 `loss` 下。
+`anytrain.loss` 提供下游 `LightningModule` 可直接组合的 task-agnostic loss。core loss
+不解释 batch，也不绑定 audio、text 或 speech 领域；领域实现放在 optional 子模块。
 
-## 当前结构
+优化目标和训练期诊断是两个接口：loss 只返回最终的 0-D `torch.Tensor`，诊断值通过
+`anytrain.observation` registry 声明和记录。loss 不再返回 `details`，也不把日志状态塞进
+训练输出。
+
+## 公开结构
 
 源码结构：
 
 ```text
 src/anytrain/loss/
   __init__.py
+  _observation.py
+  _validation.py
   abc.py
   balancer.py
   codebook.py
+  codec.py
   frame.py
   group.py
   temporal/
-    __init__.py
-    single.py
   spectral/
-    __init__.py
-    single.py
-    transform.py
-    group.py
-  codec.py
 ```
 
-当前公开导出：
+根包公开：
 
 - `LossABC`
-- `LossResult`
-- `LossDetails`
-- `LossDetailValue`
 - `LossBalancerABC`
 - `LossTensorDict`
 - `MeanLossBalancer`
 - `FixedWeightLossBalancer`
 - `UncertaintyLossBalancer`
 - `LossGroup`
-- `LossItem`
 - `MaskedFrameMSELoss` / `masked_frame_mse_loss`
 - `MaskedCosineAlignmentLoss` / `masked_cosine_alignment_loss`
+- `TeacherLoss` / `teacher_loss`
 - `MaskedCodebookCrossEntropyLoss`
 - `PackedCodebookLogits`
 
-音频相关 loss 通过子模块导出：
+`LossItem`、`LossOutputs`、`LossDetails`、`LossResult` 以及
+`combine_loss_outputs()`、`iter_loss_items()`、`loss_item_mean()` 等旧的行级组合 API
+已经删除。训练 step 应该组合已经归约好的 scalar；需要跨任务组合时使用
+`LossGroup` 和 balancer。
 
-- `anytrain.loss.temporal.SDRLoss`
-- `anytrain.loss.spectral.LogMagnitudeLoss`
-- `anytrain.loss.spectral.CompressedSpectrogramLoss`
-- `anytrain.loss.spectral.SpectralRMSELoss`
-- `anytrain.loss.spectral.STFTLoss`
-- `anytrain.loss.spectral.MelLoss`
-- `anytrain.loss.spectral.MultiScaleSTFTLoss`
-- `anytrain.loss.spectral.MultiScaleMelLoss`
-- `anytrain.loss.spectral.STFTTransform`
-- `anytrain.loss.spectral.MelSpectrogramTransform`
-- `anytrain.loss.codec.CodecLoss`
-- `anytrain.loss.codec.CodecLossPreset`
+## Scalar loss protocol
 
-## Loss 协议
-
-`LossABC` 是继承 `torch.nn.Module` 的 loss 抽象基类。子类实现：
+`LossABC` 继承 `torch.nn.Module`。子类实现：
 
 ```python
-def compute_loss(self, *args, **kwargs) -> LossResult:
+def compute_loss(self, *args, **kwargs) -> torch.Tensor:
     ...
 ```
 
-`LossResult` 可以是：
+`forward()` 会校验并固定返回 0-D Tensor。向量 Tensor、tuple、mapping 或其它带诊断的
+返回值都会立即抛错。`LossBalancerABC` 使用同样的 scalar 契约：它接受名称到 0-D
+Tensor 的 mapping，并返回一个 0-D Tensor。
 
-```python
-loss
-loss, details
-```
+`LossGroup` 对每个 child 调用同一组输入，再把 child scalar 交给 balancer。默认的
+`MeanLossBalancer` 求算术平均；`FixedWeightLossBalancer` 使用显式权重；
+`UncertaintyLossBalancer` 维护可训练的 `log_var` 并按 uncertainty 权重组合。所有
+balancer 的权重和参数都属于 module state，不会通过 loss 返回值暴露。
 
-协议约束：
+## Reduction semantics
 
-- `loss` 必须是 0-d `torch.Tensor`，可以直接用于 `backward()`。
-- `details` 是可选的 mapping，只用于监控和日志。
-- `details` 的 key 必须是非空字符串，普通子 loss 中不能包含 `/`。
-- `details` 的 value 必须是 float 或 0-d `torch.Tensor`。
-- 返回给调用方的 `details` tensor 会被 detach，避免把日志路径接进反传图。
+每个 loss 在一次 `forward` 内完成自己的 logical reduction。下游必须把一次调用的输入
+定义成完整的 reduction domain；scalar 返回后无法恢复原始 count。
 
-`LossItem` 保存按样本/行聚合的 loss 与可选 details。`MaskedFrameMSELoss` 和
-`MaskedCosineAlignmentLoss` 对 `[B, F, D]` 表示执行 frame mask 后的 MSE 或 cosine alignment；
-`MaskedCodebookCrossEntropyLoss` 接收每个 codebook 一个 `[B, F, vocab_q]` logits，支持不同
-vocab size、frame mask、逐 codebook CE 和可选 `codebook_N_top1` 监控。普通入口的 logits、labels
-和 mask 必须在同一设备。decoder 已经压紧有效帧时，可以构造 `PackedCodebookLogits`，通过
-`forward_packed()` 直接传入 `[N, vocab_q]` logits、`[N, Q]` labels 和 `[N]` batch row indices
-(`row_indices`)；packed logits、labels 和 batch row indices 也必须在同一设备，避免重新展开后在
-padding 上执行 CE。
+- `masked_frame_mse_loss`：先在最后一个 feature 轴求每帧 MSE，再对所有 `mask=True`
+  的 frame 求均值。每个有效 frame 权重相同。
+- `masked_cosine_alignment_loss`：对每个有效 frame 求 cosine distance，再对有效
+  frame 求均值。`detach_target=True` 时 target 不参与反向图。
+- `teacher_loss`：cosine distance 和 Smooth L1 各自按有效 frame 求均值，再计算
+  `cosine + smooth_l1_weight * smooth_l1`。
+- `MaskedCodebookCrossEntropyLoss`：只对有效 frame 执行 CE；每个 codebook 先对
+  有效 frame 求均值，最后对 codebook 求均值。`forward_packed()` 接受
+  `PackedCodebookLogits(logits, labels)`，其中 logits 是每个 codebook 的 `[N, vocab]`
+  Tensor，labels 是 `[N, Q]`。旧调用方可以继续附带 `row_indices`/`batch_size` packing
+  metadata；这些字段只做一致性校验，不参与 scalar reduction。这个公开的 packed 入口
+  仍通过 module call 执行，因此与普通入口一样触发 output observation 和推荐 hook。
+- `SDRLoss`：先按样本计算 SDR/SI-SNR，再对 batch 求均值。
+- `CodecLoss(lengths=...)`：按相同长度分组裁剪有效区间，使用
+  `group scalar * group sample count / batch sample count` 合并，避免 padding 污染并保持
+  样本等权。这个路径要求每个 child scalar 表示该等长 group 的 batch mean；内置 temporal
+  和 spectral child 均满足。`reduction="sum"` 或其它不具备 batch-mean 语义的自定义 child
+  不属于这个组合契约，因为 scalar 返回后无法推断其 reduction count。
 
-`combine_loss_outputs()` 默认按 `item_units` 归约并组合各个 `LossItem`。调用方已经持有最终
-scalar 主 loss 时，可以传同设备的 `total_loss`；helper 会原样保留该 Tensor，只拼接各 shard
-的 `LossItem` 与 details，不再重复执行 item reduction。
+frame/codebook 的有效 reduction domain 为空时，loss 会抛出 `ValueError`，不会返回
+`nan` 或静默的零值。
 
-## 基础 Loss
+### 分片边界
 
-根目录不再保留 `single.py`。基础 L1/MSE/CE 等通用目标直接使用 `torch.nn`，需要 `details` 或额外校验时由下游写一个继承 `LossABC` 的小模块显式聚合成 scalar 主 loss。
+如果不同 rank、数据 shard 或 gradient-accumulation microbatch 覆盖的有效 count 不同，
+对各自返回的 scalar 直接求平均并不等价于全局 count-weighted mean。调用方必须满足
+以下之一：让一次 loss 调用覆盖完整 logical domain；保证各 shard 的 count 相等；或在
+训练编排层用调用方已知的 count 对目标显式缩放。loss API 不返回公开 count，也不尝试
+在 callback 中猜测或补做跨 rank reduction。
 
-## 组合 Loss
+## Observation registry
 
-`LossGroup` 接收 loss name 到 loss module 的 mapping，并返回：
+诊断的唯一入口是 `anytrain.observation` registry；不再有 loss-specific logger callback
+或 `details` mapping。
 
-```python
-total, details = loss_fn(*args, **kwargs)
-```
+已注册 loss module 的最终输出通过 `OutputObservation("loss", ...)` 记录为 `Curve`。
+`LossGroup` 只声明自己的 total；嵌套 child 若有稳定诊断，则由 child 自己声明，避免
+group 复制或缓存 child 的中间状态。
 
-行为约定：
+只存在于一次 forward 局部作用域的值通过 `ForwardEvent("diagnostics")` 发布：
 
-- `losses` 不能为空。
-- `losses` 内部使用 `nn.ModuleDict` 注册。
-- `balancer` 是可选的 `LossBalancerABC`，默认使用 `MeanLossBalancer`。
-- `MeanLossBalancer` 对所有子 loss 求平均，得到可反传的 total。
-- `FixedWeightLossBalancer` 用显式 mapping 做固定权重组合。
-- `UncertaintyLossBalancer` 从 deepaudio 的 uncertainty balancer 迁入，按显式 `loss_names` 顺序维护可训练 `log_var`。
-- balancer 可以返回 scalar Tensor 或 `(scalar Tensor, details)`。
-- 每个子 loss 以同一组 `*args, **kwargs` 调用。
-- 子 loss 可以返回 scalar Tensor 或 `(scalar Tensor, details)`。
-- `details[name]` 记录未加权 loss 的 detached 值。
-- 子 loss 的 details 会用 `"{loss_name}/{detail_key}"` 前缀合并。
-- balancer 的 details 会用 `"balancer/{detail_key}"` 前缀合并。
-- total 只通过返回值中的第一个元素提供，不重复写入 details。
+- frame loss 发布 `valid_frames`，cosine/teacher 还发布 cosine 和 smooth-L1 scalar；
+- codebook loss 发布每个 codebook 的 CE 与 `valid_frames`；传入 `include_top1=True`
+  时额外发布每个 codebook 的 top-1 scalar。
 
-`LossGroup` 不直接提供 `loss_weights` 参数。固定权重、动态权重或领域特定平衡策略都应实现为 balancer；例如 `deepaudio.loss` 可以提供自己的 audio loss balancer。
+balancer 的持久属性通过 `StateObservation("weights", ...)` 读取：固定权重和
+uncertainty 权重都可看到当前值与历史曲线。collector 只读，不修改 module，也不缓存
+上一次 forward 的 Tensor。模块构造时会安装一次性推荐 hook；训练中第一次未绑定
+`ObservationCallback` 时在 rank 0 给出提醒。
 
-## Temporal Loss
+functional helper 保持纯函数，只返回 scalar，不会因为日志配置改变计算图或 reduction。
 
-`anytrain.loss.temporal` 放 waveform 域 loss。
+## Temporal loss
 
-当前提供：
+`anytrain.loss.temporal` 提供：
 
-- `SDRLoss`：负 SDR / SI-SNR，输入形状通常是 `(batch, channels, time)`。
+- `SDRLoss`
 - `global_sdr`
 - `si_snr`
 - `scale_invariant_signal`
 
-## Spectral Loss
+`SDRLoss` 是 scalar loss module。`global_sdr` 和 `si_snr` 是底层逐样本 score helper，
+保留其向量结果供下游做自定义 reduction；它们不是训练输出协议。
 
-`anytrain.loss.spectral.single` 放已经在谱域或 mel 域的单项 loss：
+## Spectral loss
 
-- `LogMagnitudeLoss`
-- `CompressedSpectrogramLoss`
-- `SpectralRMSELoss`
+`LogMagnitudeLoss`、`CompressedSpectrogramLoss`、`SpectralRMSELoss` 以及 STFT/Mel 和
+multi-scale 组合都返回 scalar。变换支持 `backend="auto" | "torchaudio" | "torch"`，
+并保持现有 cache 与 mel-scale 语义。cache 通过内部 keyword 沿普通 module call 传递，
+不会绕过嵌套 STFT/Mel loss 的 output observation 或推荐 hook。
 
-`anytrain.loss.spectral.group` 放负责变换和组合的 loss：
+## Codec loss
 
-- `STFTLoss`
-- `MelLoss`
-- `MultiScaleSTFTLoss`
-- `MultiScaleMelLoss`
-
-`STFTLoss` 和 `MelLoss` 先把 waveform 转成表示，再调用内部 `LossGroup`。`MultiScaleSTFTLoss` 和 `MultiScaleMelLoss` 再用多个尺度的 `STFTLoss` / `MelLoss` 组成多尺度目标。
-
-`CodecLoss` 在单次 `forward` 内为重叠的 multi-scale mel/STFT 配置共享原始 STFT，
-仅当后端和 STFT 参数完全一致时复用；缓存不会跨 forward 保留。torchaudio 后端的
-mel 路径使用相同的原始 `Spectrogram` 和已有 `MelScale`，与未缓存路径保持数值等价。
-
-谱变换支持 `backend="auto" | "torchaudio" | "torch"`：
-
-- `auto` 默认优先使用 `torchaudio.transforms`。
-- 环境没有 `torchaudio` 时，`auto` 回退到 torch-only 实现。
-- `torchaudio` 会强制要求安装 `torchaudio`。
-- `torch` 使用 `torch.stft` 和本地 mel filter bank fallback。
-
-Mel 变换还支持 `mel_scale="htk" | "slaney"`，默认保持 torchaudio/deepaudio 的 `"htk"`。
-
-## Codec Loss
-
-`anytrain.loss.codec` 放 codec reconstruction preset 组合，但不解释 batch 或训练 step。
-下游应直接从 `anytrain.loss.codec` 导入；不提供 `anytrain.loss.task` 这类 task 级快捷别名。
-
-当前提供 `CodecLoss.from_preset(...)`：
-
-- `CodecLossPreset.DAC` / `"dac"`：从 deepaudio 迁入 DAC reconstruction preset，只包含 multi-scale mel loss，默认尺度为 `n_fft=(2048, 1024, 512, 256, 128, 64, 32)`、`n_mels=(320, 160, 80, 40, 20, 10, 5)`。
-- `CodecLossPreset.DYNACODEC` / `"dynacodec"`：从 deepaudio 迁入 DynaCodec reconstruction preset，包含 `si_sdr`、`multi_mel` 和 `multi_stft`，默认固定权重为 `1.0 / 10.0 / 10.0`。
-
-示例：
-
-```python
-from anytrain.loss.codec import CodecLoss
-
-loss_fn = CodecLoss.from_preset("dynacodec")
-```
-
-变长音频可以传 `lengths`，`CodecLoss` 会逐样本裁剪有效时间后求 batch 平均，避免
-padding 污染重建 loss：
-
-```python
-loss, details = loss_fn(reconstruction, target, lengths=batch.lengths)
-```
-
-`lengths` 必须是一维整数 Tensor，或由 index-compatible integer 组成的 sequence；bool、浮点、
-复数和字符串会直接抛出 `TypeError`，不会通过 `int()` 截断或转换。dict、generator、bytes
-等非 sequence 或文本/二进制容器也不作为 batch lengths 接受。它必须为每个 batch item
-提供一个正数，且不能超过输入的 time 维。传入 `lengths` 时，`reconstruction` 和 `target`
-必须同 shape，并至少具有 `(batch, channels, time)` 三个维度。
-
-## 当前限制
-
-当前 core 已有最小可用实现，但还没有：
-
-- plain-config 友好的 loss 组合/工厂，用于按配置装配 `LossABC` / `LossGroup`
-  和 balancer。
-- deviation 等更多 balancer 策略。
-
-这些属于后续演进，不应在下游文档里假设已经存在。
+`CodecLoss.from_preset("dac" | "dynacodec")` 组合 temporal、mel 和 STFT scalar loss；
+它不解释 batch 或训练 step。传入 `lengths` 时，输入和 target 必须同 shape，lengths 为
+每个 batch item 的正整数且不超过 time 维。
 
 ## 边界
 
-`loss` 不做：
+`loss` 不做以下事情：
 
-- 不解释 batch。
-- 不决定训练 step 如何调用 loss。
-- 不记录日志；logging 由下游 LightningModule 处理。
-- 不把领域依赖放进默认 import。
+- 不解释 batch schema 或 task step；
+- 不隐式完成跨 shard 的 count 同步；
+- 不记录日志或维护 callback 历史；
+- 不把领域依赖放进默认 import；
+- 不通过训练 output 自动发现中间变量。
 
 ## 测试策略
 
-当前覆盖：
-
-- `LossGroup` 的 total 和 detail key。
-- `FixedWeightLossBalancer` 的固定权重组合。
-- `SDRLoss`、spectral single loss、STFT/Mel 和 multi-scale spectral loss 的 smoke test。
-- `CodecLoss` DAC / DynaCodec preset 结构、length-aware 裁剪和错误 preset 路径。
-
-后续扩展 plain-config 装配 helper 时，应增加嵌套 details flatten、权重 device
-迁移、checkpoint round-trip 和错误路径测试。
+`tests/test_loss.py` 覆盖 scalar-only 返回校验、balancer 组合、frame/codebook 的有效
+count reduction、空 reduction domain、packed codebook、spectral/temporal smoke、codec
+preset 与 length-aware 路径，并检查 packed/cache-aware 入口只经过一次 module hook。
+Observation callback 的归约、EMA、distributed schema 和 checkpoint 行为由
+observation/lightning 测试覆盖。

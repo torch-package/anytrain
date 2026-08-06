@@ -33,6 +33,25 @@ class _Writer:
         self.histograms.append((tag, kwargs))
 
 
+class _ErrorStrategy:
+    def __init__(self, *, remote_error=False):
+        self.remote_error = remote_error
+        self.all_gather_calls = 0
+        self.reduce_calls = 0
+
+    def all_gather(self, value):
+        self.all_gather_calls += 1
+        other = value.clone()
+        if self.remote_error:
+            other[observation_callback._SCHEMA_ERROR_INDEX] = 1
+        return torch.stack((value, other))
+
+    def reduce(self, tensor, *, reduce_op):
+        del reduce_op
+        self.reduce_calls += 1
+        return tensor
+
+
 class _Observed(nn.Module):
     def __init__(self, *, sizes=(2,)):
         super().__init__()
@@ -74,6 +93,68 @@ observation.registry.register(
 )
 
 
+class _ProfileObserved(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, values):
+        return values
+
+    @staticmethod
+    def _collect(module, inputs, kwargs, output):
+        del module, inputs, kwargs
+        if not isinstance(output, torch.Tensor):
+            raise TypeError("test profile observation requires a tensor.")
+        coordinates = torch.tensor(
+            [0.25, 1.25],
+            dtype=torch.float32,
+            device=output.device,
+        )
+        return {
+            "value": observation.Profile(
+                output.float(),
+                coordinates,
+                edges=(0.0, 1.0, 2.0),
+            )
+        }
+
+
+observation.registry.register(
+    _ProfileObserved,
+    (
+        observation.ForwardObservation(
+            "profile",
+            _ProfileObserved._collect,
+            history=observation.EMAHistory(half_life_steps=1),
+        ),
+    ),
+)
+
+
+class _RankFailObserved(nn.Module):
+    def __init__(self, *, fail: bool):
+        super().__init__()
+        self.fail = fail
+
+    def forward(self, values):
+        return values
+
+    @staticmethod
+    def _collect(module, inputs, kwargs, output):
+        del inputs, kwargs
+        if not isinstance(module, _RankFailObserved):
+            raise TypeError("test observation requires _RankFailObserved.")
+        if module.fail:
+            raise ValueError("rank-local collector exploded")
+        return observation.Curve(output.float().mean())
+
+
+observation.registry.register(
+    _RankFailObserved,
+    (observation.OutputObservation("stats", _RankFailObserved._collect),),
+)
+
+
 class _Module(pl.LightningModule):
     def __init__(self, observed=None):
         super().__init__()
@@ -111,6 +192,149 @@ def _run_step(callback, trainer, module, values, *, batch_idx):
 def _start(callback, trainer, module):
     callback.on_fit_start(trainer, module)
     callback.on_train_start(trainer, module)
+
+
+def _distributed_error_worker(
+    rank: int,
+    world_size: int,
+    init_method: str,
+    output_dir: str,
+) -> None:
+    import json
+    from datetime import timedelta
+
+    from lightning.pytorch.strategies import DDPStrategy
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=init_method,
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=30),
+    )
+    payload: dict[str, str] = {}
+    try:
+        collector_trainer = _trainer(
+            _Writer(),
+            world_size=world_size,
+            strategy=DDPStrategy(),
+            is_global_zero=rank == 0,
+        )
+        collector_module = _Module(_RankFailObserved(fail=rank == 1))
+        collector_callback = ObservationCallback(
+            every_n_steps=1,
+            sync_distributed=True,
+        )
+        _start(collector_callback, collector_trainer, collector_module)
+        collector_callback.on_train_batch_start(
+            collector_trainer,
+            collector_module,
+            None,
+            0,
+        )
+        collector_module.observed(torch.tensor([1.0]))
+        collector_trainer.global_step = 1
+        try:
+            collector_callback.on_train_batch_end(
+                collector_trainer,
+                collector_module,
+                None,
+                None,
+                0,
+            )
+        except RuntimeError as error:
+            payload["collector"] = str(error)
+        finally:
+            collector_callback.on_exception(
+                collector_trainer,
+                collector_module,
+                RuntimeError("test cleanup"),
+            )
+
+        schema_trainer = _trainer(
+            _Writer(),
+            world_size=world_size,
+            strategy=DDPStrategy(),
+            is_global_zero=rank == 0,
+        )
+        schema_module = _Module()
+        schema_callback = ObservationCallback(
+            every_n_steps=1,
+            sync_distributed=True,
+        )
+        _start(schema_callback, schema_trainer, schema_module)
+        schema_callback.on_train_batch_start(
+            schema_trainer,
+            schema_module,
+            None,
+            0,
+        )
+        schema_module.observed(torch.tensor([0, 1]))
+        if rank == 1:
+            schema_callback._emitted_keys.add("rank-local-missing-state")
+        schema_trainer.global_step = 1
+        try:
+            schema_callback.on_train_batch_end(
+                schema_trainer,
+                schema_module,
+                None,
+                None,
+                0,
+            )
+        except RuntimeError as error:
+            payload["schema"] = str(error)
+        finally:
+            schema_callback.on_exception(
+                schema_trainer,
+                schema_module,
+                RuntimeError("test cleanup"),
+            )
+
+        class RankWriter(_Writer):
+            def add_histogram_raw(self, tag, **kwargs):
+                if rank == 0:
+                    raise RuntimeError("rank-local histogram writer exploded")
+                super().add_histogram_raw(tag, **kwargs)
+
+        histogram_trainer = _trainer(
+            RankWriter(),
+            world_size=world_size,
+            strategy=DDPStrategy(),
+            is_global_zero=rank == 0,
+        )
+        histogram_module = _Module()
+        histogram_callback = ObservationCallback(
+            every_n_steps=1,
+            sync_distributed=True,
+        )
+        _start(histogram_callback, histogram_trainer, histogram_module)
+        histogram_callback.on_train_batch_start(
+            histogram_trainer,
+            histogram_module,
+            None,
+            0,
+        )
+        histogram_module.observed(torch.tensor([0, 1]))
+        histogram_trainer.global_step = 1
+        try:
+            histogram_callback.on_train_batch_end(
+                histogram_trainer,
+                histogram_module,
+                None,
+                None,
+                0,
+            )
+        except RuntimeError as error:
+            payload["histogram"] = str(error)
+        finally:
+            histogram_callback.on_exception(
+                histogram_trainer,
+                histogram_module,
+                RuntimeError("test cleanup"),
+            )
+        (Path(output_dir) / f"rank-{rank}.json").write_text(json.dumps(payload))
+    finally:
+        torch.distributed.destroy_process_group()
 
 
 class ObservationCallbackTest(unittest.TestCase):
@@ -256,6 +480,75 @@ class ObservationCallbackTest(unittest.TestCase):
         values, _kwargs = module.log_dict_calls[-1]
         self.assertAlmostEqual(values["module/observation_time"].item(), 0.8)
 
+    def test_backward_window_ignores_checkpoint_replay_then_resumes_forward(self):
+        class ReplayObserved(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            values = output.float()
+            return {
+                "curve": observation.Curve(values.mean()),
+                "distribution": observation.Distribution(
+                    values,
+                    edges=(-0.5, 0.5, 1.5),
+                ),
+                "bins": observation.Bins(output, sizes=(2,)),
+                "profile": observation.Profile(
+                    values,
+                    torch.tensor([0.25, 1.25]),
+                    edges=(0.0, 1.0, 2.0),
+                ),
+            }
+
+        observation.registry.register(
+            ReplayObserved,
+            (
+                observation.OutputObservation(
+                    "replay",
+                    collect,
+                    history=observation.EMAHistory(),
+                ),
+            ),
+        )
+        writer = _Writer()
+        trainer = _trainer(writer)
+        module = _Module(ReplayObserved())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0, 1]))
+        callback.on_before_backward(trainer, module, torch.tensor(0.0))
+        module.observed(torch.tensor([1, 1]))
+        callback.on_after_backward(trainer, module)
+        module.observed(torch.tensor([0, 0]))
+        trainer.global_step = 1
+        callback.on_train_batch_end(trainer, module, None, None, 0)
+
+        metrics, _ = module.log_dict_calls[-1]
+        prefix = "module/observed/replay"
+        self.assertEqual(metrics[f"{prefix}/curve"].item(), 0.25)
+        self.assertEqual(
+            metrics[f"{prefix}/distribution/step/observations"].item(),
+            4.0,
+        )
+        self.assertEqual(metrics[f"{prefix}/bins/step/observations"].item(), 4.0)
+        self.assertEqual(metrics[f"{prefix}/profile/step/bin_0/count"].item(), 2.0)
+        self.assertEqual(metrics[f"{prefix}/profile/step/bin_1/count"].item(), 2.0)
+        distribution = next(
+            kwargs
+            for tag, kwargs in writer.histograms
+            if tag == f"{prefix}/distribution/step"
+        )
+        bins = next(
+            kwargs
+            for tag, kwargs in writer.histograms
+            if tag == f"{prefix}/bins/step"
+        )
+        self.assertEqual(distribution["bucket_counts"], [3.0, 1.0])
+        self.assertEqual(bins["bucket_counts"], [3.0, 1.0])
+
     def test_checkpoint_roundtrip_restores_ema(self):
         writer = _Writer()
         trainer = _trainer(writer)
@@ -285,6 +578,50 @@ class ObservationCallbackTest(unittest.TestCase):
             if tag == "module/observed/stats/codes/book_0/ema"
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
+
+    def test_profile_checkpoint_roundtrip_uses_v3_state(self):
+        trainer = _trainer(_Writer())
+        module = _Module(_ProfileObserved())
+        source = ObservationCallback(every_n_steps=1, half_life_steps=1)
+        _start(source, trainer, module)
+        _run_step(source, trainer, module, torch.tensor([1.0, 3.0]), batch_idx=0)
+        state = source.state_dict()
+        self.assertEqual(state["version"], 3)
+        self.assertIn("profiles", state)
+        source.on_fit_end(trainer, module)
+
+        restored_trainer = _trainer(_Writer(), step=1)
+        restored_module = _Module(_ProfileObserved())
+        restored = ObservationCallback(every_n_steps=1, half_life_steps=1)
+        restored.load_state_dict(state)
+        _start(restored, restored_trainer, restored_module)
+        _run_step(
+            restored,
+            restored_trainer,
+            restored_module,
+            torch.tensor([3.0, 5.0]),
+            batch_idx=1,
+        )
+        values, _ = restored_module.log_dict_calls[-1]
+        prefix = "module/observed/profile/value/ema"
+        self.assertAlmostEqual(values[f"{prefix}/bin_0/mean"].item(), 2.0)
+        self.assertAlmostEqual(values[f"{prefix}/bin_1/mean"].item(), 4.0)
+
+    def test_v2_checkpoint_without_profiles_remains_compatible(self):
+        trainer = _trainer(_Writer())
+        module = _Module()
+        source = ObservationCallback(every_n_steps=None, half_life_steps=1)
+        _start(source, trainer, module)
+        _run_step(source, trainer, module, torch.tensor([0, 1]), batch_idx=0)
+        state = copy.deepcopy(source.state_dict())
+        state["version"] = 2
+        state.pop("profiles")
+        source.on_fit_end(trainer, module)
+
+        restored = ObservationCallback(every_n_steps=None, half_life_steps=1)
+        restored.load_state_dict(state)
+        self.assertEqual(restored.state_dict()["version"], 3)
+        self.assertIn("histograms", restored.state_dict())
 
     def test_callback_suppresses_nested_quantizer_observers(self):
         rvq = ResidualVectorQuantizer(
@@ -432,6 +769,58 @@ class ObservationCallbackTest(unittest.TestCase):
         )
         self.assertIn(((1, 2), "sum"), strategy.shapes)
 
+    def test_distributed_profile_reduces_counts_and_moments(self):
+        class Strategy:
+            def all_gather(self, tensor):
+                return torch.stack((tensor, tensor))
+
+            def reduce(self, tensor, *, reduce_op):
+                self.last_reduce_op = reduce_op
+                return tensor * 2
+
+        strategy = Strategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module(_ProfileObserved())
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        _run_step(callback, trainer, module, torch.tensor([1.0, 3.0]), batch_idx=0)
+
+        values, _ = module.log_dict_calls[-1]
+        prefix = "module/observed/profile/value/step"
+        self.assertEqual(values[f"{prefix}/observations"].item(), 4.0)
+        self.assertEqual(values[f"{prefix}/bin_0/count"].item(), 2.0)
+        self.assertEqual(values[f"{prefix}/bin_1/count"].item(), 2.0)
+        self.assertEqual(values[f"{prefix}/bin_0/mean"].item(), 1.0)
+        self.assertEqual(values[f"{prefix}/bin_1/mean"].item(), 3.0)
+        self.assertEqual(values[f"{prefix}/bin_0/std"].item(), 0.0)
+
+    def test_distributed_profile_schema_mismatch_fails_before_reduce(self):
+        class Strategy:
+            def __init__(self):
+                self.reduce_calls = 0
+
+            def all_gather(self, tensor):
+                other = tensor.clone()
+                other[0] += 1
+                return torch.stack((tensor, other))
+
+            def reduce(self, tensor, *, reduce_op):
+                del reduce_op
+                self.reduce_calls += 1
+                return tensor
+
+        strategy = Strategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module(_ProfileObserved())
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0, 3.0]))
+        trainer.global_step = 1
+        with self.assertRaisesRegex(RuntimeError, "same observation keys and schemas"):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertEqual(strategy.reduce_calls, 0)
+
     def test_distributed_schema_mismatch_fails_before_reduce(self):
         class Strategy:
             def __init__(self):
@@ -458,6 +847,178 @@ class ObservationCallbackTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "same observation keys and schemas"):
             callback.on_train_batch_end(trainer, module, None, None, 0)
         self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_distributed_schema_invariant_error_is_synchronized_before_reduce(self):
+        strategy = _ErrorStrategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0]))
+        callback._emitted_keys.add("missing/runtime/state")
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "distributed module observation") as error:
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertIn("schema materialization failed", str(error.exception))
+        self.assertIn("missing runtime state", str(error.exception))
+        self.assertEqual(strategy.all_gather_calls, 1)
+        self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_non_distributed_collector_error_still_raises_in_forward(self):
+        class BrokenOutput(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs, output
+            raise ValueError("output collector exploded")
+
+        observation.registry.register(
+            BrokenOutput,
+            (observation.OutputObservation("stats", collect),),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(BrokenOutput())
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        with self.assertRaisesRegex(ValueError, "output collector exploded"):
+            module.observed(torch.tensor([1.0]))
+
+    def test_distributed_output_collector_error_is_synchronized_before_reduce(self):
+        class BrokenOutput(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs, output
+            raise ValueError("output collector exploded")
+
+        observation.registry.register(
+            BrokenOutput,
+            (observation.OutputObservation("stats", collect),),
+        )
+        strategy = _ErrorStrategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module(BrokenOutput())
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "distributed module observation") as error:
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertIn("output collector exploded", str(error.exception))
+        self.assertEqual(strategy.all_gather_calls, 1)
+        self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_distributed_forward_event_record_error_is_synchronized(self):
+        class BrokenEvent(nn.Module):
+            def forward(self, value):
+                observation.emit(
+                    self,
+                    "distribution",
+                    observation.Distribution(value, edges=(0.0, 1.0)),
+                )
+                return value
+
+        observation.registry.register(
+            BrokenEvent,
+            (observation.ForwardEvent("distribution"),),
+        )
+        strategy = _ErrorStrategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module(BrokenEvent())
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0.5]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "distributed module observation") as error:
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertIn("requires EMAHistory", str(error.exception))
+        self.assertEqual(strategy.all_gather_calls, 1)
+        self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_distributed_state_collector_error_is_synchronized(self):
+        class BrokenState(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect(module):
+            del module
+            raise RuntimeError("state collector exploded")
+
+        observation.registry.register(
+            BrokenState,
+            (observation.StateObservation("state", collect),),
+        )
+        strategy = _ErrorStrategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module(BrokenState())
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "distributed module observation") as error:
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertIn("state collector exploded", str(error.exception))
+        self.assertEqual(strategy.all_gather_calls, 1)
+        self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_distributed_observation_error_on_other_rank_is_explicit(self):
+        strategy = _ErrorStrategy(remote_error=True)
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "failed on another rank"):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertEqual(strategy.all_gather_calls, 1)
+        self.assertEqual(strategy.reduce_calls, 0)
+
+    def test_real_gloo_synchronizes_observation_and_writer_errors(self):
+        import json
+
+        if not (
+            torch.distributed.is_available()
+            and torch.distributed.is_gloo_available()
+        ):
+            self.skipTest("Gloo distributed backend is unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            init_method = (Path(tmp_dir) / "init").as_uri()
+            torch.multiprocessing.spawn(
+                _distributed_error_worker,
+                args=(2, init_method, tmp_dir),
+                nprocs=2,
+                join=True,
+            )
+            payloads = [
+                json.loads((Path(tmp_dir) / f"rank-{rank}.json").read_text())
+                for rank in range(2)
+            ]
+
+        for payload in payloads:
+            self.assertIn("collector", payload)
+            self.assertIn("schema", payload)
+            self.assertIn("histogram", payload)
+        self.assertIn("another rank", payloads[0]["collector"])
+        self.assertIn("rank-local collector exploded", payloads[1]["collector"])
+        self.assertIn("another rank", payloads[0]["schema"])
+        self.assertIn("rank-local-missing-state", payloads[1]["schema"])
+        self.assertIn("rank-local histogram writer exploded", payloads[0]["histogram"])
+        self.assertIn("another rank", payloads[1]["histogram"])
 
     def test_distributed_schema_detects_key_missing_from_current_step(self):
         class Strategy:
@@ -617,6 +1178,147 @@ class ObservationCallbackTest(unittest.TestCase):
         )
         self.assertEqual(step["bucket_counts"], [1.0, 1.0])
         self.assertEqual(ema["bucket_counts"], [1.0, 1.0])
+
+    def test_distributed_raw_histogram_discovery_error_is_synchronized(self):
+        class DiscoveryWriter:
+            @property
+            def add_histogram_raw(self):
+                raise RuntimeError("histogram discovery exploded")
+
+        strategy = _ErrorStrategy()
+        trainer = _trainer(DiscoveryWriter(), world_size=2, strategy=strategy)
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0, 1]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "distributed raw histogram") as error:
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertIn("histogram discovery exploded", str(error.exception))
+        self.assertEqual(strategy.all_gather_calls, 2)
+
+    def test_distributed_raw_histogram_write_error_is_synchronized(self):
+        class FailingWriter(_Writer):
+            def __init__(self):
+                super().__init__()
+                self.write_calls = 0
+
+            def add_histogram_raw(self, tag, **kwargs):
+                del tag, kwargs
+                self.write_calls += 1
+                raise RuntimeError("histogram writer exploded")
+
+        writer = FailingWriter()
+        strategy = _ErrorStrategy()
+        trainer = _trainer(writer, world_size=2, strategy=strategy)
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0, 1]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "distributed raw histogram") as error:
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertIn("histogram writer exploded", str(error.exception))
+        self.assertEqual(writer.write_calls, 1)
+        self.assertEqual(strategy.all_gather_calls, 2)
+
+    def test_distributed_raw_histogram_error_on_other_rank_is_explicit(self):
+        class Strategy:
+            def __init__(self):
+                self.all_gather_calls = 0
+
+            def all_gather(self, value):
+                self.all_gather_calls += 1
+                other = value.clone()
+                if self.all_gather_calls == 2:
+                    other.fill_(1)
+                return torch.stack((value, other))
+
+            def reduce(self, tensor, *, reduce_op):
+                del reduce_op
+                return tensor
+
+        strategy = Strategy()
+        trainer = _trainer(
+            _Writer(),
+            world_size=2,
+            strategy=strategy,
+            is_global_zero=False,
+        )
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=1, sync_distributed=True)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0, 1]))
+        trainer.global_step = 1
+
+        with self.assertRaisesRegex(RuntimeError, "failed on another rank"):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+        self.assertEqual(strategy.all_gather_calls, 2)
+
+    def test_profile_logs_step_and_ema_count_mean_std(self):
+        trainer = _trainer(_Writer())
+        module = _Module(_ProfileObserved())
+        callback = ObservationCallback(every_n_steps=1, half_life_steps=1)
+        _start(callback, trainer, module)
+
+        _run_step(callback, trainer, module, torch.tensor([1.0, 3.0]), batch_idx=0)
+        _run_step(callback, trainer, module, torch.tensor([3.0, 5.0]), batch_idx=1)
+
+        values, _ = module.log_dict_calls[-1]
+        prefix = "module/observed/profile/value"
+        self.assertEqual(values[f"{prefix}/step/observations"].item(), 2.0)
+        self.assertEqual(values[f"{prefix}/step/active_ratio"].item(), 1.0)
+        self.assertEqual(values[f"{prefix}/step/bin_0/count"].item(), 1.0)
+        self.assertEqual(values[f"{prefix}/step/bin_1/count"].item(), 1.0)
+        self.assertEqual(values[f"{prefix}/step/bin_0/mean"].item(), 3.0)
+        self.assertEqual(values[f"{prefix}/step/bin_1/mean"].item(), 5.0)
+        self.assertEqual(values[f"{prefix}/step/bin_0/std"].item(), 0.0)
+        self.assertEqual(values[f"{prefix}/step/bin_1/std"].item(), 0.0)
+        self.assertEqual(values[f"{prefix}/ema/observations"].item(), 2.0)
+        self.assertEqual(values[f"{prefix}/ema/bin_0/count"].item(), 1.0)
+        self.assertEqual(values[f"{prefix}/ema/bin_1/count"].item(), 1.0)
+        self.assertAlmostEqual(values[f"{prefix}/ema/bin_0/mean"].item(), 2.0)
+        self.assertAlmostEqual(values[f"{prefix}/ema/bin_1/mean"].item(), 4.0)
+        self.assertAlmostEqual(values[f"{prefix}/ema/bin_0/std"].item(), 1.0)
+        self.assertAlmostEqual(values[f"{prefix}/ema/bin_1/std"].item(), 1.0)
+
+    def test_invalid_profile_pairs_fail_at_step_boundary_without_render(self):
+        class InvalidProfile(nn.Module):
+            def forward(self, values):
+                return values
+
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Profile(
+                output,
+                torch.tensor([0.5, float("nan")]),
+                edges=(0.0, 1.0, 2.0),
+            )
+
+        observation.registry.register(
+            InvalidProfile,
+            (
+                observation.ForwardObservation(
+                    "profile",
+                    collect,
+                    history=observation.EMAHistory(),
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(InvalidProfile())
+        callback = ObservationCallback(every_n_steps=None)
+        _start(callback, trainer, module)
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([1.0, 2.0]))
+        trainer.global_step = 1
+        with self.assertRaisesRegex(ValueError, "out-of-range profile pairs"):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
 
     def test_invalid_bins_fail_at_step_boundary_even_without_render(self):
         trainer = _trainer(_Writer())

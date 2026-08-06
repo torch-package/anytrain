@@ -41,6 +41,20 @@ anytrain.framework.rl。
 `validate=False`。该可信路径跳过这些重复检查，避免训练热路径把 GPU 标量带回主机；它
 不是容错模式，错误形状、非法 mask 或非有限值的结果未定义，必须由调用方负责拒绝。
 
+## Scalar 与 observation 契约
+
+四个 objective 的 forward 都固定返回一个 0-D Tensor，并在内部完成 mask、权重和归约。
+它们按 concrete type 注册 `OutputObservation("loss")` 和
+`ForwardEvent("diagnostics")`：总 loss 由 forward output 采集，只用于日志的本次统计走
+event，不进入返回值，也不保存为 module 的 `last_*` 属性。挂载
+`anytrain.lightning.ObservationCallback` 后会自动发现；未挂载时首次 training +
+grad-enabled 调用会给出一次推荐提示。
+
+一个 forward 必须覆盖完整 reduction domain。不同 shard、rank 或 microbatch 的有效 count
+不相等时，不能在 forward 之后通过平均已归约 scalar 得到精确全局结果；必须在 objective
+内部使用全局 normalizer，或由下游先构造完整 domain。diagnostics 中的 count 只用于观察，
+不能作为事后修正训练 loss 的隐藏协议。
+
 ## Rollout tensor contracts
 
 `RolloutBatch`、`ContinuousRolloutBatch` 和 `NeighborRolloutBatch` 只描述进入 loss
@@ -76,7 +90,7 @@ DPOLoss 只接收 sequence log-prob，不负责重新 forward 模型：
 
     loss_fn = DPOLoss(beta=0.1)
 
-    loss, details = loss_fn(
+    loss = loss_fn(
         policy_chosen_logps=policy_chosen,
         policy_rejected_logps=policy_rejected,
         ref_chosen_logps=ref_chosen,
@@ -92,7 +106,7 @@ DPOLoss 只接收 sequence log-prob，不负责重新 forward 模型：
 reference_free=True 时 reference margin 视为 0。reference log-prob 在 loss 内 detach，
 只让 policy log-prob 回传梯度。
 
-details：
+`diagnostics` event：
 
 - policy_margin
 - reference_margin
@@ -105,7 +119,7 @@ GRPOLoss 固定第一版 tensor contract：
 
     loss_fn = GRPOLoss(clip_range=0.2, kl_beta=0.04)
 
-    loss, details = loss_fn(
+    loss = loss_fn(
         policy_token_logps=policy_logps,
         old_token_logps=old_logps,
         ref_token_logps=ref_logps,
@@ -121,7 +135,7 @@ token 数。每个有效 group 至少需要两个候选，用于 group-relative 
 掩码。最终参与计算的 token 是 `response_mask & group_mask.unsqueeze(-1)`（未传
 `group_mask` 时使用由 `response_mask` 推导的有效候选）。它统一控制 policy loss、
 reference KL、policy / old / reference log-prob 的有限性校验，以及 `clip_fraction` 和
-`token_count` 等 details。被 `group_mask` 排除的候选即使仍有 response token，也不参与
+`token_count` 等 diagnostics。被 `group_mask` 排除的候选即使仍有 response token，也不参与
 这些计算；下游可以在这些位置保留 padding、占位值或未计算的 log-prob。
 
 公式：
@@ -135,7 +149,7 @@ reference KL、policy / old / reference log-prob 的有限性校验，以及 `cl
 old_token_logps、ref_token_logps、rewards 和 computed advantages 在 loss 内 detach；
 policy log-prob 保留梯度。
 
-details：
+`diagnostics` event：
 
 - pg_loss
 - kl_loss
@@ -154,7 +168,7 @@ group rollout、reward 打分，并能提供每个 denoising / flow step 的 Gau
 
     loss_fn = ContinuousGRPOLoss(clip_range=1e-4, adv_clip_max=5.0)
 
-    loss, details = loss_fn(
+    loss = loss_fn(
         policy_step_logps=policy_logps,
         old_step_logps=old_logps,
         rewards=rewards,
@@ -171,7 +185,10 @@ group rollout、reward 打分，并能提供每个 denoising / flow step 的 Gau
 `step_mask & group_mask.unsqueeze(-1)`（未传时使用由 `step_mask` 推导的有效候选），并
 同时用于 policy loss、外部 `kl_values`、policy / old / KL 值的有限性与非负校验、
 `approx_kl`、`clip_fraction` 和 `step_count`。被排除候选的 step 不参与任何 objective
-或 details 统计，允许下游只为被选 trajectory 物化有效的 transition log-prob / KL。
+或 diagnostics 统计，允许下游只为被选 trajectory 物化有效的 transition log-prob / KL。
+
+`diagnostics` event 包含 `pg_loss`、`kl_loss`、`reward_mean`、`reward_std`、
+`advantage_mean`、`approx_kl`、`clip_fraction`、`step_count` 和 `candidate_count`。
 
 论文引用：Liu et al., “Flow-GRPO: Training Flow Matching Models via Online RL”,
 arXiv:2505.05470。SDE transition log-prob 和 KL helper 放在
@@ -186,7 +203,7 @@ sampling、ODE sampler、reward model、trajectory cache 或重新 forward 模�
 
     loss_fn = NeighborGRPOLoss(clip_range=0.2, advantage_norm_p=1.0)
 
-    loss, details = loss_fn(
+    loss = loss_fn(
         policy_neighbor_logps=policy_logps,
         old_neighbor_logps=old_logps,
         rewards=rewards,
@@ -208,6 +225,10 @@ sampling 或其它策略决定。可选 `anchor_mask` 形状为 `[batch, anchors
     ratio     = exp(policy_neighbor_logp - old_neighbor_logp)
     pg_loss   = -min(ratio * advantage, clipped_ratio * advantage)
     total     = pg_loss + kl_beta * kl
+
+`diagnostics` event 包含 `pg_loss`、`kl_loss`、`reward_mean`、`reward_std`、
+`advantage_mean`、`approx_kl`、`clip_fraction`、`neighbor_count`、
+`anchor_step_count`、`anchor_count` 和 `candidate_count`。
 
 `neighbor_logps_from_distances(distances, mask, temperature=...)` 提供最小公共 helper：
 它把非负 neighbor distance 转成 `log_softmax(-distance / temperature)`。下游可以用当前

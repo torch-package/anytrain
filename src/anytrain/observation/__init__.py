@@ -12,6 +12,7 @@ from ._types import (
     ObservationResult,
     ObservationSpec,
     OutputObservation,
+    Profile,
     StateObservation,
 )
 
@@ -31,6 +32,7 @@ __all__ = [
     "ObservationResult",
     "ObservationSpec",
     "OutputObservation",
+    "Profile",
     "RecommendationWarning",
     "StateObservation",
     "emit",

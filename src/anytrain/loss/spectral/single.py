@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from .._observation import loss as register_loss
 from ..abc import LossABC
 
 
@@ -18,6 +19,7 @@ def _require_complex(estimate: Tensor, reference: Tensor, *, loss_name: str) -> 
         raise ValueError(f"{loss_name} requires complex estimate and reference tensors.")
 
 
+@register_loss
 class LogMagnitudeLoss(LossABC):
     def __init__(
         self,
@@ -35,6 +37,7 @@ class LogMagnitudeLoss(LossABC):
         return self.loss_fn(estimate_log_magnitude, reference_log_magnitude)
 
 
+@register_loss
 class CompressedSpectrogramLoss(LossABC):
     def __init__(
         self,
@@ -81,6 +84,7 @@ class CompressedSpectrogramLoss(LossABC):
         return magnitude, cos_phase, sin_phase
 
 
+@register_loss
 class SpectralRMSELoss(LossABC):
     def __init__(
         self,

@@ -3,28 +3,26 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 import torch
 from lightning import pytorch as pl
 from torch import Tensor
 
-from anytrain.loss import LossItem
-
 from .. import _capability
 
 
 class LossOutputProvider(Protocol):
-    def current_loss_outputs(self) -> Mapping[str, Any]: ...
+    def current_loss_outputs(self) -> Mapping[str, Tensor]: ...
 
 
 class GradientLossGroupProvider(Protocol):
-    def current_gradient_loss_groups(self) -> Mapping[str, Mapping[str, Any]]: ...
+    def current_gradient_loss_groups(self) -> Mapping[str, Mapping[str, Tensor]]: ...
 
 
 GradientLossGroupsFn = Callable[
     [pl.LightningModule],
-    Mapping[str, Mapping[str, Any]],
+    Mapping[str, Mapping[str, Tensor]],
 ]
 
 
@@ -212,14 +210,21 @@ class GradientProbeLoggerCallback(pl.Callback):
                 )
 
 
-def loss_value(outputs: Mapping[str, Any], name: str) -> Tensor:
-    value = outputs.get(name)
-    if not isinstance(value, LossItem):
-        raise KeyError(f"output {name!r} is not a LossItem")
-    return value.loss.mean()
+def loss_value(outputs: Mapping[str, Tensor], name: str) -> Tensor:
+    try:
+        value = outputs[name]
+    except KeyError as error:
+        raise KeyError(f"missing scalar loss output {name!r}") from error
+    if not isinstance(value, Tensor):
+        raise TypeError(f"loss output {name!r} must be a tensor.")
+    if value.ndim != 0:
+        raise ValueError(f"loss output {name!r} must be a scalar tensor.")
+    return value
 
 
-def gradient_loss_groups(pl_module: pl.LightningModule) -> Mapping[str, Mapping[str, Any]]:
+def gradient_loss_groups(
+    pl_module: pl.LightningModule,
+) -> Mapping[str, Mapping[str, Tensor]]:
     provider = cast(object, pl_module)
     group_provider = getattr(provider, "current_gradient_loss_groups", None)
     if callable(group_provider):
@@ -236,27 +241,27 @@ def gradient_loss_groups(pl_module: pl.LightningModule) -> Mapping[str, Mapping[
     outputs = output_provider()
     if not isinstance(outputs, Mapping):
         raise TypeError("current_loss_outputs() must return a mapping.")
-    return {"batch": cast(Mapping[str, Any], outputs)}
+    return {"batch": cast(Mapping[str, Tensor], outputs)}
 
 
 def _validate_loss_groups(
     value: object,
     *,
     source: str,
-) -> Mapping[str, Mapping[str, Any]]:
+) -> Mapping[str, Mapping[str, Tensor]]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{source} must return a mapping.")
     for name, outputs in value.items():
         _non_empty_string(name, f"{source} group name")
         if not isinstance(outputs, Mapping):
             raise TypeError(f"{source} group {name!r} must be a mapping.")
-    return cast(Mapping[str, Mapping[str, Any]], value)
+    return cast(Mapping[str, Mapping[str, Tensor]], value)
 
 
 def _loss_group(
-    loss_groups: Mapping[str, Mapping[str, Any]],
+    loss_groups: Mapping[str, Mapping[str, Tensor]],
     name: str,
-) -> Mapping[str, Any]:
+) -> Mapping[str, Tensor]:
     try:
         return loss_groups[name]
     except KeyError as error:

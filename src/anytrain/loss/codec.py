@@ -9,7 +9,7 @@ from torch import Tensor
 
 from anytrain._compat import StrEnum
 
-from .abc import LossDetails, LossResult
+from ._observation import loss as register_loss
 from .balancer import FixedWeightLossBalancer, LossBalancerABC
 from .spectral import MultiScaleMelLoss, MultiScaleSTFTLoss, SpectralTransformCache
 from .spectral._group import SpectralLossGroup
@@ -44,6 +44,7 @@ class CodecLossPreset(StrEnum):
     DYNACODEC = "dynacodec"
 
 
+@register_loss
 class CodecLoss(SpectralLossGroup):
     def forward(
         self,
@@ -51,7 +52,7 @@ class CodecLoss(SpectralLossGroup):
         target: Tensor,
         *,
         lengths: Tensor | Sequence[int] | None = None,
-    ) -> LossResult:
+    ) -> Tensor:
         spectral_cache = SpectralTransformCache()
         if lengths is None:
             return super().forward(input, target, _spectral_cache=spectral_cache)
@@ -135,30 +136,21 @@ class CodecLoss(SpectralLossGroup):
         *,
         lengths: Tensor | Sequence[int],
         spectral_cache: SpectralTransformCache,
-    ) -> LossResult:
+    ) -> Tensor:
         _validate_audio_pair(input, target)
         length_values = _validate_lengths(lengths, batch_size=input.size(0), max_length=input.size(-1))
         total = input.new_zeros(())
-        detail_sums: dict[str, Tensor] = {}
         for sample_length, batch_indices in _group_length_indices(length_values):
-            group_input = input[batch_indices, ..., :sample_length]
-            group_target = target[batch_indices, ..., :sample_length]
-            group_total, group_details = self._split_loss_result(
-                super().forward(
-                    group_input,
-                    group_target,
-                    _spectral_cache=spectral_cache,
-                )
+            group_total = super().forward(
+                input[batch_indices, ..., :sample_length],
+                target[batch_indices, ..., :sample_length],
+                _spectral_cache=spectral_cache,
             )
-            weight = input.new_tensor(float(len(batch_indices)))
-            total = total + group_total * weight
-            for name, value in group_details.items():
-                value_tensor = _detail_to_tensor(value, device=input.device, dtype=input.dtype)
-                detail_sums[name] = detail_sums.get(name, input.new_zeros(())) + value_tensor * weight
+            group_count = input.new_tensor(float(len(batch_indices)))
+            total = total + group_total * group_count
 
         divisor = input.new_tensor(float(len(length_values)))
-        details: LossDetails = {name: value / divisor for name, value in detail_sums.items()}
-        return total / divisor, details
+        return total / divisor
 
 
 def _validate_audio_pair(input: Tensor, target: Tensor) -> None:
@@ -228,9 +220,3 @@ def _group_length_indices(lengths: Sequence[int]) -> tuple[tuple[int, list[int]]
     for index, length in enumerate(lengths):
         groups.setdefault(length, []).append(index)
     return tuple(groups.items())
-
-
-def _detail_to_tensor(value: float | Tensor, *, device: torch.device, dtype: torch.dtype) -> Tensor:
-    if isinstance(value, Tensor):
-        return value.to(device=device, dtype=dtype)
-    return torch.tensor(float(value), device=device, dtype=dtype)

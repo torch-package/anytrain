@@ -6,10 +6,13 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from .abc import LossABC, LossDetails
+from ._observation import loss as register_loss
+from ._validation import scalar
+from .abc import LossABC
 from .balancer import LossBalancerABC, MeanLossBalancer
 
 
+@register_loss
 class LossGroup(LossABC):
     def __init__(
         self,
@@ -21,38 +24,21 @@ class LossGroup(LossABC):
         self.losses = cast(dict[str, nn.Module], nn.ModuleDict(validated_losses))
         self.balancer = self._validate_balancer(balancer)
 
-    def compute_loss(self, *args: Any, **kwargs: Any) -> tuple[torch.Tensor, LossDetails]:
+    def compute_loss(self, *args: Any, **kwargs: Any) -> torch.Tensor:
         loss_values: dict[str, torch.Tensor] = {}
-        details: LossDetails = {}
         for name, module in self.losses.items():
-            loss, module_details = self._split_loss_result(
+            loss_values[name] = scalar(
                 self._call_loss(
                     module,
                     *args,
                     **kwargs,
-                )
+                ),
+                name=f"loss {name!r}",
             )
-            loss_values[name] = loss
-            self._add_detail(details, name, loss)
-            for detail_name, detail_value in module_details.items():
-                self._add_prefixed_detail(
-                    details,
-                    name,
-                    detail_name,
-                    detail_value,
-                )
 
         if not loss_values:
             raise RuntimeError("LossGroup has no loss modules.")
-        total, balancer_details = self._split_loss_result(self.balancer(loss_values))
-        for detail_name, detail_value in balancer_details.items():
-            self._add_prefixed_detail(
-                details,
-                "balancer",
-                detail_name,
-                detail_value,
-            )
-        return total, details
+        return scalar(self.balancer(loss_values), name="balanced loss")
 
     def _call_loss(
         self,
@@ -84,72 +70,8 @@ class LossGroup(LossABC):
         return balancer
 
     def _validate_loss_name(self, name: object) -> str:
-        name = self._validate_detail_name(name)
-        if name == "balancer":
-            raise ValueError(f"loss name {name!r} is reserved.")
-        return name
-
-    def _split_loss_result(self, result: object) -> tuple[torch.Tensor, LossDetails]:
-        validated = self._validate_loss_result(result)
-        if isinstance(validated, torch.Tensor):
-            return validated, {}
-        return validated
-
-    def _add_detail(self, details: LossDetails, name: str, value: object) -> None:
-        name = self._validate_detail_name(name)
-        self._set_detail(details, name, value)
-
-    def _add_prefixed_detail(
-        self,
-        details: LossDetails,
-        loss_name: str,
-        detail_name: str,
-        value: object,
-    ) -> None:
-        name = self._join_detail_name(loss_name, detail_name)
-        self._set_detail(details, name, value)
-
-    def _set_detail(self, details: LossDetails, name: str, value: object) -> None:
-        if name in details:
-            raise ValueError(f"Duplicate loss detail key {name!r}.")
-        details[name] = self._validate_detail_value(value, name=name, detach=True)
-
-    def _join_detail_name(self, loss_name: str, detail_name: str) -> str:
-        return self.detail_key_separator.join(
-            [
-                self._validate_detail_name(loss_name),
-                self._validate_detail_path(detail_name),
-            ]
-        )
-
-    def _validate_nested_loss_details(
-        self,
-        details: object,
-        *,
-        detach: bool,
-    ) -> LossDetails:
-        if not isinstance(details, Mapping):
-            raise TypeError("loss details must be a mapping of string keys to detail values.")
-
-        validated: LossDetails = {}
-        for raw_name, raw_value in details.items():
-            name = self._validate_detail_path(raw_name)
-            validated[name] = self._validate_detail_value(raw_value, name=name, detach=detach)
-        return validated
-
-    def _validate_loss_details(
-        self,
-        details: object,
-        *,
-        detach: bool,
-    ) -> LossDetails:
-        return self._validate_nested_loss_details(details, detach=detach)
-
-    def _validate_detail_path(self, name: object) -> str:
         if not isinstance(name, str):
-            raise TypeError("loss detail key must be a string.")
+            raise TypeError("loss name must be a string.")
         if not name:
-            raise ValueError("loss detail key must not be empty.")
-        for part in name.split(self.detail_key_separator):
-            self._validate_detail_name(part)
+            raise ValueError("loss name must not be empty.")
         return name

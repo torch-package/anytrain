@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from .._observation import loss as register_loss
 from ..abc import LossABC
 
 
@@ -61,6 +62,7 @@ def si_snr(estimate: Tensor, reference: Tensor, *, eps: float = 1e-8) -> Tensor:
     return global_sdr(estimate, target, eps=eps)
 
 
+@register_loss
 class SDRLoss(LossABC):
     def __init__(
         self,

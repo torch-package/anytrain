@@ -17,6 +17,10 @@
 
 `framework.flow_matching` 的设计见 [`docs/flow-matching-design.md`](../flow-matching-design.md)。它作为 Facebook `flow_matching` 的可组合再封装，提供 source、time sampler、objective 和 sampler 等积木，而不是完整任务框架。
 
+`ContinuousVelocityObjective` 和 `DiscreteGeneralizedKLObjective` 固定返回 0-D Tensor，并按
+concrete type 注册推荐的 `OutputObservation("loss")`；自定义 continuous loss 只观察其已归约
+输出，不重算或猜测 per-item 统计。
+
 `framework.gan` 的设计见 [`docs/gan-framework-design.md`](../gan-framework-design.md)。当前不提供完整 manual optimization helper；音频只提供 DAC 风格 discriminator preset，不接管 codec 任务训练。
 
 `framework.rl` 的设计见 [`docs/rl-framework-design.md`](../rl-framework-design.md)。它只消费
@@ -93,9 +97,12 @@ loss_fn = Loss(
     feature_weight=1.0,
 )
 
-d_loss, d_details = loss_fn.discriminator_loss(fake, real)
-g_loss, g_details = loss_fn.generator_loss(fake, real)
+d_loss = loss_fn.discriminator_loss(fake, real)
+g_loss = loss_fn.generator_loss(fake, real)
 ```
+
+两个入口都返回 0-D Tensor。`Loss.forward(..., objective=...)` 是它们共享的 scalar
+内核，兼容方法仍保留，因而已有 manual optimization 接线只需删除 tuple 解包。
 
 DAC preset：
 
@@ -114,6 +121,15 @@ tensor 是 logits，前面 tensor 是 feature maps；简单判别器返回 `[[lo
 - `GAN.WGAN` 默认启用 `gp_weight=10.0` 的 gradient penalty；其他 GAN 默认不启用。显式 `gp_weight=0.0` 可以关闭。
 - `reduction` 公开入口支持 `Reduction` enum 或 torch 风格字符串；内部统一使用 `Reduction`，默认 `Reduction.Mean`。
 - DAC preset 只提供判别器和 loss 计算，不接管 codec 模型、batch schema 或重建 loss 组合。
+
+`GAN Loss`、`DPOLoss`、`GRPOLoss`、`ContinuousGRPOLoss` 和 `NeighborGRPOLoss` 都在
+具体 module 定义旁注册推荐 observation。总 loss 从 scalar forward output 采集；本次 forward
+才存在的分量和统计量通过 `ForwardEvent` 发出，不保存 `last_*` tensor，也不再通过返回值携带
+logging payload。挂载 `anytrain.lightning.ObservationCallback` 后即可自动发现这些声明。
+
+每次 forward 必须覆盖该 objective 的完整 reduction domain。已经归约的 scalar 不能在不同
+shard、rank 或 microbatch 的有效 count 不同时事后精确合并；这种场景必须在 objective 内获得
+全局 normalizer，或由下游在进入 objective 前构造完整 reduction domain。
 
 ## 适合放入的内容
 

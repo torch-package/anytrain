@@ -58,7 +58,6 @@ def _loss_summary_ddp_worker(
     from lightning.pytorch.strategies import DDPStrategy
 
     from anytrain.lightning import LossSummaryCallback
-    from anytrain.loss import LossItem
 
     torch.distributed.init_process_group(
         "gloo",
@@ -77,11 +76,14 @@ def _loss_summary_ddp_worker(
             include_token: bool = False,
             window_capacity: int = 2,
         ):
-            result = LossSummaryCallback(window_capacity=window_capacity)
+            result = LossSummaryCallback(
+                loss_names=("token",) if include_token else (),
+                window_capacity=window_capacity,
+            )
             for index in range(count):
                 outputs = {"loss": torch.tensor(float(index + 1 + 2 * rank))}
                 if include_token:
-                    outputs["token"] = LossItem(torch.tensor(float(index + 1)))
+                    outputs["token"] = torch.tensor(float(index + 1))
                 result.on_train_batch_end(
                     SimpleNamespace(),
                     SimpleNamespace(),
@@ -230,16 +232,16 @@ class LightningTest(unittest.TestCase):
 
         self.assertIsNone(summary["last_to_first"])
 
-    def test_loss_summary_callback_collects_output_loss_items(self):
+    def test_loss_summary_callback_collects_explicit_scalar_losses(self):
         import torch
 
         from anytrain.lightning import LossSummaryCallback
-        from anytrain.loss import LossItem
 
-        callback = LossSummaryCallback()
+        callback = LossSummaryCallback(loss_names=("token",))
         outputs = {
             "loss": torch.tensor(2.0, requires_grad=True),
-            "token": LossItem(torch.tensor([1.0, 3.0])),
+            "token": torch.tensor(3.0, requires_grad=True),
+            "unselected": torch.tensor(4.0),
             "ignored": object(),
         }
 
@@ -251,24 +253,23 @@ class LightningTest(unittest.TestCase):
             0,
         )
 
-        self.assertEqual(callback.values, {"loss": [2.0], "token": [2.0]})
+        self.assertEqual(callback.values, {"loss": [2.0], "token": [3.0]})
         self.assertFalse(callback._values["loss"].first[0].requires_grad)
         with self.assertRaisesRegex(RuntimeError, "training-end synchronization"):
             callback.report()
         callback.on_train_end(SimpleNamespace(), SimpleNamespace())
-        self.assertEqual(callback.report(window=1)["token"]["last_mean"], 2.0)
+        self.assertEqual(callback.report(window=1)["token"]["last_mean"], 3.0)
 
-    def test_loss_summary_callback_uses_injected_item_order(self):
+    def test_loss_summary_callback_uses_explicit_loss_order(self):
         import torch
 
         from anytrain.lightning import LossSummaryCallback
-        from anytrain.loss import LossItem
 
-        callback = LossSummaryCallback(item_names=("flow", "token"))
+        callback = LossSummaryCallback(loss_names=("flow", "token"))
         outputs = {
             "loss": torch.tensor(5.0),
-            "token": LossItem(torch.tensor([1.0])),
-            "flow": LossItem(torch.tensor([2.0])),
+            "token": torch.tensor(1.0),
+            "flow": torch.tensor(2.0),
         }
 
         callback.on_train_batch_end(
@@ -280,6 +281,31 @@ class LightningTest(unittest.TestCase):
         )
 
         self.assertEqual(list(callback.values), ["loss", "flow", "token"])
+
+    def test_loss_summary_callback_rejects_non_scalar_losses(self):
+        import torch
+
+        from anytrain.lightning import LossSummaryCallback
+
+        callback = LossSummaryCallback(loss_names=("token",))
+
+        with self.assertRaisesRegex(ValueError, "'loss' output must be a scalar"):
+            callback.on_train_batch_end(
+                SimpleNamespace(),
+                SimpleNamespace(),
+                {"loss": torch.tensor([1.0]), "token": torch.tensor(2.0)},
+                None,
+                0,
+            )
+        with self.assertRaisesRegex(ValueError, "'token' output must be a scalar"):
+            callback.on_train_batch_end(
+                SimpleNamespace(),
+                SimpleNamespace(),
+                {"loss": torch.tensor(1.0), "token": torch.tensor([2.0])},
+                None,
+                0,
+            )
+        self.assertEqual(callback.values, {})
 
     def test_loss_summary_callback_keeps_bounded_device_windows(self):
         import torch
@@ -528,149 +554,7 @@ class LightningTest(unittest.TestCase):
         )
         self.assertEqual(callback.report(), {})
 
-    def test_loss_item_logger_callback_groups_loss_items_by_label(self):
-        import torch
-
-        from anytrain.lightning import LossItemLoggerCallback
-        from anytrain.loss import LossItem
-
-        module = _LogModule()
-        callback = LossItemLoggerCallback(
-            lambda objective, batch: batch[objective],
-            template="{objective}/{key}/{task}",
-            label_name="task",
-        )
-        outputs = {
-            "loss": torch.tensor(9.0),
-            "token": LossItem(
-                torch.tensor([1.0, 3.0, 5.0]),
-                details={"tokens": torch.tensor([2.0, 4.0, 6.0])},
-            ),
-        }
-
-        callback.on_train_batch_end(
-            SimpleNamespace(),
-            module,
-            outputs,
-            {"token": ["asr", "mt", "asr"]},
-            0,
-        )
-
-        self.assertEqual(
-            module.log_calls,
-            [
-                ("token/loss/asr", 4.0),
-                ("token/tokens/asr", 4.0),
-                ("token/loss/mt", 3.0),
-                ("token/tokens/mt", 4.0),
-            ],
-        )
-
-    def test_loss_item_logger_callback_rejects_label_mismatch(self):
-        import torch
-
-        from anytrain.lightning import LossItemLoggerCallback
-        from anytrain.loss import LossItem
-
-        callback = LossItemLoggerCallback(lambda objective, batch: ["asr"])
-        outputs = {
-            "loss": torch.tensor(2.0),
-            "token": LossItem(torch.tensor([1.0, 3.0])),
-        }
-
-        with self.assertRaisesRegex(ValueError, "token loss rows must align"):
-            callback.on_train_batch_end(
-                SimpleNamespace(),
-                _LogModule(),
-                outputs,
-                None,
-                0,
-            )
-
-    def test_loss_time_bucket_logger_records_histogram_and_bucketed_loss(self):
-        from unittest.mock import Mock
-
-        import torch
-
-        from anytrain.lightning import LossTimeBucketLoggerCallback
-        from anytrain.loss import LossItem
-
-        experiment = Mock()
-        strategy = Mock()
-        strategy.reduce.side_effect = lambda value, *, reduce_op: value
-        trainer = SimpleNamespace(
-            global_step=2,
-            is_global_zero=True,
-            logger=SimpleNamespace(experiment=experiment),
-            strategy=strategy,
-        )
-        callback = LossTimeBucketLoggerCallback(
-            item_name="flow",
-            detail_key="t",
-            histogram_tag="flow/time",
-            scalar_template="{item}/{key}/{lower:.1f}_{upper:.1f}",
-            every_n_steps=1,
-            bucket_count=2,
-        )
-        outputs = {
-            "flow": LossItem(
-                loss=torch.tensor([1.0, 3.0, 5.0, 7.0]),
-                details={"t": torch.tensor([0.0, 0.2, 0.6, 1.0])},
-            ),
-        }
-
-        callback.on_train_batch_end(trainer, SimpleNamespace(), outputs, None, 0)
-        callback.on_train_batch_end(trainer, SimpleNamespace(), outputs, None, 1)
-
-        experiment.add_histogram.assert_called_once()
-        self.assertEqual(experiment.add_histogram.call_args.args[0], "flow/time")
-        scalar_calls = [
-            (call.args[0], call.args[1], call.args[2])
-            for call in experiment.add_scalar.call_args_list
-        ]
-        self.assertEqual(
-            scalar_calls,
-            [
-                ("flow/t/0.0_0.5", 2.0, 2),
-                ("flow/t/0.5_1.0", 6.0, 2),
-            ],
-        )
-        self.assertEqual(strategy.reduce.call_count, 2)
-
-    def test_loss_time_bucket_logger_skips_histogram_on_nonzero_rank(self):
-        from unittest.mock import Mock
-
-        import torch
-
-        from anytrain.lightning import LossTimeBucketLoggerCallback
-        from anytrain.loss import LossItem
-
-        experiment = Mock()
-        trainer = SimpleNamespace(
-            global_step=2,
-            is_global_zero=False,
-            logger=SimpleNamespace(experiment=experiment),
-            strategy=SimpleNamespace(reduce=lambda value, *, reduce_op: value),
-        )
-        callback = LossTimeBucketLoggerCallback(
-            item_name="flow",
-            detail_key="t",
-            histogram_tag="flow/time",
-            scalar_template="{item}/{key}/{lower:.1f}_{upper:.1f}",
-            every_n_steps=1,
-        )
-
-        callback.on_train_batch_end(
-            trainer,
-            SimpleNamespace(),
-            {"flow": LossItem(torch.tensor([1.0]), {"t": torch.tensor([0.5])})},
-            None,
-            0,
-        )
-
-        experiment.add_histogram.assert_not_called()
-
-    def test_gradient_probe_logger_compares_loss_item_gradients(self):
+    def test_gradient_probe_logger_compares_scalar_loss_gradients(self):
         import math
 
         import torch
@@ -681,7 +565,6 @@ class LightningTest(unittest.TestCase):
             GradientTarget,
             gradient_loss_groups,
         )
-        from anytrain.loss import LossItem
 
         class Module(torch.nn.Module):
             def __init__(self):
@@ -691,8 +574,8 @@ class LightningTest(unittest.TestCase):
 
             def current_loss_outputs(self):
                 return {
-                    "token": LossItem(self.weight.square()),
-                    "flow": LossItem((3 * self.weight).square()),
+                    "token": self.weight.square().sum(),
+                    "flow": (3 * self.weight).square().sum(),
                 }
 
             def log(self, name, value, **kwargs):
@@ -734,7 +617,6 @@ class LightningTest(unittest.TestCase):
             GradientTarget,
             gradient_loss_groups,
         )
-        from anytrain.loss import LossItem
 
         class Module(torch.nn.Module):
             def __init__(self):
@@ -746,8 +628,8 @@ class LightningTest(unittest.TestCase):
             def current_loss_outputs(self):
                 total = self.attn.sum() + self.ffn.sum()
                 return {
-                    "token": LossItem(total.square()),
-                    "flow": LossItem((2 * total).square()),
+                    "token": total.square(),
+                    "flow": (2 * total).square(),
                 }
 
             def log(self, name, value, **kwargs):
@@ -787,7 +669,6 @@ class LightningTest(unittest.TestCase):
             GradientTarget,
             gradient_loss_groups,
         )
-        from anytrain.loss import LossItem
 
         class Module(torch.nn.Module):
             def __init__(self):
@@ -797,11 +678,9 @@ class LightningTest(unittest.TestCase):
 
             def current_gradient_loss_groups(self):
                 return {
-                    "tts": {"token": LossItem(self.weight.sum().square())},
+                    "tts": {"token": self.weight.sum().square()},
                     "mt": {
-                        "token": LossItem(
-                            (self.weight[0] - self.weight[1]).square()
-                        )
+                        "token": (self.weight[0] - self.weight[1]).square()
                     },
                 }
 
@@ -829,6 +708,49 @@ class LightningTest(unittest.TestCase):
             values["grad/token@tts__token@mt/layer0_attn/cosine"],
             0.0,
         )
+
+    def test_gradient_probe_logger_rejects_non_scalar_loss(self):
+        import torch
+
+        from anytrain.lightning import (
+            GradientComparison,
+            GradientProbeLoggerCallback,
+            GradientTarget,
+            gradient_loss_groups,
+        )
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+
+            def current_loss_outputs(self):
+                return {
+                    "token": self.weight.square(),
+                    "flow": self.weight.square().sum(),
+                }
+
+        callback = GradientProbeLoggerCallback(
+            comparisons=(
+                GradientComparison(
+                    GradientTarget("token"),
+                    GradientTarget("flow"),
+                ),
+            ),
+            probes={"parameter": ("weight",)},
+            loss_groups=gradient_loss_groups,
+            every_n_steps=1,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "loss output 'token' must be a scalar tensor",
+        ):
+            callback.on_before_backward(
+                SimpleNamespace(global_step=0),
+                Module(),
+                torch.tensor(0.0),
+            )
 
     def test_gradient_probe_logger_rejects_invalid_loss_group_structure(self):
         from typing import Any, cast

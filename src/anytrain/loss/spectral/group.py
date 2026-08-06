@@ -7,6 +7,7 @@ from torch import Tensor, nn
 
 from anytrain._compat import strict_zip
 
+from .._observation import loss as register_loss
 from ..balancer import LossBalancerABC
 from ._group import SpectralLossGroup
 from .single import LogMagnitudeLoss
@@ -20,19 +21,16 @@ def _default_log_magnitude_losses() -> dict[str, nn.Module]:
 class _TransformedLoss(SpectralLossGroup):
     transform: STFTTransform | MelSpectrogramTransform
 
-    def forward(self, input: Tensor, target: Tensor):
-        return super().forward(self.transform(input), self.transform(target))
-
-    def _forward_with_spectral_cache(
+    def forward(
         self,
         input: Tensor,
         target: Tensor,
         *,
-        spectral_cache: SpectralTransformCache,
-    ):
+        _spectral_cache: SpectralTransformCache | None = None,
+    ) -> Tensor:
         return super().forward(
-            self.transform(input, cache=spectral_cache),
-            self.transform(target, cache=spectral_cache),
+            self.transform(input, cache=_spectral_cache),
+            self.transform(target, cache=_spectral_cache),
         )
 
 
@@ -44,6 +42,7 @@ class _MultiScaleLoss(SpectralLossGroup):
         return tuple(int(value) for value in values)
 
 
+@register_loss
 class STFTLoss(_TransformedLoss):
     def __init__(
         self,
@@ -58,6 +57,7 @@ class STFTLoss(_TransformedLoss):
         self.transform = STFTTransform(n_fft=n_fft, hop_length=hop_length, backend=backend)
 
 
+@register_loss
 class MelLoss(_TransformedLoss):
     def __init__(
         self,
@@ -82,6 +82,7 @@ class MelLoss(_TransformedLoss):
         )
 
 
+@register_loss
 class MultiScaleSTFTLoss(_MultiScaleLoss):
     def __init__(
         self,
@@ -99,6 +100,7 @@ class MultiScaleSTFTLoss(_MultiScaleLoss):
         super().__init__(losses, balancer=balancer)
 
 
+@register_loss
 class MultiScaleMelLoss(_MultiScaleLoss):
     def __init__(
         self,

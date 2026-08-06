@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,14 +10,7 @@ import torch
 from lightning import pytorch as pl
 from torch import Tensor
 
-from anytrain.loss import LossItem, iter_loss_items, loss_item_mean
-from anytrain.stats import TimeBucketedMean, time_bucketed_mean
-
-from .. import _capability, experiment
-from ._cadence import StepCadence
-
-LossItemsFn = Callable[[Mapping[str, Any]], Iterable[tuple[str, LossItem]]]
-LossItemLabelsFn = Callable[[str, Any], Sequence[object]]
+from .. import _capability
 
 
 @dataclass
@@ -50,17 +43,14 @@ class LossSummaryCallback(pl.Callback):
         self,
         *,
         loss_key: str = "loss",
-        item_names: Iterable[str] | None = None,
-        loss_items_fn: LossItemsFn | None = None,
+        loss_names: Iterable[str] = (),
         window_capacity: int = 20,
     ) -> None:
         super().__init__()
-        if item_names is not None and loss_items_fn is not None:
-            raise ValueError("item_names and loss_items_fn are mutually exclusive.")
+        _non_empty_string(loss_key, "loss_key")
         _positive_int(window_capacity, "window_capacity")
         self.loss_key = loss_key
-        self.item_names = tuple(item_names) if item_names is not None else None
-        self.loss_items_fn = loss_items_fn
+        self.loss_names = _loss_names(loss_names, loss_key=loss_key)
         self.window_capacity = window_capacity
         self._values: dict[str, _MetricWindow] = {}
         self._synchronized = False
@@ -84,9 +74,12 @@ class LossSummaryCallback(pl.Callback):
         del trainer, pl_module, batch, batch_idx
         if not isinstance(outputs, Mapping):
             return
-        self._append(self.loss_key, _tensor(outputs, self.loss_key))
-        for name, item in self._loss_items(outputs):
-            self._append(name, _item_summary_value(item))
+        selected = tuple(
+            (name, _scalar_tensor(outputs, name))
+            for name in (self.loss_key, *self.loss_names)
+        )
+        for name, value in selected:
+            self._append(name, value)
 
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._synchronize(trainer, pl_module)
@@ -110,15 +103,8 @@ class LossSummaryCallback(pl.Callback):
             for name, values in self._values.items()
         }
 
-    def _loss_items(self, outputs: Mapping[str, Any]) -> Iterable[tuple[str, LossItem]]:
-        if self.loss_items_fn is not None:
-            return self.loss_items_fn(outputs)
-        if self.item_names is not None:
-            return iter_loss_items(outputs, self.item_names)
-        return _available_loss_items(outputs, loss_key=self.loss_key)
-
     def _append(self, name: str, value: Tensor) -> None:
-        scalar = value.detach().float().mean()
+        scalar = value.detach().float()
         values = self._values.get(name)
         if values is None:
             values = _MetricWindow(self.window_capacity)
@@ -191,239 +177,6 @@ class LossSummaryCallback(pl.Callback):
             values.last = _reduced_window(trainer, values.last, values.capacity)
 
         self._synchronized = True
-
-
-class LossItemLoggerCallback(pl.Callback):
-    def __init__(
-        self,
-        labels_fn: LossItemLabelsFn,
-        *,
-        template: str = "{objective}_{key}/{label}",
-        label_name: str = "label",
-        item_names: Iterable[str] | None = None,
-        loss_items_fn: LossItemsFn | None = None,
-    ) -> None:
-        super().__init__()
-        if item_names is not None and loss_items_fn is not None:
-            raise ValueError("item_names and loss_items_fn are mutually exclusive.")
-        self.labels_fn = labels_fn
-        self.template = template
-        self.label_name = label_name
-        self.item_names = tuple(item_names) if item_names is not None else None
-        self.loss_items_fn = loss_items_fn
-
-    def on_train_batch_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        outputs: Tensor | Mapping[str, Any] | None,
-        batch: Any,
-        batch_idx: int,
-    ) -> None:
-        del trainer, batch_idx
-        if not isinstance(outputs, Mapping):
-            raise TypeError("LossItemLoggerCallback requires mapping training outputs.")
-
-        for objective, item in self._loss_items(outputs):
-            labels = list(self.labels_fn(objective, batch))
-            if item.loss.numel() != len(labels):
-                raise ValueError(
-                    f"{objective} loss rows must align with logged label rows."
-                )
-            self._log_item(pl_module, objective, item, labels)
-
-    def _loss_items(self, outputs: Mapping[str, Any]) -> Iterable[tuple[str, LossItem]]:
-        if self.loss_items_fn is not None:
-            return self.loss_items_fn(outputs)
-        if self.item_names is not None:
-            return iter_loss_items(outputs, self.item_names)
-        return _available_loss_items(outputs, loss_key="loss")
-
-    def _log_item(
-        self,
-        pl_module: pl.LightningModule,
-        objective: str,
-        item: LossItem,
-        labels: Sequence[object],
-    ) -> None:
-        for label in dict.fromkeys(labels):
-            mask = torch.tensor(
-                [value == label for value in labels],
-                device=item.loss.device,
-                dtype=torch.bool,
-            )
-            if not bool(mask.any()):
-                continue
-            subset = LossItem(
-                item.loss[mask],
-                None
-                if item.details is None
-                else {key: value[mask] for key, value in item.details.items()},
-            )
-            pl_module.log(
-                self._tag(objective=objective, key="loss", label=label),
-                _item_summary_value(subset),
-            )
-            if subset.details is None:
-                continue
-            for key, scalar in subset.details.items():
-                pl_module.log(
-                    self._tag(objective=objective, key=key, label=label),
-                    scalar.mean(),
-                )
-
-    def _tag(self, *, objective: str, key: str, label: object) -> str:
-        fields = {
-            "objective": objective,
-            "key": key,
-            "label": label,
-            self.label_name: label,
-        }
-        return self.template.format(**fields)
-
-
-class LossTimeBucketLoggerCallback(pl.Callback):
-    def __init__(
-        self,
-        *,
-        item_name: str,
-        detail_key: str,
-        histogram_tag: str | None = None,
-        scalar_template: str,
-        every_n_steps: int | None = 100,
-        bucket_count: int = 10,
-        t_min: float = 0.0,
-        t_max: float = 1.0,
-    ) -> None:
-        super().__init__()
-        if bucket_count < 1:
-            raise ValueError("bucket_count must be positive")
-        if t_max <= t_min:
-            raise ValueError("t_max must be greater than t_min")
-        self.item_name = item_name
-        self.detail_key = detail_key
-        self.histogram_tag = histogram_tag
-        self.scalar_template = scalar_template
-        self.every_n_steps = every_n_steps
-        self._cadence = StepCadence(every_n_steps)
-        self.bucket_count = bucket_count
-        self.t_min = t_min
-        self.t_max = t_max
-
-    def on_train_batch_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        outputs: Tensor | Mapping[str, Any] | None,
-        batch: Any,
-        batch_idx: int,
-    ) -> None:
-        del batch_idx
-        if not self.should_log(trainer, pl_module, batch):
-            return
-        if not isinstance(outputs, Mapping):
-            raise TypeError("LossTimeBucketLoggerCallback requires mapping training outputs.")
-
-        item = outputs.get(self.item_name)
-        if item is None:
-            return
-        if not isinstance(item, LossItem):
-            raise TypeError(f"{self.item_name!r} output must be a LossItem.")
-        if item.details is None:
-            raise TypeError(f"{self.item_name!r} loss item requires details.")
-        values = item.details.get(self.detail_key)
-        if not isinstance(values, Tensor):
-            raise TypeError(
-                f"{self.item_name!r} details must contain tensor {self.detail_key!r}."
-            )
-
-        self._log_histogram(trainer, values)
-        self._log_bucket_loss(trainer, item.loss, values)
-
-    def should_log(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        batch: Any,
-    ) -> bool:
-        del pl_module, batch
-        return self._cadence.should_log(trainer)
-
-    def _log_histogram(self, trainer: pl.Trainer, values: Tensor) -> None:
-        if self.histogram_tag is None:
-            return
-        if not _capability.is_global_zero(trainer):
-            return
-        writer = experiment.histogram(trainer)
-        if writer is None:
-            return
-        writer.add_histogram(
-            self.histogram_tag,
-            values.detach().float().cpu(),
-            _capability.global_step(trainer),
-        )
-
-    def _log_bucket_loss(
-        self,
-        trainer: pl.Trainer,
-        loss: Tensor,
-        values: Tensor,
-    ) -> None:
-        writer = experiment.scalar(trainer)
-        if writer is None:
-            return
-
-        bucketed = time_bucketed_mean(
-            loss.detach(),
-            values.detach(),
-            bucket_count=self.bucket_count,
-            t_min=self.t_min,
-            t_max=self.t_max,
-        )
-        bucketed = _sync_bucketed(trainer, bucketed)
-        if not _capability.is_global_zero(trainer):
-            return
-
-        mean = bucketed.mean.detach().cpu()
-        count = bucketed.count.detach().cpu()
-        edges = bucketed.edges.detach().cpu()
-        for index in range(self.bucket_count):
-            if count[index] <= 0:
-                continue
-            writer.add_scalar(
-                self._bucket_tag(edges[index], edges[index + 1]),
-                float(mean[index]),
-                _capability.global_step(trainer),
-            )
-
-    def _bucket_tag(self, lower: Tensor, upper: Tensor) -> str:
-        return self.scalar_template.format(
-            item=self.item_name,
-            key=self.detail_key,
-            lower=float(lower),
-            upper=float(upper),
-        )
-
-
-def _item_summary_value(item: LossItem) -> Tensor:
-    details = item.details
-    if details is not None:
-        for unit in ("frames", "tokens", "samples"):
-            if unit in details:
-                return loss_item_mean(item, unit=unit).detach().float()
-    return item.loss.detach().float().mean()
-
-
-def _available_loss_items(
-    outputs: Mapping[str, Any],
-    *,
-    loss_key: str,
-) -> Iterable[tuple[str, LossItem]]:
-    for name, value in outputs.items():
-        if name == loss_key:
-            continue
-        if isinstance(value, LossItem):
-            yield name, value
 
 
 def _materialized_values(values: _MetricWindow) -> list[float]:
@@ -534,23 +287,33 @@ def _tensor_int(value: Tensor) -> int:
     return int(value.detach().cpu().item())
 
 
-def _tensor(outputs: Mapping[str, Any], name: str) -> Tensor:
+def _scalar_tensor(outputs: Mapping[str, Any], name: str) -> Tensor:
     value = outputs[name]
     if not isinstance(value, Tensor):
         raise TypeError(f"{name!r} output must be a tensor.")
+    if value.ndim != 0:
+        raise ValueError(f"{name!r} output must be a scalar tensor.")
     return value
 
 
-def _sync_bucketed(trainer: pl.Trainer, bucketed: TimeBucketedMean) -> TimeBucketedMean:
-    total = _capability.strategy_reduce_or_none(trainer, bucketed.total, reduce_op="sum")
-    count = _capability.strategy_reduce_or_none(trainer, bucketed.count, reduce_op="sum")
-    if total is None or count is None:
-        return bucketed
-    return TimeBucketedMean(
-        edges=bucketed.edges,
-        total=total,
-        count=count,
-    )
+def _loss_names(values: Iterable[str], *, loss_key: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError("loss_names must be an iterable of strings.")
+    names = tuple(values)
+    for index, name in enumerate(names):
+        _non_empty_string(name, f"loss_names[{index}]")
+    if loss_key in names:
+        raise ValueError("loss_names must not contain loss_key.")
+    if len(set(names)) != len(names):
+        raise ValueError("loss_names must be unique.")
+    return names
+
+
+def _non_empty_string(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string.")
+    if not value:
+        raise ValueError(f"{name} must not be empty.")
 
 
 def _positive_int(value: int, name: str) -> None:
@@ -561,10 +324,6 @@ def _positive_int(value: int, name: str) -> None:
 
 
 __all__ = [
-    "LossItemLabelsFn",
-    "LossItemLoggerCallback",
-    "LossItemsFn",
     "LossSummaryCallback",
-    "LossTimeBucketLoggerCallback",
     "window_summary",
 ]

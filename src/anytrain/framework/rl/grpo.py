@@ -5,9 +5,7 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
-from anytrain.loss.abc import LossDetails
-
-from ._detail import detach_details
+from ._observation import emit, recommend, register
 from .advantage import group_relative_advantages
 from .types import TokenReduction
 
@@ -36,6 +34,7 @@ class GRPOLoss(nn.Module):
         self.kl_beta = float(kl_beta)
         self.eps = float(eps)
         self.token_reduction: TokenReduction = token_reduction
+        recommend(self)
 
     def forward(
         self,
@@ -47,7 +46,7 @@ class GRPOLoss(nn.Module):
         ref_token_logps: Tensor | None = None,
         group_mask: Tensor | None = None,
         validate: bool = True,
-    ) -> tuple[Tensor, LossDetails]:
+    ) -> Tensor:
         """Compute GRPO loss.
 
         Set ``validate=False`` only for batches whose tensor contracts have
@@ -111,22 +110,25 @@ class GRPOLoss(nn.Module):
         total = pg_loss + policy_token_logps.new_tensor(self.kl_beta) * kl
         selected_rewards = rewards.masked_select(candidate_mask)
         selected_advantages = advantages.masked_select(candidate_mask)
-        details = {
-            "pg_loss": pg_loss,
-            "kl_loss": kl,
-            "reward_mean": selected_rewards.mean(),
-            "reward_std": selected_rewards.std(unbiased=False),
-            "advantage_mean": selected_advantages.mean(),
-            "clip_fraction": (
-                (torch.abs(ratio - 1.0) > self.clip_range)
-                .masked_select(selected_token_mask)
-                .to(dtype=total.dtype)
-                .mean()
-            ),
-            "token_count": selected_token_mask.to(dtype=total.dtype).sum(),
-            "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
-        }
-        return total, detach_details(details)
+        emit(
+            self,
+            {
+                "pg_loss": pg_loss,
+                "kl_loss": kl,
+                "reward_mean": selected_rewards.mean(),
+                "reward_std": selected_rewards.std(unbiased=False),
+                "advantage_mean": selected_advantages.mean(),
+                "clip_fraction": (
+                    (torch.abs(ratio - 1.0) > self.clip_range)
+                    .masked_select(selected_token_mask)
+                    .to(dtype=total.dtype)
+                    .mean()
+                ),
+                "token_count": selected_token_mask.to(dtype=total.dtype).sum(),
+                "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
+            },
+        )
+        return total
 
 
 def _validate_rollout_tensors(policy: Tensor, old: Tensor, response_mask: Tensor) -> None:
@@ -229,6 +231,9 @@ def _reduce_token_values(
             raise ValueError("group_mask must select at least one candidate.")
         return (sequence_loss * candidate_weights).sum() / candidate_weights.sum().clamp_min(1)
     raise ValueError("token_reduction must be 'token_mean' or 'sequence_mean'.")
+
+
+register(GRPOLoss)
 
 
 __all__ = ["GRPOLoss"]

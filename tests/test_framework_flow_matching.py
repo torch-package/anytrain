@@ -62,6 +62,27 @@ class FlowMatchingComponentTest(unittest.TestCase):
         self.assertFalse(hasattr(flow_matching, "time_bucketed_mean"))
         self.assertFalse(hasattr(flow_matching, "TimeBucketedMean"))
 
+    def test_objectives_register_scalar_loss_observations(self):
+        from anytrain import observation
+        from anytrain.framework.flow_matching import (
+            ContinuousFlowRuntime,
+            ContinuousVelocityObjective,
+            DiscreteFlowRuntime,
+            DiscreteGeneralizedKLObjective,
+        )
+
+        objectives = (
+            ContinuousVelocityObjective(ContinuousFlowRuntime()),
+            DiscreteGeneralizedKLObjective(DiscreteFlowRuntime(8)),
+        )
+        for objective in objectives:
+            specs = observation.registry.specs(objective)
+
+            self.assertEqual(len(specs), 1)
+            self.assertIsInstance(specs[0], observation.OutputObservation)
+            self.assertEqual(specs[0].name, "loss")
+            self.assertTrue(specs[0].recommended)
+
     def test_sources_and_time_sampler(self):
         from anytrain.framework.flow_matching import (
             GaussianSource,
@@ -133,6 +154,7 @@ class FlowMatchingComponentTest(unittest.TestCase):
 
         loss = objective(model, x_1)
         loss.backward()
+        self.assertEqual(loss.ndim, 0)
         self.assertTrue(torch.isfinite(loss))
 
         output = runtime.sample(model, runtime.source_like(x_1))
@@ -425,9 +447,7 @@ class FlowMatchingComponentTest(unittest.TestCase):
         std = torch.full_like(policy_mean, 2.0)
 
         kl = gaussian_kl_from_means(policy_mean, reference_mean, std, reduction="mean")
-        expected = ((policy_mean - reference_mean).square() / (2.0 * std.square())).mean(
-            dim=(1, 2)
-        )
+        expected = ((policy_mean - reference_mean).square() / (2.0 * std.square())).mean(dim=(1, 2))
 
         torch.testing.assert_close(kl, expected)
         torch.testing.assert_close(
@@ -502,9 +522,12 @@ class FlowMatchingComponentTest(unittest.TestCase):
         from anytrain.framework.flow_matching import RectifiedFlowSDE
 
         for noise_level in (0.0, float("nan"), float("inf"), float("-inf")):
-            with self.subTest(noise_level=noise_level), self.assertRaisesRegex(
-                ValueError,
-                "noise_level",
+            with (
+                self.subTest(noise_level=noise_level),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "noise_level",
+                ),
             ):
                 RectifiedFlowSDE(noise_level=noise_level)
 

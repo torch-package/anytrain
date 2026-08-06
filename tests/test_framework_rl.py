@@ -6,6 +6,7 @@ from unittest.mock import patch
 import torch
 from torch.nn import functional as F
 
+from anytrain import observation
 from anytrain.framework.rl import (
     ContinuousGRPOLoss,
     ContinuousRolloutBatch,
@@ -19,6 +20,27 @@ from anytrain.framework.rl import (
     neighbor_logps_from_distances,
     sequence_logps,
 )
+
+
+def _run_with_observations(loss_fn, *args, **kwargs):
+    events = {}
+
+    def capture(module, name, value):
+        del module
+        events[name] = value
+
+    with patch.object(observation, "emit", side_effect=capture):
+        loss = loss_fn(*args, **kwargs)
+    if not isinstance(loss, torch.Tensor) or loss.ndim != 0:
+        raise AssertionError("framework RL objectives must return a scalar Tensor")
+
+    diagnostics = {}
+    payload = events.get("diagnostics")
+    if payload is not None:
+        for name, item in payload.items():
+            if isinstance(item, observation.Curve):
+                diagnostics[name] = item.value
+    return loss, diagnostics
 
 
 class RLImportTest(unittest.TestCase):
@@ -36,6 +58,18 @@ class RLImportTest(unittest.TestCase):
         self.assertIs(rl.NeighborRolloutBatch, NeighborRolloutBatch)
         self.assertIn("ContinuousRolloutBatch", rl.__all__)
         self.assertIn("NeighborRolloutBatch", rl.__all__)
+
+    def test_loss_observations_are_declared_by_concrete_type(self):
+        for loss_type in (DPOLoss, GRPOLoss, ContinuousGRPOLoss, NeighborGRPOLoss):
+            specs = observation.registry.specs(loss_type())
+
+            self.assertEqual(
+                [(type(spec), spec.name) for spec in specs],
+                [
+                    (observation.OutputObservation, "loss"),
+                    (observation.ForwardEvent, "diagnostics"),
+                ],
+            )
 
     def test_rollout_batch_type_contracts(self):
         self.assertEqual(
@@ -106,12 +140,13 @@ class LogProbTest(unittest.TestCase):
 
 
 class DPOLossTest(unittest.TestCase):
-    def test_reference_free_dpo_values_and_details_are_detached(self):
+    def test_reference_free_dpo_values_and_diagnostics_are_detached(self):
         chosen = torch.tensor([1.0, 0.5], requires_grad=True)
         rejected = torch.tensor([0.0, 0.5], requires_grad=True)
         loss_fn = DPOLoss(beta=1.0, reference_free=True)
 
-        loss, details = loss_fn(
+        loss, diagnostics = _run_with_observations(
+            loss_fn,
             policy_chosen_logps=chosen,
             policy_rejected_logps=rejected,
         )
@@ -124,13 +159,14 @@ class DPOLossTest(unittest.TestCase):
         ).mean()
         torch.testing.assert_close(loss, expected)
         self.assertTrue(loss.requires_grad)
-        self.assertFalse(details["policy_margin"].requires_grad)
-        self.assertTrue(torch.isclose(details["accuracy"], torch.tensor(0.5)))
+        self.assertFalse(diagnostics["policy_margin"].requires_grad)
+        self.assertTrue(torch.isclose(diagnostics["accuracy"], torch.tensor(0.5)))
 
     def test_reference_margin_cancels_policy_margin(self):
         loss_fn = DPOLoss(beta=2.0)
 
-        loss, details = loss_fn(
+        loss, diagnostics = _run_with_observations(
+            loss_fn,
             policy_chosen_logps=torch.tensor([3.0]),
             policy_rejected_logps=torch.tensor([1.0]),
             ref_chosen_logps=torch.tensor([5.0]),
@@ -138,29 +174,37 @@ class DPOLossTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(loss, torch.tensor(math.log(2.0)))
-        torch.testing.assert_close(details["preference_logit"], torch.tensor(0.0))
+        torch.testing.assert_close(diagnostics["preference_logit"], torch.tensor(0.0))
 
     def test_reference_logps_are_required_by_default(self):
         with self.assertRaisesRegex(ValueError, "reference"):
-            DPOLoss()(policy_chosen_logps=torch.ones(1), policy_rejected_logps=torch.zeros(1))
+            _run_with_observations(
+                DPOLoss(),
+                policy_chosen_logps=torch.ones(1),
+                policy_rejected_logps=torch.zeros(1),
+            )
 
     def test_default_validation_rejects_nonfinite_logps(self):
         with self.assertRaisesRegex(ValueError, "finite"):
-            DPOLoss(reference_free=True)(
+            _run_with_observations(
+                DPOLoss(reference_free=True),
                 policy_chosen_logps=torch.tensor([float("nan")]),
                 policy_rejected_logps=torch.zeros(1),
             )
 
     def test_trusted_path_avoids_tensor_scalar_checks(self):
         with (
-            patch.object(torch.Tensor, "item", side_effect=AssertionError("DPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor, "item", side_effect=AssertionError("DPO called Tensor.item()")
+            ),
             patch.object(
                 torch.Tensor,
                 "__bool__",
                 side_effect=AssertionError("DPO converted Tensor to bool"),
             ),
         ):
-            loss, _ = DPOLoss(reference_free=True)(
+            loss, _ = _run_with_observations(
+                DPOLoss(reference_free=True),
                 policy_chosen_logps=torch.ones(1),
                 policy_rejected_logps=torch.zeros(1),
                 validate=False,
@@ -192,7 +236,8 @@ class GRPOLossTest(unittest.TestCase):
         mask = torch.ones(1, 2, 2, dtype=torch.bool)
         loss_fn = GRPOLoss(clip_range=0.2, token_reduction="sequence_mean")
 
-        loss, details = loss_fn(
+        loss, diagnostics = _run_with_observations(
+            loss_fn,
             policy_token_logps=policy,
             old_token_logps=old,
             rewards=rewards,
@@ -200,10 +245,10 @@ class GRPOLossTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(loss, torch.tensor((0.8 - 1.2) / 2))
-        torch.testing.assert_close(details["pg_loss"], loss.detach())
-        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
-        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
-        torch.testing.assert_close(details["token_count"], torch.tensor(4.0))
+        torch.testing.assert_close(diagnostics["pg_loss"], loss.detach())
+        torch.testing.assert_close(diagnostics["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(diagnostics["candidate_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["token_count"], torch.tensor(4.0))
 
     def test_grpo_adds_reference_kl(self):
         policy = torch.zeros(1, 2, 1)
@@ -213,7 +258,8 @@ class GRPOLossTest(unittest.TestCase):
         mask = torch.ones_like(policy, dtype=torch.bool)
         loss_fn = GRPOLoss(kl_beta=0.5)
 
-        loss, details = loss_fn(
+        loss, diagnostics = _run_with_observations(
+            loss_fn,
             policy_token_logps=policy,
             old_token_logps=old,
             ref_token_logps=reference,
@@ -222,8 +268,11 @@ class GRPOLossTest(unittest.TestCase):
         )
 
         expected_kl = math.exp(-1.0)
-        torch.testing.assert_close(details["kl_loss"], torch.tensor(expected_kl))
-        torch.testing.assert_close(loss, details["pg_loss"] + 0.5 * details["kl_loss"])
+        torch.testing.assert_close(diagnostics["kl_loss"], torch.tensor(expected_kl))
+        torch.testing.assert_close(
+            loss,
+            diagnostics["pg_loss"] + 0.5 * diagnostics["kl_loss"],
+        )
 
     def test_grpo_keeps_gradients_on_policy_only(self):
         policy = torch.zeros(1, 2, 1, requires_grad=True)
@@ -232,7 +281,8 @@ class GRPOLossTest(unittest.TestCase):
         rewards = torch.tensor([[1.0, 3.0]], requires_grad=True)
         mask = torch.ones(1, 2, 1, dtype=torch.bool)
 
-        loss, details = GRPOLoss(kl_beta=0.1)(
+        loss, diagnostics = _run_with_observations(
+            GRPOLoss(kl_beta=0.1),
             policy_token_logps=policy,
             old_token_logps=old,
             ref_token_logps=reference,
@@ -245,7 +295,7 @@ class GRPOLossTest(unittest.TestCase):
         self.assertIsNone(old.grad)
         self.assertIsNone(reference.grad)
         self.assertIsNone(rewards.grad)
-        self.assertFalse(details["pg_loss"].requires_grad)
+        self.assertFalse(diagnostics["pg_loss"].requires_grad)
 
     def test_dpo_keeps_gradients_on_policy_only(self):
         chosen = torch.tensor([1.0], requires_grad=True)
@@ -253,7 +303,8 @@ class GRPOLossTest(unittest.TestCase):
         ref_chosen = torch.tensor([0.0], requires_grad=True)
         ref_rejected = torch.tensor([0.0], requires_grad=True)
 
-        loss, _ = DPOLoss()(
+        loss, _ = _run_with_observations(
+            DPOLoss(),
             policy_chosen_logps=chosen,
             policy_rejected_logps=rejected,
             ref_chosen_logps=ref_chosen,
@@ -268,7 +319,8 @@ class GRPOLossTest(unittest.TestCase):
 
     def test_grpo_requires_reference_when_kl_weight_is_positive(self):
         with self.assertRaisesRegex(ValueError, "ref_token_logps"):
-            GRPOLoss(kl_beta=0.1)(
+            _run_with_observations(
+                GRPOLoss(kl_beta=0.1),
                 policy_token_logps=torch.zeros(1, 2, 1),
                 old_token_logps=torch.zeros(1, 2, 1),
                 rewards=torch.tensor([[1.0, 2.0]]),
@@ -277,7 +329,8 @@ class GRPOLossTest(unittest.TestCase):
 
     def test_grpo_rejects_group_mask_without_tokens(self):
         with self.assertRaisesRegex(ValueError, "no response tokens"):
-            GRPOLoss()(
+            _run_with_observations(
+                GRPOLoss(),
                 policy_token_logps=torch.zeros(1, 2, 1),
                 old_token_logps=torch.zeros(1, 2, 1),
                 rewards=torch.tensor([[1.0, 2.0]]),
@@ -286,20 +339,19 @@ class GRPOLossTest(unittest.TestCase):
             )
 
     def test_grpo_group_mask_excludes_tokens_from_loss_and_validation(self):
-        policy = torch.tensor(
-            [[[math.log(0.8)], [math.log(1.5)], [float("nan")]]]
-        )
+        policy = torch.tensor([[[math.log(0.8)], [math.log(1.5)], [float("nan")]]])
         old = torch.tensor([[[0.0], [0.0], [float("inf")]]])
         reference = torch.tensor([[[-0.5], [-0.5], [float("nan")]]])
         rewards = torch.tensor([[1.0, 3.0, 100.0]])
         response_mask = torch.ones_like(policy, dtype=torch.bool)
         group_mask = torch.tensor([[True, True, False]])
 
-        loss, details = GRPOLoss(
-            clip_range=0.2,
-            kl_beta=0.5,
-            token_reduction="token_mean",
-        )(
+        loss, diagnostics = _run_with_observations(
+            GRPOLoss(
+                clip_range=0.2,
+                kl_beta=0.5,
+                token_reduction="token_mean",
+            ),
             policy_token_logps=policy,
             old_token_logps=old,
             ref_token_logps=reference,
@@ -313,24 +365,27 @@ class GRPOLossTest(unittest.TestCase):
         log_ratio = selected_reference - selected_policy
         expected_kl = (torch.exp(log_ratio) - log_ratio - 1).mean()
         expected_pg = torch.tensor((0.8 - 1.2) / 2)
-        torch.testing.assert_close(details["pg_loss"], expected_pg)
-        torch.testing.assert_close(details["kl_loss"], expected_kl)
+        torch.testing.assert_close(diagnostics["pg_loss"], expected_pg)
+        torch.testing.assert_close(diagnostics["kl_loss"], expected_kl)
         torch.testing.assert_close(loss, expected_pg + 0.5 * expected_kl)
-        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
-        torch.testing.assert_close(details["token_count"], torch.tensor(2.0))
-        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(diagnostics["token_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["candidate_count"], torch.tensor(2.0))
 
     def test_trusted_path_avoids_tensor_scalar_checks(self):
         policy = torch.zeros(1, 2, 1)
         with (
-            patch.object(torch.Tensor, "item", side_effect=AssertionError("GRPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor, "item", side_effect=AssertionError("GRPO called Tensor.item()")
+            ),
             patch.object(
                 torch.Tensor,
                 "__bool__",
                 side_effect=AssertionError("GRPO converted Tensor to bool"),
             ),
         ):
-            loss, _ = GRPOLoss()(
+            loss, _ = _run_with_observations(
+                GRPOLoss(),
                 policy_token_logps=policy,
                 old_token_logps=torch.zeros_like(policy),
                 rewards=torch.tensor([[1.0, 3.0]]),
@@ -349,7 +404,8 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         mask = torch.ones(1, 2, 2, dtype=torch.bool)
         loss_fn = ContinuousGRPOLoss(clip_range=0.2)
 
-        loss, details = loss_fn(
+        loss, diagnostics = _run_with_observations(
+            loss_fn,
             policy_step_logps=policy,
             old_step_logps=old,
             rewards=rewards,
@@ -357,10 +413,10 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(loss, torch.tensor((0.8 - 1.2) / 2))
-        torch.testing.assert_close(details["pg_loss"], loss.detach())
-        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
-        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
-        torch.testing.assert_close(details["step_count"], torch.tensor(4.0))
+        torch.testing.assert_close(diagnostics["pg_loss"], loss.detach())
+        torch.testing.assert_close(diagnostics["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(diagnostics["candidate_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["step_count"], torch.tensor(4.0))
 
     def test_continuous_grpo_adds_external_kl_values(self):
         policy = torch.zeros(1, 2, 1)
@@ -369,7 +425,8 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         step_mask = torch.ones_like(policy, dtype=torch.bool)
         kl_values = torch.full_like(policy, 0.25)
 
-        loss, details = ContinuousGRPOLoss(kl_beta=0.5)(
+        loss, diagnostics = _run_with_observations(
+            ContinuousGRPOLoss(kl_beta=0.5),
             policy_step_logps=policy,
             old_step_logps=old,
             rewards=rewards,
@@ -377,8 +434,11 @@ class ContinuousGRPOLossTest(unittest.TestCase):
             kl_values=kl_values,
         )
 
-        torch.testing.assert_close(details["kl_loss"], torch.tensor(0.25))
-        torch.testing.assert_close(loss, details["pg_loss"] + 0.5 * details["kl_loss"])
+        torch.testing.assert_close(diagnostics["kl_loss"], torch.tensor(0.25))
+        torch.testing.assert_close(
+            loss,
+            diagnostics["pg_loss"] + 0.5 * diagnostics["kl_loss"],
+        )
 
     def test_continuous_grpo_keeps_gradients_on_policy_only(self):
         policy = torch.zeros(1, 2, 1, requires_grad=True)
@@ -387,7 +447,8 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         kl_values = torch.ones(1, 2, 1, requires_grad=True)
         step_mask = torch.ones(1, 2, 1, dtype=torch.bool)
 
-        loss, details = ContinuousGRPOLoss(kl_beta=0.1)(
+        loss, diagnostics = _run_with_observations(
+            ContinuousGRPOLoss(kl_beta=0.1),
             policy_step_logps=policy,
             old_step_logps=old,
             rewards=rewards,
@@ -400,11 +461,12 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         self.assertIsNone(old.grad)
         self.assertIsNone(rewards.grad)
         self.assertIsNone(kl_values.grad)
-        self.assertFalse(details["pg_loss"].requires_grad)
+        self.assertFalse(diagnostics["pg_loss"].requires_grad)
 
     def test_continuous_grpo_requires_kl_when_weight_is_positive(self):
         with self.assertRaisesRegex(ValueError, "kl_values"):
-            ContinuousGRPOLoss(kl_beta=0.1)(
+            _run_with_observations(
+                ContinuousGRPOLoss(kl_beta=0.1),
                 policy_step_logps=torch.zeros(1, 2, 1),
                 old_step_logps=torch.zeros(1, 2, 1),
                 rewards=torch.tensor([[1.0, 2.0]]),
@@ -413,7 +475,8 @@ class ContinuousGRPOLossTest(unittest.TestCase):
 
     def test_continuous_grpo_rejects_group_mask_without_steps(self):
         with self.assertRaisesRegex(ValueError, "no rollout steps"):
-            ContinuousGRPOLoss()(
+            _run_with_observations(
+                ContinuousGRPOLoss(),
                 policy_step_logps=torch.zeros(1, 2, 1),
                 old_step_logps=torch.zeros(1, 2, 1),
                 rewards=torch.tensor([[1.0, 2.0]]),
@@ -422,20 +485,19 @@ class ContinuousGRPOLossTest(unittest.TestCase):
             )
 
     def test_continuous_grpo_group_mask_excludes_steps_from_loss_and_validation(self):
-        policy = torch.tensor(
-            [[[math.log(0.8)], [math.log(1.5)], [float("nan")]]]
-        )
+        policy = torch.tensor([[[math.log(0.8)], [math.log(1.5)], [float("nan")]]])
         old = torch.tensor([[[0.0], [0.0], [float("inf")]]])
         kl_values = torch.tensor([[[0.25], [0.25], [float("nan")]]])
         rewards = torch.tensor([[1.0, 3.0, 100.0]])
         step_mask = torch.ones_like(policy, dtype=torch.bool)
         group_mask = torch.tensor([[True, True, False]])
 
-        loss, details = ContinuousGRPOLoss(
-            clip_range=0.2,
-            kl_beta=0.5,
-            step_reduction="step_mean",
-        )(
+        loss, diagnostics = _run_with_observations(
+            ContinuousGRPOLoss(
+                clip_range=0.2,
+                kl_beta=0.5,
+                step_reduction="step_mean",
+            ),
             policy_step_logps=policy,
             old_step_logps=old,
             kl_values=kl_values,
@@ -445,24 +507,29 @@ class ContinuousGRPOLossTest(unittest.TestCase):
         )
 
         expected_pg = torch.tensor((0.8 - 1.2) / 2)
-        torch.testing.assert_close(details["pg_loss"], expected_pg)
-        torch.testing.assert_close(details["kl_loss"], torch.tensor(0.25))
-        torch.testing.assert_close(loss, expected_pg + 0.5 * details["kl_loss"])
-        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
-        torch.testing.assert_close(details["step_count"], torch.tensor(2.0))
-        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["pg_loss"], expected_pg)
+        torch.testing.assert_close(diagnostics["kl_loss"], torch.tensor(0.25))
+        torch.testing.assert_close(loss, expected_pg + 0.5 * diagnostics["kl_loss"])
+        torch.testing.assert_close(diagnostics["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(diagnostics["step_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["candidate_count"], torch.tensor(2.0))
 
     def test_trusted_path_avoids_tensor_scalar_checks(self):
         policy = torch.zeros(1, 2, 1)
         with (
-            patch.object(torch.Tensor, "item", side_effect=AssertionError("continuous GRPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor,
+                "item",
+                side_effect=AssertionError("continuous GRPO called Tensor.item()"),
+            ),
             patch.object(
                 torch.Tensor,
                 "__bool__",
                 side_effect=AssertionError("continuous GRPO converted Tensor to bool"),
             ),
         ):
-            loss, _ = ContinuousGRPOLoss()(
+            loss, _ = _run_with_observations(
+                ContinuousGRPOLoss(),
                 policy_step_logps=policy,
                 old_step_logps=torch.zeros_like(policy),
                 rewards=torch.tensor([[1.0, 3.0]]),
@@ -481,7 +548,8 @@ class NeighborGRPOLossTest(unittest.TestCase):
         mask = torch.ones_like(policy, dtype=torch.bool)
         loss_fn = NeighborGRPOLoss(clip_range=0.2)
 
-        loss, details = loss_fn(
+        loss, diagnostics = _run_with_observations(
+            loss_fn,
             policy_neighbor_logps=policy,
             old_neighbor_logps=old,
             rewards=rewards,
@@ -489,11 +557,11 @@ class NeighborGRPOLossTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(loss, torch.tensor((0.8 - 1.2) / 2))
-        torch.testing.assert_close(details["pg_loss"], loss.detach())
-        torch.testing.assert_close(details["clip_fraction"], torch.tensor(0.5))
-        torch.testing.assert_close(details["neighbor_count"], torch.tensor(2.0))
-        torch.testing.assert_close(details["anchor_step_count"], torch.tensor(1.0))
-        torch.testing.assert_close(details["candidate_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["pg_loss"], loss.detach())
+        torch.testing.assert_close(diagnostics["clip_fraction"], torch.tensor(0.5))
+        torch.testing.assert_close(diagnostics["neighbor_count"], torch.tensor(2.0))
+        torch.testing.assert_close(diagnostics["anchor_step_count"], torch.tensor(1.0))
+        torch.testing.assert_close(diagnostics["candidate_count"], torch.tensor(2.0))
 
     def test_neighbor_grpo_adds_external_kl_values(self):
         policy = torch.zeros(1, 1, 1, 2)
@@ -502,7 +570,8 @@ class NeighborGRPOLossTest(unittest.TestCase):
         neighbor_mask = torch.ones_like(policy, dtype=torch.bool)
         kl_values = torch.full_like(policy, 0.25)
 
-        loss, details = NeighborGRPOLoss(kl_beta=0.5)(
+        loss, diagnostics = _run_with_observations(
+            NeighborGRPOLoss(kl_beta=0.5),
             policy_neighbor_logps=policy,
             old_neighbor_logps=old,
             rewards=rewards,
@@ -510,8 +579,11 @@ class NeighborGRPOLossTest(unittest.TestCase):
             kl_values=kl_values,
         )
 
-        torch.testing.assert_close(details["kl_loss"], torch.tensor(0.25))
-        torch.testing.assert_close(loss, details["pg_loss"] + 0.5 * details["kl_loss"])
+        torch.testing.assert_close(diagnostics["kl_loss"], torch.tensor(0.25))
+        torch.testing.assert_close(
+            loss,
+            diagnostics["pg_loss"] + 0.5 * diagnostics["kl_loss"],
+        )
 
     def test_neighbor_grpo_keeps_gradients_on_policy_only(self):
         policy = torch.zeros(1, 1, 1, 2, requires_grad=True)
@@ -520,7 +592,8 @@ class NeighborGRPOLossTest(unittest.TestCase):
         kl_values = torch.ones(1, 1, 1, 2, requires_grad=True)
         neighbor_mask = torch.ones(1, 1, 1, 2, dtype=torch.bool)
 
-        loss, details = NeighborGRPOLoss(kl_beta=0.1)(
+        loss, diagnostics = _run_with_observations(
+            NeighborGRPOLoss(kl_beta=0.1),
             policy_neighbor_logps=policy,
             old_neighbor_logps=old,
             rewards=rewards,
@@ -533,7 +606,7 @@ class NeighborGRPOLossTest(unittest.TestCase):
         self.assertIsNone(old.grad)
         self.assertIsNone(rewards.grad)
         self.assertIsNone(kl_values.grad)
-        self.assertFalse(details["pg_loss"].requires_grad)
+        self.assertFalse(diagnostics["pg_loss"].requires_grad)
 
     def test_neighbor_grpo_supports_quasi_norm_advantages(self):
         policy = torch.zeros(1, 1, 1, 3)
@@ -541,7 +614,8 @@ class NeighborGRPOLossTest(unittest.TestCase):
         rewards = torch.tensor([[1.0, 3.0, 7.0]])
         neighbor_mask = torch.ones_like(policy, dtype=torch.bool)
 
-        _, details = NeighborGRPOLoss(advantage_norm_p=1.0)(
+        _, diagnostics = _run_with_observations(
+            NeighborGRPOLoss(advantage_norm_p=1.0),
             policy_neighbor_logps=policy,
             old_neighbor_logps=old,
             rewards=rewards,
@@ -549,7 +623,7 @@ class NeighborGRPOLossTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(
-            details["advantage_mean"],
+            diagnostics["advantage_mean"],
             torch.tensor(0.0),
             atol=1e-6,
             rtol=0,
@@ -557,7 +631,8 @@ class NeighborGRPOLossTest(unittest.TestCase):
 
     def test_neighbor_grpo_requires_kl_when_weight_is_positive(self):
         with self.assertRaisesRegex(ValueError, "kl_values"):
-            NeighborGRPOLoss(kl_beta=0.1)(
+            _run_with_observations(
+                NeighborGRPOLoss(kl_beta=0.1),
                 policy_neighbor_logps=torch.zeros(1, 1, 1, 2),
                 old_neighbor_logps=torch.zeros(1, 1, 1, 2),
                 rewards=torch.tensor([[1.0, 2.0]]),
@@ -566,7 +641,8 @@ class NeighborGRPOLossTest(unittest.TestCase):
 
     def test_neighbor_grpo_rejects_group_mask_without_comparisons(self):
         with self.assertRaisesRegex(ValueError, "no neighbor comparisons"):
-            NeighborGRPOLoss()(
+            _run_with_observations(
+                NeighborGRPOLoss(),
                 policy_neighbor_logps=torch.zeros(1, 1, 1, 2),
                 old_neighbor_logps=torch.zeros(1, 1, 1, 2),
                 rewards=torch.tensor([[1.0, 2.0]]),
@@ -577,14 +653,19 @@ class NeighborGRPOLossTest(unittest.TestCase):
     def test_trusted_path_avoids_tensor_scalar_checks(self):
         policy = torch.zeros(1, 1, 1, 2)
         with (
-            patch.object(torch.Tensor, "item", side_effect=AssertionError("neighbor GRPO called Tensor.item()")),
+            patch.object(
+                torch.Tensor,
+                "item",
+                side_effect=AssertionError("neighbor GRPO called Tensor.item()"),
+            ),
             patch.object(
                 torch.Tensor,
                 "__bool__",
                 side_effect=AssertionError("neighbor GRPO converted Tensor to bool"),
             ),
         ):
-            loss, _ = NeighborGRPOLoss()(
+            loss, _ = _run_with_observations(
+                NeighborGRPOLoss(),
                 policy_neighbor_logps=policy,
                 old_neighbor_logps=torch.zeros_like(policy),
                 rewards=torch.tensor([[1.0, 3.0]]),
@@ -595,14 +676,13 @@ class NeighborGRPOLossTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss))
 
     def test_neighbor_grpo_ignores_nonfinite_masked_candidates(self):
-        policy = torch.tensor(
-            [[[[math.log(0.8), math.log(1.5), float("nan")]]]]
-        )
+        policy = torch.tensor([[[[math.log(0.8), math.log(1.5), float("nan")]]]])
         old = torch.tensor([[[[0.0, 0.0, float("inf")]]]])
         rewards = torch.tensor([[1.0, 3.0, 100.0]])
         neighbor_mask = torch.tensor([[[[True, True, False]]]])
 
-        loss, details = NeighborGRPOLoss()(
+        loss, diagnostics = _run_with_observations(
+            NeighborGRPOLoss(),
             policy_neighbor_logps=policy,
             old_neighbor_logps=old,
             rewards=rewards,
@@ -610,7 +690,7 @@ class NeighborGRPOLossTest(unittest.TestCase):
         )
 
         self.assertTrue(torch.isfinite(loss))
-        self.assertTrue(torch.isfinite(details["pg_loss"]))
+        self.assertTrue(torch.isfinite(diagnostics["pg_loss"]))
 
 
 if __name__ == "__main__":

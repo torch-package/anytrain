@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Mapping
 
 import torch
@@ -9,7 +9,8 @@ from torch import Tensor, nn
 
 from anytrain._buffer import register_buffer
 
-from .abc import LossResult
+from ._observation import fixed_weights, recommend, uncertainty_weights
+from ._validation import scalar
 
 LossTensorDict = Mapping[str, Tensor]
 
@@ -21,6 +22,7 @@ def _validate_ordered_loss_names(loss_names: list[str], *, label: str) -> list[s
         raise ValueError(f"{label} must contain at least one name.")
 
     validated: list[str] = []
+    source_by_observation_name: dict[str, str] = {}
     for name in loss_names:
         if not isinstance(name, str):
             raise TypeError("loss name must be a string.")
@@ -28,31 +30,56 @@ def _validate_ordered_loss_names(loss_names: list[str], *, label: str) -> list[s
             raise ValueError("loss name must not be empty.")
         if name in validated:
             raise ValueError(f"Duplicate loss name {name!r}.")
+        observation_name = name.strip("/")
+        if not observation_name:
+            raise ValueError(
+                f"Loss name {name!r} must produce a non-empty observation tag."
+            )
+        previous = source_by_observation_name.get(observation_name)
+        if previous is not None:
+            raise ValueError(
+                f"Loss names {previous!r} and {name!r} normalize to the same "
+                f"observation tag {observation_name!r}."
+            )
+        source_by_observation_name[observation_name] = name
         validated.append(name)
     return validated
 
 
 def _stack_named_losses(losses: LossTensorDict, loss_names: list[str]) -> Tensor:
+    if not isinstance(losses, Mapping):
+        raise TypeError("losses must be a mapping of names to scalar tensors.")
     missing = [name for name in loss_names if name not in losses]
     if missing:
         raise ValueError(f"losses missing configured loss names: {missing}.")
     extra = [name for name in losses if name not in loss_names]
     if extra:
         raise ValueError(f"losses contains unknown loss names: {extra}.")
-    return torch.stack([losses[name] for name in loss_names])
+    return torch.stack(
+        [scalar(losses[name], name=f"loss {name!r}") for name in loss_names]
+    )
 
 
 class LossBalancerABC(nn.Module, ABC):
-    @abstractmethod
-    def forward(self, losses: LossTensorDict) -> LossResult:
+    def forward(self, losses: LossTensorDict) -> Tensor:
+        return scalar(self.compute_loss(losses), name="balanced loss")
+
+    def compute_loss(self, losses: LossTensorDict) -> Tensor:
         raise NotImplementedError
 
 
 class MeanLossBalancer(LossBalancerABC):
-    def forward(self, losses: LossTensorDict) -> Tensor:
-        return torch.stack(list(losses.values())).mean()
+    def compute_loss(self, losses: LossTensorDict) -> Tensor:
+        if not isinstance(losses, Mapping):
+            raise TypeError("losses must be a mapping of names to scalar tensors.")
+        if not losses:
+            raise ValueError("losses must contain at least one scalar tensor.")
+        return torch.stack(
+            [scalar(value, name=f"loss {name!r}") for name, value in losses.items()]
+        ).mean()
 
 
+@fixed_weights
 class FixedWeightLossBalancer(LossBalancerABC):
     weights: Tensor
 
@@ -73,15 +100,12 @@ class FixedWeightLossBalancer(LossBalancerABC):
                 raise ValueError("loss_weights must have positive sum when normalize=True.")
             weights = weights / weight_sum
         register_buffer(self, "weights", weights)
+        recommend(self)
 
-    def forward(self, losses: LossTensorDict) -> LossResult:
+    def compute_loss(self, losses: LossTensorDict) -> Tensor:
         loss_tensor = self._stack_losses(losses)
         weights = self.weights.to(device=loss_tensor.device, dtype=loss_tensor.dtype)
-        total = (loss_tensor * weights).sum()
-        return total, {
-            f"{loss_name}_weight": self.weights[index]
-            for index, loss_name in enumerate(self.loss_names)
-        }
+        return (loss_tensor * weights).sum()
 
     def _stack_losses(self, losses: LossTensorDict) -> Tensor:
         return _stack_named_losses(losses, self.loss_names)
@@ -97,6 +121,7 @@ def _finite_weight(value: float, *, name: str) -> float:
     return resolved
 
 
+@uncertainty_weights
 class UncertaintyLossBalancer(LossBalancerABC):
     def __init__(
         self,
@@ -108,6 +133,7 @@ class UncertaintyLossBalancer(LossBalancerABC):
         self.loss_names = _validate_ordered_loss_names(loss_names, label="loss_names")
         self.normalized = normalized
         self.log_var = nn.Parameter(torch.zeros(len(self.loss_names)))
+        recommend(self)
 
     @property
     def _weight(self) -> Tensor:
@@ -130,13 +156,9 @@ class UncertaintyLossBalancer(LossBalancerABC):
             return self.log_var.sum() / self._normalize_factor
         return self.log_var.sum()
 
-    def forward(self, losses: LossTensorDict) -> LossResult:
+    def compute_loss(self, losses: LossTensorDict) -> Tensor:
         loss_tensor = self._stack_losses(losses)
-        total = (loss_tensor * self.weight).sum() + self._sum_log_var
-        return total, {
-            f"{loss_name}_uncertainty_weight": self.weight[index]
-            for index, loss_name in enumerate(self.loss_names)
-        }
+        return (loss_tensor * self.weight).sum() + self._sum_log_var
 
     def _stack_losses(self, losses: LossTensorDict) -> Tensor:
         return _stack_named_losses(losses, self.loss_names)

@@ -7,20 +7,18 @@ import numpy as np
 import torch
 from torch import nn
 
+from anytrain import observation
 from anytrain.loss import (
     FixedWeightLossBalancer,
     LossABC,
     LossBalancerABC,
     LossGroup,
-    LossItem,
     MaskedCodebookCrossEntropyLoss,
     MaskedCosineAlignmentLoss,
     MaskedFrameMSELoss,
     PackedCodebookLogits,
     TeacherLoss,
     UncertaintyLossBalancer,
-    combine_loss_outputs,
-    iter_loss_items,
     teacher_loss,
 )
 from anytrain.loss.codec import CodecLoss, CodecLossPreset
@@ -38,13 +36,12 @@ from anytrain.loss.spectral import (
 from anytrain.loss.temporal import SDRLoss, global_sdr
 
 
-class DetailLoss(LossABC):
+class ScalarLoss(LossABC):
     def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor):
-        loss = (prediction - target).abs().mean()
-        return loss, {"raw": loss}
+        return (prediction - target).abs().mean()
 
 
-class CountingDetailLoss(DetailLoss):
+class CountingLoss(ScalarLoss):
     def __init__(self):
         super().__init__()
         self.call_count = 0
@@ -61,21 +58,20 @@ class VectorLoss(LossABC):
         return (prediction - target).abs()
 
 
-class InvalidDetailLoss(LossABC):
+class TupleLoss(LossABC):
     def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor):
         loss = (prediction - target).abs().mean()
-        return loss, {"count": 1}
+        return loss, {"raw": loss}
 
 
 class SumLossBalancer(LossBalancerABC):
-    def forward(self, losses):
+    def compute_loss(self, losses):
         return sum(losses.values())
 
 
-class DetailLossBalancer(LossBalancerABC):
+class ForwardSumLossBalancer(LossBalancerABC):
     def forward(self, losses):
-        total = sum(losses.values())
-        return total, {"scale": torch.tensor(float(len(losses)), device=total.device)}
+        return sum(losses.values())
 
 
 class LossTest(unittest.TestCase):
@@ -84,12 +80,11 @@ class LossTest(unittest.TestCase):
         target = torch.tensor([0.0, 1.0])
         loss = LossGroup({"l1": nn.L1Loss(), "l2": nn.MSELoss()})
 
-        total, details = loss(pred, target)
+        total = loss(pred, target)
 
         self.assertTrue(torch.isclose(total, torch.tensor(2.0)))
         self.assertTrue(total.requires_grad)
-        self.assertEqual(set(details), {"l1", "l2"})
-        self.assertFalse(details["l1"].requires_grad)
+        self.assertEqual(total.ndim, 0)
         self.assertIsInstance(loss.losses, nn.ModuleDict)
 
     def test_loss_group_accepts_custom_balancer(self):
@@ -97,9 +92,19 @@ class LossTest(unittest.TestCase):
         target = torch.tensor([0.0, 1.0])
         loss = LossGroup({"l1": nn.L1Loss(), "l2": nn.MSELoss()}, balancer=SumLossBalancer())
 
-        total, _ = loss(pred, target)
+        total = loss(pred, target)
 
         self.assertTrue(torch.isclose(total, torch.tensor(4.0)))
+
+    def test_loss_group_accepts_forward_style_custom_balancer(self):
+        loss = LossGroup(
+            {"l1": nn.L1Loss(), "l2": nn.MSELoss()},
+            balancer=ForwardSumLossBalancer(),
+        )
+
+        total = loss(torch.tensor([1.0, 3.0]), torch.tensor([0.0, 1.0]))
+
+        torch.testing.assert_close(total, torch.tensor(4.0))
 
     def test_fixed_weight_loss_balancer(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
@@ -109,26 +114,32 @@ class LossTest(unittest.TestCase):
             balancer=FixedWeightLossBalancer({"l1": 1.0, "l2": 0.5}),
         )
 
-        total, details = loss(pred, target)
+        total = loss(pred, target)
 
         self.assertTrue(torch.isclose(total, torch.tensor(2.75)))
-        self.assertIn("balancer/l1_weight", details)
-        self.assertIn("balancer/l2_weight", details)
+        self.assertEqual(total.ndim, 0)
 
     def test_fixed_weight_loss_balancer_rejects_nonfinite_weights(self):
         for value in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite"):
                 FixedWeightLossBalancer({"loss": value})
 
-    def test_loss_group_flattens_balancer_details(self):
-        pred = torch.tensor([1.0, 3.0], requires_grad=True)
-        target = torch.tensor([0.0, 1.0])
-        loss = LossGroup({"l1": nn.L1Loss(), "l2": nn.MSELoss()}, balancer=DetailLossBalancer())
-
-        _, details = loss(pred, target)
-
-        self.assertIn("balancer/scale", details)
-        self.assertFalse(details["balancer/scale"].requires_grad)
+    def test_observed_balancers_reject_ambiguous_observation_names(self):
+        constructors = (
+            lambda names: FixedWeightLossBalancer(dict.fromkeys(names, 1.0)),
+            UncertaintyLossBalancer,
+        )
+        for constructor in constructors:
+            with (
+                self.subTest(constructor=constructor, names=("/",)),
+                self.assertRaisesRegex(ValueError, "non-empty observation tag"),
+            ):
+                constructor(["/"])
+            with (
+                self.subTest(constructor=constructor, names=("loss", "/loss/")),
+                self.assertRaisesRegex(ValueError, "normalize to the same observation tag"),
+            ):
+                constructor(["loss", "/loss/"])
 
     def test_uncertainty_loss_balancer(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
@@ -138,12 +149,11 @@ class LossTest(unittest.TestCase):
             balancer=UncertaintyLossBalancer(["l1", "l2"]),
         )
 
-        total, details = loss(pred, target)
+        total = loss(pred, target)
 
         self.assertTrue(torch.isclose(total, torch.tensor(2.0)))
         self.assertTrue(total.requires_grad)
-        self.assertIn("balancer/l1_uncertainty_weight", details)
-        self.assertIn("balancer/l2_uncertainty_weight", details)
+        self.assertEqual(total.ndim, 0)
 
     def test_uncertainty_loss_balancer_rejects_name_mismatch(self):
         balancer = UncertaintyLossBalancer(["l1"])
@@ -154,17 +164,16 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown"):
             balancer({"l1": torch.tensor(1.0), "l2": torch.tensor(2.0)})
 
-    def test_loss_abc_accepts_scalar_loss_with_optional_details(self):
+    def test_loss_abc_accepts_only_scalar_tensor(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
         target = torch.tensor([0.0, 1.0])
-        loss_fn = DetailLoss()
+        loss_fn = ScalarLoss()
 
-        loss, details = loss_fn(pred, target)
+        loss = loss_fn(pred, target)
 
         self.assertTrue(torch.isclose(loss, torch.tensor(1.5)))
         self.assertTrue(loss.requires_grad)
-        self.assertEqual(set(details), {"raw"})
-        self.assertFalse(details["raw"].requires_grad)
+        self.assertEqual(loss.ndim, 0)
 
     def test_loss_abc_rejects_non_scalar_main_loss(self):
         loss_fn = VectorLoss()
@@ -172,145 +181,94 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scalar tensor"):
             loss_fn(torch.tensor([1.0, 3.0]), torch.tensor([0.0, 1.0]))
 
-    def test_loss_abc_rejects_non_scalar_detail_values(self):
-        loss_fn = InvalidDetailLoss()
+    def test_loss_abc_rejects_tuple_result(self):
+        loss_fn = TupleLoss()
 
-        with self.assertRaisesRegex(TypeError, "float or 0-d tensor"):
+        with self.assertRaisesRegex(TypeError, "torch.Tensor"):
             loss_fn(torch.tensor([1.0, 3.0]), torch.tensor([0.0, 1.0]))
 
-    def test_loss_group_flattens_child_details(self):
+    def test_loss_group_rejects_non_scalar_child_result(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
         target = torch.tensor([0.0, 1.0])
-        loss_fn = LossGroup({"detail": DetailLoss()})
+        loss_fn = LossGroup({"tuple": TupleLoss()})
 
-        total, details = loss_fn(pred, target)
+        with self.assertRaisesRegex(TypeError, "torch.Tensor"):
+            loss_fn(pred, target)
 
-        self.assertTrue(torch.isclose(total, torch.tensor(1.5)))
-        self.assertIn("detail/raw", details)
-        self.assertFalse(details["detail/raw"].requires_grad)
-
-    def test_loss_group_allows_total_as_loss_name(self):
+    def test_loss_group_names_are_not_logging_paths(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
         target = torch.tensor([0.0, 1.0])
-        loss_fn = LossGroup({"total": nn.L1Loss()})
+        loss_fn = LossGroup({"balancer": nn.L1Loss()})
 
-        total, details = loss_fn(pred, target)
+        total = loss_fn(pred, target)
 
         self.assertTrue(torch.isclose(total, torch.tensor(1.5)))
-        self.assertEqual(set(details), {"total"})
 
-    def test_loss_item_weighted_mean(self):
-        item = LossItem(
-            torch.tensor([1.0, 3.0]),
-            {"tokens": torch.tensor([1.0, 3.0])},
-        )
-
-        mean = item.weighted_mean(item.details["tokens"])
-
-        torch.testing.assert_close(mean, torch.tensor(2.5))
-
-    def test_loss_item_weighted_mean_ignores_zero_weight_nonfinite_rows(self):
-        item = LossItem(
-            torch.tensor([1.0, float("nan")]),
-            {"tokens": torch.tensor([2.0, 0.0])},
-        )
-
-        torch.testing.assert_close(item.weighted_mean(item.details["tokens"]), torch.tensor(1.0))
-
-    def test_loss_item_weighted_mean_rejects_invalid_weights(self):
-        item = LossItem(torch.tensor([1.0, 2.0]))
-        for weight in (torch.tensor([1.0, float("nan")]), torch.tensor([1.0, -1.0])):
-            with self.subTest(weight=weight), self.assertRaisesRegex(ValueError, "finite"):
-                item.weighted_mean(weight)
-
-    def test_loss_item_weighted_mean_trusted_path_avoids_host_predicates(self):
-        item = LossItem(torch.tensor([1.0, 3.0]))
-        weight = torch.tensor([1.0, 3.0])
-
-        with patch.object(
-            torch.Tensor,
-            "__bool__",
-            side_effect=AssertionError("trusted weights must stay on device"),
+    def test_balancers_reject_non_scalar_inputs(self):
+        for balancer in (
+            SumLossBalancer(),
+            FixedWeightLossBalancer({"loss": 1.0}),
+            UncertaintyLossBalancer(["loss"]),
         ):
-            mean = item.weighted_mean(weight, validate=False)
+            with self.subTest(type=type(balancer)), self.assertRaisesRegex(
+                ValueError,
+                "scalar tensor",
+            ):
+                balancer({"loss": torch.ones(2)})
 
-        torch.testing.assert_close(mean, torch.tensor(2.5))
+    def test_loss_modules_declare_observations(self):
+        group_specs = observation.registry.specs(LossGroup({"l1": nn.L1Loss()}))
+        frame_specs = observation.registry.specs(MaskedFrameMSELoss())
+        fixed_specs = observation.registry.specs(FixedWeightLossBalancer({"l1": 1.0}))
 
-    def test_combine_loss_outputs_uses_units_and_weights(self):
-        first = {
-            "loss": torch.tensor(0.0),
-            "token": LossItem(
-                torch.tensor([1.0]),
-                {"tokens": torch.tensor([2.0])},
-            ),
-            "acoustic": LossItem(
-                torch.tensor([5.0]),
-                {"frames": torch.tensor([1.0])},
-            ),
-            "loss_weights": {"acoustic": 0.5},
-        }
-        second = {
-            "loss": torch.tensor(0.0),
-            "token": LossItem(
-                torch.tensor([3.0]),
-                {"tokens": torch.tensor([6.0])},
-            ),
-        }
-
-        outputs = combine_loss_outputs(
-            [first, second],
-            {"token": "tokens", "acoustic": "frames"},
-        )
-
-        self.assertEqual(
-            [name for name, _ in iter_loss_items(outputs, ["acoustic", "token"])],
-            ["acoustic", "token"],
-        )
-        torch.testing.assert_close(outputs["loss"], torch.tensor(5.0))
-        torch.testing.assert_close(outputs["token"].loss, torch.tensor([1.0, 3.0]))
-
-    def test_combine_loss_outputs_uses_provided_total_without_reducing_items(self):
-        total = torch.tensor(7.0)
-        item = LossItem(
-            torch.tensor([1.0, 3.0]),
-            {"tokens": torch.tensor([1.0, 3.0])},
-        )
-
-        with patch(
-            "anytrain.loss.output.loss_item_mean",
-            side_effect=AssertionError("provided total must skip item reduction"),
-        ):
-            outputs = combine_loss_outputs(
-                [{"loss": torch.tensor(2.0), "token": item}],
-                {"token": "tokens"},
-                total_loss=total,
-            )
-
-        self.assertIs(outputs["loss"], total)
-        torch.testing.assert_close(outputs["token"].loss, item.loss)
+        self.assertEqual([spec.name for spec in group_specs], ["loss"])
+        self.assertEqual([spec.name for spec in frame_specs], ["loss", "diagnostics"])
+        self.assertEqual([spec.name for spec in fixed_specs], ["weights"])
+        self.assertIsInstance(group_specs[0], observation.OutputObservation)
+        self.assertIsInstance(frame_specs[1], observation.ForwardEvent)
+        self.assertIsInstance(fixed_specs[0], observation.StateObservation)
 
     def test_masked_frame_mse_loss_ignores_padding(self):
         prediction = torch.tensor([[[1.0, 2.0], [1000.0, float("nan")]]], requires_grad=True)
         target = torch.tensor([[[3.0, 4.0], [float("inf"), 1000.0]]])
         mask = torch.tensor([[True, False]])
 
-        item = MaskedFrameMSELoss()(
-            prediction,
-            target,
-            mask,
-            details={"t": torch.tensor([0.25])},
-        )
-        item.loss.mean().backward()
+        loss = MaskedFrameMSELoss()(prediction, target, mask)
+        loss.backward()
 
-        torch.testing.assert_close(item.loss, torch.tensor([4.0]))
-        self.assertIsNotNone(item.details)
-        torch.testing.assert_close(item.details["frames"], torch.tensor([1.0]))
-        torch.testing.assert_close(item.details["t"], torch.tensor([0.25]))
+        torch.testing.assert_close(loss, torch.tensor(4.0))
+        self.assertEqual(loss.ndim, 0)
         gradient = prediction.grad
         if gradient is None:
             self.fail("prediction gradient is unavailable")
         self.assertTrue(torch.isfinite(gradient).all())
         self.assertTrue(torch.equal(gradient[:, 1], torch.zeros_like(gradient[:, 1])))
+
+    def test_masked_frame_mse_loss_weights_all_valid_frames_equally(self):
+        prediction = torch.tensor(
+            [
+                [[2.0], [100.0], [100.0]],
+                [[0.0], [2.0], [4.0]],
+            ]
+        )
+        target = torch.zeros_like(prediction)
+        mask = torch.tensor([[True, False, False], [True, True, True]])
+
+        loss = MaskedFrameMSELoss()(prediction, target, mask)
+
+        torch.testing.assert_close(loss, torch.tensor(6.0))
+
+    def test_masked_frame_losses_reject_an_empty_reduction_domain(self):
+        prediction = torch.zeros(2, 3, 4)
+        target = torch.zeros_like(prediction)
+        mask = torch.zeros(2, 3, dtype=torch.bool)
+
+        for loss_fn in (MaskedFrameMSELoss(), MaskedCosineAlignmentLoss(), TeacherLoss()):
+            with self.subTest(type=type(loss_fn)), self.assertRaisesRegex(
+                ValueError,
+                "at least one frame",
+            ):
+                loss_fn(prediction, target, mask)
 
     def test_masked_cosine_alignment_loss_detaches_target(self):
         prediction = torch.tensor(
@@ -320,13 +278,10 @@ class LossTest(unittest.TestCase):
         target = torch.tensor([[[1.0, 0.0], [float("nan"), float("inf")]]], requires_grad=True)
         mask = torch.tensor([[True, False]])
 
-        item = MaskedCosineAlignmentLoss()(prediction, target, mask)
-        item.loss.mean().backward()
+        loss = MaskedCosineAlignmentLoss()(prediction, target, mask)
+        loss.backward()
 
-        torch.testing.assert_close(item.loss, torch.tensor([0.0]))
-        self.assertIsNotNone(item.details)
-        torch.testing.assert_close(item.details["frames"], torch.tensor([1.0]))
-        torch.testing.assert_close(item.details["cosine"], torch.tensor([1.0]))
+        torch.testing.assert_close(loss, torch.tensor(0.0))
         self.assertIsNotNone(prediction.grad)
         self.assertIsNone(target.grad)
 
@@ -335,15 +290,11 @@ class LossTest(unittest.TestCase):
         target = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]], requires_grad=True)
         mask = torch.tensor([[True, True]])
 
-        item = TeacherLoss(smooth_l1_weight=1.0)(prediction, target, mask)
-        item.loss.mean().backward()
+        loss = TeacherLoss(smooth_l1_weight=1.0)(prediction, target, mask)
+        loss.backward()
 
-        # Row mean of: frame0 (cos_dist=0, smooth~0) and frame1 (cos_dist=1, smooth>0).
-        self.assertIsNotNone(item.details)
-        torch.testing.assert_close(item.details["frames"], torch.tensor([2.0]))
-        torch.testing.assert_close(item.details["cosine"], torch.tensor([0.5]))
-        self.assertGreater(float(item.details["smooth_l1"].detach()), 0.0)
-        self.assertGreater(float(item.loss.detach()), 0.5)
+        self.assertGreater(float(loss.detach()), 0.5)
+        self.assertEqual(loss.ndim, 0)
         self.assertIsNotNone(prediction.grad)
         self.assertIsNone(target.grad)
 
@@ -355,14 +306,10 @@ class LossTest(unittest.TestCase):
         target = torch.tensor([[[0.0, 1.0], [float("nan"), float("inf")]]], requires_grad=True)
         mask = torch.tensor([[True, False]])
 
-        item = TeacherLoss(smooth_l1_weight=0.0)(prediction, target, mask)
-        item.loss.mean().backward()
+        loss = TeacherLoss(smooth_l1_weight=0.0)(prediction, target, mask)
+        loss.backward()
 
-        # Weight 0 drops Smooth L1 from the optimand; detail still reports the metric.
-        torch.testing.assert_close(item.loss, torch.tensor([1.0]))
-        self.assertIsNotNone(item.details)
-        torch.testing.assert_close(item.details["cosine"], torch.tensor([0.0]))
-        torch.testing.assert_close(item.details["smooth_l1"], torch.tensor([0.5]))
+        torch.testing.assert_close(loss, torch.tensor(1.0))
         gradient = prediction.grad
         if gradient is None:
             self.fail("prediction gradient is unavailable")
@@ -387,7 +334,7 @@ class LossTest(unittest.TestCase):
             ):
                 TeacherLoss(**{name: value})
 
-    def test_masked_codebook_cross_entropy_reports_masked_top1(self):
+    def test_masked_codebook_cross_entropy_emits_masked_top1(self):
         labels = torch.tensor(
             [
                 [[1, 2], [0, 1], [-1, -1]],
@@ -404,34 +351,38 @@ class LossTest(unittest.TestCase):
             for value, classes in zip(predictions, (3, 4))
         )
 
-        item = MaskedCodebookCrossEntropyLoss()(
-            logits,
-            labels,
-            mask,
-            include_top1=True,
-        )
-        details = item.details
-        self.assertIsNotNone(details)
-        torch.testing.assert_close(details["codebook_0_top1"], torch.tensor([0.5, 1.0]))
-        torch.testing.assert_close(details["codebook_1_top1"], torch.tensor([1.0, 0.0]))
+        with patch("anytrain.loss.codebook.emit_diagnostics") as emit:
+            loss = MaskedCodebookCrossEntropyLoss()(
+                logits,
+                labels,
+                mask,
+                include_top1=True,
+            )
 
-    def test_masked_codebook_cross_entropy_preserves_zero_frame_count(self):
-        labels = torch.tensor([[[1]], [[-1]]])
-        mask = torch.tensor([[True], [False]])
-        logits = (torch.tensor([[[0.0, 1.0]], [[0.0, 0.0]]]),)
+        diagnostics = emit.call_args.args[1]
+        self.assertEqual(loss.ndim, 0)
+        torch.testing.assert_close(diagnostics["codebook_0_top1"], torch.tensor(2 / 3))
+        torch.testing.assert_close(diagnostics["codebook_1_top1"], torch.tensor(2 / 3))
+        torch.testing.assert_close(diagnostics["valid_frames"], torch.tensor(3.0))
 
-        item = MaskedCodebookCrossEntropyLoss()(
-            logits,
-            labels,
-            mask,
-            include_top1=True,
-        )
+    def test_masked_codebook_cross_entropy_reduces_all_valid_frames(self):
+        labels = torch.tensor([[[1], [-1]], [[0], [2]]])
+        mask = torch.tensor([[True, False], [True, True]])
+        logits = (torch.randn(2, 2, 3),)
 
-        details = item.details
-        self.assertIsNotNone(details)
-        torch.testing.assert_close(item.loss[1], torch.tensor(0.0))
-        torch.testing.assert_close(details["frames"], torch.tensor([1.0, 0.0]))
-        torch.testing.assert_close(details["codebook_0_top1"], torch.tensor([1.0, 0.0]))
+        loss = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+        expected = torch.nn.functional.cross_entropy(logits[0][mask], labels[mask, 0])
+
+        self.assertEqual(loss.ndim, 0)
+        torch.testing.assert_close(loss, expected)
+
+    def test_masked_codebook_cross_entropy_rejects_no_valid_frames(self):
+        labels = torch.full((2, 1, 1), -1)
+        mask = torch.zeros(2, 1, dtype=torch.bool)
+        logits = (torch.zeros(2, 1, 3),)
+
+        with self.assertRaisesRegex(ValueError, "at least one valid frame"):
+            MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
 
     def test_masked_codebook_cross_entropy_ignores_padding_logits(self):
         labels = torch.tensor([[[1], [0], [-1]]])
@@ -442,7 +393,7 @@ class LossTest(unittest.TestCase):
 
         baseline = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
         padded = MaskedCodebookCrossEntropyLoss()(changed, labels, mask)
-        torch.testing.assert_close(baseline.loss, padded.loss)
+        torch.testing.assert_close(baseline, padded)
 
     def test_masked_codebook_cross_entropy_only_runs_ce_for_valid_frames(self):
         labels = torch.tensor(
@@ -464,8 +415,8 @@ class LossTest(unittest.TestCase):
             return cross_entropy(value, target, **kwargs)
 
         with patch("anytrain.loss.codebook.F.cross_entropy", side_effect=record):
-            item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
-            item.loss.sum().backward()
+            loss = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+            loss.backward()
 
         self.assertEqual(observed_shapes, [(3, 3), (3, 4)])
         for value in logits:
@@ -485,8 +436,6 @@ class LossTest(unittest.TestCase):
         packed = PackedCodebookLogits(
             logits=tuple(value.flatten(0, 1).index_select(0, frame_indices) for value in logits),
             labels=labels.flatten(0, 1).index_select(0, frame_indices),
-            row_indices=torch.tensor([0, 1, 1]),
-            batch_size=2,
         )
 
         masked = MaskedCodebookCrossEntropyLoss()(
@@ -500,28 +449,75 @@ class LossTest(unittest.TestCase):
             include_top1=True,
         )
 
-        torch.testing.assert_close(direct.loss, masked.loss)
-        self.assertIsNotNone(masked.details)
-        self.assertIsNotNone(direct.details)
-        for name, value in masked.details.items():
-            torch.testing.assert_close(direct.details[name], value)
+        torch.testing.assert_close(direct, masked)
+        self.assertEqual(direct.ndim, 0)
 
-    def test_masked_codebook_cross_entropy_can_skip_details(self):
+    def test_packed_codebook_routes_through_one_output_observation_hook(self):
+        labels = torch.tensor([[0], [1]])
+        packed = PackedCodebookLogits((torch.randn(2, 3),), labels)
+        loss_fn = MaskedCodebookCrossEntropyLoss()
+        output_spec = next(
+            spec
+            for spec in observation.registry.specs(loss_fn)
+            if isinstance(spec, observation.OutputObservation)
+        )
+        observed: list[observation.Curve] = []
+
+        def collect(module, inputs, kwargs, output):
+            value = output_spec.collect(module, inputs, kwargs, output)
+            if not isinstance(value, observation.Curve):
+                self.fail("loss output collector did not return a Curve")
+            observed.append(value)
+
+        handle = loss_fn.register_forward_hook(collect, with_kwargs=True)
+        try:
+            packed_loss = loss_fn.forward_packed(packed)
+            self.assertEqual(len(observed), 1)
+            torch.testing.assert_close(observed.pop().value, packed_loss)
+
+            dense_logits = (packed.logits[0].reshape(1, 2, 3),)
+            dense_labels = labels.reshape(1, 2, 1)
+            dense_loss = loss_fn(
+                dense_logits,
+                dense_labels,
+                torch.ones(1, 2, dtype=torch.bool),
+            )
+            self.assertEqual(len(observed), 1)
+            torch.testing.assert_close(observed[0].value, dense_loss)
+        finally:
+            handle.remove()
+
+    def test_packed_codebook_compatibility_metadata_does_not_change_reduction(self):
+        logits = (torch.randn(3, 4),)
+        labels = torch.tensor([[0], [1], [2]])
+        plain = PackedCodebookLogits(logits, labels)
+        with_rows = PackedCodebookLogits(
+            logits,
+            labels,
+            row_indices=torch.tensor([0, 1, 1]),
+            batch_size=2,
+        )
+        loss_fn = MaskedCodebookCrossEntropyLoss()
+
+        torch.testing.assert_close(
+            loss_fn.forward_packed(plain),
+            loss_fn.forward_packed(with_rows),
+        )
+
+    def test_masked_codebook_cross_entropy_top1_does_not_change_loss(self):
         labels = torch.tensor([[[1, 2], [0, 1], [-1, -1]]])
         mask = torch.tensor([[True, True, False]])
         logits = tuple(torch.randn(1, 3, classes, requires_grad=True) for classes in (3, 4))
 
-        with_details = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
-        without_details = MaskedCodebookCrossEntropyLoss()(
+        baseline = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+        with_top1 = MaskedCodebookCrossEntropyLoss()(
             logits,
             labels,
             mask,
-            include_details=False,
             include_top1=True,
         )
 
-        torch.testing.assert_close(without_details.loss, with_details.loss)
-        self.assertIsNone(without_details.details)
+        torch.testing.assert_close(with_top1, baseline)
 
     def test_masked_codebook_cross_entropy_validation_can_be_skipped(self):
         labels = torch.tensor([[[1], [0]]])
@@ -532,17 +528,17 @@ class LossTest(unittest.TestCase):
             "anytrain.loss.codebook._validate_inputs",
             side_effect=AssertionError("validation should be skipped"),
         ):
-            item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask, validate=False)
-        self.assertEqual(item.loss.shape, (1,))
+            loss = MaskedCodebookCrossEntropyLoss()(logits, labels, mask, validate=False)
+        self.assertEqual(loss.ndim, 0)
 
     def test_masked_codebook_cross_entropy_validates_large_vocab_with_small_labels(self):
         labels = torch.tensor([[[127], [1]]], dtype=torch.int8)
         mask = torch.tensor([[True, True]])
         logits = (torch.randn(1, 2, 256),)
 
-        item = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
+        loss = MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
 
-        self.assertEqual(item.loss.shape, (1,))
+        self.assertEqual(loss.ndim, 0)
 
     def test_masked_codebook_cross_entropy_requires_one_device(self):
         labels = torch.tensor([[[1]]])
@@ -552,11 +548,7 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "share a device"):
             MaskedCodebookCrossEntropyLoss()(logits, labels, mask)
 
-    def test_loss_group_rejects_ambiguous_names(self):
-
-        with self.assertRaisesRegex(ValueError, "reserved"):
-            LossGroup({"balancer": nn.L1Loss()})
-
+    def test_loss_group_rejects_invalid_inputs(self):
         with self.assertRaisesRegex(TypeError, "LossBalancerABC"):
             LossGroup({"loss": nn.L1Loss()}, balancer=nn.Identity())
 
@@ -593,13 +585,11 @@ class LossTest(unittest.TestCase):
         estimate = torch.randn(2, 1, 64, requires_grad=True)
         reference = estimate.detach() + 0.01 * torch.randn(2, 1, 64)
 
-        stft_loss, stft_details = STFTLoss(n_fft=16)(estimate, reference)
-        mel_loss, mel_details = MelLoss(sample_rate=16000, n_fft=32, n_mels=8)(estimate, reference)
+        stft_loss = STFTLoss(n_fft=16)(estimate, reference)
+        mel_loss = MelLoss(sample_rate=16000, n_fft=32, n_mels=8)(estimate, reference)
 
         self.assertEqual(stft_loss.ndim, 0)
         self.assertEqual(mel_loss.ndim, 0)
-        self.assertIn("log_magnitude", stft_details)
-        self.assertIn("log_magnitude", mel_details)
 
     def test_spectral_transform_backend_selection(self):
         auto_stft = STFTTransform(n_fft=16)
@@ -703,8 +693,8 @@ class LossTest(unittest.TestCase):
         estimate = torch.randn(2, 1, 64, requires_grad=True)
         reference = estimate.detach() + 0.01 * torch.randn(2, 1, 64)
 
-        stft_loss, _ = STFTLoss(n_fft=16, backend="torch")(estimate, reference)
-        mel_loss, _ = MelLoss(
+        stft_loss = STFTLoss(n_fft=16, backend="torch")(estimate, reference)
+        mel_loss = MelLoss(
             sample_rate=16000,
             n_fft=32,
             n_mels=8,
@@ -718,8 +708,8 @@ class LossTest(unittest.TestCase):
         estimate = torch.randn(2, 1, 64, requires_grad=True)
         reference = estimate.detach() + 0.01 * torch.randn(2, 1, 64)
 
-        stft_loss, stft_details = MultiScaleSTFTLoss(n_fft_list=(16, 8))(estimate, reference)
-        mel_loss, mel_details = MultiScaleMelLoss(
+        stft_loss = MultiScaleSTFTLoss(n_fft_list=(16, 8))(estimate, reference)
+        mel_loss = MultiScaleMelLoss(
             sample_rate=16000,
             n_fft_list=(32, 16),
             n_mels_list=(8, 4),
@@ -727,8 +717,6 @@ class LossTest(unittest.TestCase):
 
         self.assertEqual(stft_loss.ndim, 0)
         self.assertEqual(mel_loss.ndim, 0)
-        self.assertTrue(any(key.startswith("stft_16") for key in stft_details))
-        self.assertTrue(any(key.startswith("mel_32_8") for key in mel_details))
 
     def test_codec_loss_reuses_overlapping_stft_transforms_per_forward(self):
         estimate = torch.randn(1, 1, 128)
@@ -760,7 +748,7 @@ class LossTest(unittest.TestCase):
             stft_n_fft_list=(16, 8),
             backend="torch",
         )
-        cached_value, _ = cached_loss(estimate, reference)
+        cached_value = cached_loss(estimate, reference)
 
         expected_estimate = estimate.detach().clone().requires_grad_()
         expected_reference = reference.detach().clone()
@@ -772,8 +760,8 @@ class LossTest(unittest.TestCase):
         )
         expected_stft = MultiScaleSTFTLoss(n_fft_list=(16, 8), backend="torch")
         expected_sdr = SDRLoss()
-        mel_value, _ = expected_mel(expected_estimate, expected_reference)
-        stft_value, _ = expected_stft(expected_estimate, expected_reference)
+        mel_value = expected_mel(expected_estimate, expected_reference)
+        stft_value = expected_stft(expected_estimate, expected_reference)
         expected_value = expected_sdr(expected_estimate, expected_reference)
         expected_value = expected_value + 10 * mel_value + 10 * stft_value
 
@@ -794,16 +782,14 @@ class LossTest(unittest.TestCase):
         with self.assertRaises(ModuleNotFoundError):
             importlib.import_module("anytrain.loss.task.codec")
 
-    def test_codec_loss_preset_allows_nested_loss_details(self):
+    def test_codec_loss_preset_returns_scalar(self):
         estimate = torch.randn(1, 1, 4096, requires_grad=True)
         reference = estimate.detach() + 0.01 * torch.randn(1, 1, 4096)
         loss = CodecLoss.from_preset("dynacodec", backend="torch")
 
-        total, details = loss(estimate, reference)
+        total = loss(estimate, reference)
 
         self.assertEqual(total.ndim, 0)
-        self.assertIn("multi_mel/mel_2048_320/log_magnitude", details)
-        self.assertIn("multi_stft/stft_2048/log_magnitude", details)
 
     def test_codec_loss_supports_lengths(self):
         estimate = torch.tensor(
@@ -816,25 +802,88 @@ class LossTest(unittest.TestCase):
         reference = torch.zeros_like(estimate)
         loss = CodecLoss({"l1": nn.L1Loss()})
 
-        total, details = loss(estimate, reference, lengths=torch.tensor([2, 4]))
+        total = loss(estimate, reference, lengths=torch.tensor([2, 4]))
 
         self.assertTrue(torch.isclose(total, torch.tensor(2.0)))
-        self.assertTrue(torch.isclose(details["l1"], torch.tensor(2.0)))
+        self.assertEqual(total.ndim, 0)
         total.backward()
         self.assertEqual(float(estimate.grad[0, 0, 2]), 0.0)
 
     def test_codec_loss_groups_repeated_lengths(self):
         estimate = torch.randn(4, 1, 4)
         reference = torch.zeros_like(estimate)
-        counting_loss = CountingDetailLoss()
+        counting_loss = CountingLoss()
         loss = CodecLoss({"counting": counting_loss})
 
-        total, details = loss(estimate, reference, lengths=[2, 4, 2, 4])
+        total = loss(estimate, reference, lengths=[2, 4, 2, 4])
 
         self.assertEqual(counting_loss.call_count, 2)
         self.assertEqual(counting_loss.batch_sizes, [2, 2])
         self.assertEqual(total.ndim, 0)
-        self.assertIn("counting/raw", details)
+
+    def test_codec_loss_weights_unequal_length_groups_by_sample_count(self):
+        estimate = torch.tensor(
+            [
+                [[1.0, 1.0, 100.0, 100.0]],
+                [[3.0, 3.0, 100.0, 100.0]],
+                [[5.0, 5.0, 5.0, 5.0]],
+            ]
+        )
+        reference = torch.zeros_like(estimate)
+        loss = CodecLoss({"mean": nn.L1Loss(reduction="mean")})
+
+        total = loss(estimate, reference, lengths=[2, 2, 4])
+
+        torch.testing.assert_close(total, torch.tensor(3.0))
+
+    def test_codec_cache_routes_every_registered_loss_through_module_call(self):
+        loss = CodecLoss.from_preset(
+            "dynacodec",
+            sample_rate=16000,
+            mel_n_fft_list=(16,),
+            mel_n_mels_list=(4,),
+            stft_n_fft_list=(16,),
+            backend="torch",
+        )
+        calls = {
+            name or "<root>": 0
+            for name, module in loss.named_modules()
+            if any(
+                isinstance(spec, observation.OutputObservation)
+                for spec in observation.registry.specs(module)
+            )
+        }
+        handles = []
+        for name, module in loss.named_modules():
+            path = name or "<root>"
+            if path not in calls:
+                continue
+
+            def count(_module, _inputs, _output, *, path=path):
+                calls[path] += 1
+
+            handles.append(module.register_forward_hook(count))
+
+        try:
+            loss(torch.randn(1, 1, 64), torch.randn(1, 1, 64))
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        self.assertEqual(
+            set(calls),
+            {
+                "<root>",
+                "losses.si_sdr",
+                "losses.multi_mel",
+                "losses.multi_mel.losses.mel_16_4",
+                "losses.multi_mel.losses.mel_16_4.losses.log_magnitude",
+                "losses.multi_stft",
+                "losses.multi_stft.losses.stft_16",
+                "losses.multi_stft.losses.stft_16.losses.log_magnitude",
+            },
+        )
+        self.assertEqual(set(calls.values()), {1})
 
     def test_codec_loss_rejects_invalid_lengths(self):
         loss = CodecLoss({"l1": nn.L1Loss()})

@@ -19,14 +19,13 @@ LightningModule 侧 logging helper 是 core。
 core 提供：
 
 - `LightningLogMixin`：prefixed dict、audio 和 figure logging helper。
-- `LossSummaryCallback`：用有界 device 窗口汇总 training outputs 中的 total loss 和命名
-  `LossItem`，并在训练结束时归约跨 rank 窗口均值。
-- `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
-- `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
-- `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
+- `LossSummaryCallback`：用有界 device 窗口汇总 training outputs 中显式选择的 0-D loss Tensor，
+  并在训练结束时归约跨 rank 窗口均值。
+- `GradientProbeLoggerCallback`：从显式 provider 取得仍连接 autograd graph 的命名 0-D loss Tensor，
+  比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `ObservationCallback`：module 中间量 logging 的唯一 transport。它从
   `anytrain.observation.registry` 自动发现 concrete module 的只读 State/Output/Event 声明，记录 Curve、
-  Heatmap，以及 Distribution/Bins 的 optimizer-step 和 EMA histogram；默认只在 global rank 0 注册。ADT、MoE
+  Heatmap，以及 Distribution/Profile/Bins 的 optimizer-step 和 EMA state；默认只在 global rank 0 注册。ADT、MoE
   和公开 quantizer 已声明推荐 observation。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并
   建议改用 `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。`every_n_steps` 控制统一输出间隔，
   每次 render 同时记录 interval 平均的 `module/observation_time`。
@@ -64,18 +63,19 @@ core loss 负责统一训练 step 里的主 loss 约束：
 loss = loss_fn(prediction, target)
 ```
 
-主返回必须是可用于 `backward()` 的 scalar Tensor。需要额外日志时，loss 可以返回 `(loss, details)`；`details` 是可选的 mapping，不参与反传。
+loss module 在内部完成 mask、加权和 reduction，固定返回可用于 `backward()` 的 0-D Tensor。训练日志中间量
+通过 module 的 observation registry 声明，不占用 forward 返回协议。
 
 当前接口：
 
-- `LossABC`：抽象基类，子类实现 `compute_loss()`，统一校验 scalar 主 loss 和可选 details。
-- `LossGroup`：用 mapping/`ModuleDict` 组合多个 loss，返回 `(total, details)`。
-- `LossItem`：保存按样本/行聚合的 loss 与可选 details，供下游训练 step 组合和记录。
+- `LossABC`：抽象基类，子类实现 `compute_loss()`，统一校验 0-D Tensor。
+- `LossGroup`：用 mapping/`ModuleDict` 组合多个 scalar loss，并返回 scalar total。
 - `MaskedFrameMSELoss` / `MaskedCosineAlignmentLoss`：对 `[B, F, D]` 表示执行 frame mask 后的
   MSE 或 cosine alignment。
-- `MaskedCodebookCrossEntropyLoss`：对多 codebook logits 执行 masked CE，并可选返回逐 codebook
-  top-1。
-- `LossBalancerABC`：把多个命名 scalar loss 合成为一个 scalar total，可选返回 details；默认实现是 `MeanLossBalancer`，core 也提供 `FixedWeightLossBalancer` 和 `UncertaintyLossBalancer`。
+- `MaskedCodebookCrossEntropyLoss`：对多 codebook logits 执行 masked CE；逐 codebook top-1 等诊断通过
+  observation 发布。
+- `LossBalancerABC`：把多个命名 scalar loss 合成为一个 scalar total；默认实现是
+  `MeanLossBalancer`，core 也提供 `FixedWeightLossBalancer` 和 `UncertaintyLossBalancer`。
 
 规划接口：
 

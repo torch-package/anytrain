@@ -4,10 +4,10 @@ import hashlib
 import math
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from numbers import Real
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 from weakref import ReferenceType, ref
 
 import lightning.pytorch as pl
@@ -28,6 +28,7 @@ from anytrain.observation import (
     ObservationResult,
     ObservationSpec,
     OutputObservation,
+    Profile,
     StateObservation,
 )
 from anytrain.observation._binding import claim, release, subscribe_event
@@ -77,6 +78,39 @@ class _HistogramSnapshot:
     sums: Tensor
     sum_squares: Tensor
     invalid: Tensor
+
+
+@dataclass(frozen=True)
+class _ProfileSchema:
+    edges: tuple[float, ...]
+
+    @property
+    def bins(self) -> int:
+        return len(self.edges) - 1
+
+
+@dataclass
+class _ProfileDelta:
+    schema: _ProfileSchema
+    counts: Tensor
+    sums: Tensor
+    sum_squares: Tensor
+    total: Tensor
+    invalid: Tensor
+
+
+@dataclass(frozen=True)
+class _ProfileSnapshot:
+    schema: _ProfileSchema
+    counts: Tensor
+    sums: Tensor
+    sum_squares: Tensor
+    total: Tensor
+    invalid: Tensor
+
+
+_SCHEMA_ERROR_INDEX = 2
+_ObservationError = tuple[str, str]
 
 
 class _CurveState:
@@ -412,6 +446,196 @@ class _HistogramState:
         self.invalid_seen = self.invalid_seen.to(device)
 
 
+class _ProfileState:
+    def __init__(self, delta: _ProfileDelta, *, half_life_steps: float) -> None:
+        self.schema = delta.schema
+        self.half_life_steps = half_life_steps
+        self.pending_counts = torch.zeros_like(delta.counts)
+        self.pending_sums = torch.zeros_like(delta.sums)
+        self.pending_sum_squares = torch.zeros_like(delta.sum_squares)
+        self.pending_total = torch.zeros_like(delta.total)
+        self.pending_invalid = torch.zeros_like(delta.invalid)
+        self.last_counts = torch.zeros_like(delta.counts)
+        self.last_sums = torch.zeros_like(delta.sums)
+        self.last_sum_squares = torch.zeros_like(delta.sum_squares)
+        self.last_total = torch.zeros_like(delta.total)
+        self.last_invalid = torch.zeros_like(delta.invalid)
+        self.ema_counts = torch.zeros_like(delta.counts)
+        self.ema_sums = torch.zeros_like(delta.sums)
+        self.ema_sum_squares = torch.zeros_like(delta.sum_squares)
+        self.ema_total = torch.zeros_like(delta.total)
+        self.invalid_seen = torch.zeros_like(delta.invalid)
+        self.ema_step: int | None = None
+        self.update(delta, half_life_steps=half_life_steps)
+
+    def update(self, delta: _ProfileDelta, *, half_life_steps: float) -> None:
+        if delta.schema != self.schema:
+            raise ValueError("observation profile schema changed during training.")
+        if half_life_steps != self.half_life_steps:
+            raise ValueError("observation EMA half-life changed during training.")
+        self._to(delta.counts.device)
+        self.pending_counts.add_(delta.counts)
+        self.pending_sums.add_(delta.sums)
+        self.pending_sum_squares.add_(delta.sum_squares)
+        self.pending_total.add_(delta.total)
+        self.pending_invalid.add_(delta.invalid)
+
+    def finalize(
+        self,
+        trainer: pl.Trainer,
+        *,
+        step: int,
+        sync_distributed: bool,
+    ) -> None:
+        values = (
+            self.pending_counts,
+            self.pending_sums,
+            self.pending_sum_squares,
+            self.pending_total,
+            self.pending_invalid,
+        )
+        reduced = tuple(_sum(trainer, value, sync_distributed) for value in values)
+        (
+            self.last_counts,
+            self.last_sums,
+            self.last_sum_squares,
+            self.last_total,
+            self.last_invalid,
+        ) = reduced
+        self.invalid_seen = self.invalid_seen + self.last_invalid
+
+        if self.ema_step is None:
+            self.ema_counts.copy_(self.last_counts)
+            self.ema_sums.copy_(self.last_sums)
+            self.ema_sum_squares.copy_(self.last_sum_squares)
+            self.ema_total.copy_(self.last_total)
+        else:
+            delta_steps = step - self.ema_step
+            if delta_steps <= 0:
+                raise RuntimeError("observation EMA step must move forwards.")
+            decay = 2.0 ** (-delta_steps / self.half_life_steps)
+            one_minus_decay = 1.0 - decay
+            self.ema_counts.mul_(decay).add_(
+                self.last_counts,
+                alpha=one_minus_decay,
+            )
+            self.ema_sums.mul_(decay).add_(
+                self.last_sums,
+                alpha=one_minus_decay,
+            )
+            self.ema_sum_squares.mul_(decay).add_(
+                self.last_sum_squares,
+                alpha=one_minus_decay,
+            )
+            self.ema_total.mul_(decay).add_(
+                self.last_total,
+                alpha=one_minus_decay,
+            )
+        self.ema_step = step
+        self.discard_pending()
+
+    def current(self) -> _ProfileSnapshot:
+        return _ProfileSnapshot(
+            self.schema,
+            self.last_counts,
+            self.last_sums,
+            self.last_sum_squares,
+            self.last_total,
+            self.last_invalid,
+        )
+
+    def ema(self) -> _ProfileSnapshot:
+        return _ProfileSnapshot(
+            self.schema,
+            self.ema_counts,
+            self.ema_sums,
+            self.ema_sum_squares,
+            self.ema_total,
+            self.invalid_seen,
+        )
+
+    def discard_pending(self) -> None:
+        self.pending_counts.zero_()
+        self.pending_sums.zero_()
+        self.pending_sum_squares.zero_()
+        self.pending_total.zero_()
+        self.pending_invalid.zero_()
+
+    def state_dict(self) -> dict[str, Any]:
+        if self.ema_step is None:
+            raise RuntimeError("cannot save observation EMA before a completed step.")
+        return {
+            "schema": {"edges": self.schema.edges},
+            "half_life_steps": self.half_life_steps,
+            "ema_step": self.ema_step,
+            "ema_counts": self.ema_counts.detach(),
+            "ema_sums": self.ema_sums.detach(),
+            "ema_sum_squares": self.ema_sum_squares.detach(),
+            "ema_total": self.ema_total.detach(),
+            "invalid_seen": self.invalid_seen.detach(),
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: Mapping[str, Any]) -> _ProfileState:
+        schema = _profile_schema_from_state(state.get("schema"))
+        half_life_steps = _positive_real(
+            state.get("half_life_steps"),
+            "observation EMA half_life_steps",
+        )
+        ema_step = _non_negative_int(state.get("ema_step"), "observation EMA step")
+        shape = (schema.bins,)
+        ema_counts = _state_tensor(state, "ema_counts", shape, non_negative=True)
+        ema_sums = _state_tensor(state, "ema_sums", shape)
+        ema_sum_squares = _state_tensor(
+            state,
+            "ema_sum_squares",
+            shape,
+            non_negative=True,
+        )
+        ema_total = _state_tensor(state, "ema_total", (), non_negative=True)
+        invalid_seen = _state_tensor(state, "invalid_seen", (), non_negative=True)
+
+        value = cls.__new__(cls)
+        value.schema = schema
+        value.half_life_steps = half_life_steps
+        value.pending_counts = torch.zeros_like(ema_counts)
+        value.pending_sums = torch.zeros_like(ema_sums)
+        value.pending_sum_squares = torch.zeros_like(ema_sum_squares)
+        value.pending_total = torch.zeros_like(ema_total)
+        value.pending_invalid = torch.zeros_like(invalid_seen)
+        value.last_counts = torch.zeros_like(ema_counts)
+        value.last_sums = torch.zeros_like(ema_sums)
+        value.last_sum_squares = torch.zeros_like(ema_sum_squares)
+        value.last_total = torch.zeros_like(ema_total)
+        value.last_invalid = torch.zeros_like(invalid_seen)
+        value.ema_counts = ema_counts
+        value.ema_sums = ema_sums
+        value.ema_sum_squares = ema_sum_squares
+        value.ema_total = ema_total
+        value.invalid_seen = invalid_seen
+        value.ema_step = ema_step
+        return value
+
+    def _to(self, device: torch.device) -> None:
+        if self.pending_counts.device == device:
+            return
+        self.pending_counts = self.pending_counts.to(device)
+        self.pending_sums = self.pending_sums.to(device)
+        self.pending_sum_squares = self.pending_sum_squares.to(device)
+        self.pending_total = self.pending_total.to(device)
+        self.pending_invalid = self.pending_invalid.to(device)
+        self.last_counts = self.last_counts.to(device)
+        self.last_sums = self.last_sums.to(device)
+        self.last_sum_squares = self.last_sum_squares.to(device)
+        self.last_total = self.last_total.to(device)
+        self.last_invalid = self.last_invalid.to(device)
+        self.ema_counts = self.ema_counts.to(device)
+        self.ema_sums = self.ema_sums.to(device)
+        self.ema_sum_squares = self.ema_sum_squares.to(device)
+        self.ema_total = self.ema_total.to(device)
+        self.invalid_seen = self.invalid_seen.to(device)
+
+
 @dataclass(frozen=True)
 class _StateOwner:
     module_path: str
@@ -421,7 +645,7 @@ class _StateOwner:
 
 @dataclass
 class _StateEntry:
-    state: _CurveState | _HeatmapState | _HistogramState
+    state: _CurveState | _HeatmapState | _HistogramState | _ProfileState
     tag: str
     owner: _StateOwner
 
@@ -535,6 +759,8 @@ class ObservationCallback(pl.Callback):
         self._emitted_keys: set[str] = set()
         self._enabled = False
         self._warning_rank = False
+        self._defer_observation_errors = False
+        self._pending_observation_error: _ObservationError | None = None
         self._backward_warning_emitted = False
         self._forward_active = False
         self._render_active = False
@@ -557,6 +783,9 @@ class ObservationCallback(pl.Callback):
         if self._enabled or self._collectors or self._claimed:
             return
         self._warning_rank = _capability.is_global_zero(trainer)
+        self._defer_observation_errors = (
+            self.sync_distributed and _capability.is_distributed(trainer)
+        )
         self._enabled = self.sync_distributed or self._warning_rank
         if not self._enabled:
             return
@@ -585,7 +814,7 @@ class ObservationCallback(pl.Callback):
             ema_steps: list[int] = []
             for entry in self._states.values():
                 state = entry.state
-                if isinstance(state, _HistogramState) and state.ema_step is not None:
+                if isinstance(state, (_HistogramState, _ProfileState)) and state.ema_step is not None:
                     ema_steps.append(state.ema_step)
             if ema_steps and step < max(ema_steps):
                 raise ValueError(
@@ -650,7 +879,7 @@ class ObservationCallback(pl.Callback):
             state = self._states[key].state
             if isinstance(state, _CurveState):
                 state.finalize(trainer, sync_distributed=self.sync_distributed)
-            elif isinstance(state, _HistogramState):
+            elif isinstance(state, (_HistogramState, _ProfileState)):
                 state.finalize(
                     trainer,
                     step=step,
@@ -660,10 +889,33 @@ class ObservationCallback(pl.Callback):
         self._emitted_keys.clear()
         self._render_active = False
         _validate_histograms(self._states, device=pl_module.device)
+        _validate_profiles(self._states, device=pl_module.device)
         if self.every_n_steps is None or step % self.every_n_steps != 0:
             self._finish_observation_step(started_at)
             return
         self._log(trainer, pl_module, step=step, started_at=started_at)
+
+    def on_before_backward(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        loss: Tensor,
+    ) -> None:
+        del trainer, pl_module, loss
+        if not self._enabled:
+            return
+        # Activation checkpointing may replay module forward during backward.
+        self._forward_active = False
+
+    def on_after_backward(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        del trainer, pl_module
+        if not self._enabled:
+            return
+        self._forward_active = True
 
     def on_train_epoch_end(
         self,
@@ -712,15 +964,19 @@ class ObservationCallback(pl.Callback):
 
     def state_dict(self) -> dict[str, Any]:
         histograms: dict[str, dict[str, Any]] = {}
+        profiles: dict[str, dict[str, Any]] = {}
         owners: dict[str, dict[str, str]] = {}
         for key, entry in self._states.items():
             state = entry.state
-            if not isinstance(state, _HistogramState) or state.ema_step is None:
+            if not isinstance(state, (_HistogramState, _ProfileState)) or state.ema_step is None:
                 continue
-            histograms[key] = state.state_dict()
+            if isinstance(state, _HistogramState):
+                histograms[key] = state.state_dict()
+            else:
+                profiles[key] = state.state_dict()
             owners[key] = _owner_state(entry.owner)
         return {
-            "version": 2,
+            "version": 3,
             "tag": self.tag,
             "every_n_steps": self.every_n_steps,
             "half_life_steps": self.half_life_steps,
@@ -729,11 +985,13 @@ class ObservationCallback(pl.Callback):
             "max_heatmap_elements": self.max_heatmap_elements,
             "last_global_step": self._last_global_step,
             "histograms": histograms,
+            "profiles": profiles,
             "owners": owners,
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        if state_dict.get("version") != 2:
+        version = state_dict.get("version")
+        if version not in {2, 3}:
             raise ValueError("unsupported ObservationCallback state version.")
         if state_dict.get("tag") != self.tag:
             raise ValueError("ObservationCallback state tag mismatch.")
@@ -753,12 +1011,17 @@ class ObservationCallback(pl.Callback):
         histograms = state_dict.get("histograms")
         if not isinstance(histograms, Mapping):
             raise TypeError("ObservationCallback histograms state must be a mapping.")
+        profiles = {} if version == 2 else state_dict.get("profiles")
+        if not isinstance(profiles, Mapping):
+            raise TypeError("ObservationCallback profiles state must be a mapping.")
         owners = state_dict.get("owners")
         if not isinstance(owners, Mapping):
             raise TypeError("ObservationCallback owners state must be a mapping.")
-        if set(histograms) != set(owners):
+        if set(histograms).intersection(profiles):
+            raise ValueError("ObservationCallback history keys must be unique.")
+        if set(histograms).union(profiles) != set(owners):
             raise ValueError(
-                "ObservationCallback histogram and owner keys must match."
+                "ObservationCallback history and owner keys must match."
             )
         loaded: dict[str, _StateEntry] = {}
         for key, payload in histograms.items():
@@ -779,6 +1042,27 @@ class ObservationCallback(pl.Callback):
                 )
             loaded[key] = _StateEntry(
                 histogram,
+                tag="",
+                owner=_owner_from_state(owners[key]),
+            )
+        for key, payload in profiles.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError("ObservationCallback profile keys must be strings.")
+            if not isinstance(payload, Mapping):
+                raise TypeError(f"ObservationCallback profile {key!r} must be a mapping.")
+            profile = _ProfileState.from_state_dict(payload)
+            if profile.schema.bins > self.max_dense_bins:
+                raise ValueError(
+                    f"restored observation {key!r} requires "
+                    f"{profile.schema.bins} dense bins, exceeding "
+                    f"max_dense_bins={self.max_dense_bins}."
+                )
+            if last_global_step is None or profile.ema_step != last_global_step:
+                raise ValueError(
+                    f"restored observation {key!r} EMA step does not match callback step."
+                )
+            loaded[key] = _StateEntry(
+                profile,
                 tag="",
                 owner=_owner_from_state(owners[key]),
             )
@@ -871,7 +1155,10 @@ class ObservationCallback(pl.Callback):
             return
         started_at = self._start_observation_timer()
         try:
-            self._record(collector, spec.collect(module, inputs, kwargs, output))
+            self._collect_and_record(
+                collector,
+                lambda: spec.collect(module, inputs, kwargs, output),
+            )
         finally:
             self._add_observation_time(started_at)
 
@@ -887,7 +1174,7 @@ class ObservationCallback(pl.Callback):
             return
         started_at = self._start_observation_timer()
         try:
-            self._record(collector, value)
+            self._collect_and_record(collector, lambda: value)
         finally:
             self._add_observation_time(started_at)
 
@@ -897,12 +1184,33 @@ class ObservationCallback(pl.Callback):
             if isinstance(spec, StateObservation):
                 if spec.history is None and not self._render_active:
                     continue
-                self._record(collector, spec.collect(collector.module))
+                self._collect_and_record(
+                    collector,
+                    lambda spec=spec, module=collector.module: spec.collect(module),
+                )
+
+    def _collect_and_record(
+        self,
+        collector: _Collector,
+        collect: Callable[[], ObservationResult],
+    ) -> None:
+        if self._pending_observation_error is not None:
+            return
+        try:
+            self._record(collector, collect())
+        except Exception as error:
+            if not self._defer_observation_errors:
+                raise
+            self._pending_observation_error = (
+                "runtime",
+                f"observation collector {collector.state_prefix!r} failed: "
+                f"{type(error).__name__}: {error}",
+            )
 
     def _record(self, collector: _Collector, result: ObservationResult) -> None:
         if result is None:
             return
-        if isinstance(result, (Curve, Distribution, Bins, Heatmap)):
+        if isinstance(result, (Curve, Distribution, Profile, Bins, Heatmap)):
             values: Mapping[str, Observation] = {"value": result}
         elif isinstance(result, Mapping):
             values = result
@@ -912,7 +1220,7 @@ class ObservationCallback(pl.Callback):
             values.items(),
             name="observation value name",
         ):
-            if not isinstance(value, (Curve, Distribution, Bins, Heatmap)):
+            if not isinstance(value, (Curve, Distribution, Profile, Bins, Heatmap)):
                 raise TypeError("observation mapping values must be Observation objects.")
             if isinstance(value, Heatmap):
                 if collector.spec.history is not None:
@@ -981,7 +1289,7 @@ class ObservationCallback(pl.Callback):
         history = spec.history
         if history is None:
             raise ValueError(
-                f"observation {key!r} requires EMAHistory for Distribution or Bins."
+                f"observation {key!r} requires EMAHistory for Distribution, Profile, or Bins."
             )
         half_life_steps = (
             float(history.half_life_steps)
@@ -999,6 +1307,21 @@ class ObservationCallback(pl.Callback):
                 f"max_dense_bins={self.max_dense_bins}; use a factorized observation or raise "
                 "the limit explicitly."
             )
+        if isinstance(value, Profile):
+            delta = _profile_delta(value)
+            if entry is None:
+                state = _ProfileState(delta, half_life_steps=half_life_steps)
+                self._bind_state_identity(key, tag, state, owner)
+                self._states[key] = _StateEntry(state, tag, owner)
+                self._emitted_keys.add(key)
+                return
+            if not isinstance(entry.state, _ProfileState):
+                raise TypeError(f"observation {key!r} changed value type.")
+            self._bind_state_identity(key, tag, entry.state, owner)
+            entry.state.update(delta, half_life_steps=half_life_steps)
+            self._emitted_keys.add(key)
+            return
+
         delta = (
             _distribution_delta(value)
             if isinstance(value, Distribution)
@@ -1024,7 +1347,7 @@ class ObservationCallback(pl.Callback):
         self,
         key: str,
         tag: str,
-        state: _CurveState | _HeatmapState | _HistogramState,
+        state: _CurveState | _HeatmapState | _HistogramState | _ProfileState,
         owner: _StateOwner,
     ) -> None:
         entry = self._states.get(key)
@@ -1089,11 +1412,22 @@ class ObservationCallback(pl.Callback):
             pending=has_pending_heatmap,
             error=write_error,
         )
-        raw_writer = (
-            experiment.histogram_raw(trainer)
-            if _capability.is_global_zero(trainer)
-            else None
+        raw_writer: experiment.HistogramRaw | None = None
+        raw_error: _ObservationError | None = None
+        has_raw_histogram = any(
+            isinstance(entry.state, _HistogramState) and bool(entry.tag)
+            for entry in self._states.values()
         )
+        if has_raw_histogram and _capability.is_global_zero(trainer):
+            try:
+                raw_writer = experiment.histogram_raw(trainer)
+            except Exception as error:
+                raw_error = (
+                    "runtime",
+                    "raw histogram writer discovery failed: "
+                    f"{type(error).__name__}: {error}",
+                )
+        write_error = raw_error
         for key in sorted(self._states):
             entry = self._states[key]
             if not entry.tag:
@@ -1106,13 +1440,42 @@ class ObservationCallback(pl.Callback):
                 continue
             if isinstance(state, _HeatmapState):
                 continue
+            if isinstance(state, _ProfileState):
+                _merge_metrics(
+                    metrics,
+                    _profile_metrics(entry.tag, "step", state.current()),
+                )
+                _merge_metrics(
+                    metrics,
+                    _profile_metrics(entry.tag, "ema", state.ema()),
+                )
+                continue
             current = state.current()
             ema = state.ema()
             _merge_metrics(metrics, _histogram_metrics(entry.tag, "step", current))
             _merge_metrics(metrics, _histogram_metrics(entry.tag, "ema", ema))
-            if raw_writer is not None:
-                _write_histogram(raw_writer, entry.tag, "step", current, step=step)
-                _write_histogram(raw_writer, entry.tag, "ema", ema, step=step)
+            if raw_writer is not None and write_error is None:
+                try:
+                    _write_histogram(raw_writer, entry.tag, "step", current, step=step)
+                    _write_histogram(raw_writer, entry.tag, "ema", ema, step=step)
+                except Exception as error:
+                    write_error = (
+                        "runtime",
+                        f"raw histogram write failed for {entry.tag!r}: "
+                        f"{type(error).__name__}: {error}",
+                    )
+        self._synchronize_runtime_error(
+            trainer,
+            pl_module,
+            pending=has_raw_histogram,
+            error=write_error,
+            context="raw histogram logging",
+            collective_error=(
+                "Distributed raw histogram logging requires "
+                "trainer.strategy.all_gather; set sync_distributed=False for "
+                "rank-local diagnostics."
+            ),
+        )
         self._finish_observation_step(started_at)
         if self._observation_time_steps > 0:
             _merge_metrics(
@@ -1193,7 +1556,7 @@ class ObservationCallback(pl.Callback):
                 raise ValueError(
                     f"restored observation {key!r} has incompatible source identity."
                 )
-            if isinstance(entry.state, _HistogramState):
+            if isinstance(entry.state, (_HistogramState, _ProfileState)):
                 history = collector.spec.history
                 if history is None:
                     raise ValueError(
@@ -1224,11 +1587,7 @@ class ObservationCallback(pl.Callback):
     ) -> None:
         if not self.sync_distributed or not _capability.is_distributed(trainer):
             return
-        signature = _schema_signature(
-            self._states,
-            emitted_keys=self._emitted_keys,
-            device=pl_module.device,
-        )
+        signature, local_error = self._distributed_schema_signature(pl_module)
         gathered = _all_gather(
             trainer,
             signature,
@@ -1242,12 +1601,47 @@ class ObservationCallback(pl.Callback):
                 "trainer.strategy.all_gather returned an invalid observation schema payload."
             )
         rows = gathered.detach().cpu().reshape(-1, signature.numel())
+        if bool((rows[:, _SCHEMA_ERROR_INDEX] > 0).any().item()):
+            _raise_synchronized_error(
+                local_error,
+                context="module observation",
+            )
         expected = signature.detach().cpu()
+        expected[_SCHEMA_ERROR_INDEX] = 0
+        rows[:, _SCHEMA_ERROR_INDEX] = 0
         if any(not torch.equal(row, expected) for row in rows):
             raise RuntimeError(
                 "sync_distributed=True requires every rank to emit the same observation "
                 "keys and schemas for each optimizer step."
             )
+
+    def _distributed_schema_signature(
+        self,
+        pl_module: pl.LightningModule,
+    ) -> tuple[Tensor, _ObservationError | None]:
+        local_error = self._pending_observation_error
+        try:
+            signature = _schema_signature(
+                self._states,
+                emitted_keys=self._emitted_keys,
+                device=pl_module.device,
+                observation_error=local_error is not None,
+            )
+        except Exception as error:
+            if not self._defer_observation_errors:
+                raise
+            local_error = (
+                "runtime",
+                "observation schema materialization failed: "
+                f"{type(error).__name__}: {error}",
+            )
+            signature = _schema_signature(
+                {},
+                emitted_keys=set(),
+                device=pl_module.device,
+                observation_error=True,
+            )
+        return signature, local_error
 
     def _validate_heatmap_logging(
         self,
@@ -1329,44 +1723,58 @@ class ObservationCallback(pl.Callback):
     ) -> None:
         if not pending:
             return
+        self._synchronize_runtime_error(
+            trainer,
+            pl_module,
+            pending=pending,
+            error=error,
+            context="Heatmap image logging",
+            collective_error=(
+                "Distributed Heatmap image logging requires "
+                "trainer.strategy.all_gather; set sync_distributed=False for "
+                "rank-local diagnostics."
+            ),
+        )
+
+    def _synchronize_runtime_error(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *,
+        pending: bool,
+        error: _ObservationError | None,
+        context: str,
+        collective_error: str,
+    ) -> None:
+        if not pending:
+            return
         if self.sync_distributed and _capability.is_distributed(trainer):
             local_error = torch.tensor(
                 [int(error is not None)],
                 dtype=torch.int64,
                 device=pl_module.device,
             )
-            gathered = _all_gather(
-                trainer,
-                local_error,
-                error=(
-                    "Distributed Heatmap image logging requires "
-                    "trainer.strategy.all_gather; set sync_distributed=False for "
-                    "rank-local diagnostics."
-                ),
-            )
+            gathered = _all_gather(trainer, local_error, error=collective_error)
             if bool((gathered.detach() > 0).any().item()):
-                if error is not None:
-                    raise RuntimeError(
-                        "distributed Heatmap image logging failed: " + error[1]
-                    )
-                raise RuntimeError(
-                    "distributed Heatmap image logging failed on another rank."
-                )
+                _raise_synchronized_error(error, context=context)
             return
         if error is not None:
-            raise RuntimeError(error[1])
+            raise RuntimeError(f"{context} failed: {error[1]}")
 
     def _discard_pending(self) -> None:
         self._forward_active = False
         self._render_active = False
         self._pending_observation_time = 0.0
         self._emitted_keys.clear()
+        self._pending_observation_error = None
         for entry in self._states.values():
             entry.state.discard_pending()
 
     def _detach(self) -> None:
         self._enabled = False
         self._warning_rank = False
+        self._defer_observation_errors = False
+        self._pending_observation_error = None
         self._forward_active = False
         self._render_active = False
         self._pending_observation_time = 0.0
@@ -1427,6 +1835,37 @@ def _distribution_delta(value: Distribution) -> _HistogramDelta:
         total=total,
         sums=valid_values.sum().reshape(1),
         sum_squares=valid_values.square().sum().reshape(1),
+        invalid=(~valid).sum().to(dtype=torch.float32),
+    )
+
+
+def _profile_delta(value: Profile) -> _ProfileDelta:
+    samples = value.values.detach().float()
+    coordinates = value.coordinates.detach().float()
+    edges = torch.tensor(value.edges, dtype=coordinates.dtype, device=coordinates.device)
+    bins = len(value.edges) - 1
+    indices = torch.bucketize(coordinates, edges[1:-1])
+    valid = (
+        torch.isfinite(samples)
+        & torch.isfinite(coordinates)
+        & (coordinates >= edges[0])
+        & (coordinates <= edges[-1])
+    )
+    safe_indices = torch.where(valid, indices, torch.zeros_like(indices))
+    valid_values = torch.where(valid, samples, torch.zeros_like(samples))
+    counts = torch.zeros(bins, dtype=torch.float32, device=samples.device)
+    sums = torch.zeros_like(counts)
+    sum_squares = torch.zeros_like(counts)
+    weights = valid.to(dtype=torch.float32)
+    counts.scatter_add_(0, safe_indices, weights)
+    sums.scatter_add_(0, safe_indices, valid_values)
+    sum_squares.scatter_add_(0, safe_indices, valid_values.square())
+    return _ProfileDelta(
+        schema=_ProfileSchema(tuple(float(item) for item in value.edges)),
+        counts=counts,
+        sums=sums,
+        sum_squares=sum_squares,
+        total=samples.new_tensor(samples.numel(), dtype=torch.float32),
         invalid=(~valid).sum().to(dtype=torch.float32),
     )
 
@@ -1499,10 +1938,30 @@ def _bins_delta(value: Bins) -> _HistogramDelta:
 
 def _state_output_tags(
     tag: str,
-    state: _CurveState | _HeatmapState | _HistogramState,
+    state: _CurveState | _HeatmapState | _HistogramState | _ProfileState,
 ) -> tuple[str, ...]:
     if isinstance(state, (_CurveState, _HeatmapState)):
         return (tag,)
+    if isinstance(state, _ProfileState):
+        profile_tags: list[str] = []
+        for scope in ("step", "ema"):
+            scope_tag = join_tag(tag, scope)
+            profile_tags.extend(
+                (
+                    join_tag(scope_tag, "observations"),
+                    join_tag(scope_tag, "active_ratio"),
+                )
+            )
+            for index in range(state.schema.bins):
+                bin_tag = join_tag(scope_tag, f"bin_{index}")
+                profile_tags.extend(
+                    (
+                        join_tag(bin_tag, "count"),
+                        join_tag(bin_tag, "mean"),
+                        join_tag(bin_tag, "std"),
+                    )
+                )
+        return tuple(profile_tags)
     result: list[str] = []
     for group_name in state.schema.group_names:
         for scope in ("step", "ema"):
@@ -1585,6 +2044,40 @@ def _histogram_metrics(
     return values
 
 
+def _profile_metrics(
+    tag: str,
+    scope: str,
+    snapshot: _ProfileSnapshot,
+) -> dict[str, Tensor]:
+    values: dict[str, Tensor] = {}
+    scope_tag = join_tag(tag, scope)
+    observations = snapshot.counts.sum()
+    tiny = torch.finfo(snapshot.counts.dtype).tiny
+    values[join_tag(scope_tag, "observations")] = observations
+    values[join_tag(scope_tag, "active_ratio")] = torch.where(
+        snapshot.total > 0,
+        observations / snapshot.total.clamp_min(tiny),
+        torch.zeros_like(observations),
+    )
+    for index in range(snapshot.schema.bins):
+        bin_tag = join_tag(scope_tag, f"bin_{index}")
+        count = snapshot.counts[index]
+        mean = torch.where(
+            count > 0,
+            snapshot.sums[index] / count.clamp_min(tiny),
+            torch.zeros_like(count),
+        )
+        variance = torch.where(
+            count > 0,
+            snapshot.sum_squares[index] / count.clamp_min(tiny) - mean.square(),
+            torch.zeros_like(count),
+        ).clamp_min(0)
+        values[join_tag(bin_tag, "count")] = count
+        values[join_tag(bin_tag, "mean")] = mean
+        values[join_tag(bin_tag, "std")] = variance.sqrt()
+    return values
+
+
 def _validate_histograms(
     states: Mapping[str, _StateEntry],
     *,
@@ -1610,6 +2103,33 @@ def _validate_histograms(
                 "out-of-range, or invalid active values."
             )
     raise RuntimeError("observation invalid-count aggregation was inconsistent.")
+
+
+def _validate_profiles(
+    states: Mapping[str, _StateEntry],
+    *,
+    device: torch.device,
+) -> None:
+    entries: list[tuple[str, _ProfileState]] = []
+    for entry in states.values():
+        state = entry.state
+        if isinstance(state, _ProfileState):
+            entries.append((entry.tag, state))
+    if not entries:
+        return
+    total = torch.stack(
+        [state.last_invalid.to(device) for _tag, state in entries]
+    ).sum()
+    if not bool((total > 0).item()):
+        return
+    for tag, state in entries:
+        invalid = float(state.last_invalid.detach().cpu().item())
+        if invalid > 0:
+            raise ValueError(
+                f"observation {tag!r} contained {invalid:g} non-finite or "
+                "out-of-range profile pairs."
+            )
+    raise RuntimeError("observation profile invalid-count aggregation was inconsistent.")
 
 
 def _heatmap_schema(value: Heatmap) -> _HeatmapSchema:
@@ -1724,7 +2244,14 @@ def _schema_signature(
     *,
     emitted_keys: set[str],
     device: torch.device,
+    observation_error: bool = False,
 ) -> Tensor:
+    if observation_error:
+        return torch.tensor(
+            [0, 0, 1, 0, 0],
+            dtype=torch.int64,
+            device=device,
+        )
     unknown = emitted_keys.difference(states)
     if unknown:
         raise RuntimeError(
@@ -1752,6 +2279,16 @@ def _schema_signature(
                     state.pending_schema if state.pending else state.schema,
                 )
             )
+        elif isinstance(state, _ProfileState):
+            schema.append(
+                (
+                    key,
+                    "profile",
+                    _owner_state(entry.owner),
+                    state.half_life_steps,
+                    state.schema,
+                )
+            )
         else:
             schema.append(
                 (
@@ -1769,12 +2306,23 @@ def _schema_signature(
         [
             len(schema),
             len(emitted_keys),
+            0,
             int.from_bytes(digest[:8], "little") & mask,
             int.from_bytes(digest[8:], "little") & mask,
         ],
         dtype=torch.int64,
         device=device,
     )
+
+
+def _raise_synchronized_error(
+    error: _ObservationError | None,
+    *,
+    context: str,
+) -> NoReturn:
+    if error is not None:
+        raise RuntimeError(f"distributed {context} failed: {error[1]}")
+    raise RuntimeError(f"distributed {context} failed on another rank.")
 
 
 def _remove_observer_hooks(
@@ -1887,6 +2435,17 @@ def _schema_from_state(value: object) -> _HistogramSchema:
     )
 
 
+def _profile_schema_from_state(value: object) -> _ProfileSchema:
+    if not isinstance(value, Mapping):
+        raise TypeError("observation profile schema must be a mapping.")
+    edges = _tuple_floats(value.get("edges"), "observation profile edges")
+    if len(edges) < 2:
+        raise ValueError("observation profile edges must contain at least two values.")
+    if any(right <= left for left, right in zip(edges, edges[1:])):
+        raise ValueError("observation profile edges must be strictly increasing.")
+    return _ProfileSchema(edges)
+
+
 def _state_tensor(
     state: Mapping[str, Any],
     name: str,
@@ -1930,6 +2489,12 @@ def _tuple_float_tuples(value: object, name: str) -> tuple[tuple[float, ...], ..
             raise TypeError(f"{name} entries must be sequences.")
         result.append(tuple(_real(item, name) for item in row))
     return tuple(result)
+
+
+def _tuple_floats(value: object, name: str) -> tuple[float, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise TypeError(f"{name} must be a sequence.")
+    return tuple(_real(item, name) for item in value)
 
 
 def _positive_int(value: object, name: str) -> int:

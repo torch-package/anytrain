@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any, Literal, cast
 
 import torch
 from torch import Tensor, nn
 
-from ...loss.abc import LossDetails, LossDetailValue
+from anytrain import observation
+
 from ._output import Features, split
 from .criterion import _LogitCriterion
 from .feature import _FeatureMatching
@@ -43,6 +45,7 @@ class Loss(nn.Module):
             10.0 if gp_weight is None and self.gan == GAN.WGAN else float(gp_weight or 0.0)
         )
         self._gp = _GradientPenalty(reduction=self.reduction) if self.gp_weight > 0 else None
+        observation.registry.recommend(self)
 
     @classmethod
     def from_preset(
@@ -70,22 +73,63 @@ class Loss(nn.Module):
             gp_weight=gp_weight,
         )
 
-    def discriminator_loss(self, fake: Tensor, real: Tensor) -> tuple[Tensor, LossDetails]:
+    def forward(
+        self,
+        fake: Tensor,
+        real: Tensor | None = None,
+        *,
+        objective: Literal["discriminator", "generator"],
+    ) -> Tensor:
+        if objective == "discriminator":
+            if real is None:
+                raise ValueError("real must be provided for the discriminator objective.")
+            return self._discriminator_loss(fake, real)
+        if objective == "generator":
+            return self._generator_loss(fake, real)
+        raise ValueError("objective must be 'discriminator' or 'generator'.")
+
+    def discriminator_loss(self, fake: Tensor, real: Tensor) -> Tensor:
+        return self(fake, real, objective="discriminator")
+
+    def generator_loss(self, fake: Tensor, real: Tensor | None = None) -> Tensor:
+        return self(fake, real, objective="generator")
+
+    def _discriminator_loss(self, fake: Tensor, real: Tensor) -> Tensor:
         _, fake_logits = self._discriminate(fake.detach())
         _, real_logits = self._discriminate(real)
-        total, details = self._criterion.discriminator_loss(real_logits, fake_logits)
+        real_loss, fake_loss = self._criterion.discriminator_components(
+            real_logits,
+            fake_logits,
+        )
+        total = real_loss + fake_loss
+        observation.emit(
+            self,
+            "discriminator/components",
+            {
+                "real": observation.Curve(real_loss.detach()),
+                "fake": observation.Curve(fake_loss.detach()),
+            },
+        )
 
         if self._gp is not None and self.gp_weight > 0:
             gp = self._gp(self.discriminator, fake.detach(), real.detach())
             total = total + total.new_tensor(self.gp_weight) * gp
-            details = {**details, "gp": gp}
-        return total, _detach_details(details)
+            observation.emit(
+                self,
+                "discriminator/gradient_penalty",
+                {"gp": observation.Curve(gp.detach())},
+            )
+        return total
 
-    def generator_loss(
-        self, fake: Tensor, real: Tensor | None = None
-    ) -> tuple[Tensor, LossDetails]:
+    def _generator_loss(self, fake: Tensor, real: Tensor | None) -> Tensor:
         fake_features, fake_logits = self._discriminate(fake)
-        total, details = self._criterion.generator_loss(fake_logits)
+        adversarial = self._criterion.generator_loss(fake_logits)
+        total = adversarial
+        observation.emit(
+            self,
+            "generator/components",
+            {"adv": observation.Curve(adversarial.detach())},
+        )
 
         if self.feature_weight > 0:
             if real is None:
@@ -94,37 +138,89 @@ class Loss(nn.Module):
                 raise RuntimeError("feature_loss is not configured.")
             with torch.no_grad():
                 real_features, _ = self._discriminate(real)
-            feature, _ = self._feature(fake_features, real_features)
+            feature = self._feature(fake_features, real_features)
             total = total + total.new_tensor(self.feature_weight) * feature
-            details = {
-                **details,
-                "feature": feature,
-                "feature_weight": self.feature_weight,
-            }
-        return total, _detach_details(details)
+            observation.emit(
+                self,
+                "generator/feature_matching",
+                {"feature": observation.Curve(feature.detach())},
+            )
+        return total
 
     def _discriminate(self, x: Tensor) -> tuple[Features, list[Tensor]]:
         return split(self.discriminator(x))
 
 
-def _detach_details(details: Mapping[str, LossDetailValue]) -> LossDetails:
-    detached: LossDetails = {}
-    for name, value in details.items():
-        if not isinstance(name, str):
-            raise TypeError("loss detail key must be a string.")
-        if not name:
-            raise ValueError("loss detail key must not be empty.")
-        if "/" in name:
-            raise ValueError("loss detail key must not contain '/'.")
-        if isinstance(value, bool):
-            raise TypeError(f"Loss detail value {name!r} must be a float or 0-d tensor.")
-        if isinstance(value, float):
-            detached[name] = value
-            continue
-        if isinstance(value, Tensor):
-            if value.ndim != 0:
-                raise ValueError(f"Loss detail value {name!r} must be a 0-d tensor.")
-            detached[name] = value.detach()
-            continue
-        raise TypeError(f"Loss detail value {name!r} must be a float or 0-d tensor.")
-    return detached
+def _collect_discriminator_loss(
+    module: nn.Module,
+    inputs: tuple[Any, ...],
+    kwargs: Mapping[str, Any],
+    output: object,
+) -> observation.ObservationResult:
+    del module, inputs
+    return _collect_loss(kwargs, output, objective="discriminator")
+
+
+def _collect_generator_loss(
+    module: nn.Module,
+    inputs: tuple[Any, ...],
+    kwargs: Mapping[str, Any],
+    output: object,
+) -> observation.ObservationResult:
+    del module, inputs
+    return _collect_loss(kwargs, output, objective="generator")
+
+
+def _collect_loss(
+    kwargs: Mapping[str, Any],
+    output: object,
+    *,
+    objective: str,
+) -> observation.Curve | None:
+    if kwargs.get("objective") != objective:
+        return None
+    if not isinstance(output, Tensor):
+        raise TypeError("GAN loss observation requires a Tensor module output.")
+    return observation.Curve(output)
+
+
+def _collect_weights(module: nn.Module) -> dict[str, observation.Observation]:
+    loss = cast(Loss, module)
+    reference = next(loss.parameters(), None)
+    if reference is None:
+        reference = next(loss.buffers(), None)
+    device = torch.device("cpu") if reference is None else reference.device
+    return {
+        "feature_weight": observation.Curve(
+            torch.tensor(loss.feature_weight, dtype=torch.float32, device=device)
+        ),
+        "gp_weight": observation.Curve(
+            torch.tensor(loss.gp_weight, dtype=torch.float32, device=device)
+        ),
+    }
+
+
+observation.registry.register(
+    Loss,
+    (
+        observation.OutputObservation(
+            "discriminator/loss",
+            _collect_discriminator_loss,
+            recommended=True,
+        ),
+        observation.ForwardEvent("discriminator/components"),
+        observation.ForwardEvent("discriminator/gradient_penalty"),
+        observation.OutputObservation(
+            "generator/loss",
+            _collect_generator_loss,
+            recommended=True,
+        ),
+        observation.ForwardEvent("generator/components"),
+        observation.ForwardEvent("generator/feature_matching"),
+        observation.StateObservation(
+            "weights",
+            _collect_weights,
+            recommended=True,
+        ),
+    ),
+)

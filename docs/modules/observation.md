@@ -72,9 +72,10 @@ logger callback、monitor adapter、training-output 自动发现或额外 forwar
   `observation.emit(self, name, value)`。
 
 collector 和 event 都必须只读，不修改 output/state，也不能参与 forward 返回值。scalar 使用 `Curve`，明确的
-一维连续 view 使用 `Distribution`，离散 codes 使用 `Bins`。多维连续 tensor 不能自动 flatten；真正需要看图时，
-module 必须先选定 sample/head/crop，得到语义明确的二维 `Heatmap`。module 外计算的 aux loss、最终 evaluator、
-性能指标和 loss-to-parameter gradient 不属于中间变量入口。
+一维连续 view 使用 `Distribution`，一维数值按另一条连续坐标分段统计时使用 `Profile`，离散 codes 使用
+`Bins`。多维连续 tensor 不能自动 flatten；真正需要看图时，module 必须先选定 sample/head/crop，得到语义明确的
+二维 `Heatmap`。module 外计算的 aux loss、最终 evaluator、性能指标和 loss-to-parameter gradient 不属于
+中间变量入口。
 
 ## 日志值
 
@@ -82,6 +83,10 @@ module 必须先选定 sample/head/crop，得到语义明确的二维 `Heatmap`�
   曲线本身保存，不维护 EMA。
 - `Distribution`：1-D floating Tensor，并显式提供固定 histogram edges。多维连续 tensor 不会
   自动 flatten；调用方必须先选择明确的 view。
+- `Profile`：等长、非空、同 device 的 1-D floating `values` / `coordinates`，并显式提供固定 coordinate
+  edges。每个 coordinate interval 记录 value 的 count、mean 和 std，同时保留 step 与 EMA sufficient
+  statistics。典型用途是 loss 随 timestep、长度或噪声水平的分段变化；它取代为某个具体字段定制的
+  time-bucket callback。
 - `Bins`：任意 rank 的离散 observation Tensor。单 bin space 时所有维度都是 observation axis；
   多 bin space 时通过 `group_dim` 指出 group axis，并为每组提供固定 `sizes`。可选
   `active_mask` 与 values 同 shape。没有 mask 时只把 `-1` 视为 inactive sentinel；其它负值或超出
@@ -92,10 +97,11 @@ module 必须先选定 sample/head/crop，得到语义明确的二维 `Heatmap`�
   所属 spec 的 `history` 必须为 `None`，需要同时记录 histogram 时拆成另一个 spec。同一个 optimizer step
   同一 key 多次产生时固定保留第一次。
 
-`Distribution` 和 `Bins` 在 callback 消费时立即转换成固定大小的 histogram sufficient statistics，
+`Distribution`、`Profile` 和 `Bins` 在 callback 消费时立即转换成固定大小的 sufficient statistics，
 不保留 forward output 或 autograd graph。历史使用 `EMAHistory(half_life_steps=...)`，日志明确区分
-`step` 与 `ema`；entropy、perplexity 和 active ratio 都从 step/EMA counts 现算，不对派生指标做
-EMA。`Bins` 还统一输出 occupied/dead count 与 ratio；EMA scope 的 occupied 表示 EMA mass 仍为正的 bin。
+`step` 与 `ema`；派生指标都从 step/EMA state 现算，不单独做 EMA。`Distribution` / `Bins` 输出
+entropy、perplexity 和 active ratio；`Bins` 还输出 occupied/dead count 与 ratio，EMA scope 的 occupied
+表示 EMA mass 仍为正的 bin。`Profile` 输出各 coordinate bin 的 count/mean/std 和整体 active ratio。
 
 ## Module spec
 
@@ -142,7 +148,7 @@ trainer = pl.Trainer(
 
 callback 在 `on_fit_start` 遍历 `pl_module.named_modules()`，按 concrete type 查询 registry，并用完整
 module path 绑定 state/output/event collector。默认只有 global rank 0 绑定；`sync_distributed=True` 时才在
-所有 rank 绑定并同步状态。每个需要 EMA history 的 Distribution/Bins 每个 train batch 都收集；无 history 的
+所有 rank 绑定并同步状态。每个需要 EMA history 的 Distribution/Profile/Bins 每个 train batch 都收集；无 history 的
 State/Output collector 只在即将 render 的 optimizer step 调用。`ForwardEvent` 的 `emit()` 仍由 module 在
 所有 rank 无条件执行，但 callback 在非 render step 直接丢弃 payload，不做 detach、统计或图片转换。
 只有 `trainer.global_step` 前进时才提交
@@ -160,16 +166,16 @@ observation callback 入口实际承担的 host stall，不是隔离后的 GPU k
 checkpoint；`sync_distributed=True` 时各 rank 各自计时，默认可见的是 logger owner rank 的值。
 
 `sync_distributed=False` 默认只维护并输出 global-zero rank 的本地诊断。显式开启时，每个已发现 observer 必须
-在所有 rank 以一致结构调用；callback 先 all-gather 累计 key/schema、稳定 source identity 和当前
-optimizer step 实际 emitted key 集合的 signature，确认一致后再 sum counts/sums、更新相同 EMA 和计算
-派生指标，避免历史上曾出现过的 key 在当前 step 只由部分 rank 再次产生，或不同 source 恰好拼成同一
-state key 时静默通过。
+在所有 rank 以一致结构调用；callback 先同步 collector/record 错误，再 all-gather 累计 key/schema、稳定 source
+identity 和当前 optimizer step 实际 emitted key 集合的 signature，确认一致后再 sum sufficient stats、更新相同
+EMA 和计算派生指标。这样单 rank collector 失败不会让其它 rank 继续进入不同的 collective；也避免历史上曾
+出现过的 key 在当前 step 只由部分 rank 再次产生，或不同 source 恰好拼成同一 state key 时静默通过。
 
 Heatmap 的 key、shape、dtype 和 `value_range` 也进入 distributed schema；像素不跨 rank 归约，只由
 global rank 0 在首次有效 observation 时转换为 detached、独立的 CPU float image，并通过 logger experiment 的
 `add_image(..., dataformats="HW")` 写出。实际有 Heatmap 需要 render 但 backend 不提供 `add_image()` 时明确
-报错；distributed 模式会先完成 schema preflight，再把 materialization/backend 错误同步给所有 rank，避免
-单 rank 提前退出 collective。`max_heatmap_elements` 限制二维 view 的总元素数，超限时要求 module 显式选择
+报错；distributed 模式会先完成 schema preflight，再把 image/histogram writer 的 discovery、materialization
+和 write 错误同步给所有 rank，避免单 rank 提前退出 collective。`max_heatmap_elements` 限制二维 view 的总元素数，超限时要求 module 显式选择
 更小的语义视图，不自动 flatten、resize、crop 或 sample。
 
 不同 collector/value 组合不得归一化到同一个内部 state key；Curve、histogram step/EMA scalar 以及 raw
@@ -188,4 +194,4 @@ graph。observation 不提供 `enabled()` 分支；如果 flash/SDPA 路径不�
 
 当前 optimizer-step 提交使用 train batch end 的 `global_step` delta，支持自动优化与梯度累积；一个
 train batch 内多个 manual optimizer step 无法无歧义拆分 pending state，会明确报错。非法
-Distribution/Bins 数值在完成同一步的 distributed reduce 后立即报错，不受 render cadence 影响。
+Distribution/Profile/Bins 数值在完成同一步的 distributed reduce 后立即报错，不受 render cadence 影响。

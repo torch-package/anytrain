@@ -146,7 +146,9 @@ loss = objective(model, x_1, x_0=None, **extras)
 - `x_0` / `x_1` 必须是 `torch.long` token tensor，不做静默 dtype 转换。
 - 模型输出 logits，objective 内部不自动做 sampling 或 argmax。
 
-`objective` 返回必须是 scalar Tensor。额外日志不在第一版塞进返回值；后续如果需要，可加 `FlowLossOutput(loss, details)`，但不能影响 `backward()` 主路径。
+`objective` 固定返回 0-D Tensor。continuous / discrete objective 都按 concrete type
+注册 `OutputObservation("loss")`；后续需要的 logging-only 中间量继续通过
+observation registry 声明，不再扩展为 `details` 返回协议。
 
 continuous 和 discrete objective 都只接收对应 runtime，避免再次传入 path、source、time sampler 或 model caller。
 

@@ -44,7 +44,35 @@ class Distribution:
             )
         if not self.values.dtype.is_floating_point:
             raise TypeError("Distribution.values must use a floating dtype.")
-        _edges(self.edges)
+        _edges(self.edges, name="Distribution")
+
+
+@dataclass(frozen=True, eq=False)
+class Profile:
+    """One-dimensional values profiled over fixed coordinate intervals."""
+
+    values: Tensor
+    coordinates: Tensor
+    edges: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.values, Tensor):
+            raise TypeError("Profile.values must be a Tensor.")
+        if not isinstance(self.coordinates, Tensor):
+            raise TypeError("Profile.coordinates must be a Tensor.")
+        if self.values.ndim != 1 or self.coordinates.ndim != 1:
+            raise ValueError("Profile values and coordinates must both be 1D.")
+        if self.values.shape != self.coordinates.shape:
+            raise ValueError("Profile values and coordinates must have the same shape.")
+        if self.values.numel() == 0:
+            raise ValueError("Profile values and coordinates must be non-empty.")
+        if not self.values.dtype.is_floating_point:
+            raise TypeError("Profile.values must use a floating dtype.")
+        if not self.coordinates.dtype.is_floating_point:
+            raise TypeError("Profile.coordinates must use a floating dtype.")
+        if self.values.device != self.coordinates.device:
+            raise ValueError("Profile values and coordinates must be on the same device.")
+        _edges(self.edges, name="Profile")
 
 
 @dataclass(frozen=True, eq=False)
@@ -156,7 +184,7 @@ class EMAHistory:
             raise ValueError("EMAHistory.half_life_steps must be finite and positive.")
 
 
-Observation = Union[Curve, Distribution, Bins, Heatmap]
+Observation = Union[Curve, Distribution, Profile, Bins, Heatmap]
 ObservationResult = Union[Observation, Mapping[str, Observation], None]
 OutputCollector = Callable[
     [nn.Module, tuple[Any, ...], Mapping[str, Any], object],
@@ -242,18 +270,18 @@ ObservationSpec = Union[
 ]
 
 
-def _edges(values: tuple[float, ...]) -> None:
+def _edges(values: tuple[float, ...], *, name: str) -> None:
     if len(values) < 2:
-        raise ValueError("Distribution.edges must contain at least two values.")
+        raise ValueError(f"{name}.edges must contain at least two values.")
     previous: float | None = None
     for value in values:
         if isinstance(value, bool) or not isinstance(value, Real):
-            raise TypeError("Distribution.edges must contain real numbers.")
+            raise TypeError(f"{name}.edges must contain real numbers.")
         current = float(value)
         if not math.isfinite(current):
-            raise ValueError("Distribution.edges must contain finite values.")
+            raise ValueError(f"{name}.edges must contain finite values.")
         if previous is not None and current <= previous:
-            raise ValueError("Distribution.edges must be strictly increasing.")
+            raise ValueError(f"{name}.edges must be strictly increasing.")
         previous = current
 
 
@@ -306,5 +334,6 @@ __all__ = [
     "ObservationResult",
     "ObservationSpec",
     "OutputObservation",
+    "Profile",
     "StateObservation",
 ]

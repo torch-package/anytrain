@@ -7,9 +7,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from anytrain.loss.abc import LossDetails
-
-from ._detail import detach_details
+from ._observation import emit, recommend, register
 from .advantage import group_relative_advantages
 from .types import NeighborReduction
 
@@ -45,9 +43,7 @@ class NeighborGRPOLoss(nn.Module):
         if not math.isfinite(advantage_norm_p) or advantage_norm_p <= 0:
             raise ValueError("advantage_norm_p must be positive and finite.")
         if neighbor_reduction not in {"neighbor_mean", "anchor_step_mean"}:
-            raise ValueError(
-                "neighbor_reduction must be 'neighbor_mean' or 'anchor_step_mean'."
-            )
+            raise ValueError("neighbor_reduction must be 'neighbor_mean' or 'anchor_step_mean'.")
 
         self.clip_range = float(clip_range)
         self.kl_beta = float(kl_beta)
@@ -55,6 +51,7 @@ class NeighborGRPOLoss(nn.Module):
         self.adv_clip_max = None if adv_clip_max is None else float(adv_clip_max)
         self.advantage_norm_p = float(advantage_norm_p)
         self.neighbor_reduction: NeighborReduction = neighbor_reduction
+        recommend(self)
 
     def forward(
         self,
@@ -67,7 +64,7 @@ class NeighborGRPOLoss(nn.Module):
         group_mask: Tensor | None = None,
         anchor_mask: Tensor | None = None,
         validate: bool = True,
-    ) -> tuple[Tensor, LossDetails]:
+    ) -> Tensor:
         """Compute neighbor GRPO loss.
 
         Set ``validate=False`` only for batches whose tensor contracts have
@@ -147,33 +144,34 @@ class NeighborGRPOLoss(nn.Module):
         total = pg_loss + policy_neighbor_logps.new_tensor(self.kl_beta) * kl_loss
         selected_rewards = rewards.masked_select(candidate_mask)
         selected_advantages = advantages.masked_select(candidate_mask)
-        details = {
-            "pg_loss": pg_loss,
-            "kl_loss": kl_loss,
-            "reward_mean": selected_rewards.mean(),
-            "reward_std": selected_rewards.std(unbiased=False),
-            "advantage_mean": selected_advantages.mean(),
-            "approx_kl": 0.5
-            * _reduce_neighbor_values(
-                log_ratio.square(),
-                selected_neighbor_mask,
-                self.neighbor_reduction,
-                validate=validate,
-            ),
-            "clip_fraction": (
-                (torch.abs(ratio - 1.0) > self.clip_range)
-                .masked_select(selected_neighbor_mask)
-                .to(dtype=total.dtype)
-                .mean()
-            ),
-            "neighbor_count": selected_neighbor_mask.to(dtype=total.dtype).sum(),
-            "anchor_step_count": selected_neighbor_mask.any(dim=-1)
-            .to(dtype=total.dtype)
-            .sum(),
-            "anchor_count": selected_neighbor_mask.any(dim=(2, 3)).to(dtype=total.dtype).sum(),
-            "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
-        }
-        return total, detach_details(details)
+        emit(
+            self,
+            {
+                "pg_loss": pg_loss,
+                "kl_loss": kl_loss,
+                "reward_mean": selected_rewards.mean(),
+                "reward_std": selected_rewards.std(unbiased=False),
+                "advantage_mean": selected_advantages.mean(),
+                "approx_kl": 0.5
+                * _reduce_neighbor_values(
+                    log_ratio.square(),
+                    selected_neighbor_mask,
+                    self.neighbor_reduction,
+                    validate=validate,
+                ),
+                "clip_fraction": (
+                    (torch.abs(ratio - 1.0) > self.clip_range)
+                    .masked_select(selected_neighbor_mask)
+                    .to(dtype=total.dtype)
+                    .mean()
+                ),
+                "neighbor_count": selected_neighbor_mask.to(dtype=total.dtype).sum(),
+                "anchor_step_count": selected_neighbor_mask.any(dim=-1).to(dtype=total.dtype).sum(),
+                "anchor_count": selected_neighbor_mask.any(dim=(2, 3)).to(dtype=total.dtype).sum(),
+                "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
+            },
+        )
+        return total
 
 
 def neighbor_logps_from_distances(
@@ -391,6 +389,9 @@ def _reduce_neighbor_values(
         weights = valid_anchor_steps.to(dtype=anchor_step_value.dtype)
         return (anchor_step_value * weights).sum() / weights.sum().clamp_min(1)
     raise ValueError("neighbor_reduction must be 'neighbor_mean' or 'anchor_step_mean'.")
+
+
+register(NeighborGRPOLoss)
 
 
 __all__ = ["NeighborGRPOLoss", "neighbor_logps_from_distances"]

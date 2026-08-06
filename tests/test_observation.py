@@ -48,6 +48,64 @@ class ObservationTypeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite"):
             observation.Distribution(torch.ones(2), edges=(0.0, float("nan")))
 
+    def test_profile_requires_aligned_floating_1d_pairs(self):
+        with self.assertRaisesRegex(TypeError, "Profile.values must be a Tensor"):
+            observation.Profile(
+                [1.0],
+                torch.tensor([0.5]),
+                edges=(0.0, 1.0),
+            )
+        with self.assertRaisesRegex(TypeError, "Profile.coordinates must be a Tensor"):
+            observation.Profile(
+                torch.tensor([1.0]),
+                [0.5],
+                edges=(0.0, 1.0),
+            )
+        with self.assertRaisesRegex(ValueError, "both be 1D"):
+            observation.Profile(
+                torch.ones(1, 1),
+                torch.ones(1, 1),
+                edges=(0.0, 1.0),
+            )
+        with self.assertRaisesRegex(ValueError, "same shape"):
+            observation.Profile(
+                torch.ones(2),
+                torch.ones(1),
+                edges=(0.0, 1.0),
+            )
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            observation.Profile(
+                torch.empty(0),
+                torch.empty(0),
+                edges=(0.0, 1.0),
+            )
+        with self.assertRaisesRegex(TypeError, "Profile.values must use a floating"):
+            observation.Profile(
+                torch.ones(1, dtype=torch.int64),
+                torch.ones(1),
+                edges=(0.0, 1.0),
+            )
+        with self.assertRaisesRegex(TypeError, "Profile.coordinates must use a floating"):
+            observation.Profile(
+                torch.ones(1),
+                torch.ones(1, dtype=torch.int64),
+                edges=(0.0, 1.0),
+            )
+
+    def test_profile_requires_strictly_increasing_edges_and_matching_device(self):
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            observation.Profile(
+                torch.ones(1),
+                torch.ones(1),
+                edges=(0.0, 0.0),
+            )
+        with self.assertRaisesRegex(ValueError, "same device"):
+            observation.Profile(
+                torch.ones(1),
+                torch.ones(1, device="meta"),
+                edges=(0.0, 1.0),
+            )
+
     def test_ema_history_requires_finite_half_life(self):
         with self.assertRaisesRegex(ValueError, "finite and positive"):
             observation.EMAHistory(float("inf"))

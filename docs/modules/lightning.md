@@ -51,9 +51,7 @@ src/anytrain/lightning/
 - `GradientComparison`
 - `GradientLossGroupsFn`
 - `gradient_loss_groups`
-- `LossItemLoggerCallback`
 - `LossSummaryCallback`
-- `LossTimeBucketLoggerCallback`
 - `FlopsProvider`
 - `PerformanceCallback`
 - `ObservationCallback`
@@ -188,8 +186,9 @@ callback state，因此 `load_state_dict` 会暂存 EMA payload，并在 `on_fit
 `GradientProbeLoggerCallback` 要求构造时显式传入 `loss_groups: GradientLossGroupsFn`，不在运行时
 隐式猜测 `pl_module` 是否实现特定方法。兼容现有 `current_loss_outputs()` /
 `current_gradient_loss_groups()` 的入口是显式 adapter `gradient_loss_groups`；新下游可以直接传入返回
-`group -> outputs mapping` 的项目 provider。callback 校验 provider 的两层 mapping 结构后，再按
-`GradientTarget.group` 选择 loss graph。
+`group -> scalar Tensor mapping` 的项目 provider。callback 校验 provider 的两层 mapping 结构和每个被选
+loss 的 0-D Tensor 契约后，再按 `GradientTarget.group` 选择仍连接 autograd 的 loss graph。observation
+会 detach 值，因此不能作为 gradient provider。
 
 `ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。队列通过
 `max_pending_async_saves` 显式限制持有完整本地 source 的复制任务数，默认值为 1；达到上限时会先
@@ -230,15 +229,15 @@ claim 所有已发现 declaration，
 - `Curve` 在一个 optimizer interval 内累加 sum/count，提交时记录 mean，不维护 EMA，也不进入
   callback checkpoint；没有 history 的 State/Output/Event collector 只在即将 render 的 optimizer step
   执行，cadence 之外不计算派生 Curve。
-- `Distribution` / `Bins` 在 callback 消费时立即转成固定 schema 的 mass、observations、total、sum 和
-  sum-squares，不保存完整 output 或 autograd graph；每次 `global_step` 前进时提交 step snapshot，并按
-  optimizer-step half-life 更新 EMA。
+- `Distribution` / `Bins` 在 callback 消费时立即转成固定 histogram state；`Profile` 把等长的一维 value /
+  coordinate pair 转成每个 coordinate bin 的 count、sum 和 sum-squares。它们都不保存完整 output 或
+  autograd graph；每次 `global_step` 前进时提交 step snapshot，并按 optimizer-step half-life 更新 EMA。
 - `Heatmap` 只接受 module 已选好的 2-D floating view，不维护 EMA，且所属 spec 必须 `history=None`；同一
   optimizer step 同一 key 只保留第一次，并只由 global rank 0 转成独立 CPU image。shape/dtype/range
   跨 step 必须稳定。
 - `every_n_steps` 控制 render 和无 history collector，默认每 100 个 optimizer step 输出一次；State/Output
   collector 在 cadence 外不调用，ForwardEvent 的 `emit()` 仍执行但 payload 会被 callback 直接丢弃。`None`
-  完全关闭两者。需要 EMA history 的 Distribution/Bins 仍在所有 step 提交状态，非法 finite/range 值也
+  完全关闭两者。需要 EMA history 的 Distribution/Profile/Bins 仍在所有 step 提交状态，非法 finite/range 值也
   在 step boundary 立即失败，不受 render cadence 影响。
 - spec 的 `EMAHistory.half_life_steps` 是默认值；callback 构造参数 `half_life_steps` 非 `None` 时统一
   覆盖。

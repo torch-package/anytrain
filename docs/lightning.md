@@ -11,10 +11,9 @@
 - LightningModule 侧的轻量 logging helper。
 - Trainer 主 logger 的 text/scalar/audio/image/histogram experiment 能力访问。
 - validation 指标按实际 observation count 做 epoch/DDP 加权聚合，并记录可恢复的指标历史。
-- 训练 outputs 里的 total loss 和命名 loss item 窗口汇总 callback。
-- 训练 outputs 里的命名 loss item 按下游 label 分组记录 callback。
-- 基于命名 `LossItem` 的梯度关系、全局梯度范数和 time-bucket loss 观测 callback。
-- 自动发现普通 module registry 声明的 Curve/Distribution/Bins/Heatmap observation，并记录
+- 训练 outputs 里的显式命名 scalar loss 窗口汇总 callback。
+- 基于显式 live scalar loss provider 的梯度关系和全局梯度范数观测 callback。
+- 自动发现普通 module registry 声明的 Curve/Distribution/Profile/Bins/Heatmap observation，并记录
   optimizer-step、EMA 和 render-only image 状态；这是 module 中间量 logging 的唯一 callback。
 - non-finite loss 检查等训练调试 callback。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
@@ -133,12 +132,7 @@ class MyPLModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self(x)
-        loss_result = self.loss_fn(y_hat, y)
-        if isinstance(loss_result, tuple):
-            loss, loss_details = loss_result
-            self.log_dict({f"train/loss/{key}": value for key, value in loss_details.items()})
-        else:
-            loss = loss_result
+        loss = self.loss_fn(y_hat, y)
         self.log("train/loss", loss)
         return loss
 
@@ -296,13 +290,15 @@ trainer = pl.Trainer(
   只记录曲线，不维护跨 step EMA。
 - `Distribution` 接受 1-D floating Tensor 和固定 edges；多维连续 Tensor 必须由 module 先选择明确
   view，不能隐式 flatten。
+- `Profile` 接受等长的 1-D floating values/coordinates 和固定 coordinate edges，记录各 interval 的
+  value count/mean/std；适合观察 loss 随 timestep、长度等连续坐标的变化。
 - `Bins` 接受任意 rank 的离散 Tensor。多 codebook 时用 `group_dim` 指出 codebook 轴，bin 数可以
   大于 1，也可以在不同 group 间不同。
 - `Heatmap` 接受 module 已明确选择 sample/head/crop 后的非空 2-D floating Tensor，不维护 EMA，所属 spec
   必须 `history=None`；固定 `value_range` 时不同 step 的颜色可比较。同一步同一 key 多次产生时保留第一次。
-- `Distribution` / `Bins` 每个 optimizer step 都先形成固定大小的 histogram sufficient stats，再维护
-  counts、observation total、sum 和 sum-squares 的 EMA；step 与 EMA 的 entropy、perplexity 和
-  active ratio 均从这些状态现算。`Bins` 额外输出 occupied/dead count 与 ratio。
+- `Distribution` / `Profile` / `Bins` 每个 optimizer step 都先形成固定大小的 sufficient stats，再维护
+  EMA；派生指标从 step/EMA state 现算。`Distribution` / `Bins` 输出 entropy、perplexity 和 active ratio，
+  `Bins` 额外输出 occupied/dead count 与 ratio，`Profile` 输出各 coordinate bin 的 count/mean/std。
 
 callback 默认只在 global rank 0 的 `on_fit_start` 扫描 `pl_module.named_modules()`；
 `sync_distributed=True` 时才在所有 rank 扫描和注册。module class 在实现旁通过唯一
@@ -322,27 +318,27 @@ concrete type 查找，不保存实例或 tensor，deepcopy 直接复用 class d
 
 `every_n_steps` 控制 render 和无 history 的 State/Output/Event collector，默认每 100 个 optimizer step 输出一次；
 State/Output collector 在 cadence 外不调用，ForwardEvent 的 `emit()` 仍由 module 执行，但 callback 直接丢弃 payload。
-需要 EMA 的 Distribution/Bins 在被跳过的 step 仍更新状态。传 `None` 会关闭 render 和无 history
-collector，但保留 histogram EMA 更新。每次 render 同时输出 `module/observation_time`：它是当前 interval
+需要 EMA 的 Distribution/Profile/Bins 在被跳过的 step 仍更新状态。传 `None` 会关闭 render 和无 history
+collector，但保留 Distribution/Profile/Bins 的 EMA 更新。每次 render 同时输出 `module/observation_time`：它是当前 interval
 内全部 observation collector、状态更新、归约、校验、histogram writer 和 Heatmap image writer 的 host
 wall time，按实际 optimizer step 数取平均。它不额外同步 CUDA，也不包含最终 scalar `log_dict()` submission。
 callback 级 `half_life_steps` 会覆盖 spec 自带的 `EMAHistory`。TensorBoard 等 backend 支持
 `add_histogram_raw` 时同时写 step/EMA histogram；不支持时仍保留 scalar summary。
 `max_dense_bins` 在分配状态前限制 `[groups, max_bins]` 的 dense 大小，mixed-radix product codebook
 超过限制会明确报错，调用方应改用 factorized observation 或显式提高上限。
-
 Heatmap 只在 render step 由 global rank 0 生成独立 CPU image，并通过 `add_image(..., dataformats="HW")`
-写出；backend 不支持 image 时明确报错。distributed 模式先完成 schema preflight，再把 image materialization
-或 backend 错误同步给所有 rank。`max_heatmap_elements` 超限时要求 module 选择更小的二维语义 view，不自动
+写出；backend 不支持 image 时明确报错。distributed 模式先完成 schema preflight，并同步 collector、image
+和 histogram backend 错误。`max_heatmap_elements` 超限时要求 module 选择更小的二维语义 view，不自动
 flatten、resize 或 sample。
-默认 `sync_distributed=False`，只维护并输出 global-zero rank 的本地诊断。开启后 callback 会先确认所有 rank
-拥有相同累计 observation key/schema/source identity，并在该 optimizer step 产生相同 emitted key 集合，
-再 sum sufficient stats；条件 module 调用或动态 mapping 必须在各 rank 保持一致，否则同步失败并显式
-报错。
+
+默认 `sync_distributed=False`，只维护并输出 global-zero rank 的本地诊断。开启后 callback 会先同步
+collector/record 错误，再确认所有 rank 拥有相同累计 observation key/schema/source identity，并在该
+optimizer step 产生相同 emitted key 集合，之后才 sum sufficient stats；条件 module 调用或动态 mapping
+必须在各 rank 保持一致，否则同步失败并显式报错。
 内部 state key 与 Curve、step/EMA histogram scalar、raw histogram 的最终 logger tag 都要求全局唯一；
 不同 module/spec 路径归一化到同一个实际 tag 时会立即报错，不会静默覆盖。
 
-checkpoint 只保存已完成 optimizer step 的 Distribution/Bins EMA、稳定的 module/spec/item source
+checkpoint 只保存已完成 optimizer step 的 Distribution/Profile/Bins EMA、稳定的 module/spec/item source
 identity 和 step metadata，不保存 pending microbatch、Curve、Heatmap 或 raw forward output。恢复时 `tag` 作为
 callback state identity 必须保持稳定，`half_life_steps` 与 `sync_distributed` 必须兼容；
 `every_n_steps` 可以调整，`max_dense_bins` 可以调整到仍能容纳已保存 schema 的值。
@@ -399,7 +395,7 @@ from anytrain.lightning import LightningLogMixin
 class MyPLModule(LightningLogMixin, pl.LightningModule):
     def training_step(self, batch, batch_idx):
         ...
-        self.log_prefixed_dict("train/loss", loss_details, on_step=True)
+        self.log_prefixed_dict("train/metric", metrics, on_step=True)
         return loss
 ```
 
@@ -425,7 +421,8 @@ logger backend 不再由 `anytrain.lightning` 自动创建；需要自定义 log
 
 ## 调试能力
 
-`LossSummaryCallback` 从 mapping 形式的 training outputs 收集 total loss 和命名 `LossItem`。
+`LossSummaryCallback` 从 mapping 形式的 training outputs 收集 `loss_key` 和 `loss_names` 显式选择的
+0-D Tensor；任意选中值缺失、不是 Tensor 或不是 scalar 时，当前 batch 不写入任何窗口。
 batch hook 只保留 detached device scalar，不在每个 microbatch 上转成 Python float；每个指标保存最早和
 最近各 `window_capacity` 个值以及完整 observation count，因此内存不会随训练步数增长。默认
 `window_capacity=20`；`report()` 默认使用配置的 capacity。已经超出保留范围的显式窗口会明确报错。
@@ -453,8 +450,9 @@ callback = GradientProbeLoggerCallback(
 )
 ```
 
-新代码也可以直接传入项目自己的 provider；它必须返回 `group -> training outputs mapping`，其中默认
-group 名通常是 `batch`。这样 loss graph 的所有权留在下游装配层，callback 只负责梯度观测。
+新代码也可以直接传入项目自己的 provider；它必须返回 `group -> scalar Tensor mapping`，其中默认
+group 名通常是 `batch`，而且这些 Tensor 必须仍连接需要探测的 autograd graph，不能来自 observation
+或 detached logging state。这样 loss graph 的所有权留在下游装配层，callback 只负责梯度观测。
 
 `DebugCallback` 在调用方显式加入 callback 列表时启用。全部初始参数在 train start 检查一次；每次
 backward 后只重复检查可训练参数与现有梯度，因此冻结参数不会反复扫描。正常路径按 device/dtype 用 foreach norm 聚合后再做一次

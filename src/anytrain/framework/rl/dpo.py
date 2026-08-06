@@ -4,9 +4,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from anytrain.loss.abc import LossDetails
-
-from ._detail import detach_details
+from ._observation import emit, recommend, register
 
 
 class DPOLoss(nn.Module):
@@ -27,6 +25,7 @@ class DPOLoss(nn.Module):
         self.beta = float(beta)
         self.reference_free = bool(reference_free)
         self.label_smoothing = float(label_smoothing)
+        recommend(self)
 
     def forward(
         self,
@@ -36,7 +35,7 @@ class DPOLoss(nn.Module):
         ref_chosen_logps: Tensor | None = None,
         ref_rejected_logps: Tensor | None = None,
         validate: bool = True,
-    ) -> tuple[Tensor, LossDetails]:
+    ) -> Tensor:
         """Compute DPO loss.
 
         Set ``validate=False`` only when the caller has already established the
@@ -63,13 +62,16 @@ class DPOLoss(nn.Module):
             - F.logsigmoid(-logits) * self.label_smoothing
         )
         loss = losses.mean()
-        details = {
-            "policy_margin": policy_margin.mean(),
-            "reference_margin": reference_margin.mean(),
-            "preference_logit": logits.mean(),
-            "accuracy": (logits > 0).to(dtype=loss.dtype).mean(),
-        }
-        return loss, detach_details(details)
+        emit(
+            self,
+            {
+                "policy_margin": policy_margin.mean(),
+                "reference_margin": reference_margin.mean(),
+                "preference_logit": logits.mean(),
+                "accuracy": (logits > 0).to(dtype=loss.dtype).mean(),
+            },
+        )
+        return loss
 
 
 def _validate_pair(chosen: Tensor, rejected: Tensor, *, name: str) -> None:
@@ -83,6 +85,9 @@ def _validate_pair(chosen: Tensor, rejected: Tensor, *, name: str) -> None:
         raise TypeError(f"{name} log-probs must be real-valued.")
     if not bool(torch.isfinite(chosen).all()) or not bool(torch.isfinite(rejected).all()):
         raise ValueError(f"{name} log-probs must be finite.")
+
+
+register(DPOLoss)
 
 
 __all__ = ["DPOLoss"]

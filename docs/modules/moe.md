@@ -285,8 +285,8 @@ ratio. This is the only MoE-intermediate logging path in anytrain; direct
 
 `moe_loss()` runs after forward and is an explicit training objective, not a
 module intermediate. Downstream code records it through normal loss logging
-(`self.log`, `LossItemLoggerCallback`, or its own loss composition) rather than
-injecting it into the observation registry.
+(`self.log` or its own scalar loss composition) rather than injecting it into
+the observation registry.
 
 ## Limits
 

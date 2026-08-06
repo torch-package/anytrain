@@ -29,7 +29,7 @@ class _FeatureMatching(nn.Module):
         self,
         fake: Features,
         real: Features,
-    ) -> tuple[Tensor, dict[str, Tensor]]:
+    ) -> Tensor:
         validate_matching_features(fake, real, require_features=True)
         losses: list[Tensor] = []
         for fake_branch, real_branch in strict_zip(fake, real):
@@ -40,8 +40,7 @@ class _FeatureMatching(nn.Module):
                     raise ValueError("feature matching loss_fn must return a scalar tensor.")
                 losses.append(loss)
 
-        total = self._reduce(losses)
-        return total, {"feature": total}
+        return self._reduce(losses)
 
     def _reduce(self, losses: list[Tensor]) -> Tensor:
         if not losses:

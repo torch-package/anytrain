@@ -3,9 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from anytrain.loss.abc import LossDetails
-
-from ._detail import detach_details
+from ._observation import emit, recommend, register
 from .advantage import group_relative_advantages
 from .types import StepReduction
 
@@ -47,6 +45,7 @@ class ContinuousGRPOLoss(nn.Module):
         self.eps = float(eps)
         self.adv_clip_max = None if adv_clip_max is None else float(adv_clip_max)
         self.step_reduction: StepReduction = step_reduction
+        recommend(self)
 
     def forward(
         self,
@@ -58,7 +57,7 @@ class ContinuousGRPOLoss(nn.Module):
         kl_values: Tensor | None = None,
         group_mask: Tensor | None = None,
         validate: bool = True,
-    ) -> tuple[Tensor, LossDetails]:
+    ) -> Tensor:
         """Compute continuous GRPO loss.
 
         Set ``validate=False`` only for batches whose tensor contracts have
@@ -122,30 +121,33 @@ class ContinuousGRPOLoss(nn.Module):
         total = pg_loss + policy_step_logps.new_tensor(self.kl_beta) * kl_loss
         selected_rewards = rewards.masked_select(candidate_mask)
         selected_advantages = advantages.masked_select(candidate_mask)
-        details = {
-            "pg_loss": pg_loss,
-            "kl_loss": kl_loss,
-            "reward_mean": selected_rewards.mean(),
-            "reward_std": selected_rewards.std(unbiased=False),
-            "advantage_mean": selected_advantages.mean(),
-            "approx_kl": 0.5
-            * _reduce_step_values(
-                log_ratio.square(),
-                selected_step_mask,
-                candidate_mask,
-                self.step_reduction,
-                validate=validate,
-            ),
-            "clip_fraction": (
-                (torch.abs(ratio - 1.0) > self.clip_range)
-                .masked_select(selected_step_mask)
-                .to(dtype=total.dtype)
-                .mean()
-            ),
-            "step_count": selected_step_mask.to(dtype=total.dtype).sum(),
-            "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
-        }
-        return total, detach_details(details)
+        emit(
+            self,
+            {
+                "pg_loss": pg_loss,
+                "kl_loss": kl_loss,
+                "reward_mean": selected_rewards.mean(),
+                "reward_std": selected_rewards.std(unbiased=False),
+                "advantage_mean": selected_advantages.mean(),
+                "approx_kl": 0.5
+                * _reduce_step_values(
+                    log_ratio.square(),
+                    selected_step_mask,
+                    candidate_mask,
+                    self.step_reduction,
+                    validate=validate,
+                ),
+                "clip_fraction": (
+                    (torch.abs(ratio - 1.0) > self.clip_range)
+                    .masked_select(selected_step_mask)
+                    .to(dtype=total.dtype)
+                    .mean()
+                ),
+                "step_count": selected_step_mask.to(dtype=total.dtype).sum(),
+                "candidate_count": candidate_mask.to(dtype=total.dtype).sum(),
+            },
+        )
+        return total
 
 
 def _validate_step_tensors(policy: Tensor, old: Tensor, step_mask: Tensor) -> None:
@@ -244,6 +246,9 @@ def _reduce_step_values(
             raise ValueError("group_mask must select at least one candidate.")
         return (trajectory_value * candidate_weights).sum() / candidate_weights.sum().clamp_min(1)
     raise ValueError("step_reduction must be 'step_mean' or 'trajectory_mean'.")
+
+
+register(ContinuousGRPOLoss)
 
 
 __all__ = ["ContinuousGRPOLoss"]

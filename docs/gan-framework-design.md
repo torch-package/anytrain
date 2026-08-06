@@ -16,15 +16,16 @@ from anytrain.framework.gan import GAN, Loss, Preset, Reduction
 `Loss` 持有 discriminator，提供：
 
 ```python
-d_loss, d_details = loss_fn.discriminator_loss(fake, real)
-g_loss, g_details = loss_fn.generator_loss(fake, real)
+d_loss = loss_fn.discriminator_loss(fake, real)
+g_loss = loss_fn.generator_loss(fake, real)
 ```
 
-返回约定沿用 loss 层：
+返回约定沿用 scalar-only loss 层：
 
-- 主 loss 是 0-d `torch.Tensor`。
-- details 是 `dict[str, float | Tensor]`。
-- details tensor 返回前会 detach，只用于日志。
+- 每个入口固定返回一个 0-D `torch.Tensor`。
+- `discriminator_loss()` / `generator_loss()` 是调用统一
+  `forward(..., objective=...)` 的兼容 wrapper。
+- logging-only 分量不进入返回值，通过 module observation registry 声明和发出。
 
 ## 非目标
 
@@ -113,8 +114,8 @@ loss_fn = Loss(
     feature_weight=1.0,
 )
 
-d_loss, d_details = loss_fn.discriminator_loss(fake, real)
-g_loss, g_details = loss_fn.generator_loss(fake, real)
+d_loss = loss_fn.discriminator_loss(fake, real)
+g_loss = loss_fn.generator_loss(fake, real)
 ```
 
 也可以用内置 preset 创建 discriminator：
@@ -140,10 +141,19 @@ loss_fn = Loss.from_preset(
 `DACDiscriminator`。preset 分发层不展开具体判别器参数，避免后续新增 preset 时让
 `Loss.from_preset()` 的签名持续膨胀。
 
-details：
+`Loss` 在定义旁注册以下推荐 observation：
 
-- discriminator: `real`, `fake`, 可选 `gp`。
-- generator: `adv`, 可选 `feature` 和 `feature_weight`。
+- `OutputObservation("discriminator/loss")`：D objective 的总 scalar。
+- `ForwardEvent("discriminator/components")`：`real`、`fake`。
+- `ForwardEvent("discriminator/gradient_penalty")`：启用 GP 时的 `gp`。
+- `OutputObservation("generator/loss")`：G objective 的总 scalar。
+- `ForwardEvent("generator/components")`：`adv`。
+- `ForwardEvent("generator/feature_matching")`：启用 feature matching 时的 `feature`。
+- `StateObservation("weights")`：只读记录 `feature_weight` 和解析后的 `gp_weight`。
+
+events 中的 tensor 在发出时 detach，只用于日志，不保存到 module 属性；
+weights collector 只读取 module 已有配置，不缓存 forward tensor。未挂
+`ObservationCallback` 时，第一次 training + grad-enabled 调用会提示推荐观测入口。
 
 ## GAN 类型和公式
 
@@ -258,8 +268,10 @@ branch，最终得到每个样本一个 score。
 
 ```python
 loss = real_loss + fake_loss + gp_weight * gp
-details = {"real": real_loss, "fake": fake_loss, "gp": gp}
 ```
+
+`real_loss`、`fake_loss` 和 `gp` 作为 observation event 发出；只有加权后的 `loss`
+进入训练返回值。
 
 ## Lightning 接线边界
 
@@ -274,13 +286,13 @@ class CodecModule(pl.LightningModule):
         real = batch.waveform
         fake = self.model(real)
 
-        d_loss, d_details = self.gan.discriminator_loss(fake, real)
+        d_loss = self.gan.discriminator_loss(fake, real)
         opt_d.zero_grad()
         self.manual_backward(d_loss)
         opt_d.step()
 
-        rec_loss, rec_details = self.rec_loss(fake, real)
-        g_gan_loss, g_gan_details = self.gan.generator_loss(fake, real)
+        rec_loss = self.rec_loss(fake, real)
+        g_gan_loss = self.gan.generator_loss(fake, real)
         g_loss = rec_loss + self.gan_weight * g_gan_loss
 
         opt_g.zero_grad()
@@ -291,6 +303,10 @@ class CodecModule(pl.LightningModule):
 这里的 `self.gan_weight` 属于任务目标组合权重，不属于 `Loss` 内部。重建
 loss、commitment loss、adversarial loss 如何组合，应由下游 task module 或
 `LossGroup` 显式决定。
+
+每次 D/G forward 必须覆盖本次 objective 的完整 reduction domain。不同 shard、rank
+或 microbatch 的有效 count 不同时，事后平均多个已归约 scalar 不能恢复精确结果；调用方
+必须提供完整 domain，或在 loss 内实现所需的全局 normalizer。
 
 后续如果多个项目复用同一套 manual optimization 模式，可以新增：
 
@@ -335,6 +351,7 @@ discriminator = DACDiscriminator(in_channels=1)
 - feature matching 对 real features detach，fake features 保留梯度。
 - feature matching 缺少 `real`、没有 feature maps 或结构不匹配时抛错。
 - WGAN 默认启用 GP，非 WGAN 默认不启用 GP。
+- D/G objective 固定返回 0-D Tensor，component diagnostics 通过 registry event 发出。
 - `Loss.from_preset(Preset.DAC)` 的最小 forward / D loss / G loss smoke。
 
 ## 后续
