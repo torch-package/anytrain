@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import inspect
 import warnings
-from dataclasses import dataclass
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from weakref import WeakKeyDictionary, WeakSet
 
 import torch
@@ -11,9 +13,11 @@ from torch.utils.hooks import RemovableHandle
 
 from ._types import (
     BackwardObservation,
-    ForwardObservation,
+    ForwardEvent,
+    ObservationResult,
     ObservationSpec,
-    PollObservation,
+    OutputObservation,
+    StateObservation,
 )
 
 
@@ -25,6 +29,7 @@ class RecommendationWarning(UserWarning):
 class _Runtime:
     claims: int = 0
     hint: RemovableHandle | None = None
+    event_sinks: dict[str, OrderedDict[int, EventSink]] = field(default_factory=dict)
 
 
 class _RecommendationHook:
@@ -32,8 +37,16 @@ class _RecommendationHook:
         recommendation_hint(module, inputs)
 
 
-_SPEC_TYPES = (ForwardObservation, BackwardObservation, PollObservation)
-_RECOMMENDATION_TYPES = (ForwardObservation, PollObservation)
+EventSink = Callable[[nn.Module, ObservationResult], bool]
+
+
+_SPEC_TYPES = (
+    OutputObservation,
+    BackwardObservation,
+    StateObservation,
+    ForwardEvent,
+)
+_RECOMMENDATION_TYPES = (OutputObservation, StateObservation, ForwardEvent)
 _runtimes: WeakKeyDictionary[nn.Module, _Runtime] = WeakKeyDictionary()
 _warned_types: WeakSet[type[nn.Module]] = WeakSet()
 
@@ -83,6 +96,46 @@ class _Registry:
 
 
 registry = _Registry()
+
+
+def emit(module: nn.Module, name: str, value: ObservationResult) -> None:
+    """Publish one declared local forward value to attached observers.
+
+    Every rank calls this function as part of the same module forward. With no
+    attached observer it performs no tensor conversion and retains no value.
+    """
+
+    if not isinstance(module, nn.Module):
+        raise TypeError("observation.emit requires an nn.Module.")
+    if torch.compiler.is_compiling():
+        return
+    runtime = _runtimes.get(module)
+    if runtime is None or not any(runtime.event_sinks.values()):
+        return
+    spec = _event_spec(module, name)
+    sinks = runtime.event_sinks.get(spec.name.strip("/"))
+    if not sinks:
+        return
+    for sink_id, sink in tuple(sinks.items()):
+        if not sink(module, value):
+            sinks.pop(sink_id, None)
+
+
+def subscribe_event(
+    module: nn.Module,
+    spec: ForwardEvent,
+    sink: EventSink,
+) -> RemovableHandle:
+    declared = _event_spec(module, spec.name)
+    if declared is not spec:
+        raise RuntimeError("forward event subscription does not match registry declaration.")
+    if not callable(sink):
+        raise TypeError("forward event sink must be callable.")
+    runtime = _runtime(module)
+    sinks = runtime.event_sinks.setdefault(spec.name.strip("/"), OrderedDict())
+    handle = RemovableHandle(sinks)
+    sinks[handle.id] = sink
+    return handle
 
 
 def claim(
@@ -154,7 +207,11 @@ def _validated_specs(values: tuple[ObservationSpec, ...]) -> tuple[ObservationSp
     for value in result:
         if not isinstance(value, _SPEC_TYPES):
             raise TypeError("module observation specs must contain ObservationSpec objects.")
-        if inspect.ismethod(value.collect) and isinstance(value.collect.__self__, nn.Module):
+        if (
+            not isinstance(value, ForwardEvent)
+            and inspect.ismethod(value.collect)
+            and isinstance(value.collect.__self__, nn.Module)
+        ):
             raise TypeError(
                 "observation collectors must not be bound to an nn.Module instance."
             )
@@ -165,6 +222,20 @@ def _validated_specs(values: tuple[ObservationSpec, ...]) -> tuple[ObservationSp
             )
         normalized.add(name)
     return result
+
+
+def _event_spec(module: nn.Module, name: str) -> ForwardEvent:
+    if not isinstance(module, nn.Module):
+        raise TypeError("observation.emit requires an nn.Module.")
+    if not isinstance(name, str) or not name.strip("/"):
+        raise ValueError("forward event name must be a non-empty string.")
+    normalized = name.strip("/")
+    for spec in registry.specs(module):
+        if isinstance(spec, ForwardEvent) and spec.name.strip("/") == normalized:
+            return spec
+    raise ValueError(
+        f"{type(module).__qualname__} does not declare ForwardEvent {normalized!r}."
+    )
 
 
 def _install_recommendation(
@@ -218,5 +289,6 @@ def _suppress_descendant_hints(module: nn.Module) -> None:
 
 __all__ = [
     "RecommendationWarning",
+    "emit",
     "registry",
 ]

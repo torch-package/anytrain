@@ -672,7 +672,7 @@ def _collect_observation(module: nn.Module) -> dict[str, observation.Observation
 observation.registry.register(
     AdaptiveDirichletTempering,
     (
-        observation.PollObservation(
+        observation.StateObservation(
             name="adt",
             collect=_collect_observation,
             recommended=True,

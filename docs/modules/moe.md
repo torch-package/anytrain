@@ -276,7 +276,7 @@ partition inputs, dispatch experts, or emit Lightning logs.
 ## Auxiliary Loss and Logging
 
 MoE forward returns `MoEOutput` only. Downstream code composes task loss and
-MoE aux losses explicitly. `MoE` registers one forward routing observation in
+MoE aux losses explicitly. `MoE` registers one routing `OutputObservation` in
 the shared `anytrain.observation` registry. `ObservationCallback` discovers the
 module from the `pl_module` tree and records effective experts plus scalar
 summaries for usage, gate probability, actual route weight, tokens, and dropped

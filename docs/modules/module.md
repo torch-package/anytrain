@@ -14,9 +14,16 @@
 
 registry + `ObservationCallback` 是 anytrain 内 module 中间量 logging 的唯一入口。不得再为具体 module 新增
 logger callback、monitor adapter、training-output 自动发现或额外 forward。声明必须只读，不修改 output/state、
-不保留 autograd graph，并使用稳定 name/schema：scalar → `Curve`，明确的一维连续 view → `Distribution`，
-离散 codes → `Bins`；多维连续值必须先由 module 选择有语义的 summary/view。module aux loss 属 task/loss
-组合，不作为中间量自动接入训练目标或日志。
+不保留 autograd graph，并按来源选择：module 自然持有的跨 forward 状态用 `StateObservation`；能从
+inputs/kwargs/output 提取的调用边界值用 `OutputObservation`；forward 局部量用 `ForwardEvent` 并在产生处
+调用 `observation.emit()`。不得为了 logging 增加 `self.last_*` 缓存。值类型使用稳定 name/schema：scalar →
+`Curve`，明确的一维连续 view → `Distribution`，离散 codes → `Bins`；二维图使用 `Heatmap`，但 module 必须
+先显式选择 sample/head/crop，任意高维连续值仍不得自动 flatten。module aux loss 属 task/loss 组合，不作为
+中间量自动接入训练目标或日志。
+
+observation 不能改变 forward 输出、autograd graph 或各 rank 的 kernel 选择。尤其 attention map 只有在模型
+本身已经物化权重时才能 emit；如果 flash/SDPA 路径不返回 map，是否切换 eager attention 必须由所有 rank
+一致的显式模型配置决定，不能由 callback 是否启用来决定。
 
 ## 当前状态
 
@@ -69,7 +76,7 @@ variance、alpha 和 temperature 汇总成稳定数量的 scalar metric key，�
 `alpha_std`、`temperature_min` 和 `temperature_max`。gate utilization / effective experts 必须由
 MoE/gate routing 日志输出，ADT stats metrics 不提供 usage logging 入口。
 `diagnostics()` 直接返回同一组默认 ADT-only scalar summary，`stats()` 返回结构化 `ADTStats`。
-`AdaptiveDirichletTempering` 在 module 定义旁注册 `PollObservation("adt", ...)`；
+`AdaptiveDirichletTempering` 在 module 定义旁注册 `StateObservation("adt", ...)`；
 `ObservationCallback` 在 render step 读取 variance、alpha 和 temperature 的 mean/std/min/max，不再存在
 ADT 专用 callback 或 monitor adapter。ADT 内部统计本身已经是运行期 EMA，因此这些 Curve 不再叠加第二层
 observation EMA。
@@ -79,7 +86,7 @@ observation EMA。
 
 - Token MoE：`MoE(..., expert=linear, weight=(N, out, in), top_k=2)`；需要对齐某个 `nn.Linear` 时可用 `expand_expert` 便利构造。
 - Dynamic conv：`MoE(..., expert=Conv1dExpert(...), weight=..., grid=Grid1d(...), top_k=None)`；对齐某个 `nn.Conv1d` 时可用 `expand_expert`，自定义 cell 算子用 `CallableExpert`（native-resolution）或自实现 `Expert.bind`。
-- `MoE` 在定义旁注册 forward routing observation；普通 `moe(...)` 调用由 `ObservationCallback` 记录
+- `MoE` 在定义旁注册 `OutputObservation` routing observation；普通 `moe(...)` 调用由 `ObservationCallback` 记录
   effective experts、usage、gate probability、route weight、tokens 和 dropped ratio 的 scalar summary。
   `moe_loss()` 仍是显式 helper，MoE forward 不自动修改训练目标；aux loss 由下游 loss/self.log 处理。
 
@@ -165,7 +172,8 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
   统计 codebook 使用率、perplexity、dead code ratio 和 active ratio；`quantization_usage_metrics()`
   和 `quantization_loss_metrics()` 负责生成稳定相对 metric key。它们不依赖 Lightning，也不会触发
   quantizer forward；需要手工统计时由调用方直接使用这些纯 helper。
-- 六个公开 quantizer 都在 class 定义旁通过 `anytrain.observation.registry` 声明推荐 forward observation。普通
+- 六个公开 quantizer 都在 class 定义旁通过 `anytrain.observation.registry` 声明推荐
+  `OutputObservation`。普通
   `quantizer(...)` 调用可由 `ObservationCallback` 自动记录 quantization loss curve，以及 codes
   的 step/EMA bins、occupied/dead、entropy、perplexity 和 active ratio；residual 外层声明覆盖内部 stage，
   避免重复统计。被观测的训练路径必须走 `quantizer(...)`；直接调用 `.quantize()` 或 `.forward()`

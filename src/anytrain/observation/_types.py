@@ -110,6 +110,37 @@ class Bins:
                 raise ValueError("Bins.group_names must be unique after normalization.")
 
 
+@dataclass(frozen=True, eq=False)
+class Heatmap:
+    """One semantically selected two-dimensional continuous view.
+
+    The module must select sample, head, and any other structured axes before
+    constructing the heatmap. ``value_range=None`` scales each rendered image
+    by its finite minimum and maximum; a fixed range keeps colors comparable
+    across optimizer steps.
+    """
+
+    values: Tensor
+    value_range: tuple[float, float] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.values, Tensor):
+            raise TypeError("Heatmap.values must be a Tensor.")
+        if self.values.ndim != 2:
+            raise ValueError(
+                "Heatmap.values must be 2D after the module selects all structured "
+                f"axes, got shape {tuple(self.values.shape)}."
+            )
+        if not self.values.dtype.is_floating_point:
+            raise TypeError("Heatmap.values must use a floating dtype.")
+        if any(size <= 0 for size in self.values.shape):
+            raise ValueError("Heatmap.values dimensions must be non-empty.")
+        if self.value_range is not None:
+            lower, upper = _value_range(self.value_range)
+            if upper <= lower:
+                raise ValueError("Heatmap.value_range must be strictly increasing.")
+
+
 @dataclass(frozen=True)
 class EMAHistory:
     """Exponentially decayed history measured in optimizer-step half-life."""
@@ -125,9 +156,9 @@ class EMAHistory:
             raise ValueError("EMAHistory.half_life_steps must be finite and positive.")
 
 
-Observation = Union[Curve, Distribution, Bins]
+Observation = Union[Curve, Distribution, Bins, Heatmap]
 ObservationResult = Union[Observation, Mapping[str, Observation], None]
-ForwardCollector = Callable[
+OutputCollector = Callable[
     [nn.Module, tuple[Any, ...], Mapping[str, Any], object],
     ObservationResult,
 ]
@@ -135,7 +166,7 @@ BackwardCollector = Callable[
     [nn.Module, tuple[Optional[Tensor], ...]],
     ObservationResult,
 ]
-PollCollector = Callable[[nn.Module], ObservationResult]
+StateCollector = Callable[[nn.Module], ObservationResult]
 
 
 class BackwardObservationWarning(UserWarning):
@@ -143,9 +174,9 @@ class BackwardObservationWarning(UserWarning):
 
 
 @dataclass(frozen=True)
-class ForwardObservation:
+class OutputObservation:
     name: str
-    collect: ForwardCollector
+    collect: OutputCollector
     history: EMAHistory | None = None
     recommended: bool = False
     covers_descendants: bool = False
@@ -173,9 +204,9 @@ class BackwardObservation:
 
 
 @dataclass(frozen=True)
-class PollObservation:
+class StateObservation:
     name: str
-    collect: PollCollector
+    collect: StateCollector
     history: EMAHistory | None = None
     recommended: bool = False
     covers_descendants: bool = False
@@ -184,7 +215,31 @@ class PollObservation:
         _spec(self.name, self.collect)
 
 
-ObservationSpec = Union[ForwardObservation, BackwardObservation, PollObservation]
+@dataclass(frozen=True)
+class ForwardEvent:
+    """A named local value published explicitly from ``module.forward``."""
+
+    name: str
+    history: EMAHistory | None = None
+    recommended: bool = False
+    covers_descendants: bool = False
+
+    def __post_init__(self) -> None:
+        _name(self.name)
+
+
+# Compatibility aliases. The canonical names describe where the value lives:
+# module state or the observable forward input/output boundary.
+ForwardObservation = OutputObservation
+PollObservation = StateObservation
+
+
+ObservationSpec = Union[
+    OutputObservation,
+    BackwardObservation,
+    StateObservation,
+    ForwardEvent,
+]
 
 
 def _edges(values: tuple[float, ...]) -> None:
@@ -213,11 +268,29 @@ def _sizes(values: tuple[int, ...]) -> tuple[int, ...]:
     return values
 
 
+def _value_range(values: tuple[float, float]) -> tuple[float, float]:
+    if not isinstance(values, tuple) or len(values) != 2:
+        raise TypeError("Heatmap.value_range must be a pair of real numbers.")
+    result: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise TypeError("Heatmap.value_range must contain real numbers.")
+        current = float(value)
+        if not math.isfinite(current):
+            raise ValueError("Heatmap.value_range must contain finite values.")
+        result.append(current)
+    return result[0], result[1]
+
+
 def _spec(name: str, collect: object) -> None:
-    if not isinstance(name, str) or not name.strip("/"):
-        raise ValueError("observation name must be a non-empty string.")
+    _name(name)
     if not callable(collect):
         raise TypeError("observation collector must be callable.")
+
+
+def _name(name: str) -> None:
+    if not isinstance(name, str) or not name.strip("/"):
+        raise ValueError("observation name must be a non-empty string.")
 
 
 __all__ = [
@@ -227,9 +300,11 @@ __all__ = [
     "Curve",
     "Distribution",
     "EMAHistory",
-    "ForwardObservation",
+    "ForwardEvent",
+    "Heatmap",
     "Observation",
     "ObservationResult",
     "ObservationSpec",
-    "PollObservation",
+    "OutputObservation",
+    "StateObservation",
 ]

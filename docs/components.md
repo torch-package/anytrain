@@ -25,8 +25,8 @@ core 提供：
 - `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
 - `ObservationCallback`：module 中间量 logging 的唯一 transport。它从
-  `anytrain.observation.registry` 自动发现 concrete module 的只读声明，通过 forward/poll 记录 Curve，
-  以及 Distribution/Bins 的 optimizer-step 和 EMA histogram；默认只在 global rank 0 注册。ADT、MoE
+  `anytrain.observation.registry` 自动发现 concrete module 的只读 State/Output/Event 声明，记录 Curve、
+  Heatmap，以及 Distribution/Bins 的 optimizer-step 和 EMA histogram；默认只在 global rank 0 注册。ADT、MoE
   和公开 quantizer 已声明推荐 observation。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并
   建议改用 `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。`every_n_steps` 控制统一输出间隔，
   每次 render 同时记录 interval 平均的 `module/observation_time`。

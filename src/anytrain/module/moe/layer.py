@@ -309,7 +309,7 @@ def _collect_observation(
 observation.registry.register(
     MoE,
     (
-        observation.ForwardObservation(
+        observation.OutputObservation(
             name="routing",
             collect=_collect_observation,
             recommended=True,

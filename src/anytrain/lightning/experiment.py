@@ -27,6 +27,17 @@ class Audio(Protocol):
     ) -> object: ...
 
 
+class Image(Protocol):
+    def add_image(
+        self,
+        tag: str,
+        image: Tensor,
+        global_step: int,
+        *,
+        dataformats: str,
+    ) -> object: ...
+
+
 class Histogram(Protocol):
     def add_histogram(self, tag: str, values: Tensor, global_step: int) -> object: ...
 
@@ -68,6 +79,13 @@ def audio(trainer: Trainer) -> Audio | None:
     return cast(Audio, value)
 
 
+def image(trainer: Trainer) -> Image | None:
+    value = _experiment(trainer)
+    if value is None or not callable(getattr(value, "add_image", None)):
+        return None
+    return cast(Image, value)
+
+
 def histogram(trainer: Trainer) -> Histogram | None:
     value = _experiment(trainer)
     if value is None or not callable(getattr(value, "add_histogram", None)):
@@ -90,11 +108,13 @@ __all__ = [
     "Audio",
     "Histogram",
     "HistogramRaw",
+    "Image",
     "Scalar",
     "Text",
     "audio",
     "histogram",
     "histogram_raw",
+    "image",
     "scalar",
     "text",
 ]

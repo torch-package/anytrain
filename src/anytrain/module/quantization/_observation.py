@@ -6,7 +6,7 @@ from typing import Any, Protocol, TypeVar, cast
 from torch import nn
 
 from anytrain import observation
-from anytrain.observation import Bins, Curve, EMAHistory, ForwardObservation
+from anytrain.observation import Bins, Curve, EMAHistory, OutputObservation
 
 from .output import QuantizeOutput
 
@@ -69,14 +69,14 @@ def collect_loss(
 
 
 _QUANTIZATION_OBSERVATIONS = (
-    ForwardObservation(
+    OutputObservation(
         name="quantization",
         collect=collect_codes,
         history=EMAHistory(half_life_steps=1_000),
         recommended=True,
         covers_descendants=True,
     ),
-    ForwardObservation(
+    OutputObservation(
         name="quantization/loss",
         collect=collect_loss,
     ),

@@ -1,4 +1,4 @@
-from ._binding import RecommendationWarning, registry
+from ._binding import RecommendationWarning, emit, registry
 from ._types import (
     BackwardObservation,
     BackwardObservationWarning,
@@ -6,12 +6,17 @@ from ._types import (
     Curve,
     Distribution,
     EMAHistory,
-    ForwardObservation,
+    ForwardEvent,
+    Heatmap,
     Observation,
     ObservationResult,
     ObservationSpec,
-    PollObservation,
+    OutputObservation,
+    StateObservation,
 )
+
+ForwardObservation = OutputObservation
+PollObservation = StateObservation
 
 __all__ = [
     "BackwardObservation",
@@ -20,11 +25,14 @@ __all__ = [
     "Curve",
     "Distribution",
     "EMAHistory",
-    "ForwardObservation",
+    "ForwardEvent",
+    "Heatmap",
     "Observation",
     "ObservationResult",
     "ObservationSpec",
-    "PollObservation",
+    "OutputObservation",
     "RecommendationWarning",
+    "StateObservation",
+    "emit",
     "registry",
 ]

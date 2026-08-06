@@ -22,13 +22,15 @@ from anytrain.observation import (
     Bins,
     Curve,
     Distribution,
-    ForwardObservation,
+    ForwardEvent,
+    Heatmap,
     Observation,
     ObservationResult,
     ObservationSpec,
-    PollObservation,
+    OutputObservation,
+    StateObservation,
 )
-from anytrain.observation._binding import claim, release
+from anytrain.observation._binding import claim, release, subscribe_event
 
 from .. import _capability, experiment
 from ._naming import join_tag, unique_tag_items, validate_tag_part
@@ -114,6 +116,81 @@ class _CurveState:
         self.pending_count = self.pending_count.to(device)
         self.last_sum = self.last_sum.to(device)
         self.last_count = self.last_count.to(device)
+
+
+@dataclass(frozen=True)
+class _HeatmapSchema:
+    shape: tuple[int, int]
+    dtype: str
+    value_range: tuple[float, float] | None
+
+
+class _HeatmapState:
+    def __init__(
+        self,
+        value: Heatmap,
+        *,
+        keep_image: bool,
+        max_elements: int,
+    ) -> None:
+        self.schema = _heatmap_schema(value)
+        self.pending = False
+        self.pending_schema: _HeatmapSchema | None = None
+        self.pending_image: Tensor | None = None
+        self.pending_error: tuple[Literal["value", "runtime"], str] | None = None
+        self.update(
+            value,
+            keep_image=keep_image,
+            max_elements=max_elements,
+        )
+
+    def update(
+        self,
+        value: Heatmap,
+        *,
+        keep_image: bool,
+        max_elements: int,
+    ) -> None:
+        # Keep the first emission in an optimizer step. This is deterministic
+        # under gradient accumulation and ignores backward checkpoint replay.
+        if self.pending:
+            return
+        schema = _heatmap_schema(value)
+        self.pending = True
+        self.pending_schema = schema
+        if schema != self.schema:
+            self.pending_error = (
+                "value",
+                "observation heatmap schema changed during training.",
+            )
+            return
+        if value.values.numel() > max_elements:
+            self.pending_error = (
+                "value",
+                "observation heatmap contains "
+                f"{value.values.numel()} elements, exceeding "
+                f"max_heatmap_elements={max_elements}; select a smaller semantic view "
+                "inside the module.",
+            )
+            return
+        if not keep_image:
+            return
+        try:
+            self.pending_image = _heatmap_image(value)
+        except Exception as error:
+            self.pending_error = (
+                "value" if isinstance(error, ValueError) else "runtime",
+                f"heatmap image materialization failed: {type(error).__name__}: {error}",
+            )
+
+    def value(self) -> Tensor | None:
+        return self.pending_image
+
+    def discard_pending(self) -> None:
+        self.pending = False
+        self.pending_schema = None
+        self.pending_image = None
+        self.pending_error = None
 
 
 class _HistogramState:
@@ -344,7 +421,7 @@ class _StateOwner:
 
 @dataclass
 class _StateEntry:
-    state: _CurveState | _HistogramState
+    state: _CurveState | _HeatmapState | _HistogramState
     tag: str
     owner: _StateOwner
 
@@ -396,6 +473,28 @@ class _ForwardCollectorHook:
         callback._forward(collector, module, inputs, kwargs, output)
 
 
+class _ForwardEventSink:
+    def __init__(
+        self,
+        callback: ObservationCallback,
+        module: nn.Module,
+        collector_id: int,
+    ) -> None:
+        self.callback: ReferenceType[ObservationCallback] = ref(callback)
+        self.module_id = id(module)
+        self.collector_id = collector_id
+
+    def __call__(self, module: nn.Module, value: ObservationResult) -> bool:
+        callback = self.callback()
+        if callback is None or id(module) != self.module_id:
+            return False
+        collector = callback._collectors_by_id.get(self.collector_id)
+        if collector is None:
+            return False
+        callback._event(collector, value)
+        return True
+
+
 class ObservationCallback(pl.Callback):
     """Discover registered module observations and log current/EMA statistics."""
 
@@ -407,6 +506,7 @@ class ObservationCallback(pl.Callback):
         half_life_steps: float | None = None,
         sync_distributed: bool = False,
         max_dense_bins: int = 1_000_000,
+        max_heatmap_elements: int = 65_536,
     ) -> None:
         super().__init__()
         if every_n_steps is not None:
@@ -422,6 +522,10 @@ class ObservationCallback(pl.Callback):
             raise TypeError("sync_distributed must be bool.")
         self.sync_distributed = sync_distributed
         self.max_dense_bins = _positive_int(max_dense_bins, "max_dense_bins")
+        self.max_heatmap_elements = _positive_int(
+            max_heatmap_elements,
+            "max_heatmap_elements",
+        )
         self._collectors: list[_Collector] = []
         self._collectors_by_id: dict[int, _Collector] = {}
         self._handles: list[RemovableHandle] = []
@@ -491,7 +595,8 @@ class ObservationCallback(pl.Callback):
         self._last_global_step = step
         self._restored_last_global_step = None
         for entry in self._states.values():
-            entry.state._to(pl_module.device)
+            if not isinstance(entry.state, _HeatmapState):
+                entry.state._to(pl_module.device)
 
     def on_train_batch_start(
         self,
@@ -545,7 +650,7 @@ class ObservationCallback(pl.Callback):
             state = self._states[key].state
             if isinstance(state, _CurveState):
                 state.finalize(trainer, sync_distributed=self.sync_distributed)
-            else:
+            elif isinstance(state, _HistogramState):
                 state.finalize(
                     trainer,
                     step=step,
@@ -621,6 +726,7 @@ class ObservationCallback(pl.Callback):
             "half_life_steps": self.half_life_steps,
             "sync_distributed": self.sync_distributed,
             "max_dense_bins": self.max_dense_bins,
+            "max_heatmap_elements": self.max_heatmap_elements,
             "last_global_step": self._last_global_step,
             "histograms": histograms,
             "owners": owners,
@@ -731,12 +837,24 @@ class ObservationCallback(pl.Callback):
 
     def _attach_collector(self, collector: _Collector) -> None:
         spec = collector.spec
-        if isinstance(spec, ForwardObservation):
+        if isinstance(spec, OutputObservation):
             handle = collector.module.register_forward_hook(
                 _ForwardCollectorHook(self, collector.module, collector.identifier),
                 with_kwargs=True,
             )
             self._handles.append(handle)
+        elif isinstance(spec, ForwardEvent):
+            self._handles.append(
+                subscribe_event(
+                    collector.module,
+                    spec,
+                    _ForwardEventSink(
+                        self,
+                        collector.module,
+                        collector.identifier,
+                    ),
+                )
+            )
 
     def _forward(
         self,
@@ -748,7 +866,7 @@ class ObservationCallback(pl.Callback):
     ) -> None:
         if not self._forward_active:
             return
-        spec = cast(ForwardObservation, collector.spec)
+        spec = cast(OutputObservation, collector.spec)
         if spec.history is None and not self._render_active:
             return
         started_at = self._start_observation_timer()
@@ -757,10 +875,26 @@ class ObservationCallback(pl.Callback):
         finally:
             self._add_observation_time(started_at)
 
+    def _event(
+        self,
+        collector: _Collector,
+        value: ObservationResult,
+    ) -> None:
+        if not self._forward_active:
+            return
+        spec = cast(ForwardEvent, collector.spec)
+        if spec.history is None and not self._render_active:
+            return
+        started_at = self._start_observation_timer()
+        try:
+            self._record(collector, value)
+        finally:
+            self._add_observation_time(started_at)
+
     def _poll(self) -> None:
         for collector in self._collectors:
             spec = collector.spec
-            if isinstance(spec, PollObservation):
+            if isinstance(spec, StateObservation):
                 if spec.history is None and not self._render_active:
                     continue
                 self._record(collector, spec.collect(collector.module))
@@ -768,7 +902,7 @@ class ObservationCallback(pl.Callback):
     def _record(self, collector: _Collector, result: ObservationResult) -> None:
         if result is None:
             return
-        if isinstance(result, (Curve, Distribution, Bins)):
+        if isinstance(result, (Curve, Distribution, Bins, Heatmap)):
             values: Mapping[str, Observation] = {"value": result}
         elif isinstance(result, Mapping):
             values = result
@@ -778,8 +912,16 @@ class ObservationCallback(pl.Callback):
             values.items(),
             name="observation value name",
         ):
-            if not isinstance(value, (Curve, Distribution, Bins)):
+            if not isinstance(value, (Curve, Distribution, Bins, Heatmap)):
                 raise TypeError("observation mapping values must be Observation objects.")
+            if isinstance(value, Heatmap):
+                if collector.spec.history is not None:
+                    raise ValueError(
+                        "Heatmap observations do not support EMAHistory; declare a "
+                        "separate no-history observation."
+                    )
+                if not self._render_active:
+                    continue
             key = join_tag(collector.state_prefix, item)
             tag = join_tag(self.tag, collector.tag_prefix, item)
             self._update_state(
@@ -811,6 +953,28 @@ class ObservationCallback(pl.Callback):
                 raise TypeError(f"observation {key!r} changed value type.")
             self._bind_state_identity(key, tag, entry.state, owner)
             entry.state.update(value)
+            self._emitted_keys.add(key)
+            return
+
+        if isinstance(value, Heatmap):
+            if entry is None:
+                state = _HeatmapState(
+                    value,
+                    keep_image=self._warning_rank,
+                    max_elements=self.max_heatmap_elements,
+                )
+                self._bind_state_identity(key, tag, state, owner)
+                self._states[key] = _StateEntry(state, tag, owner)
+                self._emitted_keys.add(key)
+                return
+            if not isinstance(entry.state, _HeatmapState):
+                raise TypeError(f"observation {key!r} changed value type.")
+            self._bind_state_identity(key, tag, entry.state, owner)
+            entry.state.update(
+                value,
+                keep_image=self._warning_rank,
+                max_elements=self.max_heatmap_elements,
+            )
             self._emitted_keys.add(key)
             return
 
@@ -860,7 +1024,7 @@ class ObservationCallback(pl.Callback):
         self,
         key: str,
         tag: str,
-        state: _CurveState | _HistogramState,
+        state: _CurveState | _HeatmapState | _HistogramState,
         owner: _StateOwner,
     ) -> None:
         entry = self._states.get(key)
@@ -893,6 +1057,38 @@ class ObservationCallback(pl.Callback):
         started_at: float | None,
     ) -> None:
         metrics: dict[str, Tensor] = {}
+        has_pending_heatmap = any(
+            isinstance(entry.state, _HeatmapState) and entry.state.pending
+            for entry in self._states.values()
+        )
+        image_writer: experiment.Image | None = None
+        image_error: tuple[Literal["runtime"], str] | None = None
+        if has_pending_heatmap and _capability.is_global_zero(trainer):
+            try:
+                image_writer = experiment.image(trainer)
+            except Exception as error:
+                image_error = (
+                    "runtime",
+                    "heatmap image writer discovery failed: "
+                    f"{type(error).__name__}: {error}",
+                )
+        self._validate_heatmap_logging(
+            trainer,
+            pl_module,
+            image_writer=image_writer,
+            image_error=image_error,
+        )
+        write_error = self._write_heatmaps(
+            trainer,
+            image_writer=image_writer,
+            step=step,
+        )
+        self._validate_heatmap_write(
+            trainer,
+            pl_module,
+            pending=has_pending_heatmap,
+            error=write_error,
+        )
         raw_writer = (
             experiment.histogram_raw(trainer)
             if _capability.is_global_zero(trainer)
@@ -907,6 +1103,8 @@ class ObservationCallback(pl.Callback):
                 value = state.value()
                 if value is not None:
                     _merge_metrics(metrics, {entry.tag: value})
+                continue
+            if isinstance(state, _HeatmapState):
                 continue
             current = state.current()
             ema = state.ema()
@@ -937,6 +1135,45 @@ class ObservationCallback(pl.Callback):
                 logger=True,
                 sync_dist=False,
             )
+
+    def _write_heatmaps(
+        self,
+        trainer: pl.Trainer,
+        *,
+        image_writer: experiment.Image | None,
+        step: int,
+    ) -> tuple[Literal["runtime"], str] | None:
+        error: tuple[Literal["runtime"], str] | None = None
+        for key in sorted(self._states):
+            entry = self._states[key]
+            state = entry.state
+            if not isinstance(state, _HeatmapState) or not state.pending:
+                continue
+            if _capability.is_global_zero(trainer) and error is None:
+                try:
+                    value = state.value()
+                    if value is None:
+                        raise RuntimeError(
+                            "global-zero heatmap observation did not retain an image."
+                        )
+                    if image_writer is None:
+                        raise RuntimeError(
+                            "heatmap image writer preflight was inconsistent."
+                        )
+                    _write_heatmap(
+                        image_writer,
+                        entry.tag,
+                        value,
+                        step=step,
+                    )
+                except Exception as caught:
+                    error = (
+                        "runtime",
+                        f"heatmap image write failed for {entry.tag!r}: "
+                        f"{type(caught).__name__}: {caught}",
+                    )
+            state.discard_pending()
+        return error
 
     def _bind_restored_tags(self) -> None:
         self._output_tag_owners.clear()
@@ -1011,6 +1248,113 @@ class ObservationCallback(pl.Callback):
                 "sync_distributed=True requires every rank to emit the same observation "
                 "keys and schemas for each optimizer step."
             )
+
+    def _validate_heatmap_logging(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *,
+        image_writer: experiment.Image | None,
+        image_error: tuple[Literal["runtime"], str] | None,
+    ) -> None:
+        pending = [
+            entry.state
+            for entry in self._states.values()
+            if isinstance(entry.state, _HeatmapState) and entry.state.pending
+        ]
+        if not pending:
+            return
+        errors = [state.pending_error for state in pending if state.pending_error]
+        if image_error is not None:
+            errors.append(image_error)
+        elif self._warning_rank and image_writer is None:
+            errors.append(
+                (
+                    "runtime",
+                    "Heatmap observation requires the Trainer logger experiment "
+                    "to provide add_image().",
+                )
+            )
+        if self._warning_rank and any(
+            state.pending_image is None and state.pending_error is None
+            for state in pending
+        ):
+            errors.append(
+                (
+                    "runtime",
+                    "global-zero heatmap observation did not retain an image.",
+                )
+            )
+
+        if self.sync_distributed and _capability.is_distributed(trainer):
+            local_error = torch.tensor(
+                [int(bool(errors))],
+                dtype=torch.int64,
+                device=pl_module.device,
+            )
+            gathered = _all_gather(
+                trainer,
+                local_error,
+                error=(
+                    "Distributed Heatmap observation requires "
+                    "trainer.strategy.all_gather; set sync_distributed=False for "
+                    "rank-local diagnostics."
+                ),
+            )
+            if bool((gathered.detach() > 0).any().item()):
+                if errors:
+                    detail = "; ".join(message for _kind, message in errors)
+                    raise RuntimeError(
+                        "distributed Heatmap observation failed: " + detail
+                    )
+                raise RuntimeError(
+                    "distributed Heatmap observation failed on another rank."
+                )
+            return
+
+        if not errors:
+            return
+        kind, message = errors[0]
+        if kind == "value":
+            raise ValueError(message)
+        raise RuntimeError(message)
+
+    def _validate_heatmap_write(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *,
+        pending: bool,
+        error: tuple[Literal["runtime"], str] | None,
+    ) -> None:
+        if not pending:
+            return
+        if self.sync_distributed and _capability.is_distributed(trainer):
+            local_error = torch.tensor(
+                [int(error is not None)],
+                dtype=torch.int64,
+                device=pl_module.device,
+            )
+            gathered = _all_gather(
+                trainer,
+                local_error,
+                error=(
+                    "Distributed Heatmap image logging requires "
+                    "trainer.strategy.all_gather; set sync_distributed=False for "
+                    "rank-local diagnostics."
+                ),
+            )
+            if bool((gathered.detach() > 0).any().item()):
+                if error is not None:
+                    raise RuntimeError(
+                        "distributed Heatmap image logging failed: " + error[1]
+                    )
+                raise RuntimeError(
+                    "distributed Heatmap image logging failed on another rank."
+                )
+            return
+        if error is not None:
+            raise RuntimeError(error[1])
 
     def _discard_pending(self) -> None:
         self._forward_active = False
@@ -1155,9 +1499,9 @@ def _bins_delta(value: Bins) -> _HistogramDelta:
 
 def _state_output_tags(
     tag: str,
-    state: _CurveState | _HistogramState,
+    state: _CurveState | _HeatmapState | _HistogramState,
 ) -> tuple[str, ...]:
-    if isinstance(state, _CurveState):
+    if isinstance(state, (_CurveState, _HeatmapState)):
         return (tag,)
     result: list[str] = []
     for group_name in state.schema.group_names:
@@ -1268,6 +1612,55 @@ def _validate_histograms(
     raise RuntimeError("observation invalid-count aggregation was inconsistent.")
 
 
+def _heatmap_schema(value: Heatmap) -> _HeatmapSchema:
+    rows, columns = value.values.shape
+    value_range = (
+        None
+        if value.value_range is None
+        else (float(value.value_range[0]), float(value.value_range[1]))
+    )
+    return _HeatmapSchema(
+        shape=(rows, columns),
+        dtype=str(value.values.dtype),
+        value_range=value_range,
+    )
+
+
+def _heatmap_image(value: Heatmap) -> Tensor:
+    values = value.values.detach().to(
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        copy=True,
+    )
+    if not bool(torch.isfinite(values).all().item()):
+        raise ValueError("observation heatmap values must be finite.")
+    if value.value_range is None:
+        lower = values.min()
+        upper = values.max()
+    else:
+        lower = values.new_tensor(value.value_range[0])
+        upper = values.new_tensor(value.value_range[1])
+    scale = upper - lower
+    if bool((scale > 0).item()):
+        return ((values - lower) / scale).clamp(0.0, 1.0)
+    return torch.zeros_like(values)
+
+
+def _write_heatmap(
+    writer: experiment.Image,
+    tag: str,
+    image: Tensor,
+    *,
+    step: int,
+) -> None:
+    writer.add_image(
+        tag,
+        image,
+        step,
+        dataformats="HW",
+    )
+
+
 def _write_histogram(
     writer: experiment.HistogramRaw,
     tag: str,
@@ -1344,6 +1737,21 @@ def _schema_signature(
         state = entry.state
         if isinstance(state, _CurveState):
             schema.append((key, "curve", _owner_state(entry.owner)))
+        elif isinstance(state, _HeatmapState):
+            if key in emitted_keys and (
+                not state.pending or state.pending_schema is None
+            ):
+                raise RuntimeError(
+                    f"heatmap observation {key!r} was emitted without a pending value."
+                )
+            schema.append(
+                (
+                    key,
+                    "heatmap",
+                    _owner_state(entry.owner),
+                    state.pending_schema if state.pending else state.schema,
+                )
+            )
         else:
             schema.append(
                 (

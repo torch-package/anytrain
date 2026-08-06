@@ -15,6 +15,7 @@ class ExperimentTest(unittest.TestCase):
             add_text=lambda *args: None,
             add_scalar=lambda *args: None,
             add_audio=lambda *args, **kwargs: None,
+            add_image=lambda *args, **kwargs: None,
             add_histogram=lambda *args: None,
             add_histogram_raw=lambda *args, **kwargs: None,
         )
@@ -23,6 +24,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertIs(experiment.text(trainer), writer)
         self.assertIs(experiment.scalar(trainer), writer)
         self.assertIs(experiment.audio(trainer), writer)
+        self.assertIs(experiment.image(trainer), writer)
         self.assertIs(experiment.histogram(trainer), writer)
         self.assertIs(experiment.histogram_raw(trainer), writer)
 
@@ -32,6 +34,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertIsNone(experiment.text(trainer))
         self.assertIsNone(experiment.scalar(trainer))
         self.assertIsNone(experiment.audio(trainer))
+        self.assertIsNone(experiment.image(trainer))
         self.assertIsNone(experiment.histogram(trainer))
         self.assertIsNone(experiment.histogram_raw(trainer))
 
@@ -41,6 +44,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertIsNone(experiment.text(trainer))
         self.assertIsNone(experiment.scalar(trainer))
         self.assertIsNone(experiment.audio(trainer))
+        self.assertIsNone(experiment.image(trainer))
         self.assertIsNone(experiment.histogram(trainer))
         self.assertIsNone(experiment.histogram_raw(trainer))
 

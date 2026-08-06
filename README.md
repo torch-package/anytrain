@@ -110,7 +110,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | 模块 | 作用 |
 | --- | --- |
 | `anytrain.lightning` | Lightning logging mixin、task-agnostic background materialization、loss/gradient logging、debug 和性能观测 callback。 |
-| `anytrain.observation` | 普通 module 的 concrete-type registry、Curve/Distribution/Bins 值契约，以及 step/EMA 状态。 |
+| `anytrain.observation` | 普通 module 的 concrete-type registry、State/Output/Event 来源、Curve/Distribution/Bins/Heatmap 值契约，以及 step/EMA 状态。 |
 | `anytrain.lightning.schedule` | 统一 step/unit LR schedule spec、unit progress、unit LR runtime 和按 unit 停止训练。 |
 | `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
 | `anytrain.stats` | 纯 tensor 统计 helper，例如按 time bucket 聚合 loss。 |

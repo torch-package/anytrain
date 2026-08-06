@@ -9,13 +9,13 @@
 它负责：
 
 - LightningModule 侧的轻量 logging helper。
-- Trainer 主 logger 的 text/scalar/audio/histogram experiment 能力访问。
+- Trainer 主 logger 的 text/scalar/audio/image/histogram experiment 能力访问。
 - validation 指标按实际 observation count 做 epoch/DDP 加权聚合，并记录可恢复的指标历史。
 - 训练 outputs 里的 total loss 和命名 loss item 窗口汇总 callback。
 - 训练 outputs 里的命名 loss item 按下游 label 分组记录 callback。
 - 基于命名 `LossItem` 的梯度关系、全局梯度范数和 time-bucket loss 观测 callback。
-- 自动发现普通 module registry 声明的 Curve/Distribution/Bins observation，并记录 optimizer-step
-  与 EMA 状态；这是 module 中间量 logging 的唯一 callback。
+- 自动发现普通 module registry 声明的 Curve/Distribution/Bins/Heatmap observation，并记录
+  optimizer-step、EMA 和 render-only image 状态；这是 module 中间量 logging 的唯一 callback。
 - non-finite loss 检查等训练调试 callback。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
 - 训练效率观测 callback，记录参数量、step time、硬件峰值算力和 MFU。
@@ -263,10 +263,11 @@ if writer is not None:
     writer.add_scalar("train/example", value, trainer.global_step)
 ```
 
-`experiment.text()`、`scalar()`、`audio()`、`histogram()` 和 `histogram_raw()` 检查 Trainer 主 logger
+`experiment.text()`、`scalar()`、`audio()`、`image()`、`histogram()` 和 `histogram_raw()` 检查 Trainer 主 logger
 的 experiment 是否暴露对应 callable。`histogram_raw()` 面向已经聚合好的 bucket counts，例如
 Distribution/Bins 的 EMA histogram。没有 logger 或 backend 不支持时返回 `None`；helper 不决定 rank、
-记录 cadence、tag 或 tensor 设备，下游 callback 继续拥有这些语义。
+记录 cadence、tag 或 tensor 设备，下游 callback 继续拥有这些语义。`image()` 面向已经选成二维并归一化的
+image tensor。
 
 ## Module observations
 
@@ -291,12 +292,14 @@ trainer = pl.Trainer(
 
 值类型和历史语义固定为：
 
-- `Curve` 接受 scalar Tensor；同一个 optimizer step 内多次 forward/poll observation 取 mean，
+- `Curve` 接受 scalar Tensor；同一个 optimizer step 内多次 State/Output/Event observation 取 mean，
   只记录曲线，不维护跨 step EMA。
 - `Distribution` 接受 1-D floating Tensor 和固定 edges；多维连续 Tensor 必须由 module 先选择明确
   view，不能隐式 flatten。
 - `Bins` 接受任意 rank 的离散 Tensor。多 codebook 时用 `group_dim` 指出 codebook 轴，bin 数可以
   大于 1，也可以在不同 group 间不同。
+- `Heatmap` 接受 module 已明确选择 sample/head/crop 后的非空 2-D floating Tensor，不维护 EMA，所属 spec
+  必须 `history=None`；固定 `value_range` 时不同 step 的颜色可比较。同一步同一 key 多次产生时保留第一次。
 - `Distribution` / `Bins` 每个 optimizer step 都先形成固定大小的 histogram sufficient stats，再维护
   counts、observation total、sum 和 sum-squares 的 EMA；step 与 EMA 的 entropy、perplexity 和
   active ratio 均从这些状态现算。`Bins` 额外输出 occupied/dead count 与 ratio。
@@ -312,16 +315,26 @@ concrete type 查找，不保存实例或 tensor，deepcopy 直接复用 class d
 `BackwardObservationWarning` 并跳过，不注册 backward hook 或修改 autograd graph。需要观察 loss 对
 参数的梯度时先使用 `GradientProbeLoggerCallback`。
 
-`every_n_steps` 控制 render 和无 history 的 Curve/poll collector，默认每 100 个 optimizer step 输出一次；
+声明按来源分为 `StateObservation`、`OutputObservation` 和 `ForwardEvent`：State 在 optimizer boundary
+读取 module 自然持有的状态；Output 从普通 `module(...)` 的 inputs/kwargs/output 提取；Event 在 forward
+局部量产生处显式调用 `observation.emit(module, name, value)`。不得为了 logging 保存 `self.last_*`，也不
+提供 observer-enabled 分支来改变 forward、autograd 或各 rank 的 attention kernel。
+
+`every_n_steps` 控制 render 和无 history 的 State/Output/Event collector，默认每 100 个 optimizer step 输出一次；
+State/Output collector 在 cadence 外不调用，ForwardEvent 的 `emit()` 仍由 module 执行，但 callback 直接丢弃 payload。
 需要 EMA 的 Distribution/Bins 在被跳过的 step 仍更新状态。传 `None` 会关闭 render 和无 history
 collector，但保留 histogram EMA 更新。每次 render 同时输出 `module/observation_time`：它是当前 interval
-内全部 observation collector、状态更新、归约、校验和 render 准备的 host wall time，按实际 optimizer
-step 数取平均。它不额外同步 CUDA，也不包含最终 logger submission。
+内全部 observation collector、状态更新、归约、校验、histogram writer 和 Heatmap image writer 的 host
+wall time，按实际 optimizer step 数取平均。它不额外同步 CUDA，也不包含最终 scalar `log_dict()` submission。
 callback 级 `half_life_steps` 会覆盖 spec 自带的 `EMAHistory`。TensorBoard 等 backend 支持
 `add_histogram_raw` 时同时写 step/EMA histogram；不支持时仍保留 scalar summary。
 `max_dense_bins` 在分配状态前限制 `[groups, max_bins]` 的 dense 大小，mixed-radix product codebook
 超过限制会明确报错，调用方应改用 factorized observation 或显式提高上限。
 
+Heatmap 只在 render step 由 global rank 0 生成独立 CPU image，并通过 `add_image(..., dataformats="HW")`
+写出；backend 不支持 image 时明确报错。distributed 模式先完成 schema preflight，再把 image materialization
+或 backend 错误同步给所有 rank。`max_heatmap_elements` 超限时要求 module 选择更小的二维语义 view，不自动
+flatten、resize 或 sample。
 默认 `sync_distributed=False`，只维护并输出 global-zero rank 的本地诊断。开启后 callback 会先确认所有 rank
 拥有相同累计 observation key/schema/source identity，并在该 optimizer step 产生相同 emitted key 集合，
 再 sum sufficient stats；条件 module 调用或动态 mapping 必须在各 rank 保持一致，否则同步失败并显式
@@ -330,13 +343,13 @@ callback 级 `half_life_steps` 会覆盖 spec 自带的 `EMAHistory`。TensorBoa
 不同 module/spec 路径归一化到同一个实际 tag 时会立即报错，不会静默覆盖。
 
 checkpoint 只保存已完成 optimizer step 的 Distribution/Bins EMA、稳定的 module/spec/item source
-identity 和 step metadata，不保存 pending microbatch、Curve 或 raw forward output。恢复时 `tag` 作为
+identity 和 step metadata，不保存 pending microbatch、Curve、Heatmap 或 raw forward output。恢复时 `tag` 作为
 callback state identity 必须保持稳定，`half_life_steps` 与 `sync_distributed` 必须兼容；
 `every_n_steps` 可以调整，`max_dense_bins` 可以调整到仍能容纳已保存 schema 的值。
 
-自动 hook 只覆盖普通 `module(...)`。直接调用 `.forward()` 或领域方法（例如
-`quantizer.quantize()`）会绕过它；被观测的训练路径必须改为普通 module 调用，或由所属上层 module
-声明自己的 observation，不提供 module-specific callback 兜底。当前提交边界基于 train batch end 的
+直接调用 `.forward()` 会绕过 `OutputObservation` hook，但其中显式执行的 `emit()` 仍会发布
+`ForwardEvent`，`StateObservation` 也仍会在 step boundary 读取；领域方法是否 emit 由 module 自己的
+公开 contract 决定，不提供 module-specific callback 兜底。当前提交边界基于 train batch end 的
 `global_step` 变化，因此支持常规自动优化和梯度
 累积；同一个 train batch 内执行多个 optimizer step 的 manual optimization 会 fail-fast。
 
