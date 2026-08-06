@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import inspect
 import warnings
 from dataclasses import dataclass
-from typing import cast
 from weakref import WeakKeyDictionary, WeakSet
 
 import torch
@@ -12,7 +12,6 @@ from torch.utils.hooks import RemovableHandle
 from ._types import (
     BackwardObservation,
     ForwardObservation,
-    ObservationProvider,
     ObservationSpec,
     PollObservation,
 )
@@ -33,51 +32,64 @@ class _RecommendationHook:
         recommendation_hint(module, inputs)
 
 
-_SPECS_ATTRIBUTE = "_anytrain_observation_specs"
 _SPEC_TYPES = (ForwardObservation, BackwardObservation, PollObservation)
 _RECOMMENDATION_TYPES = (ForwardObservation, PollObservation)
 _runtimes: WeakKeyDictionary[nn.Module, _Runtime] = WeakKeyDictionary()
 _warned_types: WeakSet[type[nn.Module]] = WeakSet()
 
 
-def register(module: nn.Module, values: tuple[ObservationSpec, ...]) -> None:
-    """Bind immutable observation declarations to one module instance."""
+class _Registry:
+    """The process-wide declaration registry used by ObservationCallback."""
 
-    if not isinstance(module, nn.Module):
-        raise TypeError("observation.register module must be nn.Module.")
-    if _SPECS_ATTRIBUTE in module.__dict__:
-        raise RuntimeError("module observations were already registered.")
-    declared = _validated_specs(values)
-    module.__dict__[_SPECS_ATTRIBUTE] = declared
-    _install_recommendation(module, declared)
+    def __init__(self) -> None:
+        self._specs: dict[type[nn.Module], tuple[ObservationSpec, ...]] = {}
+
+    def register(
+        self,
+        module_type: type[nn.Module],
+        values: tuple[ObservationSpec, ...],
+    ) -> None:
+        """Register the complete observation contract for one concrete module type."""
+
+        if not isinstance(module_type, type) or not issubclass(module_type, nn.Module):
+            raise TypeError("observation registry keys must be nn.Module classes.")
+        if module_type in self._specs:
+            raise RuntimeError(
+                f"observations are already registered for {module_type.__qualname__}."
+            )
+        self._specs[module_type] = _validated_specs(values)
+
+    def specs(self, module: nn.Module) -> tuple[ObservationSpec, ...]:
+        """Return the declaration for the module's exact concrete type."""
+
+        if not isinstance(module, nn.Module):
+            raise TypeError("observation registry lookup requires an nn.Module.")
+        return self._specs.get(type(module), ())
+
+    def recommend(self, module: nn.Module) -> None:
+        """Install the one-shot hint for a registered module instance."""
+
+        values = self.specs(module)
+        if not values:
+            return
+        if not any(
+            isinstance(spec, _RECOMMENDATION_TYPES) and spec.recommended
+            for spec in values
+        ):
+            raise ValueError(
+                "observation registry recommend requires a registered recommended spec."
+            )
+        _install_recommendation(module, values)
 
 
-def recommend(module: nn.Module) -> None:
-    """Install the one-shot hint for a module that implements ObservationProvider."""
-
-    values = provided_specs(module)
-    if not any(
-        isinstance(spec, _RECOMMENDATION_TYPES) and spec.recommended
-        for spec in values
-    ):
-        raise ValueError(
-            "observation.recommend requires a supported recommended provided spec."
-        )
-    _install_recommendation(module, values)
-
-
-def specs(module: nn.Module) -> tuple[ObservationSpec, ...]:
-    value = module.__dict__.get(_SPECS_ATTRIBUTE)
-    if value is not None:
-        return cast(tuple[ObservationSpec, ...], value)
-    return provided_specs(module)
+registry = _Registry()
 
 
 def claim(
     module: nn.Module,
     declared: tuple[ObservationSpec, ...] | None = None,
 ) -> None:
-    values = specs(module) if declared is None else declared
+    values = registry.specs(module) if declared is None else declared
     if not values:
         raise RuntimeError("cannot claim observations from an unregistered module.")
     runtime = _runtime(module)
@@ -94,7 +106,7 @@ def release(module: nn.Module) -> None:
 
 def recommendation_hint(module: nn.Module, inputs: tuple[object, ...]) -> None:
     del inputs
-    values = specs(module)
+    values = registry.specs(module)
     supported = tuple(
         spec for spec in values if isinstance(spec, _RECOMMENDATION_TYPES)
     )
@@ -134,12 +146,6 @@ def recommendation_hint(module: nn.Module, inputs: tuple[object, ...]) -> None:
     )
 
 
-def provided_specs(module: nn.Module) -> tuple[ObservationSpec, ...]:
-    if not isinstance(module, ObservationProvider):
-        return ()
-    return _validated_specs(tuple(module.observation_specs()))
-
-
 def _validated_specs(values: tuple[ObservationSpec, ...]) -> tuple[ObservationSpec, ...]:
     result = tuple(values)
     if not result:
@@ -148,6 +154,10 @@ def _validated_specs(values: tuple[ObservationSpec, ...]) -> tuple[ObservationSp
     for value in result:
         if not isinstance(value, _SPEC_TYPES):
             raise TypeError("module observation specs must contain ObservationSpec objects.")
+        if inspect.ismethod(value.collect) and isinstance(value.collect.__self__, nn.Module):
+            raise TypeError(
+                "observation collectors must not be bound to an nn.Module instance."
+            )
         name = value.name.strip("/")
         if name in normalized:
             raise ValueError(
@@ -208,7 +218,5 @@ def _suppress_descendant_hints(module: nn.Module) -> None:
 
 __all__ = [
     "RecommendationWarning",
-    "recommend",
-    "register",
-    "specs",
+    "registry",
 ]

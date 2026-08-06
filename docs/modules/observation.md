@@ -6,10 +6,60 @@
 不持有 logger、Trainer 或 LightningModule；Lightning 生命周期由
 `ObservationCallback` 适配。
 
-模块可以在构造时调用 `observation.register()` 绑定实例级 spec，也可以实现
-`ObservationProvider.observation_specs()`，让声明在 deepcopy、spawn 和重新装配后仍可发现。
-内置 quantizer 使用 provider 形式。实例级 spec 保存在 module 自身的普通 Python metadata 中，runtime
-claim/hook 才使用弱引用状态，因此 bound collector 不会被全局 registry 反向保活。
+唯一声明来源是进程级 `observation.registry`。module 实现文件在 class 定义完成后，用
+`registry.register(ModuleType, specs)` 注册该 concrete type 的完整 immutable contract；构造器末尾调用
+`registry.recommend(self)` 安装一次性的使用提示。contract 含 `recommended=True` spec 时必须调用；否则无需
+调用。registry 只保存 module class 和无状态 collector，不保存
+module 实例、tensor、forward output 或 autograd graph。deepcopy 直接复用 class declaration，spawn/DDP 进程
+通过正常 import 重建同一 registry。
+
+registry 按 exact concrete type 查找，不隐式继承父类声明。新增 subclass 时必须重新审查 forward contract
+并显式注册；这能避免 subclass 改变 output/schema 后仍静默沿用父类 collector。同一个 class 只能注册一次，
+spec name 归一化后必须唯一，collector 不能绑定到某个 `nn.Module` 实例。
+
+```python
+import torch
+
+from anytrain import observation
+
+
+class Router(torch.nn.Module):
+    def __init__(self, ...):
+        super().__init__()
+        ...
+        observation.registry.recommend(self)
+
+    def forward(self, logits):
+        ...
+
+
+def _collect_router(module, inputs, kwargs, output):
+    del module, inputs, kwargs
+    return {"output_mean": observation.Curve(output.float().mean())}
+
+
+observation.registry.register(
+    Router,
+    (
+        observation.ForwardObservation(
+            "routing",
+            _collect_router,
+            recommended=True,
+        ),
+    ),
+)
+```
+
+## Module author 约定
+
+设计或修改一个 `nn.Module` 的 forward contract 时，必须同时审查其输出和内部运行状态中是否存在值得训练期
+观察的稳定中间量。有则在 module 实现旁注册；没有则可以不注册，但应是明确的设计结论。
+
+registry + `ObservationCallback` 是 anytrain 内 module 中间变量 logging 的唯一入口。不得为具体 module 新增
+logger callback、monitor adapter、training-output 自动发现或额外 forward。collector 必须只读，不修改
+output/state；scalar 使用 `Curve`，明确的一维连续 view 使用 `Distribution`，离散 codes 使用 `Bins`。多维
+连续 tensor 必须由 module 先选择有语义的 summary 或一维 view，不能自动 flatten。module 外计算的 aux loss、
+最终 evaluator、性能指标和 loss-to-parameter gradient 不属于中间变量入口。
 
 ## 日志值
 
@@ -25,7 +75,7 @@ claim/hook 才使用弱引用状态，因此 bound collector 不会被全局 reg
 `Distribution` 和 `Bins` 在 hook 内立即转换成固定大小的 histogram sufficient statistics，
 不保留 forward output 或 autograd graph。历史使用 `EMAHistory(half_life_steps=...)`，日志明确区分
 `step` 与 `ema`；entropy、perplexity 和 active ratio 都从 step/EMA counts 现算，不对派生指标做
-EMA。
+EMA。`Bins` 还统一输出 occupied/dead count 与 ratio；EMA scope 的 occupied 表示 EMA mass 仍为正的 bin。
 
 ## Module spec
 
@@ -41,7 +91,8 @@ EMA。
 `covers_descendants=True` 表示父 module 的观测已经覆盖该子树。Residual quantizer 使用这个规则，
 避免同时记录外层组合结果和内部 stage quantizer，也会移除内部 stage 的推荐 hint。
 
-当前可执行的 `ForwardObservation` / `PollObservation` 设置 `recommended=True` 时会安装一次性
+注册的 `ForwardObservation` / `PollObservation` 设置 `recommended=True`，并在 module 构造器调用
+`registry.recommend(self)` 时，会安装一次性
 training forward hint；尚未实现的 `BackwardObservation` 不参与通用推荐或子树 hint 覆盖。没有
 observer 时，首次 training + grad-enabled 调用会发出 `RecommendationWarning`，提示加入
 `ObservationCallback`；eval、no-grad、非零 DDP rank 和 `torch.compile` 图内不提示。callback
@@ -64,13 +115,23 @@ trainer = pl.Trainer(
 )
 ```
 
-callback 在 `on_fit_start` 遍历 `pl_module.named_modules()`，用完整 module path 绑定 hook。默认只有
+callback 在 `on_fit_start` 遍历 `pl_module.named_modules()`，按 concrete type 查询 registry，并用完整
+module path 绑定 hook。默认只有
 global rank 0 扫描并注册 forward hook；`sync_distributed=True` 时才在所有 rank 注册并同步状态。每个
-train batch 都收集，但只有 `trainer.global_step` 前进时才提交一个 optimizer-step snapshot 和更新 EMA，
-`every_n_steps` 只控制 render，传 `None` 完全关闭 render。EMA state 随 callback checkpoint 保存，
+需要 EMA history 的 Distribution/Bins 每个 train batch 都收集；无 history 的 Curve/collector 只在即将
+render 的 optimizer step 执行，避免 cadence 之外计算昂贵派生指标。只有 `trainer.global_step` 前进时才提交
+optimizer-step snapshot 和更新 EMA；`every_n_steps` 控制 render，默认每 100 个 optimizer step 输出一次，
+传 `None` 完全关闭 render 和无 history collector。EMA state 随 callback checkpoint 保存，
 pending microbatch state、Curve 和 hook 不保存。每个 histogram 同时保存稳定的
 `module_path/spec_name/item` source identity，恢复时不靠 slash prefix 猜测 collector；`tag` 是 callback
 identity。render cadence 可以改变，half-life 和 distributed 语义必须兼容。
+
+每次 render 还会在同一次 `log_dict()` 中输出 callback 自身的 `module/observation_time` 曲线（`module`
+由 `tag` 参数决定）。它累计该 render interval 内所有 module collector、state/EMA 更新、distributed
+归约、校验和 histogram render 准备的 host wall time，再按实际 optimizer step 数取平均，单位为秒。
+最终 scalar logger submission 不计入该值，也不会为了计时额外执行 CUDA synchronize；因此它表达训练在
+observation callback 入口实际承担的 host stall，不是隔离后的 GPU kernel 时间。该 interval 计时不进入
+checkpoint；`sync_distributed=True` 时各 rank 各自计时，默认可见的是 logger owner rank 的值。
 
 `sync_distributed=False` 默认只维护并输出 global-zero rank 的本地诊断。显式开启时，每个已发现 observer 必须
 在所有 rank 以一致结构调用；callback 先 all-gather 累计 key/schema、稳定 source identity 和当前

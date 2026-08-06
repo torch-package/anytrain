@@ -6,6 +6,18 @@
 
 它不是模型 zoo，也不提供完整任务网络。组件必须保持小而清楚，只依赖 core torch、einops 或对应 optional extra。
 
+## 可观测性约定
+
+每个新增或修改的 `nn.Module` 在确定 forward contract 时，必须同时审查其输出和内部运行状态中是否存在训练期
+应观察的稳定中间量。存在时，必须在 module 实现旁通过 `anytrain.observation.registry` 声明；没有稳定中间量
+时可以不注册，但应是有意识的设计结论。
+
+registry + `ObservationCallback` 是 anytrain 内 module 中间量 logging 的唯一入口。不得再为具体 module 新增
+logger callback、monitor adapter、training-output 自动发现或额外 forward。声明必须只读，不修改 output/state、
+不保留 autograd graph，并使用稳定 name/schema：scalar → `Curve`，明确的一维连续 view → `Distribution`，
+离散 codes → `Bins`；多维连续值必须先由 module 选择有语义的 summary/view。module aux loss 属 task/loss
+组合，不作为中间量自动接入训练目标或日志。
+
 ## 当前状态
 
 `anytrain.module` 顶层只导出少量稳定组件：
@@ -56,23 +68,20 @@ per-expert 温度。`stats()` 返回纯 `ADTStats` 对象；`adt_stats_metrics()
 variance、alpha 和 temperature 汇总成稳定数量的 scalar metric key，例如 `variance_mean`、
 `alpha_std`、`temperature_min` 和 `temperature_max`。gate utilization / effective experts 必须由
 MoE/gate routing 日志输出，ADT stats metrics 不提供 usage logging 入口。
-`diagnostics()` 直接返回默认 ADT-only scalar summary key，和 `ADTStatsLoggerCallback` 配套；需要结构化张量时使用
-`stats()`，或者读取 ADT module 的只读 `monitor` property 获取当前 `ADTStats` snapshot。
-如果需要看完整 ADT per-expert 分布，使用 `ADTStatsLoggerCallback(log_histograms=True)` 记录 variance、
-alpha 和 temperature 的 histogram，而不是为每个 expert 生成一条 scalar 曲线。
-默认使用 `ADTStatsLoggerCallback()` 即可：callback 会从 `pl_module.named_modules()` 自动发现所有
-`AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper 从 module path
-推断最短唯一日志名：单个 `encoder.router.gate` 记为 `adt/gate/temperature_mean`，如果同时存在
-`encoder.router.gate` 和 `decoder.router.gate`，则分别记为
-`adt/encoder.router.gate/temperature_mean` 和 `adt/decoder.router.gate/temperature_mean`；
-需要覆盖时再传显式 mapping key 或 `ADTStatsMonitor(name=...)`。
+`diagnostics()` 直接返回同一组默认 ADT-only scalar summary，`stats()` 返回结构化 `ADTStats`。
+`AdaptiveDirichletTempering` 在 module 定义旁注册 `PollObservation("adt", ...)`；
+`ObservationCallback` 在 render step 读取 variance、alpha 和 temperature 的 mean/std/min/max，不再存在
+ADT 专用 callback 或 monitor adapter。ADT 内部统计本身已经是运行期 EMA，因此这些 Curve 不再叠加第二层
+observation EMA。
 `ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
 
 `anytrain.module.moe` 的公共模型是统一 `MoE`：`num_experts` 为顶层真相，核心契约是 `Expert` 对象 + 已是 `(E,...)` 的 `weight`/`bias` + 可选薄 `grid`。`expand_expert` 只对 stock `nn.Linear`/`nn.Conv*` 做几何拷贝和参数扩维，**不能**也不应用于自定义 `nn.Module` 推断。Conv 与 ConvTranspose 共享 `expand_param`、`Grid1d` 和「restore 后再加 bias」；weight 布局与 restore（concat vs OLA）由各自 Expert.`bind` 选择。设计见 [`moe.md`](moe.md) 与 [`moe-routing.md`](moe-routing.md)。
 
 - Token MoE：`MoE(..., expert=linear, weight=(N, out, in), top_k=2)`；需要对齐某个 `nn.Linear` 时可用 `expand_expert` 便利构造。
 - Dynamic conv：`MoE(..., expert=Conv1dExpert(...), weight=..., grid=Grid1d(...), top_k=None)`；对齐某个 `nn.Conv1d` 时可用 `expand_expert`，自定义 cell 算子用 `CallableExpert`（native-resolution）或自实现 `Expert.bind`。
-- `moe_loss()` 和 routing metrics 是显式 helper；MoE forward 不自动改训练目标或打日志。
+- `MoE` 在定义旁注册 forward routing observation；普通 `moe(...)` 调用由 `ObservationCallback` 记录
+  effective experts、usage、gate probability、route weight、tokens 和 dropped ratio 的 scalar summary。
+  `moe_loss()` 仍是显式 helper，MoE forward 不自动修改训练目标；aux loss 由下游 loss/self.log 处理。
 
 `anytrain.module.qwen.qwen3` 是 Hugging Face Qwen3 的薄复用层，不重新实现
 transformer block，也不要求下游维护一份庞大的项目级 config：
@@ -155,12 +164,13 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
 - `quantization_usage()` / `codebook_usage()` 只基于 `indices` 和 `active_codebook_mask`
   统计 codebook 使用率、perplexity、dead code ratio 和 active ratio；`quantization_usage_metrics()`
   和 `quantization_loss_metrics()` 负责生成稳定相对 metric key。它们不依赖 Lightning，也不会触发
-  quantizer forward；Lightning callback 只负责 monitor 解析、分布式 reduce 和日志 transport。
-- 六个公开 quantizer 都通过 `anytrain.observation` 声明推荐 forward observation。普通
+  quantizer forward；需要手工统计时由调用方直接使用这些纯 helper。
+- 六个公开 quantizer 都在 class 定义旁通过 `anytrain.observation.registry` 声明推荐 forward observation。普通
   `quantizer(...)` 调用可由 `ObservationCallback` 自动记录 quantization loss curve，以及 codes
-  的 step/EMA bins；residual 外层声明覆盖内部 stage，避免重复统计。直接调用 `.quantize()` 或
-  `.forward()` 会绕过 PyTorch forward hook，仍可使用原有显式 `QuantizationLoggerCallback` adapter。
-- flat mixed-radix codebook 可能非常大；自动 callback 在分配 dense EMA bins 前检查
+  的 step/EMA bins、occupied/dead、entropy、perplexity 和 active ratio；residual 外层声明覆盖内部 stage，
+  避免重复统计。被观测的训练路径必须走 `quantizer(...)`；直接调用 `.quantize()` 或 `.forward()`
+  会绕过 PyTorch forward hook，不提供专用 callback 兜底。
+- flat mixed-radix codebook 可能非常大；`ObservationCallback` 在分配 dense EMA bins 前检查
   `max_dense_bins` 并明确报错，不会尝试无界分配。需要大 product codebook 时应提供 factorized
   observation。
 - 单 codebook quantizer 实现 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。

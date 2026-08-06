@@ -20,7 +20,6 @@ src/anytrain/lightning/
   callback/
     __init__.py
     checkpoint.py
-    dirichlet_tempering.py
     debug.py
     ema.py
     grad.py
@@ -28,8 +27,6 @@ src/anytrain/lightning/
     observation.py
     parameter_policy.py
     performance.py
-    quantization.py
-    moe.py
   mixin/
     __init__.py
     log.py
@@ -60,16 +57,6 @@ src/anytrain/lightning/
 - `FlopsProvider`
 - `PerformanceCallback`
 - `ObservationCallback`
-- `ADTStatsLoggerCallback`
-- `ADTStatsMonitor`
-- `CodebookUsageLoggerCallback`
-- `CodebookUsageMonitor`
-- `CodebookUsageMonitorsFn`
-- `QuantizationLoggerCallback`
-- `QuantizationMonitor`
-- `QuantizationMonitorsFn`
-- `MoELoggerCallback`
-- `MoEMonitor`
 - `RankLogMode`
 - `prefixed_log_dict`
 
@@ -224,7 +211,8 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 关闭该行为。
 
 `ObservationCallback` 适配 [`anytrain.observation`](observation.md) 的 module 声明。它在
-`on_fit_start` 扫描完整 `pl_module.named_modules()`，claim 所有已发现 provider/instance declaration，
+`on_fit_start` 扫描完整 `pl_module.named_modules()`，按 concrete module type 查询唯一 class registry，
+claim 所有已发现 declaration，
 再按 `covers_descendants` 去除父子重复 observation。默认只有 global rank 0 扫描并注册；显式
 `sync_distributed=True` 时才在所有 rank 注册。Forward hook 在普通 `module(...)` 返回后抽取值，Poll
 observation 在 optimizer step 提交边界读取 module 已维护状态。复制一个正在被观察的 module 时，
@@ -238,17 +226,25 @@ observation 在 optimizer step 提交边界读取 module 已维护状态。复�
 运行状态按值类型分开：
 
 - `Curve` 在一个 optimizer interval 内累加 sum/count，提交时记录 mean，不维护 EMA，也不进入
-  callback checkpoint。
+  callback checkpoint；没有 history 的 forward/poll collector 只在即将 render 的 optimizer step
+  执行，cadence 之外不计算派生 Curve。
 - `Distribution` / `Bins` 在 hook 内立即转成固定 schema 的 mass、observations、total、sum 和
   sum-squares，不保存完整 output 或 autograd graph；每次 `global_step` 前进时提交 step snapshot，并按
   optimizer-step half-life 更新 EMA。
-- `every_n_steps` 只控制 render；`None` 完全关闭 render。所有 step 仍提交状态，非法 finite/range 值也
-  在 step boundary 立即失败，不受 cadence 影响。
+- `every_n_steps` 控制 render 和无 history collector，默认每 100 个 optimizer step 输出一次；`None`
+  完全关闭两者。需要 EMA history 的 Distribution/Bins 仍在所有 step 提交状态，非法 finite/range 值也
+  在 step boundary 立即失败，不受 render cadence 影响。
 - spec 的 `EMAHistory.half_life_steps` 是默认值；callback 构造参数 `half_life_steps` 非 `None` 时统一
   覆盖。
 
+callback 在每次 render 的同一批 scalar 中加入 `module/observation_time`。该值累计 interval 内 collector、
+state/EMA、distributed reduction、校验和 histogram render 准备的 host wall time，再按实际 optimizer
+step 数取平均；它不额外调用 CUDA synchronize，也不包含最终 `pl_module.log_dict()` submission。计时窗口
+不进入 checkpoint，`sync_distributed=True` 时保持各 rank 本地口径。
+
 histogram render 使用 `experiment.histogram_raw()` 写 step/EMA bucket counts；backend 不支持 raw
-histogram 时仍通过 `pl_module.log_dict()` 写 observations、active ratio、entropy 和 perplexity。
+histogram 时仍通过 `pl_module.log_dict()` 写 observations、active ratio、entropy 和 perplexity；
+`Bins` 额外写 occupied/dead count 与 ratio。
 `max_dense_bins` 在 `_bins_delta` 分配 `[groups, max_bins]` 前检查实际 dense state 大小，防止 flat
 mixed-radix codebook OOM。
 
@@ -273,57 +269,10 @@ restore 顺序。callback `state_key` 只用稳定的 `tag` 区分实例；恢�
 
 提交边界通过 train batch end 的 `global_step` delta 判断，因此覆盖自动优化和梯度累积；同一 train
 batch 内多个 optimizer step 无法把 pending observation 无歧义拆分，会明确报错。PyTorch forward hook
-不覆盖显式 `.forward()` 或领域方法调用。量化器普通调用可自动观察；`.quantize()` 等路径继续使用
-显式 `QuantizationLoggerCallback` / `CodebookUsageLoggerCallback`。旧 callback 没有弃用，两套入口分别
-服务 module declaration 和 training-output monitor。
-
-`ADTStatsLoggerCallback` 默认从 `pl_module.named_modules()` 自动发现所有
-`AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper
-推断最短唯一日志名：单个 `encoder.router.gate` 记录为 `adt/gate/temperature_mean`；如果同时存在
-`encoder.router.gate` 和 `decoder.router.gate`，则分别记录为
-`adt/encoder.router.gate/temperature_mean` 和 `adt/decoder.router.gate/temperature_mean`。显式 mapping key 或
-`ADTStatsMonitor(name=...)` 会覆盖自动推断；裸 `ADTStats` 无法反查来源时使用稳定 fallback
-如 `adt/monitor_0/...`。callback 不解释 batch，也不额外触发 router forward。它把
-`adt_stats_metrics()` 生成的 ADT-only scalar summary 加上 `tag/name` 前缀记录，默认只包含
-variance、alpha 和 temperature；gate utilization / effective experts 由 gate 或 MoE routing logger
-记录，避免和 ADT 重复。完整 ADT per-expert 分布只在 `log_histograms=True` 时作为 histogram 写入。
-DDP 下 callback 不做额外 collective。
-ADT 默认像 BatchNorm 一样只用本地 stats；跨卡同步若以后需要，会以 SyncBatchNorm 风格的
-显式 API 提供，而不是构造参数自动推断。
-
-`CodebookUsageLoggerCallback` 只消费下游显式返回的 `CodebookUsageMonitor` mapping；
-monitor 绑定任意离散 `indices`、对应 `codebook_sizes` 和可选
-`active_codebook_mask`。它不扫描 `pl_module`，不解释 batch，也不为了日志额外 forward
-模型。单进程直接用当前 batch 的 indices 统计 usage；DDP 下先对每个 codebook 的 counts、
-active count 和 denominator 做 sum 归约，再计算 perplexity、dead code ratio 和 active ratio，
-避免平均各 rank 比例。histogram 默认关闭，开启后只由 global rank 0 写入本地观测到的 index 分布。
-
-`QuantizationLoggerCallback` 只消费下游显式返回的 `QuantizationMonitor` mapping；monitor 绑定
-`QuantizeOutput` 和对应 quantizer 或显式 `codebook_sizes`。callback 记录 quantization loss，
-并把 `QuantizeOutput.indices` / `active_codebook_mask` 转交给同一套 codebook usage 统计；
-它同样不扫描 `pl_module`，不解释 batch，也不为了日志额外 forward quantizer。
-
-`MoELoggerCallback` 默认从 `training_step` outputs mapping 中自动发现 `MoEOutput` /
-`ExpertRouting` / `MoEMonitor` values；例如返回 `{"router": moe_output}` 时会记录到
-`moe/router/...`。同名 `MoELossOutput` 可用 `router_loss` / `router_aux_loss` /
-`router_moe_loss` / `router/loss` 自动配对；需要自定义抽取时再传显式 monitor function。
-callback 不解释 batch，也不为了日志额外 forward router 或 expert。它把
-`moe_routing_metrics()` 生成的 routing scalar 和 `moe_loss()` 返回值里的 loss scalars 加上
-`tag/name` 前缀后记录，例如 `moe/router/effective_experts`、
-`moe/router/usage_mean`、`moe/router/gate_probability_mean`、
-`moe/router/route_weight_mean`、`moe/router/tokens/total`、`moe/router/dropped/ratio`
-和 `moe/router/loss/total`。默认不为每个 expert 生成 scalar 曲线；需要看完整
-per-expert 分布时设置 `log_histograms=True`，以 histogram 记录 usage、
-gate_probability、route_weight 和 tokens。`gate_probability` 是 gate 输出的 full distribution；
-`route_weight` 是 MoE 实际执行时使用的 combine weight，因此 `top_k=None` 使用 dense
-probabilities，`top_k=K` 使用 materialized selected weights。loss logs 只在 monitor
-提供或 outputs 中可自动配对 `MoELossOutput` 时记录。若 outputs key 与
-`module_monitor_names(pl_module, MoE)` 推断出的 shortest suffix 匹配，且对应 `MoE.gate`
-是 `AdaptiveDirichletTempering`，callback 会在同一 prefix 下追加 `adt/...` stats；
-这些嵌套 ADT stats 默认只包含 ADT 独有的 variance、alpha 和 temperature，usage/effective experts
-继续由 MoE routing metrics 记录。
-独立非 MoE 的 ADT 仍使用 `ADTStatsLoggerCallback`。DDP 下 callback 不做额外 collective；
-需要全局 MoE 统计时，下游应先在任务层聚合 routing outputs 或 metrics。
+不覆盖显式 `.forward()` 或领域方法调用。需要自动观察的 module 中间路径必须使用普通
+`module(...)`；不再保留 ADT、quantization/codebook usage 或 MoE 专用 callback/monitor 作为兜底。
+量化 loss 是 quantizer forward output 的一部分，可以由其 registry collector 记录；`moe_loss()` 在
+forward 外显式计算，属于 task objective，继续走普通 loss logging。
 
 `LossSummaryCallback` 在 batch hook 中仅保存 detached device scalar。每个指标的状态固定为前后各
 `window_capacity` 个值和完整 observation count；默认 capacity 为 20，不随训练长度增长。训练结束时
@@ -365,7 +314,8 @@ trainer = pl.Trainer(
 - 不决定 optimizer / scheduler。
 - 不内置模型 zoo。
 - 不隐式加载 optional domain component。
-- 不把 callback registry 做成额外抽象层。
+- 不把 Trainer callback 做成 registry 或自动装配层；module observation 的 type registry 属于
+  `anytrain.observation` 的声明协议。
 - 不提供 `AnyTrainModule` 这类魔法基类。
 
 ## 测试策略
@@ -377,10 +327,11 @@ trainer = pl.Trainer(
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
 - `ModelCheckpoint` 的原生接口兼容、异步复制、有界背压、同步 opt-out 和删除排队。
-- ADT、quantization 和 MoE callback 的显式 monitor contract、日志 cadence 和 root export。
-- module observation 的类型约束、forward/poll hook、backward TODO warning、rank-zero 默认绑定、
-  梯度累积、step/EMA、DDP schema preflight、dense-bin guard、deepcopy/cleanup 和真实 Trainer
-  checkpoint resume。
+- module observation registry 的 exact-type/duplicate/bound-collector 约束，以及 ADT、MoE 和六个
+  quantizer 的自动 discovery。
+- module observation 的类型约束、forward/poll hook、render-only Curve、interval `observation_time`、
+  backward TODO warning、rank-zero 默认绑定、梯度累积、step/EMA、DDP schema preflight、dense-bin
+  guard、deepcopy/cleanup 和真实 Trainer checkpoint resume。
 - callback 可直接传入 Lightning `Trainer`。
 
 后续新增 logger backend 或 callback 时，需要补充与 Lightning logger backend 的集成测试，并确保没有引入 optional 依赖到 core import。

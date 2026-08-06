@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import Any
 
 from torch import Tensor, nn
+
+from anytrain import observation
 
 from .bank import ParamExpertBank
 from .expand import (
@@ -14,7 +17,7 @@ from .expand import (
 )
 from .expert import Expert
 from .grid import MoEGrid
-from .metrics import tokens_per_expert
+from .metrics import moe_routing_metrics, tokens_per_expert
 from .params import ExpertInit, expand_expert
 from .partitioner import MoEPartitioner, PartitionLayout
 from .routing import ExpertRouting, materialize_routing, validate_num_experts
@@ -79,6 +82,7 @@ class MoE(nn.Module):
         self._gate_accepts_mask = _module_accepts_keyword(gate, "mask")
         self._gate_accepts_collect_stats = _module_accepts_keyword(gate, "collect_stats")
         self._router_accepts_mask = _module_accepts_keyword(router, "mask")
+        observation.registry.recommend(self)
 
     @classmethod
     def from_module(
@@ -281,6 +285,37 @@ def _default_router_for_module(module: nn.Module, num_experts: int) -> nn.Module
         "nn.Conv2d, and nn.ConvTranspose1d modules. Pass router=... for "
         f"custom modules; got {type(module)!r}."
     )
+
+
+def _collect_observation(
+    module: nn.Module,
+    inputs: tuple[Any, ...],
+    kwargs: Mapping[str, Any],
+    output: object,
+) -> dict[str, observation.Observation]:
+    del module, inputs, kwargs
+    if not isinstance(output, MoEOutput):
+        raise TypeError("MoE observation requires MoEOutput from module forward.")
+    return {
+        name: observation.Curve(value.detach())
+        for name, value in moe_routing_metrics(
+            output.routing,
+            tokens=output.tokens_per_expert,
+            dropped_mask=output.dropped_mask,
+        ).items()
+    }
+
+
+observation.registry.register(
+    MoE,
+    (
+        observation.ForwardObservation(
+            name="routing",
+            collect=_collect_observation,
+            recommended=True,
+        ),
+    ),
+)
 
 
 __all__ = ["MoE"]

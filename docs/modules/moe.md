@@ -276,12 +276,17 @@ partition inputs, dispatch experts, or emit Lightning logs.
 ## Auxiliary Loss and Logging
 
 MoE forward returns `MoEOutput` only. Downstream code composes task loss and
-MoE aux losses explicitly. `MoELoggerCallback` lives under `anytrain.lightning`
-and auto-discovers `MoEOutput` / `ExpertRouting` / `MoEMonitor` entries from
-`training_step` outputs. It logs full gate probabilities separately from actual
-route weights so `top_k=None` and `top_k=K` share one MoE logging surface. The
-default scalar logs are summary metrics rather than per-expert curves; enable
-`log_histograms=True` when the full expert distribution needs inspection.
+MoE aux losses explicitly. `MoE` registers one forward routing observation in
+the shared `anytrain.observation` registry. `ObservationCallback` discovers the
+module from the `pl_module` tree and records effective experts plus scalar
+summaries for usage, gate probability, actual route weight, tokens, and dropped
+ratio. This is the only MoE-intermediate logging path in anytrain; direct
+`.route()` / `.forward_manually()` calls bypass the normal module forward hook.
+
+`moe_loss()` runs after forward and is an explicit training objective, not a
+module intermediate. Downstream code records it through normal loss logging
+(`self.log`, `LossItemLoggerCallback`, or its own loss composition) rather than
+injecting it into the observation registry.
 
 ## Limits
 

@@ -11,7 +11,7 @@ from anytrain._buffer import register_buffer
 from anytrain._compat import strict_zip
 
 from . import _checks
-from ._observation import ObservedQuantizer
+from ._observation import recommend as recommend_observation
 from ._observation import register as register_observation
 from ._product_codebook import (
     group_indices_to_indices as _group_indices_to_indices,
@@ -77,7 +77,8 @@ class AGRVQConfig:
         _checks.dropout(self.dropout)
 
 
-class AutoGroupResidualVectorQuantizer(ObservedQuantizer, nn.Module):
+@register_observation
+class AutoGroupResidualVectorQuantizer(nn.Module):
     config: AGRVQConfig
     quantizers: nn.ModuleList
     _index_basis: Tensor
@@ -114,7 +115,7 @@ class AutoGroupResidualVectorQuantizer(ObservedQuantizer, nn.Module):
                 for _ in range(config.num_codebooks)
             ]
         )
-        register_observation(self)
+        recommend_observation(self)
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:

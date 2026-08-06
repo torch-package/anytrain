@@ -1,9 +1,7 @@
 import copy
-import gc
 import unittest
 import warnings
 from unittest import mock
-from weakref import ref
 
 import torch
 from torch import nn
@@ -82,20 +80,21 @@ class ObservationTypeTest(unittest.TestCase):
         class Recommended(nn.Module):
             def __init__(self):
                 super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "value",
-                            _curve,
-                            recommended=True,
-                        ),
-                    ),
-                )
+                observation.registry.recommend(self)
 
             def forward(self, value):
                 return value
 
+        observation.registry.register(
+            Recommended,
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    recommended=True,
+                ),
+            ),
+        )
         module = Recommended().eval()
         with warnings.catch_warnings(record=True) as records:
             warnings.simplefilter("always")
@@ -126,29 +125,34 @@ class ObservationTypeTest(unittest.TestCase):
             ),
         )
         for module in modules:
-            specs = observation.specs(module)
-            self.assertEqual(len(specs), 1)
+            specs = observation.registry.specs(module)
+            self.assertEqual(
+                tuple(spec.name for spec in specs),
+                ("quantization", "quantization/loss"),
+            )
             self.assertTrue(specs[0].recommended)
             self.assertTrue(specs[0].covers_descendants)
+            self.assertIsNone(specs[1].history)
 
     def test_recommendation_hint_never_requires_a_process_group(self):
         class Recommended(nn.Module):
             def __init__(self):
                 super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "value",
-                            _curve,
-                            recommended=True,
-                        ),
-                    ),
-                )
+                observation.registry.recommend(self)
 
             def forward(self, value):
                 return value
 
+        observation.registry.register(
+            Recommended,
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    recommended=True,
+                ),
+            ),
+        )
         module = Recommended().train()
         with (
             mock.patch("torch.distributed.is_available", return_value=True),
@@ -164,16 +168,7 @@ class ObservationTypeTest(unittest.TestCase):
         class Child(nn.Module):
             def __init__(self):
                 super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "value",
-                            _curve,
-                            recommended=True,
-                        ),
-                    ),
-                )
+                observation.registry.recommend(self)
 
             def forward(self, value):
                 return value
@@ -182,21 +177,32 @@ class ObservationTypeTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.child = Child()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "value",
-                            _curve,
-                            recommended=True,
-                            covers_descendants=True,
-                        ),
-                    ),
-                )
+                observation.registry.recommend(self)
 
             def forward(self, value):
                 return self.child(value)
 
+        observation.registry.register(
+            Child,
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    recommended=True,
+                ),
+            ),
+        )
+        observation.registry.register(
+            Parent,
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    recommended=True,
+                    covers_descendants=True,
+                ),
+            ),
+        )
         module = Parent().train()
         self.assertEqual(len(module.child._forward_pre_hooks), 0)
         with warnings.catch_warnings(record=True) as records:
@@ -212,16 +218,7 @@ class ObservationTypeTest(unittest.TestCase):
         class Child(nn.Module):
             def __init__(self):
                 super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "value",
-                            _curve,
-                            recommended=True,
-                        ),
-                    ),
-                )
+                observation.registry.recommend(self)
 
             def forward(self, value):
                 return value
@@ -230,25 +227,35 @@ class ObservationTypeTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.child = Child()
-                observation.register(
-                    self,
-                    (
-                        observation.BackwardObservation(
-                            "gradient",
-                            self._collect,
-                            recommended=True,
-                            covers_descendants=True,
-                        ),
-                    ),
-                )
 
             def forward(self, value):
                 return self.child(value)
 
-            def _collect(self, module, grad_outputs):
-                del module, grad_outputs
-                return None
+        def collect_backward(module, grad_outputs):
+            del module, grad_outputs
+            return None
 
+        observation.registry.register(
+            Child,
+            (
+                observation.ForwardObservation(
+                    "value",
+                    _curve,
+                    recommended=True,
+                ),
+            ),
+        )
+        observation.registry.register(
+            Parent,
+            (
+                observation.BackwardObservation(
+                    "gradient",
+                    collect_backward,
+                    recommended=True,
+                    covers_descendants=True,
+                ),
+            ),
+        )
         module = Parent().train()
         self.assertEqual(len(module._forward_pre_hooks), 0)
         self.assertEqual(len(module.child._forward_pre_hooks), 1)
@@ -263,69 +270,72 @@ class ObservationTypeTest(unittest.TestCase):
         self.assertEqual(len(matching), 1)
         self.assertIn("Child", str(matching[0].message))
 
-    def test_bound_collector_registration_does_not_keep_module_alive(self):
+    def test_registry_rejects_bound_module_collectors(self):
         class Registered(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "value",
-                            self._collect,
-                            recommended=True,
-                        ),
-                    ),
-                )
-
             def _collect(self, module, inputs, kwargs, output):
                 del module, inputs, kwargs, output
                 return None
 
         module = Registered()
-        module_ref = ref(module)
-        del module
-        gc.collect()
-        self.assertIsNone(module_ref())
-
-    def test_instance_registered_bound_collector_rebinds_on_deepcopy(self):
-        class Registered(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (observation.ForwardObservation("value", self._collect),),
-                )
-
-            def _collect(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs, output
-                return None
-
-        module = Registered()
-        copied = copy.deepcopy(module)
-        collector = observation.specs(copied)[0].collect
-        self.assertIs(getattr(collector, "__self__", None), copied)
+        with self.assertRaisesRegex(TypeError, "must not be bound"):
+            observation.registry.register(
+                Registered,
+                (observation.ForwardObservation("value", module._collect),),
+            )
 
     def test_quantizer_observation_declaration_survives_deepcopy(self):
         module = FiniteScalarQuantizer(FSQConfig(input_dim=2, levels=(3, 3)))
         copied = copy.deepcopy(module)
-        self.assertEqual(observation.specs(copied), observation.specs(module))
+        self.assertEqual(
+            observation.registry.specs(copied),
+            observation.registry.specs(module),
+        )
         self.assertEqual(len(copied._forward_pre_hooks), 1)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", observation.RecommendationWarning)
             copied(torch.randn(1, 2))
         self.assertEqual(len(copied._forward_pre_hooks), 0)
 
-    def test_register_rejects_normalized_spec_name_collisions(self):
-        module = nn.Identity()
+    def test_registry_rejects_normalized_spec_name_collisions(self):
+        class Registered(nn.Module):
+            pass
+
         with self.assertRaisesRegex(ValueError, "unique after normalization"):
-            observation.register(
-                module,
+            observation.registry.register(
+                Registered,
                 (
                     observation.ForwardObservation("value", _curve),
                     observation.ForwardObservation("/value/", _curve),
                 ),
             )
+
+    def test_registry_rejects_duplicate_class_registration(self):
+        class Registered(nn.Module):
+            pass
+
+        observation.registry.register(
+            Registered,
+            (observation.ForwardObservation("value", _curve),),
+        )
+        with self.assertRaisesRegex(RuntimeError, "already registered"):
+            observation.registry.register(
+                Registered,
+                (observation.ForwardObservation("other", _curve),),
+            )
+
+    def test_registry_requires_explicit_concrete_subclass_registration(self):
+        class Registered(nn.Module):
+            pass
+
+        class Child(Registered):
+            pass
+
+        observation.registry.register(
+            Registered,
+            (observation.ForwardObservation("value", _curve),),
+        )
+        self.assertEqual(len(observation.registry.specs(Registered())), 1)
+        self.assertEqual(observation.registry.specs(Child()), ())
 
 
 if __name__ == "__main__":

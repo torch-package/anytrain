@@ -33,7 +33,8 @@
 默认安装必须可用：
 
 - `anytrain.lightning`：LightningModule logging mixin、debug callback、schedule runtime 和性能观测 callback。
-- `anytrain.observation`：普通 `nn.Module` 的 Curve/Distribution/Bins observation spec，不依赖 Lightning logger。
+- `anytrain.observation`：普通 `nn.Module` 的 concrete-type observation registry，以及
+  Curve/Distribution/Bins 值契约；这是 module 中间量 logging 的唯一声明入口，不依赖 Lightning logger。
 - `anytrain.lightning.schedule`：step/unit LR schedule spec、unit progress、unit LR runtime 和 unit stop。
 - `anytrain.lightning.perf`：训练效率观测 helper，包括参数量、FLOPs、硬件峰值算力和 MFU。
 - `anytrain.loss`：通用 loss 接口和组合器。

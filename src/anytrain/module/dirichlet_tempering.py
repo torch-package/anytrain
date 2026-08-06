@@ -7,6 +7,7 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
+from anytrain import observation
 from anytrain._buffer import register_buffer
 
 DirichletStrategy = Literal["std", "var", "range"]
@@ -222,6 +223,7 @@ class AdaptiveDirichletTempering(nn.Module):
 
         self._disabled = False
         self._stats_frozen = False
+        observation.registry.recommend(self)
 
     @property
     def num_experts(self) -> int:
@@ -317,12 +319,6 @@ class AdaptiveDirichletTempering(nn.Module):
             alpha=self.alpha,
             temperature=self.temperature,
         )
-
-    @property
-    def monitor(self) -> ADTStats:
-        """Read-only logging monitor snapshot for callback auto-discovery."""
-
-        return self.stats()
 
     def diagnostics(self) -> dict[str, Tensor]:
         return adt_stats_metrics(self.stats())
@@ -662,3 +658,24 @@ def _summary_metrics(values: Tensor, name: str) -> dict[str, Tensor]:
         f"{name}_min": values.min(),
         f"{name}_max": values.max(),
     }
+
+
+def _collect_observation(module: nn.Module) -> dict[str, observation.Observation]:
+    if not isinstance(module, AdaptiveDirichletTempering):
+        raise TypeError("ADT observation requires AdaptiveDirichletTempering.")
+    return {
+        name: observation.Curve(value)
+        for name, value in adt_stats_metrics(module.stats()).items()
+    }
+
+
+observation.registry.register(
+    AdaptiveDirichletTempering,
+    (
+        observation.PollObservation(
+            name="adt",
+            collect=_collect_observation,
+            recommended=True,
+        ),
+    ),
+)

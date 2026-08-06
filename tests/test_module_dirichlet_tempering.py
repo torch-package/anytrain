@@ -334,20 +334,14 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         adt = ADT(num_experts=4)
 
         stats = adt.stats()
-        monitor = adt.monitor
         metrics = adt_stats_metrics(stats)
 
         self.assertIsInstance(stats, ADTStats)
-        self.assertIsInstance(monitor, ADTStats)
         self.assertEqual(set(metrics), set(adt.diagnostics()))
         for name, value in metrics.items():
             torch.testing.assert_close(value, adt.diagnostics()[name])
         torch.testing.assert_close(stats.expert_means, stats.expert_utilization)
         torch.testing.assert_close(stats.effective_experts, adt.effective_experts)
-        torch.testing.assert_close(monitor.expert_utilization, stats.expert_utilization)
-        torch.testing.assert_close(monitor.expert_vars, stats.expert_vars)
-        torch.testing.assert_close(monitor.alpha, stats.alpha)
-        torch.testing.assert_close(monitor.temperature, stats.temperature)
 
     def test_stats_metrics_can_select_groups(self):
         stats = ADT(num_experts=3).stats()

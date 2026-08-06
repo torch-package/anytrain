@@ -1,4 +1,4 @@
-from ._binding import RecommendationWarning, recommend, register, specs
+from ._binding import RecommendationWarning, registry
 from ._types import (
     BackwardObservation,
     BackwardObservationWarning,
@@ -8,7 +8,6 @@ from ._types import (
     EMAHistory,
     ForwardObservation,
     Observation,
-    ObservationProvider,
     ObservationResult,
     ObservationSpec,
     PollObservation,
@@ -23,12 +22,9 @@ __all__ = [
     "EMAHistory",
     "ForwardObservation",
     "Observation",
-    "ObservationProvider",
     "ObservationResult",
     "ObservationSpec",
     "PollObservation",
     "RecommendationWarning",
-    "recommend",
-    "register",
-    "specs",
+    "registry",
 ]

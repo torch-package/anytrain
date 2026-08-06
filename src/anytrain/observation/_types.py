@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from numbers import Real
-from typing import Any, Optional, Protocol, Union, runtime_checkable
+from typing import Any, Optional, Union
 
 import torch
 from torch import Tensor, nn
@@ -187,11 +187,6 @@ class PollObservation:
 ObservationSpec = Union[ForwardObservation, BackwardObservation, PollObservation]
 
 
-@runtime_checkable
-class ObservationProvider(Protocol):
-    def observation_specs(self) -> tuple[ObservationSpec, ...]: ...
-
-
 def _edges(values: tuple[float, ...]) -> None:
     if len(values) < 2:
         raise ValueError("Distribution.edges must contain at least two values.")
@@ -235,7 +230,6 @@ __all__ = [
     "ForwardObservation",
     "Observation",
     "ObservationResult",
-    "ObservationProvider",
     "ObservationSpec",
     "PollObservation",
 ]

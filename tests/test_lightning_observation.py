@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import torch
 from lightning import pytorch as pl
@@ -14,6 +15,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import anytrain.lightning.callback.observation as observation_callback
 from anytrain import observation
 from anytrain.lightning import ObservationCallback
+from anytrain.module import AdaptiveDirichletTempering
+from anytrain.module.moe import CallableExpert, LinearRouter, MoE
 from anytrain.module.quantization import (
     EmbeddingVectorQuantizer,
     ResidualVectorQuantizer,
@@ -34,33 +37,41 @@ class _Observed(nn.Module):
     def __init__(self, *, sizes=(2,)):
         super().__init__()
         self.sizes = sizes
-        observation.register(
-            self,
-            (
-                observation.ForwardObservation(
-                    "stats",
-                    self._collect,
-                    history=observation.EMAHistory(half_life_steps=1),
-                    recommended=True,
-                    covers_descendants=True,
-                ),
-            ),
-        )
+        observation.registry.recommend(self)
 
     def forward(self, values):
         return values
 
-    def _collect(self, module, inputs, kwargs, output):
-        del module, inputs, kwargs
+    @staticmethod
+    def _collect(module, inputs, kwargs, output):
+        del inputs, kwargs
+        if not isinstance(module, _Observed):
+            raise TypeError("test observation requires _Observed.")
         return {
             "codes": observation.Bins(
                 output,
-                sizes=self.sizes,
-                group_dim=None if len(self.sizes) == 1 else -1,
-                group_names=tuple(f"book_{index}" for index in range(len(self.sizes))),
+                sizes=module.sizes,
+                group_dim=None if len(module.sizes) == 1 else -1,
+                group_names=tuple(
+                    f"book_{index}" for index in range(len(module.sizes))
+                ),
             ),
             "mean": observation.Curve(output.float().mean()),
         }
+
+
+observation.registry.register(
+    _Observed,
+    (
+        observation.ForwardObservation(
+            "stats",
+            _Observed._collect,
+            history=observation.EMAHistory(half_life_steps=1),
+            recommended=True,
+            covers_descendants=True,
+        ),
+    ),
+)
 
 
 class _Module(pl.LightningModule):
@@ -123,6 +134,81 @@ class ObservationCallbackTest(unittest.TestCase):
         values, kwargs = module.log_dict_calls[-1]
         self.assertEqual(kwargs["sync_dist"], False)
         self.assertEqual(values["module/observed/stats/mean"].item(), 1.0)
+        self.assertEqual(
+            values[
+                "module/observed/stats/codes/book_0/step/occupied_count"
+            ].item(),
+            1.0,
+        )
+        self.assertEqual(
+            values[
+                "module/observed/stats/codes/book_0/ema/occupied_count"
+            ].item(),
+            2.0,
+        )
+
+    def test_observation_time_is_amortized_over_the_render_interval(self):
+        writer = _Writer()
+        trainer = _trainer(writer)
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=2)
+        _start(callback, trainer, module)
+
+        with mock.patch.object(
+            observation_callback.time,
+            "perf_counter",
+            side_effect=(0.0, 0.1, 1.0, 1.2, 2.0, 2.3, 3.0, 3.4),
+        ):
+            _run_step(callback, trainer, module, torch.tensor([0]), batch_idx=0)
+            self.assertEqual(module.log_dict_calls, [])
+            _run_step(callback, trainer, module, torch.tensor([1]), batch_idx=1)
+
+        values, _kwargs = module.log_dict_calls[-1]
+        self.assertAlmostEqual(values["module/observation_time"].item(), 0.5)
+
+    def test_disabled_render_does_not_measure_observation_time(self):
+        trainer = _trainer(_Writer())
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=None)
+        _start(callback, trainer, module)
+
+        with mock.patch.object(
+            observation_callback.time,
+            "perf_counter",
+            side_effect=AssertionError("disabled observation timing must not run"),
+        ):
+            _run_step(callback, trainer, module, torch.tensor([0]), batch_idx=0)
+        self.assertEqual(module.log_dict_calls, [])
+
+    def test_curve_collectors_only_run_for_rendered_steps(self):
+        class Curved(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def forward(self, value):
+                return value
+
+        def collect(module, inputs, kwargs, output):
+            del inputs, kwargs
+            if not isinstance(module, Curved):
+                raise TypeError("test observation requires Curved.")
+            module.calls += 1
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            Curved,
+            (observation.ForwardObservation("curve", collect),),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(Curved())
+        callback = ObservationCallback(every_n_steps=2)
+        _start(callback, trainer, module)
+
+        _run_step(callback, trainer, module, torch.tensor([1.0]), batch_idx=0)
+        self.assertEqual(module.observed.calls, 0)
+        _run_step(callback, trainer, module, torch.tensor([2.0]), batch_idx=1)
+        self.assertEqual(module.observed.calls, 1)
 
     def test_gradient_accumulation_finalizes_once_when_global_step_advances(self):
         writer = _Writer()
@@ -146,6 +232,29 @@ class ObservationCallbackTest(unittest.TestCase):
             if tag == "module/observed/stats/codes/book_0/step"
         )
         self.assertEqual(current["bucket_counts"], [2.0, 2.0])
+
+    def test_observation_time_counts_gradient_accumulation_as_one_optimizer_step(self):
+        trainer = _trainer(_Writer())
+        module = _Module()
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+
+        with mock.patch.object(
+            observation_callback.time,
+            "perf_counter",
+            side_effect=(0.0, 0.1, 1.0, 1.2, 2.0, 2.2, 3.0, 3.3),
+        ):
+            callback.on_train_batch_start(trainer, module, None, 0)
+            module.observed(torch.tensor([0]))
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+
+            callback.on_train_batch_start(trainer, module, None, 1)
+            module.observed(torch.tensor([1]))
+            trainer.global_step = 1
+            callback.on_train_batch_end(trainer, module, None, None, 1)
+
+        values, _kwargs = module.log_dict_calls[-1]
+        self.assertAlmostEqual(values["module/observation_time"].item(), 0.8)
 
     def test_checkpoint_roundtrip_restores_ema(self):
         writer = _Writer()
@@ -193,29 +302,30 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(callback.observed_modules, ("observed",))
         callback.on_fit_end(trainer, module)
 
-    def test_provider_specs_are_evaluated_once_during_discovery(self):
+    def test_registry_discovery_does_not_call_collectors(self):
         class Provider(nn.Module):
             def __init__(self):
                 super().__init__()
                 self.calls = 0
 
-            def observation_specs(self):
-                self.calls += 1
-                return (
-                    observation.PollObservation(
-                        "state",
-                        lambda module: observation.Curve(torch.tensor(1.0)),
-                    ),
-                )
-
             def forward(self, value):
                 return value
 
+        def collect(module):
+            if not isinstance(module, Provider):
+                raise TypeError("test observation requires Provider.")
+            module.calls += 1
+            return observation.Curve(torch.tensor(1.0))
+
+        observation.registry.register(
+            Provider,
+            (observation.PollObservation("state", collect),),
+        )
         provider = Provider()
         module = _Module(provider)
         callback = ObservationCallback()
         _start(callback, _trainer(_Writer()), module)
-        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.calls, 0)
 
     def test_quantizer_adapter_logs_codes_and_loss_curves(self):
         quantizer = EmbeddingVectorQuantizer(VQConfig(input_dim=2, codebook_size=4))
@@ -235,6 +345,56 @@ class ObservationCallbackTest(unittest.TestCase):
                 for tag, _kwargs in writer.histograms
             )
         )
+
+    def test_adt_registry_logs_poll_summaries(self):
+        writer = _Writer()
+        trainer = _trainer(writer)
+        module = _Module(AdaptiveDirichletTempering(num_experts=3))
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        _run_step(
+            callback,
+            trainer,
+            module,
+            torch.tensor([[2.0, 0.0, -1.0], [0.0, 1.0, -2.0]]),
+            batch_idx=0,
+        )
+
+        values, _ = module.log_dict_calls[-1]
+        self.assertIn("module/observed/adt/variance_mean", values)
+        self.assertIn("module/observed/adt/alpha_std", values)
+        self.assertIn("module/observed/adt/temperature_max", values)
+
+    def test_moe_registry_logs_forward_routing_summaries(self):
+        def scale(input, weight, bias=None):
+            del bias
+            return input * weight
+
+        moe = MoE(
+            num_experts=2,
+            router=LinearRouter(2, 2),
+            expert=CallableExpert(scale),
+            weight=nn.Parameter(torch.tensor([1.0, 2.0])),
+            top_k=1,
+        )
+        writer = _Writer()
+        trainer = _trainer(writer)
+        module = _Module(moe)
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+        _run_step(
+            callback,
+            trainer,
+            module,
+            torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+            batch_idx=0,
+        )
+
+        values, _ = module.log_dict_calls[-1]
+        self.assertIn("module/observed/routing/effective_experts", values)
+        self.assertIn("module/observed/routing/usage_mean", values)
+        self.assertIn("module/observed/routing/tokens/total", values)
+        self.assertIn("module/observed/routing/dropped/ratio", values)
 
     def test_dense_bin_limit_fails_before_allocation(self):
         writer = _Writer()
@@ -333,37 +493,52 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(strategy.reduce_calls, 0)
 
     def test_distributed_schema_includes_stable_source_identity(self):
-        class Source(nn.Module):
-            def __init__(self, spec_name, item):
-                super().__init__()
-                self.item = item
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            spec_name,
-                            self._collect,
-                            history=observation.EMAHistory(),
-                        ),
-                    ),
-                )
-
+        class SourceA(nn.Module):
             def forward(self, value):
                 return value
 
-            def _collect(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {self.item: observation.Bins(output, sizes=(2,))}
+        class SourceB(nn.Module):
+            def forward(self, value):
+                return value
+
+        def collect_a(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"b/c": observation.Bins(output, sizes=(2,))}
+
+        def collect_b(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"c": observation.Bins(output, sizes=(2,))}
+
+        observation.registry.register(
+            SourceA,
+            (
+                observation.ForwardObservation(
+                    "a",
+                    collect_a,
+                    history=observation.EMAHistory(),
+                ),
+            ),
+        )
+        observation.registry.register(
+            SourceB,
+            (
+                observation.ForwardObservation(
+                    "a/b",
+                    collect_b,
+                    history=observation.EMAHistory(),
+                ),
+            ),
+        )
 
         first_trainer = _trainer(_Writer(), world_size=2)
-        first_module = _Module(Source("a", "b/c"))
+        first_module = _Module(SourceA())
         first = ObservationCallback(sync_distributed=True)
         _start(first, first_trainer, first_module)
         first.on_train_batch_start(first_trainer, first_module, None, 0)
         first_module.observed(torch.tensor([0]))
 
         second_trainer = _trainer(_Writer(), world_size=2)
-        second_module = _Module(Source("a/b", "c"))
+        second_module = _Module(SourceB())
         second = ObservationCallback(sync_distributed=True)
         _start(second, second_trainer, second_module)
         second.on_train_batch_start(second_trainer, second_module, None, 0)
@@ -395,30 +570,28 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_distribution_writes_step_and_ema_raw_histograms(self):
         class Continuous(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "stats",
-                            self._collect,
-                            history=observation.EMAHistory(half_life_steps=1),
-                        ),
-                    ),
-                )
-
             def forward(self, values):
                 return values
 
-            def _collect(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {
-                    "values": observation.Distribution(
-                        output,
-                        edges=(0.0, 1.0, 2.0),
-                    )
-                }
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {
+                "values": observation.Distribution(
+                    output,
+                    edges=(0.0, 1.0, 2.0),
+                )
+            }
+
+        observation.registry.register(
+            Continuous,
+            (
+                observation.ForwardObservation(
+                    "stats",
+                    collect,
+                    history=observation.EMAHistory(half_life_steps=1),
+                ),
+            ),
+        )
 
         writer = _Writer()
         trainer = _trainer(writer)
@@ -473,20 +646,20 @@ class ObservationCallbackTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.current = torch.tensor(0.0)
-                observation.register(
-                    self,
-                    (
-                        observation.PollObservation(
-                            "state",
-                            lambda module: observation.Curve(module.current),
-                        ),
-                    ),
-                )
 
             def forward(self, value):
                 self.current = value.float().mean()
                 return value
 
+        observation.registry.register(
+            Polled,
+            (
+                observation.PollObservation(
+                    "state",
+                    lambda module: observation.Curve(module.current),
+                ),
+            ),
+        )
         writer = _Writer()
         trainer = _trainer(writer)
         module = _Module(Polled())
@@ -498,27 +671,20 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_backward_observation_warns_once_and_is_not_attached(self):
         class BackwardObserved(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.BackwardObservation(
-                            "gradient",
-                            self._collect,
-                        ),
-                        observation.BackwardObservation(
-                            "other_gradient",
-                            self._collect,
-                        ),
-                    ),
-                )
-
             def forward(self, value):
                 return value * 2
 
-            def _collect(self, module, grad_outputs):
-                raise AssertionError("backward observation must not be collected")
+        def collect(module, grad_outputs):
+            del module, grad_outputs
+            raise AssertionError("backward observation must not be collected")
+
+        observation.registry.register(
+            BackwardObserved,
+            (
+                observation.BackwardObservation("gradient", collect),
+                observation.BackwardObservation("other_gradient", collect),
+            ),
+        )
 
         trainer = _trainer(_Writer())
         module = _Module(BackwardObserved())
@@ -567,24 +733,22 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_mapping_value_names_reject_normalized_collisions(self):
         class Colliding(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (observation.ForwardObservation("stats", self._collect),),
-                )
-
             def forward(self, value):
                 return value
 
-            def _collect(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                value = observation.Curve(output.float().mean())
-                return {"value": value, "/value/": value}
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            value = observation.Curve(output.float().mean())
+            return {"value": value, "/value/": value}
+
+        observation.registry.register(
+            Colliding,
+            (observation.ForwardObservation("stats", collect),),
+        )
 
         trainer = _trainer(_Writer())
         module = _Module(Colliding())
-        callback = ObservationCallback()
+        callback = ObservationCallback(every_n_steps=1)
         _start(callback, trainer, module)
         callback.on_train_batch_start(trainer, module, None, 0)
         with self.assertRaisesRegex(ValueError, "same tag"):
@@ -626,22 +790,22 @@ class ObservationCallbackTest(unittest.TestCase):
                 super().__init__()
                 self.module = _Observed()
                 self.log_dict_calls = []
-                observation.register(
-                    self,
-                    (observation.ForwardObservation("root", self._collect),),
-                )
 
             def forward(self, value):
                 self.module(value)
                 return value
 
-            def _collect(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return observation.Curve(output.float().mean())
-
             def log_dict(self, values, **kwargs):
                 self.log_dict_calls.append((values, kwargs))
 
+        def collect_root(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            Root,
+            (observation.ForwardObservation("root", collect_root),),
+        )
         trainer = _trainer(_Writer())
         module = Root()
         callback = ObservationCallback(every_n_steps=1)
@@ -656,20 +820,6 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_root_and_child_logger_tag_collision_fails_fast(self):
         class Child(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "stats",
-                            lambda module, inputs, kwargs, output: observation.Curve(
-                                output.float().mean()
-                            ),
-                        ),
-                    ),
-                )
-
             def forward(self, value):
                 return value
 
@@ -677,24 +827,25 @@ class ObservationCallbackTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.module = Child()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "module/stats",
-                            lambda module, inputs, kwargs, output: observation.Curve(
-                                output.float().mean()
-                            ),
-                        ),
-                    ),
-                )
 
             def forward(self, value):
                 return self.module(value)
 
+        def collect(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return observation.Curve(output.float().mean())
+
+        observation.registry.register(
+            Child,
+            (observation.ForwardObservation("stats", collect),),
+        )
+        observation.registry.register(
+            Root,
+            (observation.ForwardObservation("module/stats", collect),),
+        )
         trainer = _trainer(_Writer())
         module = Root()
-        callback = ObservationCallback()
+        callback = ObservationCallback(every_n_steps=1)
         _start(callback, trainer, module)
         callback.on_train_batch_start(trainer, module, None, 0)
         with self.assertRaisesRegex(ValueError, "same logger tag"):
@@ -702,37 +853,35 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_histogram_derived_logger_tag_collision_fails_fast(self):
         class Colliding(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "histogram",
-                            self._histogram,
-                            history=observation.EMAHistory(),
-                        ),
-                        observation.ForwardObservation(
-                            "histogram/codes/step",
-                            self._curve,
-                        ),
-                    ),
-                )
-
             def forward(self, value):
                 return value
 
-            def _histogram(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {"codes": observation.Bins(output, sizes=(2,))}
+        def histogram(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"codes": observation.Bins(output, sizes=(2,))}
 
-            def _curve(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {"entropy": observation.Curve(output.float().mean())}
+        def curve(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"entropy": observation.Curve(output.float().mean())}
+
+        observation.registry.register(
+            Colliding,
+            (
+                observation.ForwardObservation(
+                    "histogram",
+                    histogram,
+                    history=observation.EMAHistory(),
+                ),
+                observation.ForwardObservation(
+                    "histogram/codes/step",
+                    curve,
+                ),
+            ),
+        )
 
         trainer = _trainer(_Writer())
         module = _Module(Colliding())
-        callback = ObservationCallback()
+        callback = ObservationCallback(every_n_steps=1)
         _start(callback, trainer, module)
         callback.on_train_batch_start(trainer, module, None, 0)
         with self.assertRaisesRegex(ValueError, "same logger tag"):
@@ -740,30 +889,28 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_observation_state_key_collision_fails_fast(self):
         class Colliding(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation("a", self._first),
-                        observation.ForwardObservation("a/b", self._second),
-                    ),
-                )
-
             def forward(self, value):
                 return value
 
-            def _first(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {"b/c": observation.Curve(output.float().mean())}
+        def first(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"b/c": observation.Curve(output.float().mean())}
 
-            def _second(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {"c": observation.Curve(output.float().mean())}
+        def second(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"c": observation.Curve(output.float().mean())}
+
+        observation.registry.register(
+            Colliding,
+            (
+                observation.ForwardObservation("a", first),
+                observation.ForwardObservation("a/b", second),
+            ),
+        )
 
         trainer = _trainer(_Writer())
         module = _Module(Colliding())
-        callback = ObservationCallback()
+        callback = ObservationCallback(every_n_steps=1)
         _start(callback, trainer, module)
         callback.on_train_batch_start(trainer, module, None, 0)
         with self.assertRaisesRegex(ValueError, "same state key"):
@@ -777,34 +924,32 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_checkpoint_restores_hierarchical_spec_source_identity(self):
         class Hierarchical(nn.Module):
-            def __init__(self):
-                super().__init__()
-                observation.register(
-                    self,
-                    (
-                        observation.ForwardObservation(
-                            "a",
-                            self._first,
-                            history=observation.EMAHistory(),
-                        ),
-                        observation.ForwardObservation(
-                            "a/b",
-                            self._second,
-                            history=observation.EMAHistory(),
-                        ),
-                    ),
-                )
-
             def forward(self, value):
                 return value
 
-            def _first(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {"x": observation.Bins(output, sizes=(2,))}
+        def first(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"x": observation.Bins(output, sizes=(2,))}
 
-            def _second(self, module, inputs, kwargs, output):
-                del module, inputs, kwargs
-                return {"c": observation.Bins(output, sizes=(2,))}
+        def second(module, inputs, kwargs, output):
+            del module, inputs, kwargs
+            return {"c": observation.Bins(output, sizes=(2,))}
+
+        observation.registry.register(
+            Hierarchical,
+            (
+                observation.ForwardObservation(
+                    "a",
+                    first,
+                    history=observation.EMAHistory(),
+                ),
+                observation.ForwardObservation(
+                    "a/b",
+                    second,
+                    history=observation.EMAHistory(),
+                ),
+            ),
+        )
 
         trainer = _trainer(_Writer())
         module = _Module(Hierarchical())
@@ -884,6 +1029,10 @@ class ObservationCallbackTest(unittest.TestCase):
 
         self.assertIs(lightning.ObservationCallback, ObservationCallback)
         self.assertFalse(hasattr(lightning, "ModuleObservationCallback"))
+        self.assertFalse(hasattr(lightning, "ADTStatsLoggerCallback"))
+        self.assertFalse(hasattr(lightning, "CodebookUsageLoggerCallback"))
+        self.assertFalse(hasattr(lightning, "QuantizationLoggerCallback"))
+        self.assertFalse(hasattr(lightning, "MoELoggerCallback"))
         self.assertFalse(hasattr(callback, "ObservationCallback"))
         self.assertFalse(hasattr(callback, "ModuleObservationCallback"))
 

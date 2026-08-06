@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -432,6 +433,10 @@ class ObservationCallback(pl.Callback):
         self._warning_rank = False
         self._backward_warning_emitted = False
         self._forward_active = False
+        self._render_active = False
+        self._pending_observation_time = 0.0
+        self._observation_time_sum = 0.0
+        self._observation_time_steps = 0
         self._last_global_step: int | None = None
         self._restored_last_global_step: int | None = None
         self.observed_modules: tuple[str, ...] = ()
@@ -495,10 +500,15 @@ class ObservationCallback(pl.Callback):
         batch: Any,
         batch_idx: int,
     ) -> None:
-        del trainer, pl_module, batch, batch_idx
+        del pl_module, batch, batch_idx
         if not self._enabled:
             return
         self._forward_active = True
+        step = _capability.global_step(trainer)
+        self._render_active = (
+            self.every_n_steps is not None
+            and (step + 1) % self.every_n_steps == 0
+        )
 
     def on_train_batch_end(
         self,
@@ -511,6 +521,7 @@ class ObservationCallback(pl.Callback):
         del outputs, batch, batch_idx
         if not self._enabled:
             return
+        started_at = self._start_observation_timer()
         self._forward_active = False
         step = _capability.global_step(trainer)
         previous = self._last_global_step
@@ -521,6 +532,7 @@ class ObservationCallback(pl.Callback):
         if optimizer_steps < 0:
             raise RuntimeError("trainer.global_step moved backwards during observation.")
         if optimizer_steps == 0:
+            self._add_observation_time(started_at)
             return
         if optimizer_steps != 1:
             raise RuntimeError(
@@ -541,10 +553,12 @@ class ObservationCallback(pl.Callback):
                 )
         self._last_global_step = step
         self._emitted_keys.clear()
+        self._render_active = False
         _validate_histograms(self._states, device=pl_module.device)
         if self.every_n_steps is None or step % self.every_n_steps != 0:
+            self._finish_observation_step(started_at)
             return
-        self._log(trainer, pl_module, step=step)
+        self._log(trainer, pl_module, step=step, started_at=started_at)
 
     def on_train_epoch_end(
         self,
@@ -672,7 +686,7 @@ class ObservationCallback(pl.Callback):
     def _attach(self, pl_module: pl.LightningModule) -> None:
         registered: list[tuple[str, nn.Module, tuple[ObservationSpec, ...]]] = []
         for name, module in pl_module.named_modules():
-            declared = observation.specs(module)
+            declared = observation.registry.specs(module)
             if declared:
                 registered.append((name, module, declared))
         for _name, module, declared in registered:
@@ -735,12 +749,20 @@ class ObservationCallback(pl.Callback):
         if not self._forward_active:
             return
         spec = cast(ForwardObservation, collector.spec)
-        self._record(collector, spec.collect(module, inputs, kwargs, output))
+        if spec.history is None and not self._render_active:
+            return
+        started_at = self._start_observation_timer()
+        try:
+            self._record(collector, spec.collect(module, inputs, kwargs, output))
+        finally:
+            self._add_observation_time(started_at)
 
     def _poll(self) -> None:
         for collector in self._collectors:
             spec = collector.spec
             if isinstance(spec, PollObservation):
+                if spec.history is None and not self._render_active:
+                    continue
                 self._record(collector, spec.collect(collector.module))
 
     def _record(self, collector: _Collector, result: ObservationResult) -> None:
@@ -868,6 +890,7 @@ class ObservationCallback(pl.Callback):
         pl_module: pl.LightningModule,
         *,
         step: int,
+        started_at: float | None,
     ) -> None:
         metrics: dict[str, Tensor] = {}
         raw_writer = (
@@ -892,6 +915,20 @@ class ObservationCallback(pl.Callback):
             if raw_writer is not None:
                 _write_histogram(raw_writer, entry.tag, "step", current, step=step)
                 _write_histogram(raw_writer, entry.tag, "ema", ema, step=step)
+        self._finish_observation_step(started_at)
+        if self._observation_time_steps > 0:
+            _merge_metrics(
+                metrics,
+                {
+                    join_tag(self.tag, "observation_time"): torch.tensor(
+                        self._observation_time_sum / self._observation_time_steps,
+                        dtype=torch.float32,
+                        device=pl_module.device,
+                    )
+                },
+            )
+            self._observation_time_sum = 0.0
+            self._observation_time_steps = 0
         if metrics:
             pl_module.log_dict(
                 metrics,
@@ -977,6 +1014,8 @@ class ObservationCallback(pl.Callback):
 
     def _discard_pending(self) -> None:
         self._forward_active = False
+        self._render_active = False
+        self._pending_observation_time = 0.0
         self._emitted_keys.clear()
         for entry in self._states.values():
             entry.state.discard_pending()
@@ -985,6 +1024,10 @@ class ObservationCallback(pl.Callback):
         self._enabled = False
         self._warning_rank = False
         self._forward_active = False
+        self._render_active = False
+        self._pending_observation_time = 0.0
+        self._observation_time_sum = 0.0
+        self._observation_time_steps = 0
         while self._handles:
             self._handles.pop().remove()
         while self._claimed:
@@ -993,6 +1036,24 @@ class ObservationCallback(pl.Callback):
         self._collectors_by_id.clear()
         self._output_tag_owners.clear()
         self._emitted_keys.clear()
+
+    def _start_observation_timer(self) -> float | None:
+        if self.every_n_steps is None or not self._collectors:
+            return None
+        return time.perf_counter()
+
+    def _add_observation_time(self, started_at: float | None) -> None:
+        if started_at is None:
+            return
+        self._pending_observation_time += time.perf_counter() - started_at
+
+    def _finish_observation_step(self, started_at: float | None) -> None:
+        self._add_observation_time(started_at)
+        if self.every_n_steps is None or not self._collectors:
+            return
+        self._observation_time_sum += self._pending_observation_time
+        self._observation_time_steps += 1
+        self._pending_observation_time = 0.0
 
 
 def _distribution_delta(value: Distribution) -> _HistogramDelta:
@@ -1103,15 +1164,22 @@ def _state_output_tags(
         for scope in ("step", "ema"):
             scope_tag = join_tag(tag, group_name, scope)
             result.append(scope_tag)
-            result.extend(
-                join_tag(scope_tag, metric)
-                for metric in (
-                    "observations",
-                    "active_ratio",
-                    "entropy",
-                    "perplexity",
+            metrics = [
+                "observations",
+                "active_ratio",
+                "entropy",
+                "perplexity",
+            ]
+            if state.schema.kind == "bins":
+                metrics.extend(
+                    (
+                        "occupied_count",
+                        "occupied_ratio",
+                        "dead_count",
+                        "dead_ratio",
+                    )
                 )
-            )
+            result.extend(join_tag(scope_tag, metric) for metric in metrics)
     if len(set(result)) != len(result):
         raise RuntimeError("observation state produced duplicate logger tags.")
     return tuple(result)
@@ -1162,6 +1230,14 @@ def _histogram_metrics(
             entropy.exp(),
             torch.zeros_like(entropy),
         )
+        if snapshot.schema.kind == "bins":
+            denominator = mass.new_tensor(float(size))
+            occupied = (mass > 0).sum().to(dtype=mass.dtype)
+            dead = denominator - occupied
+            values[join_tag(group_tag, "occupied_count")] = occupied
+            values[join_tag(group_tag, "occupied_ratio")] = occupied / denominator
+            values[join_tag(group_tag, "dead_count")] = dead
+            values[join_tag(group_tag, "dead_ratio")] = dead / denominator
     return values
 
 

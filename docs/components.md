@@ -24,14 +24,12 @@ core 提供：
 - `LossItemLoggerCallback`：按下游提供的 label adapter 汇总并记录命名 `LossItem`。
 - `GradientProbeLoggerCallback`：比较 `loss@group` target 对指定参数 probe 的梯度 norm、log-ratio 和 cosine。
 - `LossTimeBucketLoggerCallback`：按 `LossItem.details` 中的 time-like tensor 记录 histogram 和 bucketed loss。
-- `ADTStatsLoggerCallback`：记录下游返回的 `AdaptiveDirichletTempering` / `ADTStats` monitor，默认只打 ADT 独有的 variance、alpha 和 temperature；直接返回 ADT module 时按 `pl_module.named_modules()` 自动推断日志名。
-- `CodebookUsageLoggerCallback`：按下游显式声明的 codebook indices 记录 usage、perplexity、dead code 和 active codebook 比例。
-- `QuantizationLoggerCallback`：按下游显式声明的 `QuantizeOutput` 记录量化 loss，并复用 codebook usage 统计。
-- `ObservationCallback`：自动发现 module 声明的推荐 observation，通过 forward/poll 记录 Curve，
-  以及 Distribution/Bins 的 optimizer-step 和 EMA histogram；默认只在 global rank 0 注册。当前内置
-  quantizer 默认声明该能力。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并建议改用
-  `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。
-- `MoELoggerCallback`：从 training outputs 自动发现 `MoEOutput` / `ExpertRouting` / `MoEMonitor`，记录 MoE usage、gate probability、actual route weight、assignment counts、dropped-token ratio 的稳定 scalar summary、可选 histogram 和 aux-loss components，并在匹配到 ADT gate 时自动追加 ADT-only `adt/...` stats。
+- `ObservationCallback`：module 中间量 logging 的唯一 transport。它从
+  `anytrain.observation.registry` 自动发现 concrete module 的只读声明，通过 forward/poll 记录 Curve，
+  以及 Distribution/Bins 的 optimizer-step 和 EMA histogram；默认只在 global rank 0 注册。ADT、MoE
+  和公开 quantizer 已声明推荐 observation。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并
+  建议改用 `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。`every_n_steps` 控制统一输出间隔，
+  每次 render 同时记录 interval 平均的 `module/observation_time`。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
 
