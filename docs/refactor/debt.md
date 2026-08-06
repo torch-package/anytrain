@@ -36,7 +36,7 @@ Do not use this file for experiment logs, benchmark results, private paths, remo
 
 ### R001 Codec registry should be data-driven
 
-Resolved: callers still ask for capabilities or default frame/semantic-acoustic loaders by name, but capability declaration and lazy loader dispatch now live in one `CodecEntry` descriptor per codec wrapper.
+Resolved: callers still ask for capabilities or default frame, semantic-acoustic, and semantic-global loaders by name, but capability declaration and lazy loader dispatch now live in one `CodecEntry` descriptor per codec wrapper.
 
 Current policy:
 
