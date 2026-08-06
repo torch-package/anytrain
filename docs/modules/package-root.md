@@ -22,6 +22,7 @@ assert anytrain.__all__ == []
 
 - 根包 import 应保持轻量，不隐式导入 Lightning、torchmetrics、plot/audio/text 等重依赖，也不导出跨模块快捷别名。
 - 训练入口由下游项目自己维护，根包不提供快捷启动函数。
+- 用户需要 module observation 契约时显式使用 `anytrain.observation`。
 - 用户需要 Lightning helper 时显式使用 `anytrain.lightning`。
 - 用户需要 loss/evaluator/framework 或 optional backend 时显式使用对应子模块。
 

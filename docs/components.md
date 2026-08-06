@@ -27,6 +27,10 @@ core 提供：
 - `ADTStatsLoggerCallback`：记录下游返回的 `AdaptiveDirichletTempering` / `ADTStats` monitor，默认只打 ADT 独有的 variance、alpha 和 temperature；直接返回 ADT module 时按 `pl_module.named_modules()` 自动推断日志名。
 - `CodebookUsageLoggerCallback`：按下游显式声明的 codebook indices 记录 usage、perplexity、dead code 和 active codebook 比例。
 - `QuantizationLoggerCallback`：按下游显式声明的 `QuantizeOutput` 记录量化 loss，并复用 codebook usage 统计。
+- `ObservationCallback`：自动发现 module 声明的推荐 observation，通过 forward/poll 记录 Curve，
+  以及 Distribution/Bins 的 optimizer-step 和 EMA histogram；默认只在 global rank 0 注册。当前内置
+  quantizer 默认声明该能力。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并建议改用
+  `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。
 - `MoELoggerCallback`：从 training outputs 自动发现 `MoEOutput` / `ExpertRouting` / `MoEMonitor`，记录 MoE usage、gate probability、actual route weight、assignment counts、dropped-token ratio 的稳定 scalar summary、可选 histogram 和 aux-loss components，并在匹配到 ADT gate 时自动追加 ADT-only `adt/...` stats。
 - `DebugCallback` 等训练调试 callback。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。

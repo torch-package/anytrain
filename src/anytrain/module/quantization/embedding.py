@@ -9,6 +9,8 @@ from torch.nn import functional as F
 from anytrain._buffer import register_buffer
 
 from . import _checks
+from ._observation import ObservedQuantizer
+from ._observation import register as register_observation
 from .lookup import nearest_codebook_indices
 from .output import QuantizationLoss, QuantizeOutput
 from .projection import make_projection
@@ -60,7 +62,7 @@ class VQConfig:
         return self.input_dim if self.codebook_dim is None else self.codebook_dim
 
 
-class EmbeddingVectorQuantizer(nn.Module):
+class EmbeddingVectorQuantizer(ObservedQuantizer, nn.Module):
     config: VQConfig
     project_in: nn.Module
     project_out: nn.Module
@@ -101,6 +103,7 @@ class EmbeddingVectorQuantizer(nn.Module):
         # Zero EMA counts are the checkpoint-compatible pending k-means sentinel.
         self._ema_initialized = not config.kmeans_init
         self.reset_parameters()
+        register_observation(self)
 
     def _apply(self, fn, recurse: bool = True):
         module = super()._apply(fn, recurse)

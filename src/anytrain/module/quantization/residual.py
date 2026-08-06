@@ -6,6 +6,8 @@ import torch
 from torch import Tensor, nn
 
 from . import _checks
+from ._observation import ObservedQuantizer
+from ._observation import register as register_observation
 from ._residual_runner import run_residual_quantization, sample_active_mask
 from .embedding import EmbeddingVectorQuantizer, VQConfig
 from .output import QuantizeOutput
@@ -36,7 +38,7 @@ class RVQConfig:
         return len(self.vq_configs)
 
 
-class ResidualVectorQuantizer(nn.Module):
+class ResidualVectorQuantizer(ObservedQuantizer, nn.Module):
     config: RVQConfig
     quantizers: nn.ModuleList
 
@@ -53,6 +55,7 @@ class ResidualVectorQuantizer(nn.Module):
         self.quantizers = nn.ModuleList(
             [EmbeddingVectorQuantizer(vq_config) for vq_config in config.vq_configs]
         )
+        register_observation(self)
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:

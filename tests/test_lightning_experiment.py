@@ -16,6 +16,7 @@ class ExperimentTest(unittest.TestCase):
             add_scalar=lambda *args: None,
             add_audio=lambda *args, **kwargs: None,
             add_histogram=lambda *args: None,
+            add_histogram_raw=lambda *args, **kwargs: None,
         )
         trainer = _trainer(writer)
 
@@ -23,6 +24,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertIs(experiment.scalar(trainer), writer)
         self.assertIs(experiment.audio(trainer), writer)
         self.assertIs(experiment.histogram(trainer), writer)
+        self.assertIs(experiment.histogram_raw(trainer), writer)
 
     def test_returns_none_without_a_logger(self) -> None:
         trainer = cast(Trainer, SimpleNamespace(logger=None))
@@ -31,6 +33,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertIsNone(experiment.scalar(trainer))
         self.assertIsNone(experiment.audio(trainer))
         self.assertIsNone(experiment.histogram(trainer))
+        self.assertIsNone(experiment.histogram_raw(trainer))
 
     def test_returns_none_for_unsupported_capabilities(self) -> None:
         trainer = _trainer(SimpleNamespace(add_text=None))
@@ -39,6 +42,7 @@ class ExperimentTest(unittest.TestCase):
         self.assertIsNone(experiment.scalar(trainer))
         self.assertIsNone(experiment.audio(trainer))
         self.assertIsNone(experiment.histogram(trainer))
+        self.assertIsNone(experiment.histogram_raw(trainer))
 
     def test_uses_first_logger_when_trainer_logger_is_missing(self) -> None:
         writer = SimpleNamespace(add_scalar=lambda *args, **kwargs: None)

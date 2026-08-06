@@ -16,6 +16,8 @@
 - 基于命名 `LossItem` 的梯度关系、全局梯度范数和 time-bucket loss 观测 callback。
 - 任意离散 codebook indices 的 usage、perplexity、dead code 和 active codebook 观测 callback。
 - 训练 outputs 中显式声明的 `QuantizeOutput` loss 和 codebook usage 观测 callback。
+- 自动发现普通 module 声明的 Curve/Distribution/Bins observation，并记录 optimizer-step 与
+  EMA 状态的 callback。
 - non-finite loss 检查等训练调试 callback。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
 - 训练效率观测 callback，记录参数量、step time、硬件峰值算力和 MFU。
@@ -33,7 +35,8 @@
 
 `anytrain` 可以提供训练组件，但按依赖层级拆分：
 
-- core：`lightning`、`lightning.schedule`、`lightning.perf`、通用 loss/evaluator/optim/module 接口和 `module.idspace`。
+- core：`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、通用
+  loss/evaluator/optim/module 接口和 `module.idspace`。
 - optional general：通用 torchmetrics evaluator、第三方 logger backend。
 - optional domain：audio/text/speech 等领域 loss、evaluator。
 - optional framework：flow matching、MAE、GAN adversarial training 等研究框架。
@@ -262,9 +265,81 @@ if writer is not None:
     writer.add_scalar("train/example", value, trainer.global_step)
 ```
 
-`experiment.text()`、`scalar()`、`audio()` 和 `histogram()` 检查 Trainer 主 logger 的 experiment 是否
-暴露对应 callable。没有 logger 或 backend 不支持时返回 `None`；helper 不决定 rank、记录 cadence、
-tag 或 tensor 设备，下游 callback 继续拥有这些语义。
+`experiment.text()`、`scalar()`、`audio()`、`histogram()` 和 `histogram_raw()` 检查 Trainer 主 logger
+的 experiment 是否暴露对应 callable。`histogram_raw()` 面向已经聚合好的 bucket counts，例如
+Distribution/Bins 的 EMA histogram。没有 logger 或 backend 不支持时返回 `None`；helper 不决定 rank、
+记录 cadence、tag 或 tensor 设备，下游 callback 继续拥有这些语义。
+
+## Module observations
+
+普通 `nn.Module` 可以通过 `anytrain.observation` 声明推荐观测值，再由一个 Lightning callback 从
+完整 `pl_module` 树自动发现和绑定：
+
+```python
+from lightning import pytorch as pl
+
+from anytrain.lightning import ObservationCallback
+
+
+trainer = pl.Trainer(
+    callbacks=[
+        ObservationCallback(
+            every_n_steps=100,
+            half_life_steps=1_000,
+        )
+    ]
+)
+```
+
+值类型和历史语义固定为：
+
+- `Curve` 接受 scalar Tensor；同一个 optimizer step 内多次 forward/poll observation 取 mean，
+  只记录曲线，不维护跨 step EMA。
+- `Distribution` 接受 1-D floating Tensor 和固定 edges；多维连续 Tensor 必须由 module 先选择明确
+  view，不能隐式 flatten。
+- `Bins` 接受任意 rank 的离散 Tensor。多 codebook 时用 `group_dim` 指出 codebook 轴，bin 数可以
+  大于 1，也可以在不同 group 间不同。
+- `Distribution` / `Bins` 每个 optimizer step 都先形成固定大小的 histogram sufficient stats，再维护
+  counts、observation total、sum 和 sum-squares 的 EMA；step 与 EMA 的 entropy、perplexity 和
+  active ratio 均从这些状态现算。
+
+callback 默认只在 global rank 0 的 `on_fit_start` 扫描 `pl_module.named_modules()`；
+`sync_distributed=True` 时才在所有 rank 扫描和注册。module 可用实例级
+`observation.register()`，也可实现 `ObservationProvider.observation_specs()`；后者适合需要在
+deepcopy/spawn 后继续发现声明的组件。当前六个公开 quantizer 已默认声明 codes bins 和可用的
+quantization loss curves。未挂 callback 时，推荐 module 首次 training + grad-enabled 普通调用会发出
+一次 `RecommendationWarning`；父 module 声明 `covers_descendants=True` 时不会再提示或观察内部 stage。
+`BackwardObservation` 当前是 TODO 占位；callback 发现后发出一次
+`BackwardObservationWarning` 并跳过，不注册 backward hook 或修改 autograd graph。需要观察 loss 对
+参数的梯度时先使用 `GradientProbeLoggerCallback`。
+
+`every_n_steps` 只控制 render；被跳过的 step 仍更新 EMA，传 `None` 可完全关闭 render 而保留状态。
+callback 级 `half_life_steps` 会覆盖 spec 自带的 `EMAHistory`。TensorBoard 等 backend 支持
+`add_histogram_raw` 时同时写 step/EMA histogram；不支持时仍保留 scalar summary。
+`max_dense_bins` 在分配状态前限制 `[groups, max_bins]` 的 dense 大小，mixed-radix product codebook
+超过限制会明确报错，调用方应改用 factorized observation 或显式提高上限。
+
+默认 `sync_distributed=False`，只维护并输出 global-zero rank 的本地诊断。开启后 callback 会先确认所有 rank
+拥有相同累计 observation key/schema/source identity，并在该 optimizer step 产生相同 emitted key 集合，
+再 sum sufficient stats；条件 module 调用或动态 mapping 必须在各 rank 保持一致，否则同步失败并显式
+报错。
+内部 state key 与 Curve、step/EMA histogram scalar、raw histogram 的最终 logger tag 都要求全局唯一；
+不同 module/spec 路径归一化到同一个实际 tag 时会立即报错，不会静默覆盖。
+
+checkpoint 只保存已完成 optimizer step 的 Distribution/Bins EMA、稳定的 module/spec/item source
+identity 和 step metadata，不保存 pending microbatch、Curve 或 raw forward output。恢复时 `tag` 作为
+callback state identity 必须保持稳定，`half_life_steps` 与 `sync_distributed` 必须兼容；
+`every_n_steps` 可以调整，`max_dense_bins` 可以调整到仍能容纳已保存 schema 的值。
+
+自动 hook 只覆盖普通 `module(...)`。直接调用 `.forward()` 或领域方法（例如
+`quantizer.quantize()`）会绕过它；这类路径继续使用显式 `QuantizationLoggerCallback` monitor，或改为
+普通 module 调用。当前提交边界基于 train batch end 的 `global_step` 变化，因此支持常规自动优化和梯度
+累积；同一个 train batch 内执行多个 optimizer step 的 manual optimization 会 fail-fast。
+
+更完整的类型、provider 和 hook 边界见
+[`anytrain.observation` 设计](modules/observation.md)。原有
+`CodebookUsageLoggerCallback` / `QuantizationLoggerCallback` 仍保留，适合 training outputs 已显式持有
+monitor，或调用路径不能被 module hook 覆盖的场景。
 
 ## Optimizer / Scheduler
 

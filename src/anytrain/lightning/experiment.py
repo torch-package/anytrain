@@ -31,6 +31,22 @@ class Histogram(Protocol):
     def add_histogram(self, tag: str, values: Tensor, global_step: int) -> object: ...
 
 
+class HistogramRaw(Protocol):
+    def add_histogram_raw(
+        self,
+        tag: str,
+        *,
+        min: float,
+        max: float,
+        num: float,
+        sum: float,
+        sum_squares: float,
+        bucket_limits: list[float],
+        bucket_counts: list[float],
+        global_step: int,
+    ) -> object: ...
+
+
 def text(trainer: Trainer) -> Text | None:
     value = _experiment(trainer)
     if value is None or not callable(getattr(value, "add_text", None)):
@@ -59,6 +75,13 @@ def histogram(trainer: Trainer) -> Histogram | None:
     return cast(Histogram, value)
 
 
+def histogram_raw(trainer: Trainer) -> HistogramRaw | None:
+    value = _experiment(trainer)
+    if value is None or not callable(getattr(value, "add_histogram_raw", None)):
+        return None
+    return cast(HistogramRaw, value)
+
+
 def _experiment(trainer: Trainer) -> object | None:
     return _capability.logger_experiment(trainer)
 
@@ -66,10 +89,12 @@ def _experiment(trainer: Trainer) -> object | None:
 __all__ = [
     "Audio",
     "Histogram",
+    "HistogramRaw",
     "Scalar",
     "Text",
     "audio",
     "histogram",
+    "histogram_raw",
     "scalar",
     "text",
 ]

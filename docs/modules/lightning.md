@@ -25,6 +25,7 @@ src/anytrain/lightning/
     ema.py
     grad.py
     loss.py
+    observation.py
     parameter_policy.py
     performance.py
     quantization.py
@@ -36,7 +37,7 @@ src/anytrain/lightning/
 
 当前公开导出：
 
-- `experiment`：从 Trainer 主 logger 获取 text/scalar/audio/histogram 能力。
+- `experiment`：从 Trainer 主 logger 获取 text/scalar/audio/histogram/raw-histogram 能力。
 - `validation`：加权 validation logging 与可恢复指标历史。
 - `schedule`：统一 step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制。
 - `LightningLogMixin`
@@ -58,6 +59,7 @@ src/anytrain/lightning/
 - `LossTimeBucketLoggerCallback`
 - `FlopsProvider`
 - `PerformanceCallback`
+- `ObservationCallback`
 - `ADTStatsLoggerCallback`
 - `ADTStatsMonitor`
 - `CodebookUsageLoggerCallback`
@@ -141,9 +143,11 @@ if writer is not None:
     writer.add_audio("sample", waveform, trainer.global_step, sample_rate=16_000)
 ```
 
-`text()`、`scalar()`、`audio()` 和 `histogram()` 只在 logger experiment 暴露对应 callable 时返回
-类型化 Protocol；没有 logger 或 backend 不支持该能力时返回 `None`。这个模块不选择 logger backend，
-也不决定 rank、cadence、tag 或 tensor 的设备转换，这些仍由调用 callback 负责。
+`text()`、`scalar()`、`audio()`、`histogram()` 和 `histogram_raw()` 只在 logger experiment 暴露对应
+callable 时返回类型化 Protocol；没有 logger 或 backend 不支持该能力时返回 `None`。
+`histogram_raw()` 用于已经持有 bucket limits/counts 的状态，避免为了渲染浮点 EMA counts 伪造样本。
+这个模块不选择 logger backend，也不决定 rank、cadence、tag 或 tensor 的设备转换，这些仍由调用
+callback 负责。
 
 ## Logging Mixin
 
@@ -218,6 +222,60 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
+
+`ObservationCallback` 适配 [`anytrain.observation`](observation.md) 的 module 声明。它在
+`on_fit_start` 扫描完整 `pl_module.named_modules()`，claim 所有已发现 provider/instance declaration，
+再按 `covers_descendants` 去除父子重复 observation。默认只有 global rank 0 扫描并注册；显式
+`sync_distributed=True` 时才在所有 rank 注册。Forward hook 在普通 `module(...)` 返回后抽取值，Poll
+observation 在 optimizer step 提交边界读取 module 已维护状态。复制一个正在被观察的 module 时，
+复制体上的 runtime forward hook 会在首次调用时自行移除，不能反向写入原 callback。
+
+`BackwardObservation` 当前是 TODO 占位。callback 发现后只发出一次
+`BackwardObservationWarning` 并跳过，不注册 backward hook、不替换 output，也不改变 autograd graph。
+需要观察 loss 对参数的梯度时使用 `GradientProbeLoggerCallback`；真正的 module backward observation
+需要先确定严格只读的契约后再实现。
+
+运行状态按值类型分开：
+
+- `Curve` 在一个 optimizer interval 内累加 sum/count，提交时记录 mean，不维护 EMA，也不进入
+  callback checkpoint。
+- `Distribution` / `Bins` 在 hook 内立即转成固定 schema 的 mass、observations、total、sum 和
+  sum-squares，不保存完整 output 或 autograd graph；每次 `global_step` 前进时提交 step snapshot，并按
+  optimizer-step half-life 更新 EMA。
+- `every_n_steps` 只控制 render；`None` 完全关闭 render。所有 step 仍提交状态，非法 finite/range 值也
+  在 step boundary 立即失败，不受 cadence 影响。
+- spec 的 `EMAHistory.half_life_steps` 是默认值；callback 构造参数 `half_life_steps` 非 `None` 时统一
+  覆盖。
+
+histogram render 使用 `experiment.histogram_raw()` 写 step/EMA bucket counts；backend 不支持 raw
+histogram 时仍通过 `pl_module.log_dict()` 写 observations、active ratio、entropy 和 perplexity。
+`max_dense_bins` 在 `_bins_delta` 分配 `[groups, max_bins]` 前检查实际 dense state 大小，防止 flat
+mixed-radix codebook OOM。
+
+默认 `sync_distributed=False`，只在 global rank 0 保留 rank-local 诊断。开启后每个 optimizer step 先用固定 signature
+all-gather 确认所有 rank 的累计 observation keys/schema 和本 step emitted key 集合一致，再 sum
+sufficient stats，最后从全局 counts 计算派生指标；signature 同时包含稳定的
+`module_path/spec_name/item` source identity，不会把不同 source 恰好拼成的同名 key 归约在一起。派生
+ratio 不跨 rank 求平均。条件执行 module、动态 mapping key 和动态 schema 必须保持 rank 对齐，否则在
+进入逐 state reduce 前显式失败。
+
+callback 同时校验内部 state key 和所有实际输出 logger tag 的全局唯一性。检查范围包含 Curve tag、
+histogram 的 step/EMA scalar 以及 raw histogram tag，因此 root/child path 或 spec/item 分段方式不同但
+最终字符串相同的声明会明确报错，不会在 metric mapping 合并时静默覆盖。
+
+checkpoint state 只包含已完成 step 的 histogram EMA、invalid history、稳定 source identity 和
+`last_global_step`，不包含 pending microbatch、Curve 或 hook。source identity 直接绑定当前 module path、
+spec name 和 mapping item，允许合法的层级 spec/item 名称而不做 prefix 猜测。attach 留在
+`on_fit_start`；loop state 已恢复后，`on_train_start` 再校验 callback step，兼容 Lightning 的 checkpoint
+restore 顺序。callback `state_key` 只用稳定的 `tag` 区分实例；恢复要求 `tag` 能匹配旧 callback，并校验
+`half_life_steps` / `sync_distributed`。
+`every_n_steps` 可在 resume 时改变；`max_dense_bins` 只要仍容纳 checkpoint schema 也可改变。
+
+提交边界通过 train batch end 的 `global_step` delta 判断，因此覆盖自动优化和梯度累积；同一 train
+batch 内多个 optimizer step 无法把 pending observation 无歧义拆分，会明确报错。PyTorch forward hook
+不覆盖显式 `.forward()` 或领域方法调用。量化器普通调用可自动观察；`.quantize()` 等路径继续使用
+显式 `QuantizationLoggerCallback` / `CodebookUsageLoggerCallback`。旧 callback 没有弃用，两套入口分别
+服务 module declaration 和 training-output monitor。
 
 `ADTStatsLoggerCallback` 默认从 `pl_module.named_modules()` 自动发现所有
 `AdaptiveDirichletTempering` module，读取它们的 `monitor`，并用通用 monitor naming helper
@@ -315,11 +373,14 @@ trainer = pl.Trainer(
 当前覆盖：
 
 - validation count-weighted epoch aggregation、history state 和严格错误路径。
-- experiment text/scalar/audio/histogram 能力探测及缺失路径。
+- experiment text/scalar/audio/histogram/raw-histogram 能力探测及缺失路径。
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
 - `ModelCheckpoint` 的原生接口兼容、异步复制、有界背压、同步 opt-out 和删除排队。
 - ADT、quantization 和 MoE callback 的显式 monitor contract、日志 cadence 和 root export。
+- module observation 的类型约束、forward/poll hook、backward TODO warning、rank-zero 默认绑定、
+  梯度累积、step/EMA、DDP schema preflight、dense-bin guard、deepcopy/cleanup 和真实 Trainer
+  checkpoint resume。
 - callback 可直接传入 Lightning `Trainer`。
 
 后续新增 logger backend 或 callback 时，需要补充与 Lightning logger backend 的集成测试，并确保没有引入 optional 依赖到 core import。

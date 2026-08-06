@@ -33,6 +33,7 @@
 默认安装必须可用：
 
 - `anytrain.lightning`：LightningModule logging mixin、debug callback、schedule runtime 和性能观测 callback。
+- `anytrain.observation`：普通 `nn.Module` 的 Curve/Distribution/Bins observation spec，不依赖 Lightning logger。
 - `anytrain.lightning.schedule`：step/unit LR schedule spec、unit progress、unit LR runtime 和 unit stop。
 - `anytrain.lightning.perf`：训练效率观测 helper，包括参数量、FLOPs、硬件峰值算力和 MFU。
 - `anytrain.loss`：通用 loss 接口和组合器。
@@ -171,6 +172,7 @@ tokenizer / detokenizer 是同一 backend 的方向 capability view，相同 res
 
 ```text
 src/anytrain/
+  observation/
   lightning/
     callback/
     mixin/
@@ -193,7 +195,7 @@ src/anytrain/
   example/
 ```
 
-`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`chat`、
+`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`chat`、
 `framework` 和领域组件按依赖拆分为 optional 子模块。
 
 ## 边界

@@ -5,6 +5,7 @@
 ## 模块列表
 
 - [`anytrain` package root](package-root.md)：轻量公开导出和 import 边界。
+- [`anytrain.observation`](observation.md)：module observation 类型、推荐 spec 和 step/EMA 状态契约。
 - [`anytrain.lightning`](lightning.md)：LightningModule logging mixin、调试 callback 和性能观测 callback。
 - `anytrain.lightning.schedule`：step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制；归入 [`anytrain.lightning`](lightning.md)。
 - [`anytrain.lightning.perf`](perf.md)：参数量、FLOPs、硬件峰值算力和 MFU。

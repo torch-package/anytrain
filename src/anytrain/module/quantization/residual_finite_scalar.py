@@ -12,6 +12,8 @@ from torch import Tensor, nn
 from anytrain._buffer import register_buffer
 
 from . import _checks
+from ._observation import ObservedQuantizer
+from ._observation import register as register_observation
 from .finite_scalar import DEFAULT_FSQ_LEVELS, FSQConfig
 from .output import QuantizeOutput
 from .projection import make_projection
@@ -55,7 +57,7 @@ class RFSQConfig:
             raise ValueError("work_dtype must be torch.float32, torch.float64, or None.")
 
 
-class ResidualFiniteScalarQuantizer(nn.Module):
+class ResidualFiniteScalarQuantizer(ObservedQuantizer, nn.Module):
     """Residual finite scalar quantizer with a shared scalar grid.
 
     Each residual stage quantizes into the same mixed-radix FSQ codebook while
@@ -103,6 +105,7 @@ class ResidualFiniteScalarQuantizer(nn.Module):
             persistent=False,
         )
         register_buffer(self, "_dtype", torch.empty(0), persistent=False)
+        register_observation(self)
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:

@@ -30,6 +30,7 @@ from .callback.moe import (
     MoEMonitor,
     MoEMonitorsFn,
 )
+from .callback.observation import ObservationCallback
 from .callback.parameter_policy import (
     ModuleSelector,
     ParameterPolicyCallback,
@@ -105,6 +106,7 @@ __all__ = [
     "gradient_loss_groups",
     "prefixed_log_dict",
     "schedule",
+    "ObservationCallback",
     "window_summary",
     "validation",
 ]

@@ -156,6 +156,13 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
   统计 codebook 使用率、perplexity、dead code ratio 和 active ratio；`quantization_usage_metrics()`
   和 `quantization_loss_metrics()` 负责生成稳定相对 metric key。它们不依赖 Lightning，也不会触发
   quantizer forward；Lightning callback 只负责 monitor 解析、分布式 reduce 和日志 transport。
+- 六个公开 quantizer 都通过 `anytrain.observation` 声明推荐 forward observation。普通
+  `quantizer(...)` 调用可由 `ObservationCallback` 自动记录 quantization loss curve，以及 codes
+  的 step/EMA bins；residual 外层声明覆盖内部 stage，避免重复统计。直接调用 `.quantize()` 或
+  `.forward()` 会绕过 PyTorch forward hook，仍可使用原有显式 `QuantizationLoggerCallback` adapter。
+- flat mixed-radix codebook 可能非常大；自动 callback 在分配 dense EMA bins 前检查
+  `max_dense_bins` 并明确报错，不会尝试无界分配。需要大 product codebook 时应提供 factorized
+  observation。
 - 单 codebook quantizer 实现 `QuantizerProtocol`；支持 `num_active_codebooks` 的 residual quantizer 额外实现 `ResidualQuantizerProtocol`。
 - 所有 quantizer 暴露 `codebook_sizes`，单 codebook 为 `(codebook_size,)`，residual
   / multi-stage quantizer 为每个 stage 的 flat id 空间大小。

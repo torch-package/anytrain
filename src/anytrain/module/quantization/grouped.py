@@ -10,6 +10,8 @@ from anytrain._buffer import register_buffer
 from anytrain._compat import strict_zip
 
 from . import _checks
+from ._observation import ObservedQuantizer
+from ._observation import register as register_observation
 from ._product_codebook import (
     group_indices_to_indices as _group_indices_to_indices,
 )
@@ -73,7 +75,7 @@ class GVQConfig:
         self.group_dims = tuple(int(dim) for dim in group_dims)
 
 
-class GroupedVectorQuantizer(nn.Module):
+class GroupedVectorQuantizer(ObservedQuantizer, nn.Module):
     config: GVQConfig
     project_in: nn.Module
     project_out: nn.Module
@@ -126,6 +128,7 @@ class GroupedVectorQuantizer(nn.Module):
             persistent=False,
         )
         self.reset_parameters()
+        register_observation(self)
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:

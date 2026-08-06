@@ -2,6 +2,13 @@
 
 只记录尚未实现或需要真实环境确认的需求。历史迁移记录以文档和 git 历史为准。
 
+## Lightning
+
+- 设计真正只读的 module backward observation 契约。当前 `BackwardObservation` 只作为占位声明，
+  `ObservationCallback` 会 warning 后跳过；需要观察 loss 对参数的梯度时先使用
+  `GradientProbeLoggerCallback`。未来方案不能替换 module output、插入 autograd view，或让各 rank
+  使用不同的 forward/backward graph。
+
 ## Loss
 
 - 实现 plain-config 友好的 loss 组合/工厂：只负责按配置装配 `LossABC` / `LossGroup`

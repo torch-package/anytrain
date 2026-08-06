@@ -13,6 +13,8 @@ from torch import Tensor, nn
 from anytrain._buffer import register_buffer
 
 from . import _checks
+from ._observation import ObservedQuantizer
+from ._observation import register as register_observation
 from .output import QuantizeOutput
 from .projection import make_projection
 
@@ -58,7 +60,7 @@ class FSQConfig:
             )
 
 
-class FiniteScalarQuantizer(nn.Module):
+class FiniteScalarQuantizer(ObservedQuantizer, nn.Module):
     config: FSQConfig
     project_in: nn.Module
     project_out: nn.Module
@@ -108,6 +110,7 @@ class FiniteScalarQuantizer(nn.Module):
             self._build_level_mask(config.levels),
             persistent=False,
         )
+        register_observation(self)
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:
