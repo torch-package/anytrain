@@ -6,7 +6,13 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._observation import loss as register_loss
+from .._observation import (
+    emit_diagnostics,
+    loss_with_diagnostics,
+)
+from .._observation import (
+    loss as register_loss,
+)
 from ..abc import LossABC
 
 
@@ -37,7 +43,7 @@ class LogMagnitudeLoss(LossABC):
         return self.loss_fn(estimate_log_magnitude, reference_log_magnitude)
 
 
-@register_loss
+@loss_with_diagnostics
 class CompressedSpectrogramLoss(LossABC):
     def __init__(
         self,
@@ -74,6 +80,14 @@ class CompressedSpectrogramLoss(LossABC):
         imag_loss = self.loss_fn(
             estimate_sin * estimate_compressed,
             reference_sin * reference_compressed,
+        )
+        emit_diagnostics(
+            self,
+            {
+                "magnitude": magnitude_loss,
+                "real": real_loss,
+                "imag": imag_loss,
+            },
         )
         return magnitude_loss + real_loss + imag_loss
 

@@ -1,10 +1,13 @@
 from .abc import LossABC
 from .balancer import (
     FixedWeightLossBalancer,
+    InterpolatedLossBalancer,
     LossBalancerABC,
-    LossTensorDict,
+    LossMapping,
     MeanLossBalancer,
     UncertaintyLossBalancer,
+    UncertaintyNormalization,
+    WeightedLossBalancerABC,
 )
 from .codebook import MaskedCodebookCrossEntropyLoss, PackedCodebookLogits
 from .frame import (
@@ -19,17 +22,20 @@ from .group import LossGroup
 
 __all__ = [
     "FixedWeightLossBalancer",
+    "InterpolatedLossBalancer",
     "LossABC",
     "LossBalancerABC",
     "LossGroup",
     "MaskedCosineAlignmentLoss",
     "MaskedFrameMSELoss",
     "TeacherLoss",
-    "LossTensorDict",
+    "LossMapping",
     "MaskedCodebookCrossEntropyLoss",
     "PackedCodebookLogits",
     "MeanLossBalancer",
+    "UncertaintyNormalization",
     "UncertaintyLossBalancer",
+    "WeightedLossBalancerABC",
     "masked_cosine_alignment_loss",
     "masked_frame_mse_loss",
     "teacher_loss",

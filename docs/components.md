@@ -76,7 +76,9 @@ loss module 在内部完成 mask、加权和 reduction，固定返回可用于 `
 - `MaskedCodebookCrossEntropyLoss`：对多 codebook logits 执行 masked CE；逐 codebook top-1 等诊断通过
   observation 发布。
 - `LossBalancerABC`：把多个命名 scalar loss 合成为一个 scalar total；默认实现是
-  `MeanLossBalancer`，core 也提供 `FixedWeightLossBalancer` 和 `UncertaintyLossBalancer`。
+  `MeanLossBalancer`；`WeightedLossBalancerABC` 统一公开实际 `weights`，core 也提供
+  `FixedWeightLossBalancer`、`UncertaintyLossBalancer` 和 fixed-to-dynamic 的
+  `InterpolatedLossBalancer`。
 
 规划接口：
 

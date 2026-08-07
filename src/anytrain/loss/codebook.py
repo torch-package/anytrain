@@ -14,17 +14,10 @@ from .abc import LossABC
 
 @dataclass(frozen=True)
 class PackedCodebookLogits:
-    """Valid-frame logits and optional labels.
-
-    ``row_indices`` and ``batch_size`` are retained as optional packing metadata
-    for callers that already construct this object. They do not participate in
-    scalar loss reduction.
-    """
+    """Valid-frame logits and labels for scalar codebook cross entropy."""
 
     logits: tuple[Tensor, ...]
-    labels: Tensor | None
-    row_indices: Tensor | None = None
-    batch_size: int | None = None
+    labels: Tensor
 
 
 @loss_with_diagnostics
@@ -75,20 +68,6 @@ class MaskedCodebookCrossEntropyLoss(LossABC):
             include_top1=include_top1,
         )
 
-    def forward_packed(
-        self,
-        packed: PackedCodebookLogits,
-        *,
-        validate: bool = True,
-        include_top1: bool = False,
-    ) -> Tensor:
-        """Compute one scalar CE over an already packed valid-frame domain."""
-        return self(
-            packed,
-            validate=validate,
-            include_top1=include_top1,
-        )
-
     def _compute_packed(
         self,
         packed: PackedCodebookLogits,
@@ -96,8 +75,6 @@ class MaskedCodebookCrossEntropyLoss(LossABC):
         validate: bool,
         include_top1: bool,
     ) -> Tensor:
-        if packed.labels is None:
-            raise ValueError("packed codebook logits require labels for loss computation.")
         if len(packed.logits) == 0:
             raise ValueError("codebook logits must provide at least one tensor.")
         if validate:
@@ -156,8 +133,6 @@ def _validate_inputs(logits: Sequence[Tensor], labels: Tensor, mask: Tensor) -> 
 
 def _validate_packed_inputs(packed: PackedCodebookLogits) -> None:
     labels = packed.labels
-    if labels is None:
-        raise ValueError("packed codebook logits require labels for loss computation.")
     if labels.ndim != 2:
         raise ValueError("packed codebook labels must have shape [N, Q].")
     if not _is_signed_integer_dtype(labels.dtype):
@@ -179,21 +154,6 @@ def _validate_packed_inputs(packed: PackedCodebookLogits) -> None:
     valid_targets = labels.to(dtype=torch.long)
     if bool(((valid_targets < 0) | (valid_targets >= limits)).any()):
         raise ValueError("packed codebook target is outside its logits vocabulary.")
-    if (packed.row_indices is None) != (packed.batch_size is None):
-        raise ValueError("packed row_indices and batch_size must be provided together.")
-    if packed.row_indices is not None and packed.batch_size is not None:
-        if packed.row_indices.ndim != 1 or packed.row_indices.numel() != labels.size(0):
-            raise ValueError("packed row indices must align with labels.")
-        if packed.row_indices.dtype != torch.long:
-            raise TypeError("packed row indices must use torch.long.")
-        if packed.row_indices.device != labels.device:
-            raise ValueError("packed row indices and labels must share a device.")
-        if packed.batch_size < 1:
-            raise ValueError("packed batch_size must be positive.")
-        if bool(
-            ((packed.row_indices < 0) | (packed.row_indices >= packed.batch_size)).any()
-        ):
-            raise ValueError("packed row index is outside the batch.")
 
 
 def _is_signed_integer_dtype(dtype: torch.dtype) -> bool:
