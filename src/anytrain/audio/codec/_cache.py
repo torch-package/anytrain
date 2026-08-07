@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..env import anytrain_home, hf_home
+from anytrain.env import anytrain_home, hf_home
 
 
 def hf_cache_dir(

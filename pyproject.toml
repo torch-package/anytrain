@@ -33,7 +33,7 @@ dac = ["descript-audio-codec>=1.0"]
 logger = ["wandb>=0.16"]
 module = ["transformers>=4.51.0"]
 peft = ["peft>=0.17.1,<0.21"]
-tokenizer = ["tokenizers>=0.20", "tqdm>=4.0"]
+bpe = ["tokenizers>=0.20", "tqdm>=4.0"]
 text = ["jiwer>=4.0", "sacrebleu>=2.0"]
 translation = ["transformers>=4.51.0"]
 speech = [

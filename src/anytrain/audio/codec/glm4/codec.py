@@ -10,8 +10,8 @@ from typing import Any, cast
 import torch
 from torch import Tensor, nn
 
-from anytrain.codec._audio import resample
-from anytrain.codec._module import DeviceModule, resolve_device, validate_frame_codes
+from anytrain.audio.codec._audio import resample
+from anytrain.audio.codec._module import DeviceModule, resolve_device, validate_frame_codes
 
 from ._registry import (
     DEFAULT_GLM4_ARTIFACT,

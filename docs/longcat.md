@@ -1,6 +1,6 @@
 # LongCat Audio Codec
 
-`anytrain.codec.longcat` 是对
+`anytrain.audio.codec.longcat` 是对
 `meituan-longcat/LongCat-Audio-Codec` 的 optional 集成层。它不进入 core import，
 只在用户显式安装 `longcat` extra 并调用相关 API 时使用。
 
@@ -50,7 +50,7 @@ config 在 `$HF_HOME/longcat-audio-codec/configs`。
 ## 使用
 
 ```python
-from anytrain.codec.longcat import DEFAULT_LONGCAT_REVISION, LongCat
+from anytrain.audio.codec.longcat import DEFAULT_LONGCAT_REVISION, LongCat
 
 codec = LongCat.from_pretrained(
     device="cuda",

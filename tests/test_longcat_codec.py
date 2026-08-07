@@ -10,9 +10,9 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
-from anytrain.codec import AcousticLayout, SemanticAcousticCodes
-from anytrain.codec.longcat.assets import LongCatAssets, LongCatConfigPaths
-from anytrain.codec.longcat.codec import LongCat
+from anytrain.audio.codec import AcousticLayout, SemanticAcousticCodes
+from anytrain.audio.codec.longcat.assets import LongCatAssets, LongCatConfigPaths
+from anytrain.audio.codec.longcat.codec import LongCat
 
 
 class LongCatCodecTest(unittest.TestCase):
@@ -50,11 +50,11 @@ class LongCatCodecTest(unittest.TestCase):
                 os.environ.pop("LONGCAT_AUDIO_CODEC_CKPT_DIR", None)
                 with (
                     patch(
-                        "anytrain.codec.longcat.codec.ensure_longcat_assets",
+                        "anytrain.audio.codec.longcat.codec.ensure_longcat_assets",
                         side_effect=fake_ensure_assets,
                     ),
                     patch(
-                        "anytrain.codec.longcat.codec._load_longcat_loaders",
+                        "anytrain.audio.codec.longcat.codec._load_longcat_loaders",
                         return_value=(fake_load_encoder, fake_load_decoder),
                     ),
                 ):

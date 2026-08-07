@@ -17,8 +17,9 @@
 - [`anytrain.module.moe`](moe.md)：统一 `MoE` 入口（`num_experts` / `expert` / `grid`、dense/top-k runtime）与 metrics。
 - `anytrain.module.moe.conv`：conv router、causal `Conv1d` 模板；归入 [`anytrain.module.moe`](moe.md)。
 - [`anytrain.module.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。
-- [`anytrain.tokenizer`](tokenizer.md)：int BPE。
-- [`anytrain.codec`](../codec.md)：optional audio codec wrapper，以及 frame、semantic-acoustic 与 semantic-global capability 契约。
+- [`anytrain.audio`](audio.md)：waveform tokenizer / detokenizer / codec 组合与 frame BPE。
+- [`anytrain.audio.bpe`](bpe.md)：int BPE over discrete codec frames。
+- [`anytrain.audio.codec`](../codec.md)：optional audio codec wrapper，以及 frame、semantic-acoustic 与 semantic-global capability 契约。
 - [`anytrain.tts`](../tts.md)：TTS 公共协议和 optional backend adapter。
 - [`anytrain.chat`](chat.md)：环境变量驱动的可选大模型调用入口。
 - [`anytrain.framework`](framework.md)：可选研究框架层。

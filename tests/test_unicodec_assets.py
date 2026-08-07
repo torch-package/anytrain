@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import anytrain.codec.unicodec.assets as unicodec_assets
-from anytrain.codec.unicodec.assets import (
+import anytrain.audio.codec.unicodec.assets as unicodec_assets
+from anytrain.audio.codec.unicodec.assets import (
     DEFAULT_CHECKPOINT_FILENAME,
     DEFAULT_HF_REPO_ID,
     ensure_unicodec_assets,
@@ -34,7 +34,7 @@ class UniCodecAssetsTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec._cache.require_hf_function",
+                    "anytrain.audio.codec._cache.require_hf_function",
                     return_value=fake_download,
                 ),
                 patch.object(unicodec_assets, "_default_config_path", return_value=config),
@@ -56,7 +56,7 @@ class UniCodecAssetsTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec._cache.require_hf_function",
+                    "anytrain.audio.codec._cache.require_hf_function",
                     side_effect=AssertionError("unexpected download"),
                 ),
                 patch.object(unicodec_assets, "_default_config_path", return_value=config),

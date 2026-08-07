@@ -158,7 +158,17 @@ dynamic conv、MoE、quantization、Qwen 和 idspace 从各自子模块显式导
 - `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 experimental MTP codebook predictor。
 
 `anytrain.module.idspace` 也是 core 组件，维护 local/global token id 映射和 block embedding
-路由，不把 tokenizer 或任务 special-token 语义塞进 tokenizer 或任务层。
+路由，不把 tokenizer 或任务 special-token 语义塞进 idspace 或任务层。
+
+## Audio
+
+`anytrain.audio` 是 optional domain 包：
+
+- `audio.tokenizer` / `audio.detokenizer`：waveform ↔ codes 方向 view。
+- `audio.codec`：双向组合、protocol、registry 与 concrete backend。
+- `audio.bpe`：frame-sequence BPE（`bpe` extra）。
+
+缺依赖时应给出实际缺失的包和可执行安装命令。
 
 ## Chat
 
@@ -198,8 +208,8 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
 - `import anytrain.loss.spectral` 和 `import anytrain.loss.temporal` 当前只依赖 core torch。
 - `import anytrain.optim` 可以假设 torch 已安装。
 - `import anytrain.chat` 不应要求 chat extra；真实 provider 请求路径可以要求 `chat` extra。
-- `import anytrain.tokenizer` 不加载 `tokenizers`；构造或训练 `CodecBPE` 时要求 `tokenizer` extra。
-- `import anytrain.codec` 只暴露轻量 protocol、静态 audio preset spec 和 lazy registry，不加载具体
+- `import anytrain.audio.bpe` 不加载 `tokenizers`；构造或训练 `CodecBPE` 时要求 `bpe` extra。
+- `import anytrain.audio.codec` 只暴露轻量 protocol、静态 audio preset spec 和 lazy registry，不加载具体
   backend；默认 tokenizer / detokenizer capability view 按 resolved preset identity 和 device 共享底层
   backend，加载模型时要求对应 extra。只有 metadata、没有通用 online adapter 的 preset 必须明确
   报告 loader 不可用。

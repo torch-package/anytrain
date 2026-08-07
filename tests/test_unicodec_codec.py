@@ -10,8 +10,8 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
-from anytrain.codec.unicodec.assets import UniCodecAssets
-from anytrain.codec.unicodec.codec import UniCodec
+from anytrain.audio.codec.unicodec.assets import UniCodecAssets
+from anytrain.audio.codec.unicodec.codec import UniCodec
 
 
 class UniCodecCodecTest(unittest.TestCase):
@@ -26,11 +26,11 @@ class UniCodecCodecTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec.unicodec.codec.ensure_unicodec_assets",
+                    "anytrain.audio.codec.unicodec.codec.ensure_unicodec_assets",
                     return_value=assets,
                 ),
                 patch(
-                    "anytrain.codec.unicodec.codec._load_unicodec_model",
+                    "anytrain.audio.codec.unicodec.codec._load_unicodec_model",
                     return_value=FakeUniCodecFactory,
                 ),
             ):

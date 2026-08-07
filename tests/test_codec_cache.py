@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from anytrain.codec._cache import anytrain_cache_dir, hf_cache_dir, hf_file, hf_snapshot
+from anytrain.audio.codec._cache import anytrain_cache_dir, hf_cache_dir, hf_file, hf_snapshot
 from anytrain.env import (
     ANYTRAIN_HOME_ENV,
     DEFAULT_ANYTRAIN_HOME,

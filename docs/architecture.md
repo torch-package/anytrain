@@ -21,7 +21,7 @@
 - `core`：跨任务复用、只依赖默认依赖，并直接服务训练模块实现。
 - `framework`：跨项目复用的训练范式，必须保持可组合，不生成完整任务或训练入口。
 - `domain adapter`：封装 codec、TTS、speech 等领域 backend，放显式 optional 子模块。
-- `runtime utility`：chat、tokenizer、example 等训练工程辅助能力，不能进入根包或 core import。
+- `runtime utility`：chat、example 等训练工程辅助能力，不能进入根包或 core import。
 
 新模块必须同时给出公开输入输出、依赖 extra、缺依赖错误、最小 CPU 测试和文档入口。只服务
 单个实验、绑定私有 batch schema 或需要 workspace 路径的逻辑不进入 `anytrain`。
@@ -56,7 +56,7 @@ PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 
 - `anytrain.optim.peft`：从 Hugging Face PEFT 的 vanilla Linear adapter 构造 LoRA-Muon。
 - `chat`：环境变量驱动的大模型调用入口，用于训练工程里的实验总结、日志解释和 LLM 辅助评估原型。
-- `tokenizer`：基于 Hugging Face `tokenizers` 的 codec frame BPE。
+- `anytrain.audio.bpe`：基于 Hugging Face `tokenizers` 的 codec frame BPE（`bpe` extra）。
 - third-party logger backend：wandb 等。
 
 规划中的 optional general 组件：
@@ -69,9 +69,9 @@ PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 对应 extra；只依赖 core torch 的 temporal/spectral loss 不额外要求 audio extra：
 
 - temporal/spectral audio loss：使用 core PyTorch 实现，不依赖 `audio` extra。
-- codec wrapper：DAC、LongCat、BiCodec、UniCodec 分别使用 `dac`、`longcat`、`bicodec`、
-  `unicodec` backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装 codec 模型。
-  Stable Codec 的 torch pin 与 core 冲突，按 `docs/stable-codec.md` 使用独立兼容环境。
+- `anytrain.audio.codec` wrapper：DAC、LongCat、BiCodec、UniCodec 分别使用 `dac`、`longcat`、
+  `bicodec`、`unicodec` backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装
+  codec 模型。Stable Codec 的 torch pin 与 core 冲突，按 `docs/stable-codec.md` 使用独立兼容环境。
 - text evaluator：安装 `text` extra 使用 sacreBLEU/jiwer backend；无 extra 时有显式 warning
   的轻量 fallback。
 - speech evaluator：安装 `speech` extra 使用 Whisper、UTMOS 和 speech text metrics。
@@ -150,17 +150,21 @@ class MyPLModule(pl.LightningModule):
 
 提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；MoE routing、MoE conv、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.moe.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv.bank` 的 dense parameter-bank mixing 与 `anytrain.module.moe.sparse` 的 top-k module dispatch 是统一 MoE 的两种 executor。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
 
-### `module.idspace` / `tokenizer`
+### `module.idspace`
 
-`anytrain.module.idspace` 是 core 的 local/global token id 映射和 embedding 路由。`tokenizer` 是 optional
-general 算法层；CodecBPE 需要 `tokenizer` extra，不进入 package root import。
+`anytrain.module.idspace` 是 core 的 local/global token id 映射和 embedding 路由。
 
-### `codec` / `tts`
+### `audio` / `tts`
 
-`codec` 顶层只提供轻量 protocol、structured unit 类型、静态 audio preset spec 和 lazy registry；
-tokenizer / detokenizer 是同一 backend 的方向 capability view，相同 resolved preset identity 和 device
-共享 backend 实例。具体 audio codec wrapper 从 `anytrain.codec.*` 子模块导入。`tts` 的协议和输出
-类型保持轻量，具体 backend adapter 按依赖 extra 隔离。两者都不接管数据集、训练 step 或模型组合。
+`anytrain.audio` 收拢 waveform I/O 与 frame-sequence BPE：
+
+- `audio.tokenizer` / `audio.detokenizer`：方向 capability view 与 loader。
+- `audio.codec`：双向组合（`AudioCodec = tokenizer ∩ detokenizer`）、protocol、静态 preset spec、
+  lazy registry 和 concrete backend；相同 resolved identity 与 device 共享 backend 实例。
+- `audio.bpe`：离散 codec frame 上的 int BPE，不加载神经网络 codec；需要 `bpe` extra。
+
+`tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。它们都不接管数据集、
+训练 step 或模型组合。
 
 ### `chat`
 
@@ -189,15 +193,18 @@ src/anytrain/
       conv/
     idspace/
     quantization/
+  audio/
+    tokenizer/
+    detokenizer/
+    codec/
+    bpe/
   chat/
-  tokenizer/
-  codec/
   tts/
   framework/
   example/
 ```
 
-`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`chat`、
+`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`audio`、`chat`、
 `framework` 和领域组件按依赖拆分为 optional 子模块。
 
 ## 边界

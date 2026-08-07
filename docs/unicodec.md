@@ -1,6 +1,6 @@
 # UniCodec
 
-`anytrain.codec.unicodec` 是对 `rookiejune/UniCodec` fork 的 optional 集成层。
+`anytrain.audio.codec.unicodec` 是对 `rookiejune/UniCodec` fork 的 optional 集成层。
 它不进入 core import，只在用户显式安装 `unicodec` extra 并调用相关 API 时使用。
 
 ## 安装
@@ -32,7 +32,7 @@ Python 3.9、pip 24、torch 2.4 环境通过；Python 3.12 + 新版 pip 下 `fai
 export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH
 ```
 
-该兼容路径只用于运行 `anytrain.codec.unicodec` 并离线生成 codes/features；不要把它当成
+该兼容路径只用于运行 `anytrain.audio.codec.unicodec` 并离线生成 codes/features；不要把它当成
 完整 anytrain 环境。已验证版本和安装记录见 `docs/codec-envs.md`。
 
 ## 缓存路径
@@ -60,7 +60,7 @@ export ANYTRAIN_HOME=/mnt/pami202/zhuyin/.anytrain
 ## 使用
 
 ```python
-from anytrain.codec.unicodec import UniCodec
+from anytrain.audio.codec.unicodec import UniCodec
 
 codec = UniCodec.from_pretrained(
     device="cuda",

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from torch import device as TorchDevice
 
-from anytrain.codec._registry import CodecEntry
-from anytrain.codec.protocol import AudioCapability, CodecCapability
-from anytrain.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
+from anytrain.audio.codec._registry import CodecEntry
+from anytrain.audio.codec.protocol import AudioCapability, CodecCapability
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
 
 from .assets import DEFAULT_HF_REPO_ID
 

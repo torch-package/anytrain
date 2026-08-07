@@ -1,23 +1,25 @@
-# `anytrain.tokenizer` Design
+# `anytrain.audio.bpe` Design
 
 ## 定位
 
-`anytrain.tokenizer` 放 tokenizer 算法组件。统一 token id space 和 token embedding/head
-已独立到 [`anytrain.module.idspace`](idspace.md)。
+`anytrain.audio.bpe` 在离散 codec frame sequence 上训练和评估 int BPE。它不加载神经网络
+codec，也不管理 global id space；统一 token id 与 embedding 路由见
+[`anytrain.module.idspace`](idspace.md)，waveform tokenizer / detokenizer 见
+[`anytrain.audio`](audio.md)。
 
 当前公开对象：
 
 - `CodecBPE`
 - `EvalStats`
 
-`tokenizer` 是 optional general 模块。安装依赖：
+安装依赖：
 
 ```bash
-python -m pip install tokenizers
+python -m pip install "anytrain[bpe]"
 ```
 
-`import anytrain.tokenizer` 保持轻量；构造、加载或训练 `CodecBPE` 时才导入
-Hugging Face `tokenizers`，缺失时直接提示安装 `tokenizer` extra。
+`import anytrain.audio.bpe` 保持轻量；构造、加载或训练 `CodecBPE` 时才导入
+Hugging Face `tokenizers`，缺失时直接提示安装 `bpe` extra。
 
 ## CodecBPE
 
@@ -41,7 +43,7 @@ mixed-radix 编码成统一的 int sequence，再训练 compact BPE vocab，并�
 基础用法：
 
 ```python
-from anytrain.tokenizer import CodecBPE
+from anytrain.audio.bpe import CodecBPE
 
 def corpus():
     return [[[1], [2], [1], [2], [3]], [[1], [2], [3]]]
@@ -126,9 +128,10 @@ unit sequence 入口。
 
 ## 边界
 
-`tokenizer` 不做：
+`bpe` 不做：
 
 - 不定义 shared special token 或多模态 global id space。
 - 不管理 embedding/head。
 - 不解释多模态 batch schema。
 - 不自动处理下游模型的 padding side、label mask 或 loss。
+- 不加载或组合神经网络 audio codec。

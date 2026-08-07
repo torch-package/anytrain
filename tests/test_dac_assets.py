@@ -6,8 +6,8 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-import anytrain.codec.dac.assets as dac_assets
-from anytrain.codec.dac import ensure_dac_assets
+import anytrain.audio.codec.dac.assets as dac_assets
+from anytrain.audio.codec.dac import ensure_dac_assets
 
 
 class DACAssetsTest(unittest.TestCase):

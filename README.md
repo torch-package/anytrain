@@ -123,8 +123,9 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
 | `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
-| `anytrain.tokenizer` | 依赖 `tokenizer` extra 的 codec frame BPE。 |
-| `anytrain.codec` | audio tokenizer / detokenizer capability view、静态 preset spec、frame / semantic-acoustic / semantic-global protocol、feature helper 和共享 backend 的 lazy registry；具体 backend 从 `anytrain.codec.*` 子模块导入。 |
+| `anytrain.audio` | waveform tokenizer / detokenizer / codec 与 frame BPE 的 optional 包入口。 |
+| `anytrain.audio.bpe` | 依赖 `bpe` extra 的 codec frame BPE。 |
+| `anytrain.audio.codec` | audio tokenizer / detokenizer capability view、静态 preset spec、frame / semantic-acoustic / semantic-global protocol、feature helper 和共享 backend 的 lazy registry；具体 backend 从 `anytrain.audio.codec.*` 子模块导入。 |
 | `anytrain.tts` | TTS 公共协议和可选 backend adapter。 |
 | `anytrain.chat` | 可选 LLM provider 调用入口。 |
 | `anytrain.framework` | 可选研究训练范式组件。 |

@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from anytrain.tokenizer.codec_bpe import CodecBPE
+from anytrain.audio.bpe import CodecBPE
 
 try:
     import tokenizers

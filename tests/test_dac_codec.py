@@ -9,8 +9,8 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
-from anytrain.codec.dac.assets import DACAssets
-from anytrain.codec.dac.codec import DAC
+from anytrain.audio.codec.dac.assets import DACAssets
+from anytrain.audio.codec.dac.codec import DAC
 
 
 class DACCodecTest(unittest.TestCase):
@@ -29,11 +29,11 @@ class DACCodecTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec.dac.codec.ensure_dac_assets",
+                    "anytrain.audio.codec.dac.codec.ensure_dac_assets",
                     return_value=assets,
                 ),
                 patch(
-                    "anytrain.codec.dac.codec._load_dac_model",
+                    "anytrain.audio.codec.dac.codec._load_dac_model",
                     return_value=FakeDACFactory,
                 ),
             ):
@@ -71,7 +71,7 @@ class DACCodecTest(unittest.TestCase):
         audio = torch.zeros((1, 1, 8))
 
         with patch(
-            "anytrain.codec.dac.codec.resample",
+            "anytrain.audio.codec.dac.codec.resample",
             return_value=audio,
         ) as resample:
             codec.encode(audio, 16000)

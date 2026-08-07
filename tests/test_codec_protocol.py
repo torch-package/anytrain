@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pytest
 import torch
 
-import anytrain.codec as codec_api
-from anytrain.codec import (
+import anytrain.audio.codec as codec_api
+from anytrain.audio.codec import (
     AcousticLayout,
     AudioCapability,
     AudioCodeSchema,
@@ -31,8 +31,8 @@ from anytrain.codec import (
     semantic_acoustic_spec,
     semantic_global_spec,
 )
-from anytrain.codec._module import validate_frame_codes
-from anytrain.codec.longcat import DEFAULT_LONGCAT_REVISION
+from anytrain.audio.codec._module import validate_frame_codes
+from anytrain.audio.codec.longcat import DEFAULT_LONGCAT_REVISION
 
 
 @pytest.fixture(autouse=True)
@@ -367,7 +367,7 @@ def test_semantic_acoustic_loader_rejects_frame_only_codec_before_loading() -> N
 
 def test_semantic_acoustic_loader_uses_lazy_longcat_loader() -> None:
     backend = object()
-    with patch("anytrain.codec.longcat.LongCat.from_pretrained", return_value=backend) as load:
+    with patch("anytrain.audio.codec.longcat.LongCat.from_pretrained", return_value=backend) as load:
         loaded = load_semantic_acoustic("longcat", device="cpu")
 
     assert loaded is backend
@@ -386,7 +386,7 @@ def test_semantic_global_loader_rejects_semantic_acoustic_codec() -> None:
 
 def test_semantic_global_loader_uses_lazy_bicodec_loader() -> None:
     backend = object()
-    with patch("anytrain.codec.bicodec.BiCodec.from_pretrained", return_value=backend) as load:
+    with patch("anytrain.audio.codec.bicodec.BiCodec.from_pretrained", return_value=backend) as load:
         loaded = load_semantic_global("bicodec", device="cpu")
 
     assert loaded is backend
@@ -403,7 +403,7 @@ def test_frame_loader_rejects_structured_only_codec_before_loading() -> None:
 
 def test_frame_loader_uses_lazy_longcat_loader() -> None:
     backend = object()
-    with patch("anytrain.codec.longcat.LongCat.from_pretrained", return_value=backend) as load:
+    with patch("anytrain.audio.codec.longcat.LongCat.from_pretrained", return_value=backend) as load:
         loaded = load_frame("longcat", device="cpu")
 
     assert loaded is backend
@@ -432,7 +432,7 @@ class _FrameBackend:
 def test_audio_views_and_legacy_loader_share_one_backend_instance() -> None:
     backend = _FrameBackend()
     with patch(
-        "anytrain.codec.unicodec.UniCodec.from_pretrained",
+        "anytrain.audio.codec.unicodec.UniCodec.from_pretrained",
         return_value=backend,
     ) as load:
         tokenizer = load_audio_tokenizer("unicodec", device="cpu")
@@ -477,7 +477,7 @@ class _SemanticGlobalBackend:
 def test_bicodec_capability_views_dispatch_structured_codes() -> None:
     backend = _SemanticGlobalBackend()
     with patch(
-        "anytrain.codec.bicodec.BiCodec.from_pretrained",
+        "anytrain.audio.codec.bicodec.BiCodec.from_pretrained",
         return_value=backend,
     ) as load:
         tokenizer = load_audio_tokenizer("bicodec", device="cpu")

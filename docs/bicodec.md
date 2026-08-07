@@ -1,7 +1,7 @@
 # Spark-TTS BiCodec
 
-`anytrain.codec.bicodec` 是对 SparkAudio Spark-TTS 中 BiCodec 的 optional 薄集成。它不复制
-Spark-TTS 源码，也不在 import `anytrain.codec` 时导入 `sparktts`；只有调用
+`anytrain.audio.codec.bicodec` 是对 SparkAudio Spark-TTS 中 BiCodec 的 optional 薄集成。它不复制
+Spark-TTS 源码，也不在 import `anytrain.audio.codec` 时导入 `sparktts`；只有调用
 `BiCodec.from_pretrained()` 时才需要上游源码和依赖。
 
 ## 安装
@@ -16,7 +16,7 @@ BiCodec runtime 不依赖该 UI。
 
 ## 使用
 
-    from anytrain.codec.bicodec import BiCodec
+    from anytrain.audio.codec.bicodec import BiCodec
 
     codec = BiCodec.from_pretrained(
         cache_dir="/path/to/model-cache/bicodec",

@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import anytrain.codec.longcat.assets as longcat_assets
-from anytrain.codec.longcat.assets import (
+import anytrain.audio.codec.longcat.assets as longcat_assets
+from anytrain.audio.codec.longcat.assets import (
     CHECKPOINT_FILENAMES,
     DECODER_CONFIG_KEYS,
     ensure_longcat_assets,
@@ -41,7 +41,7 @@ class LongCatAssetsTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec._cache.require_hf_function",
+                    "anytrain.audio.codec._cache.require_hf_function",
                     return_value=fake_download,
                 ),
                 patch.object(longcat_assets, "_read_default_config", side_effect=fake_config),
@@ -96,7 +96,7 @@ class LongCatAssetsTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec._cache.require_hf_function",
+                    "anytrain.audio.codec._cache.require_hf_function",
                     return_value=fake_download,
                 ),
                 patch.object(longcat_assets, "_read_default_config", side_effect=fake_config),

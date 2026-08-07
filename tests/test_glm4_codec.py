@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from anytrain.codec import (
+from anytrain.audio.codec import (
     AudioCapability,
     FrameTokenizerBackend,
     audio_capabilities,
@@ -20,13 +20,13 @@ from anytrain.codec import (
     load_audio_detokenizer,
     load_audio_tokenizer,
 )
-from anytrain.codec.glm4 import (
+from anytrain.audio.codec.glm4 import (
     DEFAULT_GLM4_ARTIFACT,
     DEFAULT_GLM4_REVISION,
     GLM4_SOURCE_ROOT_ENV,
     GLM4Tokenizer,
 )
-from anytrain.codec.glm4.codec import CODEBOOK_SIZE, _load_runtime, _validate_source_root
+from anytrain.audio.codec.glm4.codec import CODEBOOK_SIZE, _load_runtime, _validate_source_root
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +121,7 @@ def test_glm4_registry_exposes_only_online_tokenizer(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv(GLM4_SOURCE_ROOT_ENV, "/opt/glm-4-voice")
 
     with patch(
-        "anytrain.codec.glm4.codec.GLM4Tokenizer.from_pretrained",
+        "anytrain.audio.codec.glm4.codec.GLM4Tokenizer.from_pretrained",
         return_value=backend,
     ) as load:
         first = load_audio_tokenizer("glm4", device="cpu")
@@ -186,7 +186,7 @@ def test_glm4_encode_resamples_before_canonical_extraction() -> None:
     audio = torch.zeros((1, 1, 1_280))
     resampled = torch.zeros((1, 1, 2_560))
 
-    with patch("anytrain.codec.glm4.codec.resample", return_value=resampled) as resample:
+    with patch("anytrain.audio.codec.glm4.codec.resample", return_value=resampled) as resample:
         codes = tokenizer.encode(audio, sample_rate=8_000)
 
     assert codes.shape == (1, 2, 1)
@@ -257,14 +257,14 @@ def test_glm4_from_pretrained_uses_pinned_artifact_without_test_download(
 
     with (
         patch(
-            "anytrain.codec.glm4.codec._validate_source_root",
+            "anytrain.audio.codec.glm4.codec._validate_source_root",
             return_value=tmp_path,
         ),
         patch(
-            "anytrain.codec.glm4.codec._load_runtime",
+            "anytrain.audio.codec.glm4.codec._load_runtime",
             return_value=(model_loader, feature_loader),
         ),
-        patch("anytrain.codec.glm4.codec._require_contract"),
+        patch("anytrain.audio.codec.glm4.codec._require_contract"),
     ):
         tokenizer = GLM4Tokenizer.from_pretrained(
             source_root=tmp_path,
@@ -316,7 +316,7 @@ def test_glm4_runtime_rejects_unvalidated_transformers_version(tmp_path: Path) -
     transformers = SimpleNamespace(__version__="4.57.6")
 
     with (
-        patch("anytrain.codec.glm4.codec.import_module", return_value=transformers),
+        patch("anytrain.audio.codec.glm4.codec.import_module", return_value=transformers),
         pytest.raises(
             RuntimeError,
             match="only been validated with Transformers 4.44.1",
@@ -349,7 +349,7 @@ def test_glm4_runtime_rejects_source_imported_outside_configured_root(
 
     monkeypatch.setattr(sys, "path", list(sys.path))
     with (
-        patch("anytrain.codec.glm4.codec.import_module", side_effect=_import),
+        patch("anytrain.audio.codec.glm4.codec.import_module", side_effect=_import),
         pytest.raises(
             RuntimeError,
             match="outside the configured source_root",
@@ -379,7 +379,7 @@ def test_glm4_runtime_rejects_incompatible_source_api(
 
     monkeypatch.setattr(sys, "path", list(sys.path))
     with (
-        patch("anytrain.codec.glm4.codec.import_module", side_effect=_import),
+        patch("anytrain.audio.codec.glm4.codec.import_module", side_effect=_import),
         pytest.raises(RuntimeError, match="must expose an nn.Module WhisperVQEncoder") as error,
     ):
         _load_runtime(tmp_path)

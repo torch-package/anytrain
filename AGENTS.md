@@ -39,7 +39,7 @@
 - 公开接口优先围绕 `pl_module`，不要把单一 `model` 写成硬边界。
 - 下游 `pl_module` 直接继承 Lightning 原生 `LightningModule`；不要提供或要求继承 `AnyTrainModule` 这类魔法基类。
 - `lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 构成默认依赖下的核心体验。
-- `chat`、`tokenizer`、`codec`、`tts`、`framework` 和领域组件按依赖拆分为 optional 子模块。
+- `chat`、`tts`、`framework` 和领域组件按依赖拆分为 optional 子模块；audio codec / BPE 收在 `audio` 下。
 - package root 保持轻量，不从 `anytrain` 根包导出跨模块快捷别名。
 
 ## 当前模块
@@ -48,8 +48,9 @@
 - `loss`、`evaluator`：通用接口、组合器及按领域拆分的实现。
 - `optim`：optimizer 参数分组、scheduler 和 LLM/Muon helper。
 - `module`：task-agnostic `nn.Module` 积木；`module.idspace` 存 token id space。
-- `chat`、`tokenizer`：optional general 组件。
-- `codec`、`tts`：optional domain adapter。
+- `audio`：waveform tokenizer / detokenizer / codec 组合，以及 frame-sequence BPE。
+- `chat`：optional general 组件。
+- `tts`：optional domain adapter。
 - `framework`：flow matching、GAN 等 optional/experimental 训练范式组件。
 
 ## 代码组织

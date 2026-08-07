@@ -12,9 +12,9 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
-from anytrain.codec import SemanticGlobalCodes
-from anytrain.codec.bicodec.assets import BiCodecAssets
-from anytrain.codec.bicodec.codec import BICODEC_INSTALL_COMMAND, BiCodec
+from anytrain.audio.codec import SemanticGlobalCodes
+from anytrain.audio.codec.bicodec.assets import BiCodecAssets
+from anytrain.audio.codec.bicodec.codec import BICODEC_INSTALL_COMMAND, BiCodec
 
 
 class BiCodecCodecTest(unittest.TestCase):
@@ -35,7 +35,7 @@ class BiCodecCodecTest(unittest.TestCase):
     def test_missing_spark_tts_error_includes_the_install_command(self):
         with (
             patch.dict(sys.modules, {"sparktts": None}),
-            patch("anytrain.codec.bicodec.codec.ensure_bicodec_assets") as assets,
+            patch("anytrain.audio.codec.bicodec.codec.ensure_bicodec_assets") as assets,
             self.assertRaises(ImportError) as raised,
         ):
             BiCodec.from_pretrained(device="cpu")
@@ -53,19 +53,19 @@ class BiCodecCodecTest(unittest.TestCase):
 
             with (
                 patch(
-                    "anytrain.codec.bicodec.codec.ensure_bicodec_assets",
+                    "anytrain.audio.codec.bicodec.codec.ensure_bicodec_assets",
                     return_value=assets,
                 ),
                 patch(
-                    "anytrain.codec.bicodec.codec._load_bicodec_model",
+                    "anytrain.audio.codec.bicodec.codec._load_bicodec_model",
                     return_value=FakeBiCodecFactory,
                 ),
                 patch(
-                    "anytrain.codec.bicodec.codec._load_wav2vec2_classes",
+                    "anytrain.audio.codec.bicodec.codec._load_wav2vec2_classes",
                     return_value=(FakeProcessor, FakeFeatureExtractor),
                 ),
                 patch(
-                    "anytrain.codec.bicodec.codec._load_config",
+                    "anytrain.audio.codec.bicodec.codec._load_config",
                     return_value={
                         "sample_rate": 16000,
                         "ref_segment_duration": 0.5,
@@ -140,7 +140,7 @@ class BiCodecCodecTest(unittest.TestCase):
         ref_audio = torch.ones((2, 1, 2000))
 
         with patch(
-            "anytrain.codec.bicodec.codec.resample",
+            "anytrain.audio.codec.bicodec.codec.resample",
             side_effect=[audio, ref_audio],
         ) as resample:
             codec.tokenize(

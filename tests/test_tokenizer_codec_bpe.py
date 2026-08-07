@@ -8,7 +8,7 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from anytrain.tokenizer.codec_bpe import CodecBPE
+from anytrain.audio.bpe import CodecBPE
 
 try:
     import tokenizers
@@ -194,7 +194,7 @@ class BPETest(unittest.TestCase):
 
     def test_train_max_frames_progress_tracks_frame_limit(self):
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=True),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=True),
             patch("tqdm.auto.tqdm") as tqdm,
         ):
             CodecBPE.train(
@@ -221,7 +221,7 @@ class BPETest(unittest.TestCase):
 
     def test_train_max_frames_none_keeps_default_progress(self):
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=True),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=True),
             patch("tqdm.auto.tqdm") as tqdm,
         ):
             CodecBPE.train(
@@ -237,7 +237,7 @@ class BPETest(unittest.TestCase):
 
     def test_train_max_frames_progress_reports_early_corpus_exhaustion(self):
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=True),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=True),
             patch("tqdm.auto.tqdm") as tqdm,
         ):
             CodecBPE.train(
@@ -264,8 +264,8 @@ class BPETest(unittest.TestCase):
 
     def test_train_progress_uses_static_logs_without_dynamic_bars_non_interactive(self):
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
-            patch("anytrain.tokenizer.codec_bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.audio.bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
             patch("builtins.print") as output,
             patch("tqdm.auto.tqdm") as tqdm,
         ):
@@ -307,7 +307,7 @@ class BPETest(unittest.TestCase):
         from tokenizers.trainers import BpeTrainer
 
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=False),
             patch("tokenizers.trainers.BpeTrainer", wraps=BpeTrainer) as trainer,
         ):
             CodecBPE.train(
@@ -320,8 +320,8 @@ class BPETest(unittest.TestCase):
 
     def test_multi_codebook_alphabet_uses_periodic_static_logs_non_interactive(self):
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
-            patch("anytrain.tokenizer.codec_bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.audio.bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
             patch("builtins.print") as output,
         ):
             CodecBPE.train(
@@ -343,7 +343,7 @@ class BPETest(unittest.TestCase):
             raise RuntimeError("corpus failed")
 
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=True),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=True),
             patch("tqdm.auto.tqdm") as tqdm,
             self.assertRaisesRegex(RuntimeError, "corpus failed"),
         ):
@@ -371,7 +371,7 @@ class BPETest(unittest.TestCase):
             return iterable if iterable is not None else frame_bar
 
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=True),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=True),
             patch("tqdm.auto.tqdm", side_effect=progress) as tqdm,
         ):
             CodecBPE.train(
@@ -671,8 +671,8 @@ class BPETest(unittest.TestCase):
         )
 
         with (
-            patch("anytrain.tokenizer.codec_bpe._core.sys.stderr.isatty", return_value=False),
-            patch("anytrain.tokenizer.codec_bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
+            patch("anytrain.audio.bpe._core.sys.stderr.isatty", return_value=False),
+            patch("anytrain.audio.bpe._core.STATIC_PROGRESS_INTERVAL_SECONDS", 0),
             patch("builtins.print") as output,
             patch("tqdm.auto.tqdm") as tqdm,
         ):

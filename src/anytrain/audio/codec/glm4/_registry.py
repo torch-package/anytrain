@@ -4,9 +4,9 @@ import os
 
 from torch import device as TorchDevice
 
-from anytrain.codec._registry import CodecEntry
-from anytrain.codec.protocol import AudioCapability
-from anytrain.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
+from anytrain.audio.codec._registry import CodecEntry
+from anytrain.audio.codec.protocol import AudioCapability
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
 
 DEFAULT_GLM4_ARTIFACT = "zai-org/glm-4-voice-tokenizer"
 DEFAULT_GLM4_REVISION = "a5f2404e63c84e92f5238908e1706316324ebafa"

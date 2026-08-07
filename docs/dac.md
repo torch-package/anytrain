@@ -1,7 +1,7 @@
 # Descript Audio Codec
 
-`anytrain.codec.dac` 是对 Descript Audio Codec 的 optional 薄集成。它不复制模型源码，
-也不在 import `anytrain.codec` 时导入上游 `dac` 包；只有加载 checkpoint 时才需要安装
+`anytrain.audio.codec.dac` 是对 Descript Audio Codec 的 optional 薄集成。它不复制模型源码，
+也不在 import `anytrain.audio.codec` 时导入上游 `dac` 包；只有加载 checkpoint 时才需要安装
 `descript-audio-codec`。
 
 ## 安装
@@ -16,7 +16,7 @@ python -m pip install "descript-audio-codec>=1.0" "torchcodec>=0.2" "torchaudio>
 ## 使用
 
 ```python
-from anytrain.codec.dac import DAC
+from anytrain.audio.codec.dac import DAC
 
 codec = DAC.from_pretrained(
     model_type="44khz",

@@ -1,6 +1,6 @@
 # Stable Codec
 
-`anytrain.codec.stable_codec` 是对 Stability AI `stable-codec` 包的 optional
+`anytrain.audio.codec.stable_codec` 是对 Stability AI `stable-codec` 包的 optional
 薄集成层。它不复制模型源码，不进入 core import；只有调用
 `StableCodec.from_pretrained()` 或 `from_config()` 时才导入上游
 `stable_codec`。
@@ -26,7 +26,7 @@ Stable Codec 还要求特定 CUDA、FlashAttention 和旧构建链，所以暂�
 export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH
 ```
 
-这个桥接环境只用于 `anytrain.codec.stable_codec` 推理和离线生成 codes/latents；其它 anytrain
+这个桥接环境只用于 `anytrain.audio.codec.stable_codec` 推理和离线生成 codes/latents；其它 anytrain
 模块仍需满足各自依赖和运行环境约束。
 
 Stable Codec 官方 README 还说明当前模型依赖 FlashAttention，不建议 CPU 推理。
@@ -46,7 +46,7 @@ CFLAGS="-fcommon" python -m pip install stable-codec==0.1.2
 ## 使用
 
 ```python
-from anytrain.codec.stable_codec import StableCodec
+from anytrain.audio.codec.stable_codec import StableCodec
 
 codec = StableCodec.from_pretrained(
     version="speech-16k",

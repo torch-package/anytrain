@@ -1,6 +1,6 @@
 # Codec
 
-`anytrain.codec` 为 optional audio codec wrapper 提供轻量 runtime protocol、静态 preset metadata
+`anytrain.audio.codec` 为 optional audio codec wrapper 提供轻量 runtime protocol、静态 preset metadata
 和加载前的 capability 分类。waveform 的 tokenizer / detokenizer 方向与 code schema 分开表达；
 code schema 仍区分完整 frame codes、显式拆分且仍表达声学时间结构的 semantic/acoustic codes，
 以及语义时间轴外另带全局 unit 的 semantic/global codes。semantic-only waveform decoder 属于
@@ -75,7 +75,7 @@ class SemanticAcousticCodec(CodecBackend, Protocol):
 `FIXED_LENGTH` 表示 acoustic unit 数由 codec 固定，不随 semantic 帧数变化。
 
 需要把 acoustic code 转成连续训练特征时，使用
-`anytrain.codec.masked_acoustic_features(codec, acoustic_codes, mask)`。该 helper 会先把
+`anytrain.audio.codec.masked_acoustic_features(codec, acoustic_codes, mask)`。该 helper 会先把
 padding code 置零，再调用 backend，并对输出特征重新应用 unit mask，避免 padding 泄漏到
 下游 loss；已经由上游 batch 契约验证过的内部热路径可以传 `validate=False`。
 
@@ -141,14 +141,14 @@ Stable Codec 的 latent 可以被语义目标增强，DAC 的早期 RVQ codebook
 `audio_spec()` 和 `audio_backend_identity()` 都是只读静态查询，不加载模型：
 
 ```python
-from anytrain.codec import (
+from anytrain.audio.codec import (
     AudioCapability,
     audio_backend_identity,
     audio_capabilities,
     audio_spec,
-    load_audio_detokenizer,
-    load_audio_tokenizer,
 )
+from anytrain.audio.detokenizer import load_audio_detokenizer
+from anytrain.audio.tokenizer import load_audio_tokenizer
 
 assert AudioCapability.TOKENIZER in audio_capabilities("bicodec")
 assert audio_spec("bicodec").primary_codebook_sizes == (8192,)
@@ -159,7 +159,7 @@ detokenizer = load_audio_detokenizer("bicodec", device="cuda")
 assert tokenizer.backend is detokenizer.backend
 ```
 
-registry 的每个默认 preset 只保存一个 lazy backend loader。相同 resolved identity 和 device 的
+也可从 `anytrain.audio.codec` 直接导入同一组 loader。registry 的每个默认 preset 只保存一个 lazy backend loader。相同 resolved identity 和 device 的
 tokenizer view、detokenizer view 与 legacy loader 共享一个 backend 实例；`clear_audio_backend_cache()`
 用于显式释放 registry 持有的引用。非默认 decoder、checkpoint 或 cache 选项仍从具体 backend
 子模块构造，不冒充默认 preset identity。

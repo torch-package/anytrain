@@ -1,13 +1,13 @@
 # Codec Environments
 
-`anytrain.codec` 的边界是 optional thin wrapper：core 包不安装具体 codec
+`anytrain.audio.codec` 的边界是 optional thin wrapper：core 包不安装具体 codec
 上游依赖，wrapper 只在用户显式调用时导入上游包。codec 依赖如果能和主训练环境共存，
 可以放进 extra；如果上游 pin 旧版 torch、Python 或 pip，就使用独立环境先离线生成
 codes/cache，再由主训练环境读取产物。
 
 ## GLM-4 online tokenizer
 
-`anytrain.codec.glm4.GLM4Tokenizer` 采用目前经过 exact token-ID 审计的官方 API 和数值契约：
+`anytrain.audio.codec.glm4.GLM4Tokenizer` 采用目前经过 exact token-ID 审计的官方 API 和数值契约：
 
 - source：通过 `GLM4_VOICE_SOURCE_ROOT` 显式传入 GLM-4-Voice checkout 或用户 fork。loader 不读取
   Git remote/HEAD，也不限制 commit；它校验 `speech_tokenizer` 必需文件、导入来源和
@@ -176,7 +176,7 @@ PY
   模式接收该 list，返回 `(B, C, L)` waveform。
 - `set_posthoc_bottleneck(stages)` 支持 preset 字符串或 stage 配置。
 
-因此 `anytrain.codec.stable_codec.StableCodec` 继续作为 optional thin wrapper：
+因此 `anytrain.audio.codec.stable_codec.StableCodec` 继续作为 optional thin wrapper：
 `from_pretrained()` / `from_config()` 只负责加载上游模型，`encode()` 返回统一的
 `[batch, frame, codebook]` codes，`encode_latents()` 暴露上游 latent/code 边界，
 `decode()` 接收 codes。wrapper 在 posthoc 模式负责上游 list 与公共 Tensor 间的双向转换，

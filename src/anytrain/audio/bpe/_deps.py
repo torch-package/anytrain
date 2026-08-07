@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-INSTALL_HINT = 'Install tokenizer dependencies with `python -m pip install "tokenizers>=0.20"`.'
+INSTALL_HINT = (
+    "Install BPE dependencies with "
+    '`python -m pip install "anytrain[bpe]"` '
+    'or `python -m pip install "tokenizers>=0.20"`.'
+)
 
 
 def bpe_class() -> type[Any]:

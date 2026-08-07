@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
-from anytrain.codec.stable_codec import (
+from anytrain.audio.codec.stable_codec import (
     DEFAULT_CODEBOOK_SIZE,
     DEFAULT_POSTHOC_BOTTLENECK,
     DEFAULT_PRETRAINED_MODEL,
@@ -18,7 +18,7 @@ from anytrain.codec.stable_codec import (
 class StableCodecTest(unittest.TestCase):
     def test_from_pretrained_loads_default_model(self):
         with patch(
-            "anytrain.codec.stable_codec.codec._load_stable_codec_model",
+            "anytrain.audio.codec.stable_codec.codec._load_stable_codec_model",
             return_value=FakeStableCodecBackend,
         ):
             codec = StableCodec.from_pretrained(device="cpu")
@@ -36,7 +36,7 @@ class StableCodecTest(unittest.TestCase):
 
     def test_from_pretrained_sets_posthoc_bottleneck(self):
         with patch(
-            "anytrain.codec.stable_codec.codec._load_stable_codec_model",
+            "anytrain.audio.codec.stable_codec.codec._load_stable_codec_model",
             return_value=FakeStableCodecBackend,
         ):
             codec = StableCodec.from_pretrained(
@@ -55,7 +55,7 @@ class StableCodecTest(unittest.TestCase):
             checkpoint = root / "model.ckpt"
 
             with patch(
-                "anytrain.codec.stable_codec.codec._load_stable_codec_model",
+                "anytrain.audio.codec.stable_codec.codec._load_stable_codec_model",
                 return_value=FakeStableCodecBackend,
             ):
                 codec = StableCodec.from_config(
@@ -96,7 +96,7 @@ class StableCodecTest(unittest.TestCase):
 
     def test_posthoc_encode_joins_backend_codebooks(self):
         with patch(
-            "anytrain.codec.stable_codec.codec._load_stable_codec_model",
+            "anytrain.audio.codec.stable_codec.codec._load_stable_codec_model",
             return_value=FakeStableCodecBackend,
         ):
             codec = StableCodec.from_pretrained(
@@ -158,7 +158,7 @@ class StableCodecTest(unittest.TestCase):
         audio = torch.zeros((2, 1, 8))
 
         with patch(
-            "anytrain.codec.stable_codec.codec.resample",
+            "anytrain.audio.codec.stable_codec.codec.resample",
             return_value=audio,
         ) as resample:
             codec.encode(audio, 8000)
@@ -185,7 +185,7 @@ class StableCodecTest(unittest.TestCase):
 
     def test_posthoc_decode_splits_public_codebook_axis(self):
         with patch(
-            "anytrain.codec.stable_codec.codec._load_stable_codec_model",
+            "anytrain.audio.codec.stable_codec.codec._load_stable_codec_model",
             return_value=FakeStableCodecBackend,
         ):
             codec = StableCodec.from_pretrained(
