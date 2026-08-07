@@ -274,27 +274,27 @@ policy 的 anchor / candidate latent 距离生成 `policy_neighbor_logps`，用 
 - 采样 symmetric anchors / timesteps，并构造 neighbor distance 或 surrogate logits。
 - 保存或重算 old_neighbor_logps，并生成 neighbor_mask。
 
-## semantic-acoustic-codec / s2s 适配边界
+## audio-code-generator / s2s 适配边界
 
 强化学习能力按依赖方向分成三层：
 
 ```text
 anytrain.framework.rl
-  -> semantic-acoustic-codec.rl
+  -> audio-code-generator.rl
       -> s2s.rl
 ```
 
 `anytrain.framework.rl` 只保留 tensor-level objective 和最小 typed contract，不出现
 semantic code、acoustic/global code、source speech、ASR、speaker 或任务 prompt 字段。
 
-`semantic-acoustic-codec.rl` 拥有 structured codec rollout source，包括 frame-aligned
-semantic/acoustic 与 independent semantic/global contract。它可以定义 SAC 自己的 request、
+`audio-code-generator.rl` 拥有 structured codec rollout source，包括 frame-aligned
+semantic/acoustic 与 independent semantic/global contract。它可以定义 audio-code-generator 自己的 request、
 candidate、reward components 和 adapter，例如：
 
 ```python
-class SACRLAdapter:
-    def rollout(self, source_batch) -> list[SACCandidate]: ...
-    def score(self, candidates) -> SACRewardBatch: ...
+class AudioCodeGeneratorRLAdapter:
+    def rollout(self, source_batch) -> list[AudioCodeGeneratorCandidate]: ...
+    def score(self, candidates) -> AudioCodeGeneratorRewardBatch: ...
     def to_grpo_batch(self, candidates, rewards) -> RolloutBatch: ...
     def to_continuous_grpo_batch(
         self,
@@ -304,23 +304,23 @@ class SACRLAdapter:
     def to_neighbor_grpo_batch(self, candidates, rewards) -> NeighborRolloutBatch: ...
 ```
 
-SAC adapter 可以知道 structured codec 的 semantic ids、acoustic/global ids/features、decode
+audio-code-generator adapter 可以知道 structured codec 的 semantic ids、acoustic/global ids/features、decode
 audio、decode_ok、old log-prob / old distance、codec metadata 和 codec-specific reward。
 它最终只把这些领域对象降维成 `anytrain.framework.rl` 的 tensor batch。
 
-`s2s.rl` 依赖 SAC adapter，但拥有 s2s source 和 task reward。它可以在 SAC candidate
+`s2s.rl` 依赖 audio-code-generator adapter，但拥有 s2s source 和 task reward。它可以在 audio-code-generator candidate
 之上定义 source speech、generation request/result、target text/semantic intent、ASR
 结果、speaker preservation、translation/semantic correctness 等字段，例如：
 
 ```python
 class S2SRLAdapter:
-    def __init__(self, sac_adapter: SACRLAdapter): ...
+    def __init__(self, sac_adapter: AudioCodeGeneratorRLAdapter): ...
     def rollout(self, requests) -> list[S2SGenerationResult]: ...
     def score(self, results) -> S2SRewardBatch: ...
     def to_grpo_batch(self, results, rewards) -> RolloutBatch: ...
 ```
 
-因此 s2s 可以复用 SAC 的 codec substrate 和 candidate construction，但 SAC 不理解 s2s
+因此 s2s 可以复用 audio-code-generator 的 codec substrate 和 candidate construction，但 audio-code-generator 不理解 s2s
 任务语义；二者也都不把领域 schema 上推到 anytrain。
 
 ## 非目标
