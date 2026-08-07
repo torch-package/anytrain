@@ -137,6 +137,33 @@ callback 用 `trainer.global_step` 的推进识别 optimizer update 边界：
 `measure_window_steps` 保存最近的 optimizer-boundary measurements。尚未推进 `global_step` 的
 epoch 末尾 microbatch 不构成完整 measurement，不进入 MFU，也不会带入下一 epoch。
 
+## 有界 Perf Probe
+
+单独的性能探测可以复用同一个 callback，不需要下游实现停止逻辑：
+
+```python
+callback = PerformanceCallback(
+    model_flops_per_step=model_flops_per_step,
+    warmup_steps=20,
+    measure_window_steps=100,
+    stop_after_measurement=True,
+)
+
+trainer.fit(module, datamodule=data)
+report = callback.report()
+```
+
+默认 `stop_after_measurement=False`，保持持续训练和周期日志行为。启用后，warmup 和 measurement
+window 都从本次 `on_train_start` 起按 optimizer update 相对计数，不受恢复时已有 global step 影响；
+warmup measurement 不进入最终窗口。完整执行 `warmup_steps + measure_window_steps` 后，callback
+强制记录最终窗口并设置 `trainer.should_stop=True`，即使该 step 不满足 `log_every_n_steps`。
+
+`report()` 返回 `PerformanceReport`：`optimizer_steps` 是报告窗口包含的 optimizer update 数，
+`metrics` 使用与 logger 一致的 `perf/*` key，包含模型/硬件静态字段和最终 step time、FLOPs、MFU、
+显存字段（当前设备支持时）。报告返回副本，不持有输出路径；在任何完整 measurement 可用前调用会
+显式报错。默认持续模式下，report 对应最近一次实际日志窗口；有界模式下对应排除 warmup 的最终
+完整窗口。
+
 ## DDP 边界
 
 DDP 下 provider 和静态值都使用 local-rank 口径，调用方不能预先乘 `world_size`。在每个日志点，

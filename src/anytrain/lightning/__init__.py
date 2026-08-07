@@ -24,7 +24,7 @@ from .callback.parameter_policy import (
     ParameterTrainabilitySummary,
     apply_parameter_trainability,
 )
-from .callback.performance import FlopsProvider, PerformanceCallback
+from .callback.performance import FlopsProvider, PerformanceCallback, PerformanceReport
 from .materialization import (
     BackgroundMaterialization,
     Materialization,
@@ -34,6 +34,7 @@ from .materialization import (
     MaterializationProvider,
 )
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
+from .service import ManagedService, ManagedServiceCallback, ManagedServiceProvider
 
 __all__ = [
     "BackgroundMaterialization",
@@ -56,12 +57,16 @@ __all__ = [
     "MaterializationPhase",
     "MaterializationProducer",
     "MaterializationProvider",
+    "ManagedService",
+    "ManagedServiceCallback",
+    "ManagedServiceProvider",
     "ModuleSelector",
     "ModelCheckpoint",
     "ParameterPolicyCallback",
     "ParameterTrainability",
     "ParameterTrainabilitySummary",
     "PerformanceCallback",
+    "PerformanceReport",
     "RankLogMode",
     "apply_parameter_trainability",
     "experiment",

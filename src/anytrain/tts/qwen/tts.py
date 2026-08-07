@@ -14,8 +14,10 @@ from typing_extensions import Unpack
 from anytrain.tts import (
     AudioReference,
     PathAudioReference,
+    TTSCapabilities,
     TTSOptions,
     TTSOutput,
+    TTSVoiceMode,
     validate_text,
     waveform_duration,
 )
@@ -23,6 +25,7 @@ from anytrain.tts._common import config_hash, hashable_mapping, positive_int, va
 
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 DEFAULT_SAMPLE_RATE = 24000
+_PLACEMENT_LOAD_KWARGS = frozenset(("device", "device_map"))
 
 
 class QwenLoadKwargs(TypedDict, total=False):
@@ -65,13 +68,18 @@ class QwenCustomVoiceTTSConfig:
         return TTSOptions(**kwargs)
 
     def hash_dict(self) -> dict[str, object]:
+        semantic_load_kwargs = {
+            key: value
+            for key, value in self.load_kwargs.items()
+            if key not in _PLACEMENT_LOAD_KWARGS
+        }
         return {
             "model": self.model,
             "sample_rate": self.sample_rate,
             "language": self.language,
             "speaker": self.speaker,
             "instruct": self.instruct,
-            "load_kwargs": hashable_mapping(self.load_kwargs),
+            "load_kwargs": hashable_mapping(semantic_load_kwargs),
             "runtime_kwargs": hashable_mapping(self.runtime_kwargs),
         }
 
@@ -127,6 +135,14 @@ class QwenCustomVoiceTTS:
 
     def config_hash(self) -> str:
         return config_hash(self.config.hash_dict())
+
+    @property
+    def capabilities(self) -> TTSCapabilities:
+        speakers = self.supported_speakers()
+        return TTSCapabilities(
+            voice_modes=frozenset((TTSVoiceMode.SPEAKER_ID,)),
+            speaker_ids=speakers or None,
+        )
 
     def supported_speakers(self) -> tuple[str, ...]:
         getter = getattr(self.model, "get_supported_speakers", None)

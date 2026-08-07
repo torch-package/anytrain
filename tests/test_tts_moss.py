@@ -8,14 +8,38 @@ import torch
 
 from anytrain.tts import (
     EncodedAudioReference,
+    TTSCapabilities,
     TTSOptions,
     TTSOutput,
+    TTSVoiceMode,
     WaveformReference,
 )
 from anytrain.tts.moss import DEFAULT_CODEC_MODEL, MossTTS, MossTTSConfig
 
 
 class TTSProtocolTest(unittest.TestCase):
+    def test_capabilities_report_known_unknown_and_unavailable_speakers(self):
+        known = TTSCapabilities(
+            voice_modes=frozenset((TTSVoiceMode.SPEAKER_ID,)),
+            speaker_ids=("Vivian", "Ryan"),
+        )
+        unknown = TTSCapabilities(
+            voice_modes=frozenset((TTSVoiceMode.SPEAKER_ID,)),
+        )
+        reference = TTSCapabilities(
+            voice_modes=frozenset((TTSVoiceMode.REFERENCE_AUDIO,)),
+        )
+
+        self.assertEqual(
+            known.unsupported_speaker_ids(("Vivian", "Unknown")),
+            ("Unknown",),
+        )
+        self.assertIsNone(unknown.unsupported_speaker_ids(("Vivian",)))
+        self.assertEqual(
+            reference.unsupported_speaker_ids(("Vivian",)),
+            ("Vivian",),
+        )
+
     def test_output_requires_channel_time_waveform(self):
         with self.assertRaisesRegex(ValueError, "channels, time"):
             TTSOutput(
@@ -90,6 +114,13 @@ class MossTTSImportTest(unittest.TestCase):
 
 
 class MossTTSAdapterTest(unittest.TestCase):
+    def test_capabilities_expose_reference_audio_only(self):
+        tts = MossTTS(model=FakeMossModel(), processor=FakeMossProcessor())
+
+        self.assertTrue(tts.capabilities.supports(TTSVoiceMode.REFERENCE_AUDIO))
+        self.assertFalse(tts.capabilities.supports(TTSVoiceMode.SPEAKER_ID))
+        self.assertIsNone(tts.capabilities.speaker_ids)
+
     def test_from_pretrained_loads_v15_model_and_processor(self):
         class FakeAutoModel:
             @classmethod

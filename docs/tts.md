@@ -40,6 +40,15 @@ Passing a single string returns one `TTSOutput`; passing a sequence of strings
 returns `list[TTSOutput]`. Batch synthesis shares one `TTSOptions` object across
 all texts and keeps each variable-length waveform as a separate output item.
 
+Every loaded backend exposes `capabilities`. `TTSVoiceMode.SPEAKER_ID` means a
+caller can persist one speaker id and reuse it across texts and languages;
+`TTSVoiceMode.REFERENCE_AUDIO` means it can reuse one audio reference. The
+optional `speaker_ids` tuple lists known ids when the backend can enumerate
+them. `unsupported_speaker_ids()` returns the requested ids that are known to
+be unsupported, or `None` when a speaker-id backend cannot enumerate its ids.
+Dataset code must choose and persist the condition; the backend does not own
+source scheduling or speaker assignment.
+
 The MOSS adapter intentionally targets only MOSS-TTS v1.5. It loads the
 Hugging Face remote-code model and processor, then runs the v1.5 processor
 generation path. Keyword arguments passed to `from_pretrained()` are load-time

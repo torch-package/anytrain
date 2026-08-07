@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import auto
 from os import PathLike
 from typing import Protocol, TypedDict, Union, overload
 
 from torch import Tensor
 from typing_extensions import Unpack
+
+from anytrain._compat import StrEnum
 
 from ._common import positive_int, validate_mapping
 
@@ -59,6 +62,63 @@ AudioReference = Union[
     WaveformReference,
     EncodedAudioReference,
 ]
+
+
+class TTSVoiceMode(StrEnum):
+    """Voice conditioning modes a TTS backend can guarantee at its boundary."""
+
+    SPEAKER_ID = auto()
+    REFERENCE_AUDIO = auto()
+
+
+@dataclass(frozen=True)
+class TTSCapabilities:
+    """Static voice-conditioning capabilities exposed by one loaded backend."""
+
+    voice_modes: frozenset[TTSVoiceMode]
+    speaker_ids: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.voice_modes, frozenset) or any(
+            not isinstance(mode, TTSVoiceMode) for mode in self.voice_modes
+        ):
+            raise TypeError("voice_modes must be a frozenset of TTSVoiceMode values.")
+        if self.speaker_ids is None:
+            return
+        if TTSVoiceMode.SPEAKER_ID not in self.voice_modes:
+            raise ValueError("speaker_ids require TTSVoiceMode.SPEAKER_ID.")
+        if not isinstance(self.speaker_ids, tuple):
+            raise TypeError("speaker_ids must be a tuple of strings or None.")
+        for index, speaker in enumerate(self.speaker_ids):
+            _validate_speaker_id(speaker, f"speaker_ids[{index}]")
+        if len(set(self.speaker_ids)) != len(self.speaker_ids):
+            raise ValueError("speaker_ids must be unique.")
+
+    def supports(self, mode: TTSVoiceMode) -> bool:
+        if not isinstance(mode, TTSVoiceMode):
+            raise TypeError("mode must be a TTSVoiceMode.")
+        return mode in self.voice_modes
+
+    def unsupported_speaker_ids(
+        self,
+        speaker_ids: Sequence[str],
+    ) -> tuple[str, ...] | None:
+        """Return unsupported ids, or ``None`` when the backend cannot enumerate."""
+
+        if isinstance(speaker_ids, (str, bytes)) or not isinstance(
+            speaker_ids,
+            Sequence,
+        ):
+            raise TypeError("speaker_ids must be a sequence of strings.")
+        values = tuple(speaker_ids)
+        for index, speaker in enumerate(values):
+            _validate_speaker_id(speaker, f"speaker_ids[{index}]")
+        if not self.supports(TTSVoiceMode.SPEAKER_ID):
+            return values
+        if self.speaker_ids is None:
+            return None
+        supported = set(self.speaker_ids)
+        return tuple(speaker for speaker in values if speaker not in supported)
 
 
 class TTSKwargs(TypedDict, total=False):
@@ -167,6 +227,9 @@ class TTSOutput:
 class TTSBackend(Protocol):
     name: str
     sample_rate: int
+
+    @property
+    def capabilities(self) -> TTSCapabilities: ...
 
     def config_hash(self) -> str: ...
 

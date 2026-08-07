@@ -31,6 +31,7 @@ core 提供：
   建议改用 `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。`every_n_steps` 控制统一输出间隔，
   每次 render 同时记录 interval 平均的 `module/observation_time`。
 - `DebugCallback` 等训练调试 callback。
+- `ManagedServiceCallback`：由 global rank 启动、检查和关闭 task-agnostic 长驻服务，并同步传播 owner 错误。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。
 
 optional backend：
@@ -52,7 +53,7 @@ optional backend：
 - `infer_peak_flops()`：根据 GPU 型号和 compute dtype 查内置硬件表；下游 job 可覆盖 `hardware_peak_flops`。
 - `model_flops_utilization()`：按 `model_flops_per_step / step_time / hardware_peak_flops` 计算 MFU。
 - `PerformanceCallback`：在 Lightning 训练中记录性能元数据、optimizer step time 和 MFU；
-  支持固定 step FLOPs，以及由 `FlopsProvider` 提供的动态 train-batch FLOPs。
+  支持固定 step FLOPs、由 `FlopsProvider` 提供的动态 train-batch FLOPs，以及 warmup 后有界测量并返回结构化报告。
 
 `anytrain` 不内置任务的数据量语义。samples、tokens、frames、valid mask count 和详细 loss 由下游 `training_step` 按任务 schema 显式记录；需要把这些 units 作为训练时钟、LR schedule 和停止条件时，使用 `anytrain.lightning.schedule`。
 

@@ -20,8 +20,10 @@ from typing_extensions import Unpack
 from anytrain.tts import (
     AudioReference,
     PathAudioReference,
+    TTSCapabilities,
     TTSOptions,
     TTSOutput,
+    TTSVoiceMode,
     validate_text,
 )
 from anytrain.tts._common import config_hash
@@ -114,6 +116,12 @@ class MossTTS:
 
     def config_hash(self) -> str:
         return config_hash(self.config.hash_dict())
+
+    @property
+    def capabilities(self) -> TTSCapabilities:
+        return TTSCapabilities(
+            voice_modes=frozenset((TTSVoiceMode.REFERENCE_AUDIO,)),
+        )
 
     @overload
     def synthesize(

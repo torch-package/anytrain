@@ -32,7 +32,7 @@
 
 默认安装必须可用：
 
-- `anytrain.lightning`：LightningModule logging mixin、debug callback、schedule runtime 和性能观测 callback。
+- `anytrain.lightning`：LightningModule logging mixin、debug callback、后台物化与长驻服务生命周期、schedule runtime 和性能观测 callback。
 - `anytrain.observation`：普通 `nn.Module` 的 concrete-type observation registry，以及
   Curve/Distribution/Profile/Bins/Heatmap 值契约、State/Output/Event 来源声明和重复值 reduction；这是 module 中间量 logging 的
   唯一声明入口，不依赖 Lightning logger。
@@ -68,7 +68,7 @@ PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 这些领域组件由 `anytrain` 提供，并从对应子模块显式导入。需要第三方 backend 的组件安装
 对应 extra；只依赖 core torch 的 temporal/spectral loss 不额外要求 audio extra：
 
-- temporal/spectral audio loss：torch backend 使用 core；torchaudio backend 安装 `audio` extra。
+- temporal/spectral audio loss：使用 core PyTorch 实现，不依赖 `audio` extra。
 - codec wrapper：DAC、LongCat、BiCodec、UniCodec 分别使用 `dac`、`longcat`、`bicodec`、
   `unicodec` backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装 codec 模型。
   Stable Codec 的 torch pin 与 core 冲突，按 `docs/stable-codec.md` 使用独立兼容环境。

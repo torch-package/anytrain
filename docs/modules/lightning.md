@@ -14,6 +14,8 @@ Lightning 是 core 依赖，不作为 optional integration。
 src/anytrain/lightning/
   __init__.py
   experiment.py
+  materialization.py
+  service.py
   validation.py
   schedule/
     __init__.py
@@ -52,8 +54,14 @@ src/anytrain/lightning/
 - `GradientLossGroupsFn`
 - `gradient_loss_groups`
 - `LossSummaryCallback`
+- `BackgroundMaterialization`
+- `MaterializationCallback`
+- `ManagedService`
+- `ManagedServiceProvider`
+- `ManagedServiceCallback`
 - `FlopsProvider`
 - `PerformanceCallback`
+- `PerformanceReport`
 - `ObservationCallback`
 - `RankLogMode`
 - `prefixed_log_dict`
@@ -209,6 +217,13 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
+
+`ManagedServiceCallback` 通过下游 `ManagedServiceProvider` 获取可选的 task-agnostic 长驻服务。
+provider 的 service presence 和 discovery error 在所有 rank 同步；global rank 执行 start、按
+optimizer step cadence 执行 health check，并在训练正常结束时 close。owner lifecycle error 会广播
+给全部 rank，exception 路径则 best-effort close，不覆盖原始异常。默认 one-shot SIGTERM guard 防止
+重复进程组信号重入 Lightning distributed handler。callback 不解释服务的进程实现、设备、数据或
+checkpoint/cursor 状态。
 
 `ObservationCallback` 适配 [`anytrain.observation`](observation.md) 的 module 声明。它在
 `on_fit_start` 扫描完整 `pl_module.named_modules()`，按 concrete module type 查询唯一 class registry，

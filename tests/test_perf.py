@@ -679,6 +679,117 @@ class PerformanceCallbackTest(unittest.TestCase):
         self.assertGreater(metrics["perf/model_flops_per_step"], 0.0)
         self.assertGreater(metrics["perf/mfu"], 0.0)
 
+    def test_bounded_probe_excludes_warmup_and_forces_a_final_report(self):
+        from anytrain.lightning import PerformanceCallback
+
+        trainer = SimpleNamespace(
+            precision="bf16-mixed",
+            loggers=[],
+            global_step=50,
+            world_size=1,
+            should_stop=False,
+        )
+        module = _Module()
+        provider = _FlopsProvider()
+        callback = PerformanceCallback(
+            model_flops_per_batch=provider,
+            hardware_peak_flops=200.0,
+            warmup_steps=1,
+            log_every_n_steps=100,
+            measure_window_steps=2,
+            sync_cuda=False,
+            stop_after_measurement=True,
+        )
+        callback.on_train_start(trainer, module)
+
+        for batch_idx, (started, ended, flops) in enumerate(
+            ((0.0, 10.0, 100.0), (20.0, 22.0, 200.0), (30.0, 36.0, 600.0))
+        ):
+            with patch("time.perf_counter", side_effect=[started, ended]):
+                callback.on_train_batch_start(
+                    trainer,
+                    module,
+                    batch={"flops": flops},
+                    batch_idx=batch_idx,
+                )
+                trainer.global_step += 1
+                callback.on_train_batch_end(
+                    trainer,
+                    module,
+                    outputs=None,
+                    batch={"flops": flops},
+                    batch_idx=batch_idx,
+                )
+            self.assertEqual(trainer.should_stop, batch_idx == 2)
+
+        report = callback.report()
+        self.assertEqual(report["optimizer_steps"], 2)
+        self.assertEqual(report["metrics"]["perf/step_time"], 6.0)
+        self.assertEqual(report["metrics"]["perf/step_time_window"], 4.0)
+        self.assertEqual(
+            report["metrics"]["perf/model_flops_per_step_window"],
+            400.0,
+        )
+        self.assertEqual(report["metrics"]["perf/mfu"], 0.5)
+        self.assertEqual(report["metrics"]["perf/model_params"], 3.0)
+        self.assertEqual(len(module.log_dict_calls), 2)
+
+        report["metrics"]["perf/step_time"] = -1.0
+        self.assertEqual(callback.report()["metrics"]["perf/step_time"], 6.0)
+
+    def test_bounded_probe_stops_a_real_lightning_fit(self):
+        import torch
+        from lightning import pytorch as pl
+        from torch.utils.data import DataLoader, TensorDataset
+
+        from anytrain.lightning import PerformanceCallback
+
+        class Module(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(2, 1)
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                inputs, targets = batch
+                return torch.nn.functional.mse_loss(self.linear(inputs), targets)
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.01)
+
+        callback = PerformanceCallback(
+            model_flops_per_step=100.0,
+            hardware_peak_flops=200.0,
+            warmup_steps=1,
+            measure_window_steps=2,
+            log_every_n_steps=100,
+            sync_cuda=False,
+            stop_after_measurement=True,
+        )
+        dataset = TensorDataset(torch.ones(10, 2), torch.zeros(10, 1))
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            devices=1,
+            max_steps=10,
+            callbacks=[callback],
+            logger=False,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(Module(), train_dataloaders=DataLoader(dataset, batch_size=1))
+
+        self.assertEqual(trainer.global_step, 3)
+        self.assertEqual(callback.report()["optimizer_steps"], 2)
+
+    def test_report_requires_a_completed_measurement(self):
+        from anytrain.lightning import PerformanceCallback
+
+        callback = PerformanceCallback(sync_cuda=False)
+
+        with self.assertRaisesRegex(RuntimeError, "report is unavailable"):
+            callback.report()
+
     def test_callback_rejects_static_and_dynamic_flops_together(self):
         from anytrain.lightning import PerformanceCallback
 
@@ -693,6 +804,9 @@ class PerformanceCallbackTest(unittest.TestCase):
                 model_flops_per_step=100.0,
                 profile_flops=True,
             )
+
+        with self.assertRaisesRegex(TypeError, "stop_after_measurement must be a boolean"):
+            PerformanceCallback(stop_after_measurement=1)
 
     def test_callback_rejects_invalid_dynamic_flops(self):
         from anytrain.lightning import PerformanceCallback

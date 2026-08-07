@@ -17,6 +17,7 @@
   optimizer-step、EMA 和 render-only image 状态；这是 module 中间量 logging 的唯一 callback。
 - non-finite loss 检查等训练调试 callback。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
+- global rank 所有的 task-agnostic 长驻服务启动、健康检查、错误同步和清理 callback。
 - 训练效率观测 callback，记录参数量、step time、硬件峰值算力和 MFU。
 
 它不负责：
@@ -98,6 +99,36 @@ train start 同步各 rank 的 active 状态并启动 owner worker，在 epoch e
 适配层拥有。
 
 配置形状和运行目录属于下游入口约定，不能藏进 `LightningModule` 继承链里。
+
+## Managed services
+
+`ManagedServiceCallback` 管理与训练并行存在的 task-agnostic 长驻服务。它不创建进程、解释数据、
+规划设备或持有训练 cursor；下游只提供一个窄 controller：
+
+```python
+from anytrain.lightning import ManagedService, ManagedServiceCallback
+
+
+def service(trainer) -> ManagedService | None:
+    return controller if enabled else None
+
+
+callback = ManagedServiceCallback(
+    service,
+    check_every_n_steps=1,
+    label="data producer",
+)
+```
+
+provider 在每个 rank 的 `on_fit_start` 解析，所有 rank 必须一致地返回 service 或 `None`。实际
+`start(owner=True)`、`check(owner=True)` 和 `close(owner=True)` 只由 global rank 调用；owner
+错误广播给所有 rank。健康检查使用 optimizer `global_step` cadence，同一 step 最多调用一次。
+正常 train/fit end 的 close 错误会显式传播；exception 路径只做 best-effort close，避免覆盖原始训练
+异常。
+
+默认 `guard_sigterm=True`。callback 在 Lightning 注册 SIGTERM handler 后用 one-shot guard 包装它，
+只转发第一次 SIGTERM，避免重复的进程组信号重入 distributed handler。已有其它明确的信号所有者时
+可以显式关闭该 guard。服务内部的 subprocess、状态文件、业务阶段和停止协议仍由下游拥有。
 
 ## 下游用法
 
@@ -488,6 +519,10 @@ backward 后只重复检查可训练参数与现有梯度，因此冻结参数�
   `FlopsProvider` 按 train batch 提供并在 optimizer step 边界聚合。
 - `perf/hardware_peak_flops`，默认按设备型号和 compute dtype 查表，必要时由 job 覆盖。
 - `perf/step_time`、`perf/step_time_window` 和 `perf/mfu`。
+
+短性能探测可设置 `stop_after_measurement=True`：callback-relative warmup 后完整测量
+`measure_window_steps` 个 optimizer update，记录最终窗口并请求 Trainer 停止。`report()` 返回不持有
+输出路径的 `PerformanceReport`，其中包含窗口 optimizer step 数和同名 `perf/*` metrics。
 
 代表性输入、训练 step FLOPs 口径属于下游任务语义，不由 callback 猜测。有效 audio 秒 / token
 数等 unit 进度由 `anytrain.lightning.schedule` 的 `UnitClock` 显式提供，并由 unit runtime

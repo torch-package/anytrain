@@ -4,8 +4,9 @@ import math
 import time
 import warnings
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 import torch
 from lightning import pytorch as pl
@@ -33,6 +34,11 @@ class FlopsProvider(Protocol):
         batch: Any,
         batch_idx: int,
     ) -> float: ...
+
+
+class PerformanceReport(TypedDict):
+    optimizer_steps: int
+    metrics: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,7 @@ class PerformanceCallback(pl.Callback):
         measure_window_steps: int = 100,
         sync_cuda: bool = True,
         sync_distributed: bool = True,
+        stop_after_measurement: bool = False,
     ) -> None:
         _require_positive_int(log_every_n_steps, "log_every_n_steps")
         _require_non_negative_int(warmup_steps, "warmup_steps")
@@ -93,6 +100,7 @@ class PerformanceCallback(pl.Callback):
         for name, value in (
             ("sync_cuda", sync_cuda),
             ("sync_distributed", sync_distributed),
+            ("stop_after_measurement", stop_after_measurement),
         ):
             if not isinstance(value, bool):
                 raise TypeError(f"{name} must be a boolean.")
@@ -107,6 +115,7 @@ class PerformanceCallback(pl.Callback):
         self.measure_window_steps = measure_window_steps
         self.sync_cuda = sync_cuda
         self.sync_distributed = sync_distributed
+        self.stop_after_measurement = stop_after_measurement
         self.hardware: PeakFlops | None = None
         self._step_started_at: float | None = None
         self._last_global_step: int | None = None
@@ -114,6 +123,10 @@ class PerformanceCallback(pl.Callback):
         self._pending_flops = 0.0
         self._flop_counter: FlopCounterMode | None = None
         self._measurements: deque[_Measurement] = deque(maxlen=measure_window_steps)
+        self._probe_optimizer_steps = 0
+        self._probe_measurements: list[_Measurement] = []
+        self._static_metrics: dict[str, float] = {}
+        self._report: PerformanceReport | None = None
 
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._reset(global_step=_capability.global_step(trainer))
@@ -133,6 +146,7 @@ class PerformanceCallback(pl.Callback):
             metrics["perf/model_flops_per_step"] = float(self.model_flops_per_step)
         if self.hardware is not None:
             metrics["perf/hardware_peak_flops"] = float(self.hardware.flops)
+        self._static_metrics = dict(metrics)
 
         pl_module.log_dict(metrics, on_step=False, on_epoch=True, logger=True)
         _log_metadata(
@@ -155,6 +169,8 @@ class PerformanceCallback(pl.Callback):
         batch_idx: int,
     ) -> None:
         del batch, batch_idx
+        if self.stop_after_measurement and self._report is not None:
+            return
         if self._step_started_at is not None:
             raise RuntimeError("A training batch started before the previous batch ended.")
         if self._last_global_step is None:
@@ -189,11 +205,29 @@ class PerformanceCallback(pl.Callback):
         if step is None:
             return
         global_step, measurement = step
+        if self.stop_after_measurement:
+            final_measurement = self._record_probe_measurement(measurement)
+            if final_measurement is None:
+                return
+            metrics = self._metrics(
+                trainer,
+                pl_module,
+                final_measurement,
+                measurements=self._probe_measurements,
+            )
+            self._log_measurement(pl_module, metrics)
+            self._set_report(metrics, optimizer_steps=self.measure_window_steps)
+            trainer.should_stop = True
+            return
         if not self._should_log(global_step):
             return
 
         metrics = self._metrics(trainer, pl_module, measurement)
-        pl_module.log_dict(metrics, on_step=True, on_epoch=False, logger=True, sync_dist=False)
+        self._log_measurement(pl_module, metrics)
+        self._set_report(
+            metrics,
+            optimizer_steps=sum(item.optimizer_steps for item in self._measurements),
+        )
 
     def on_train_epoch_end(
         self,
@@ -211,6 +245,17 @@ class PerformanceCallback(pl.Callback):
     ) -> None:
         del pl_module, exception
         self._discard_pending(global_step=_capability.global_step(trainer))
+
+    def report(self) -> PerformanceReport:
+        report = self._report
+        if report is None:
+            raise RuntimeError(
+                "Performance report is unavailable before a completed measurement."
+            )
+        return {
+            "optimizer_steps": report["optimizer_steps"],
+            "metrics": dict(report["metrics"]),
+        }
 
     def _record_batch(
         self,
@@ -284,14 +329,17 @@ class PerformanceCallback(pl.Callback):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         measurement: _Measurement,
+        *,
+        measurements: Sequence[_Measurement] | None = None,
     ) -> dict[str, float]:
+        window = self._measurements if measurements is None else measurements
         optimizer_steps = measurement.optimizer_steps
-        window_steps = sum(item.optimizer_steps for item in self._measurements)
+        window_steps = sum(item.optimizer_steps for item in window)
         totals = _totals(
             trainer=trainer,
             pl_module=pl_module,
             current=measurement,
-            measurements=self._measurements,
+            measurements=window,
             hardware_peak_flops=None if self.hardware is None else self.hardware.flops,
         )
         metrics = {
@@ -314,9 +362,66 @@ class PerformanceCallback(pl.Callback):
         metrics.update(_memory_metrics(trainer, pl_module))
         return metrics
 
+    def _record_probe_measurement(
+        self,
+        measurement: _Measurement,
+    ) -> _Measurement | None:
+        start = self._probe_optimizer_steps
+        end = start + measurement.optimizer_steps
+        self._probe_optimizer_steps = end
+        window_start = self.warmup_steps
+        window_end = window_start + self.measure_window_steps
+        overlap_start = max(start, window_start)
+        overlap_end = min(end, window_end)
+        if overlap_start < overlap_end:
+            optimizer_steps = overlap_end - overlap_start
+            fraction = optimizer_steps / measurement.optimizer_steps
+            flops = None if measurement.flops is None else measurement.flops * fraction
+            self._probe_measurements.append(
+                _Measurement(
+                    elapsed=measurement.elapsed * fraction,
+                    flops=flops,
+                    optimizer_steps=optimizer_steps,
+                )
+            )
+        measured_steps = sum(
+            item.optimizer_steps for item in self._probe_measurements
+        )
+        if measured_steps < self.measure_window_steps:
+            return None
+        return self._probe_measurements[-1]
+
+    def _log_measurement(
+        self,
+        pl_module: pl.LightningModule,
+        metrics: dict[str, float],
+    ) -> None:
+        pl_module.log_dict(
+            metrics,
+            on_step=True,
+            on_epoch=False,
+            logger=True,
+            sync_dist=False,
+        )
+
+    def _set_report(
+        self,
+        metrics: dict[str, float],
+        *,
+        optimizer_steps: int,
+    ) -> None:
+        self._report = {
+            "optimizer_steps": optimizer_steps,
+            "metrics": {**self._static_metrics, **metrics},
+        }
+
     def _reset(self, *, global_step: int) -> None:
         self._discard_pending(global_step=global_step)
         self._measurements.clear()
+        self._probe_optimizer_steps = 0
+        self._probe_measurements.clear()
+        self._static_metrics = {}
+        self._report = None
 
     def _discard_pending(self, *, global_step: int) -> None:
         self._stop_flop_counter()
@@ -334,7 +439,7 @@ class PerformanceCallback(pl.Callback):
         return float(counter.get_total_flops())
 
 
-def _window_flops(measurements: deque[_Measurement]) -> float | None:
+def _window_flops(measurements: Sequence[_Measurement]) -> float | None:
     if not measurements or measurements[0].flops is None:
         return None
     values = [item.flops for item in measurements]
@@ -348,7 +453,7 @@ def _totals(
     trainer: pl.Trainer,
     pl_module: pl.LightningModule,
     current: _Measurement,
-    measurements: deque[_Measurement],
+    measurements: Sequence[_Measurement],
     hardware_peak_flops: float | None,
 ) -> _Totals:
     window_time = math.fsum(item.elapsed for item in measurements)
@@ -581,4 +686,5 @@ def _require_non_negative_int(value: int, name: str) -> None:
 __all__ = [
     "FlopsProvider",
     "PerformanceCallback",
+    "PerformanceReport",
 ]

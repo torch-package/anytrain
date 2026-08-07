@@ -4,11 +4,19 @@ import unittest
 
 import torch
 
-from anytrain.tts import TTSOptions
+from anytrain.tts import TTSOptions, TTSVoiceMode
 from anytrain.tts.qwen import QwenCustomVoiceTTS, QwenCustomVoiceTTSConfig
 
 
 class QwenTTSAdapterTest(unittest.TestCase):
+    def test_capabilities_expose_speaker_ids_only(self):
+        with _fake_qwen_tts():
+            tts = QwenCustomVoiceTTS.from_pretrained("fake-qwen")
+
+        self.assertTrue(tts.capabilities.supports(TTSVoiceMode.SPEAKER_ID))
+        self.assertFalse(tts.capabilities.supports(TTSVoiceMode.REFERENCE_AUDIO))
+        self.assertEqual(tts.capabilities.speaker_ids, ("Vivian", "Ryan"))
+
     def test_from_pretrained_loads_qwen_tts_model(self):
         FakeQwen3TTSModel.loaded = None
         with _fake_qwen_tts():
@@ -131,6 +139,56 @@ class QwenTTSConfigTest(unittest.TestCase):
         )
 
         self.assertEqual(first.config_hash(), second.config_hash())
+
+    def test_config_hash_ignores_replica_device_but_keeps_semantic_load_options(self):
+        first = QwenCustomVoiceTTS(
+            model=object(),
+            config=QwenCustomVoiceTTSConfig(
+                load_kwargs={
+                    "device": "cuda:0",
+                    "device_map": "cuda:0",
+                    "dtype": "bfloat16",
+                    "attn_implementation": "sdpa",
+                },
+            ),
+        )
+        replica = QwenCustomVoiceTTS(
+            model=object(),
+            config=QwenCustomVoiceTTSConfig(
+                load_kwargs={
+                    "device": "cuda:1",
+                    "device_map": "cuda:1",
+                    "dtype": "bfloat16",
+                    "attn_implementation": "sdpa",
+                },
+            ),
+        )
+        changed_dtype = QwenCustomVoiceTTS(
+            model=object(),
+            config=QwenCustomVoiceTTSConfig(
+                load_kwargs={
+                    "device": "cuda:1",
+                    "device_map": "cuda:1",
+                    "dtype": "float32",
+                    "attn_implementation": "sdpa",
+                },
+            ),
+        )
+        changed_attention = QwenCustomVoiceTTS(
+            model=object(),
+            config=QwenCustomVoiceTTSConfig(
+                load_kwargs={
+                    "device": "cuda:1",
+                    "device_map": "cuda:1",
+                    "dtype": "bfloat16",
+                    "attn_implementation": "flash_attention_2",
+                },
+            ),
+        )
+
+        self.assertEqual(first.config_hash(), replica.config_hash())
+        self.assertNotEqual(first.config_hash(), changed_dtype.config_hash())
+        self.assertNotEqual(first.config_hash(), changed_attention.config_hash())
 
 
 class FakeQwen3TTSModel:

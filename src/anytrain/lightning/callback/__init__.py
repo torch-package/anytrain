@@ -22,7 +22,7 @@ from .parameter_policy import (
     ParameterTrainabilitySummary,
     apply_parameter_trainability,
 )
-from .performance import FlopsProvider, PerformanceCallback
+from .performance import FlopsProvider, PerformanceCallback, PerformanceReport
 
 __all__ = [
     "DebugCallback",
@@ -44,6 +44,7 @@ __all__ = [
     "ParameterTrainability",
     "ParameterTrainabilitySummary",
     "PerformanceCallback",
+    "PerformanceReport",
     "apply_parameter_trainability",
     "gradient_loss_groups",
     "window_summary",
