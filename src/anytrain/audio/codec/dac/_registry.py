@@ -32,12 +32,12 @@ ENTRY = CodecEntry(
             AudioCapability.DETOKENIZER,
         }
     ),
+    audio_schema=AudioCodeSchema.FRAME,
     audio_spec=AudioCodeSpec(
-        view="dac",
-        schema=AudioCodeSchema.FRAME,
+        names=tuple(f"frame_{index}" for index in range(9)),
+        vocab_sizes=(1024,) * 9,
         sample_rate=44_100,
-        frame_rate=44_100 / 512,
-        frame_codebook_sizes=(1024,) * 9,
+        frame_rates=(44_100 / 512,) * 9,
     ),
     identity=AudioBackendIdentity(
         preset="dac",

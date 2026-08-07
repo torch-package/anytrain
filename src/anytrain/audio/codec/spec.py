@@ -37,105 +37,70 @@ class AudioBackendIdentity:
 
 @dataclass(frozen=True)
 class AudioCodeSpec:
-    """Static token layout metadata for one registered audio backend preset."""
+    """Static code inventory required by an audio detokenizer.
 
-    view: str
-    schema: AudioCodeSchema
-    sample_rate: int | None
-    frame_rate: float
-    frame_codebook_sizes: tuple[int, ...] = ()
-    semantic_codebook_sizes: tuple[int, ...] = ()
-    acoustic_codebook_sizes: tuple[int, ...] = ()
-    global_codebook_sizes: tuple[int, ...] = ()
-    acoustic_layout: AcousticLayout | None = None
-    acoustic_unit_length: int | None = None
-    global_unit_length: int | None = None
+    ``names[i]``, ``vocab_sizes[i]`` and ``frame_rates[i]`` describe the same
+    code stream.  A ``None`` frame rate marks a fixed-length stream (for
+    example BiCodec's global speaker codes); every other stream is aligned to
+    the declared rate.
+    """
+
+    names: tuple[str, ...]
+    vocab_sizes: tuple[int, ...]
+    sample_rate: int
+    frame_rates: tuple[float | None, ...]
 
     def __post_init__(self) -> None:
-        _non_empty_string(self.view, name="view")
-        if not isinstance(self.schema, AudioCodeSchema):
-            raise TypeError("schema must be an AudioCodeSchema.")
-        if self.sample_rate is not None:
-            _positive_int(self.sample_rate, name="sample_rate")
-        _positive_float(self.frame_rate, name="frame_rate")
-        _optional_codebook_sizes(
-            self.frame_codebook_sizes,
-            name="frame_codebook_sizes",
-        )
-        _optional_codebook_sizes(
-            self.semantic_codebook_sizes,
-            name="semantic_codebook_sizes",
-        )
-        _optional_codebook_sizes(
-            self.acoustic_codebook_sizes,
-            name="acoustic_codebook_sizes",
-        )
-        _optional_codebook_sizes(
-            self.global_codebook_sizes,
-            name="global_codebook_sizes",
-        )
-        self._validate_schema()
+        _names(self.names)
+        _codebook_sizes(self.vocab_sizes, name="vocab_sizes", allow_empty=True)
+        _positive_int(self.sample_rate, name="sample_rate")
+        _frame_rates(self.frame_rates)
+        if len(self.names) != len(self.vocab_sizes):
+            raise ValueError("names and vocab_sizes must have the same length.")
+        if len(self.names) != len(self.frame_rates):
+            raise ValueError("names and frame_rates must have the same length.")
+
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        """Compatibility alias for code-oriented backend callers."""
+
+        return self.vocab_sizes
 
     @property
     def primary_codebook_sizes(self) -> tuple[int, ...]:
-        """Codebooks occupying the preset's primary temporal token axis."""
+        """The first code stream's vocabulary, retained for codec callers."""
 
-        if self.schema is AudioCodeSchema.FRAME:
-            return self.frame_codebook_sizes
-        return self.semantic_codebook_sizes
+        return self.vocab_sizes[:1]
 
-    def _validate_schema(self) -> None:
-        if self.schema is AudioCodeSchema.FRAME:
-            if not self.frame_codebook_sizes:
-                raise ValueError("frame schema requires frame_codebook_sizes.")
-            if (
-                self.semantic_codebook_sizes
-                or self.acoustic_codebook_sizes
-                or self.global_codebook_sizes
-            ):
-                raise ValueError("frame schema must not declare structured codebooks.")
-            if (
-                self.acoustic_layout is not None
-                or self.acoustic_unit_length is not None
-                or self.global_unit_length is not None
-            ):
-                raise ValueError("frame schema must not declare structured unit metadata.")
-            return
+    def select(self, names: tuple[str, ...]) -> AudioCodeSpec:
+        """Return the sub-spec for the requested streams, in requested order."""
 
-        if not self.semantic_codebook_sizes:
-            raise ValueError("structured schema requires semantic_codebook_sizes.")
-        if self.schema is AudioCodeSchema.SEMANTIC_ACOUSTIC:
-            if not self.acoustic_codebook_sizes:
-                raise ValueError("semantic-acoustic schema requires acoustic_codebook_sizes.")
-            if self.global_codebook_sizes or self.global_unit_length is not None:
-                raise ValueError("semantic-acoustic schema must not declare global unit metadata.")
-            if not isinstance(self.acoustic_layout, AcousticLayout):
-                raise TypeError(
-                    "semantic-acoustic schema requires acoustic_layout to be an AcousticLayout."
-                )
-            if self.acoustic_layout is AcousticLayout.FIXED_LENGTH:
-                if self.acoustic_unit_length is None:
-                    raise ValueError(
-                        "fixed-length semantic-acoustic schema requires acoustic_unit_length."
-                    )
-                _positive_int(self.acoustic_unit_length, name="acoustic_unit_length")
-            elif self.acoustic_unit_length is not None:
-                raise ValueError(
-                    "frame-aligned semantic-acoustic schema must not set acoustic_unit_length."
-                )
-            return
+        requested = _names(names, name="selected names")
+        indices = self._indices(requested)
+        return AudioCodeSpec(
+            names=requested,
+            vocab_sizes=tuple(self.vocab_sizes[index] for index in indices),
+            sample_rate=self.sample_rate,
+            frame_rates=tuple(self.frame_rates[index] for index in indices),
+        )
 
-        if not self.global_codebook_sizes:
-            raise ValueError("semantic-global schema requires global_codebook_sizes.")
-        if self.global_unit_length is None:
-            raise ValueError("semantic-global schema requires global_unit_length.")
-        _positive_int(self.global_unit_length, name="global_unit_length")
-        if (
-            self.acoustic_codebook_sizes
-            or self.acoustic_layout is not None
-            or self.acoustic_unit_length is not None
-        ):
-            raise ValueError("semantic-global schema must not declare acoustic unit metadata.")
+    def exclude(self, names: tuple[str, ...]) -> AudioCodeSpec:
+        """Return the sub-spec after removing the requested streams."""
+
+        excluded_names = _names(names, name="excluded names")
+        self._indices(excluded_names)
+        excluded = set(excluded_names)
+        selected = tuple(name for name in self.names if name not in excluded)
+        return self.select(selected)
+
+    def _indices(self, names: tuple[str, ...]) -> tuple[int, ...]:
+        positions = {name: index for index, name in enumerate(self.names)}
+        missing = tuple(name for name in names if name not in positions)
+        if missing:
+            raise ValueError(
+                f"unknown code names {missing!r}; available names are {self.names!r}."
+            )
+        return tuple(positions[name] for name in names)
 
 
 @dataclass(frozen=True)
@@ -248,9 +213,10 @@ def _semantic_codebook(value: object, sizes: tuple[int, ...]) -> None:
         raise TypeError("semantic_codebook must be floating point.")
 
 
-def _codebook_sizes(value: object, *, name: str) -> None:
-    if not _optional_codebook_sizes(value, name=name):
+def _codebook_sizes(value: object, *, name: str, allow_empty: bool = False) -> None:
+    if not allow_empty and not _optional_codebook_sizes(value, name=name):
         raise ValueError(f"{name} must not be empty.")
+    _optional_codebook_sizes(value, name=name)
 
 
 def _optional_codebook_sizes(value: object, *, name: str) -> tuple[int, ...]:
@@ -261,6 +227,25 @@ def _optional_codebook_sizes(value: object, *, name: str) -> tuple[int, ...]:
         _positive_int(size, name=f"{name}[{index}]")
         resolved.append(int(size))
     return tuple(resolved)
+
+
+def _names(value: object, *, name: str = "names") -> tuple[str, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple of strings.")
+    for index, item in enumerate(value):
+        _non_empty_string(item, name=f"{name}[{index}]")
+    if len(set(value)) != len(value):
+        raise ValueError(f"{name} must contain unique values.")
+    return value
+
+
+def _frame_rates(value: object) -> tuple[float | None, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError("frame_rates must be a tuple of positive numbers or None.")
+    for index, rate in enumerate(value):
+        if rate is not None:
+            _positive_float(rate, name=f"frame_rates[{index}]")
+    return value
 
 
 def _non_empty_string(value: object, *, name: str) -> None:

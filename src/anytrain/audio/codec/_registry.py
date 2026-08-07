@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .protocol import AudioCapability, CodecCapability
-from .spec import AudioBackendIdentity, AudioCodeSpec
+from .spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
 
 CodecLoader = Callable[..., Any]
 
@@ -19,6 +19,7 @@ class CodecEntry:
     loader: CodecLoader | None = None
     audio_capabilities: frozenset[AudioCapability] = frozenset()
     audio_spec: AudioCodeSpec | None = None
+    audio_schema: AudioCodeSchema | None = None
     identity: AudioBackendIdentity | None = None
 
     def __post_init__(self) -> None:
@@ -35,6 +36,16 @@ class CodecEntry:
             raise ValueError(
                 f"codec registry entry {self.name!r} with audio capabilities must "
                 "provide static audio_spec metadata."
+            )
+        if self.audio_capabilities and not isinstance(self.audio_schema, AudioCodeSchema):
+            raise TypeError(
+                f"codec registry entry {self.name!r} with audio capabilities must "
+                "provide an audio_schema for payload dispatch."
+            )
+        if not self.audio_capabilities and self.audio_schema is not None:
+            raise ValueError(
+                f"codec registry entry {self.name!r} must not declare audio_schema "
+                "without audio capabilities."
             )
 
     @property

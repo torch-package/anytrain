@@ -44,12 +44,12 @@ ENTRY = CodecEntry(
     capabilities=frozenset(),
     loader=_load_tokenizer,
     audio_capabilities=frozenset({AudioCapability.TOKENIZER}),
+    audio_schema=AudioCodeSchema.FRAME,
     audio_spec=AudioCodeSpec(
-        view="glm4",
-        schema=AudioCodeSchema.FRAME,
+        names=("frame_0",),
+        vocab_sizes=(16_384,),
         sample_rate=16_000,
-        frame_rate=12.5,
-        frame_codebook_sizes=(16_384,),
+        frame_rates=(12.5,),
     ),
     identity=AudioBackendIdentity(
         preset="glm4",

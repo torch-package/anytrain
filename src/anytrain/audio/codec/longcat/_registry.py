@@ -3,7 +3,7 @@ from __future__ import annotations
 from torch import device as TorchDevice
 
 from anytrain.audio.codec._registry import CodecEntry
-from anytrain.audio.codec.protocol import AcousticLayout, AudioCapability, CodecCapability
+from anytrain.audio.codec.protocol import AudioCapability, CodecCapability
 from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
 
 from .assets import DEFAULT_HF_REPO_ID, DEFAULT_LONGCAT_REVISION
@@ -30,15 +30,12 @@ ENTRY = CodecEntry(
             AudioCapability.DETOKENIZER,
         }
     ),
+    audio_schema=AudioCodeSchema.SEMANTIC_ACOUSTIC,
     audio_spec=AudioCodeSpec(
-        view="longcat",
-        schema=AudioCodeSchema.SEMANTIC_ACOUSTIC,
+        names=("semantic", "acoustic_0", "acoustic_1", "acoustic_2"),
+        vocab_sizes=(8192, 8100, 8100, 8100),
         sample_rate=16_000,
-        frame_rate=16_000 / 960,
-        frame_codebook_sizes=(8192, 8100, 8100, 8100),
-        semantic_codebook_sizes=(8192,),
-        acoustic_codebook_sizes=(8100, 8100, 8100),
-        acoustic_layout=AcousticLayout.FRAME_ALIGNED,
+        frame_rates=(16_000 / 960,) * 4,
     ),
     identity=AudioBackendIdentity(
         preset="longcat",

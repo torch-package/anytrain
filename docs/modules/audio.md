@@ -24,7 +24,8 @@ AudioCodec = AudioTokenizer ∩ AudioDetokenizer   # anytrain.audio.codec
 ## 子模块
 
 - [`anytrain.audio.tokenizer`](../codec.md)：`AudioTokenizer`、`load_audio_tokenizer`。
-- [`anytrain.audio.detokenizer`](../codec.md)：`AudioDetokenizer`、`load_audio_detokenizer`。
+- [`anytrain.audio.detokenizer`](../codec.md)：`AudioCodeSpec`、`AudioDetokenizer`、
+  `load_audio_detokenizer`。
 - [`anytrain.audio.codec`](../codec.md)：protocol、registry、preset、concrete backend。
 - [`anytrain.audio.bpe`](bpe.md)：`CodecBPE` / `EvalStats`。
 

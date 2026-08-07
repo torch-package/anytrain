@@ -111,10 +111,12 @@ slot 属于这个契约。
 backend 读取并严格校验对应的 rate、codebook、feature dim 和 unit 结构；spec 不包含 backend 名称、
 checkpoint、加载参数或实际 codebook Tensor，因此不能替代 codec 实例和 registry。
 
-配置和数据层需要在加载权重前读取默认 preset 结构时，使用静态 `AudioCodeSpec`。它包含稳定
-`view` 字符串、`AudioCodeSchema`、sample/frame rate、frame/semantic/acoustic/global codebook sizes，
-以及 structured schema 对应的 layout 和固定 unit length。`primary_codebook_sizes` 返回 LLM 主时间轴
-上的码本；backend resource identity 由独立的 `AudioBackendIdentity` 表达，不能用 code schema 代替。
+配置和数据层需要在加载权重前读取默认 preset 的完整 code inventory 时，使用静态
+`AudioCodeSpec(names, vocab_sizes, sample_rate, frame_rates)`。三个 tuple 按索引一一对应；
+`frame_rates[i] is None` 表示该 code stream 定长，不参与逐帧对齐。`select(names)` 按调用方声明顺序
+选取输入 stream，`exclude(names)` 保持原 inventory 顺序得到剩余 stream。payload 的 Python 结构和
+backend resource identity 分别由 registry 内部 dispatch metadata 与 `AudioBackendIdentity` 表达，不能
+混入 detokenizer 的 code contract。
 
 这些 protocol 是可重叠的 capability，不是 concrete class 继承树：
 

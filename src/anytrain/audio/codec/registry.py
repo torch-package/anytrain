@@ -128,6 +128,13 @@ def _audio_spec(entry: CodecEntry) -> AudioCodeSpec:
     return spec
 
 
+def _audio_schema(entry: CodecEntry) -> AudioCodeSchema:
+    schema = entry.audio_schema
+    if schema is None:
+        raise RuntimeError(f"Audio backend {entry.name!r} has no payload dispatch schema.")
+    return schema
+
+
 def _device_key(device: str | torch.device | None) -> str:
     if device is None:
         resolved = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -176,9 +183,10 @@ class _AudioTokenizerView:
         return _audio_spec(self._entry)
 
     def tokenize(self, audio: Tensor, sample_rate: int) -> AudioCodes:
-        if self.spec.schema is AudioCodeSchema.FRAME:
+        schema = _audio_schema(self._entry)
+        if schema is AudioCodeSchema.FRAME:
             return cast(FrameTokenizerBackend, self.backend).encode(audio, sample_rate)
-        if self.spec.schema is AudioCodeSchema.SEMANTIC_ACOUSTIC:
+        if schema is AudioCodeSchema.SEMANTIC_ACOUSTIC:
             return cast(SemanticAcousticCodec, self.backend).tokenize(audio, sample_rate)
         return cast(SemanticGlobalCodec, self.backend).tokenize(audio, sample_rate)
 
@@ -201,9 +209,10 @@ class _AudioDetokenizerView:
         return _audio_spec(self._entry)
 
     def detokenize(self, codes: AudioCodes) -> Tensor:
-        if self.spec.schema is AudioCodeSchema.FRAME:
+        schema = _audio_schema(self._entry)
+        if schema is AudioCodeSchema.FRAME:
             return cast(FrameDetokenizerBackend, self.backend).decode(cast(Tensor, codes))
-        if self.spec.schema is AudioCodeSchema.SEMANTIC_ACOUSTIC:
+        if schema is AudioCodeSchema.SEMANTIC_ACOUSTIC:
             return cast(SemanticAcousticCodec, self.backend).detokenize(
                 cast(SemanticAcousticCodes, codes)
             )

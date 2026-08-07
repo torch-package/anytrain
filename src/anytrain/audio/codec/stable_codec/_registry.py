@@ -25,12 +25,12 @@ ENTRY = CodecEntry(
             AudioCapability.DETOKENIZER,
         }
     ),
+    audio_schema=AudioCodeSchema.FRAME,
     audio_spec=AudioCodeSpec(
-        view="stable",
-        schema=AudioCodeSchema.FRAME,
+        names=("frame_0",),
+        vocab_sizes=(46_656,),
         sample_rate=16_000,
-        frame_rate=25.0,
-        frame_codebook_sizes=(46_656,),
+        frame_rates=(25.0,),
     ),
     identity=AudioBackendIdentity(
         preset="stable_codec",

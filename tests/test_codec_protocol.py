@@ -270,51 +270,56 @@ def test_registry_rejects_unknown_codec() -> None:
 
 def test_audio_specs_are_static_for_default_presets() -> None:
     assert audio_spec("glm4") == AudioCodeSpec(
-        view="glm4",
-        schema=AudioCodeSchema.FRAME,
+        names=("frame_0",),
+        vocab_sizes=(16_384,),
         sample_rate=16_000,
-        frame_rate=12.5,
-        frame_codebook_sizes=(16_384,),
+        frame_rates=(12.5,),
     )
     assert audio_spec("bicodec") == AudioCodeSpec(
-        view="bicodec",
-        schema=AudioCodeSchema.SEMANTIC_GLOBAL,
+        names=("semantic", "global"),
+        vocab_sizes=(8192, 4096),
         sample_rate=16_000,
-        frame_rate=50.0,
-        semantic_codebook_sizes=(8192,),
-        global_codebook_sizes=(4096,),
-        global_unit_length=32,
+        frame_rates=(50.0, None),
     )
     assert audio_spec("longcat") == AudioCodeSpec(
-        view="longcat",
-        schema=AudioCodeSchema.SEMANTIC_ACOUSTIC,
+        names=("semantic", "acoustic_0", "acoustic_1", "acoustic_2"),
+        vocab_sizes=(8192, 8100, 8100, 8100),
         sample_rate=16_000,
-        frame_rate=16_000 / 960,
-        frame_codebook_sizes=(8192, 8100, 8100, 8100),
-        semantic_codebook_sizes=(8192,),
-        acoustic_codebook_sizes=(8100, 8100, 8100),
-        acoustic_layout=AcousticLayout.FRAME_ALIGNED,
+        frame_rates=(16_000 / 960,) * 4,
     )
     assert audio_spec("stable_codec") == AudioCodeSpec(
-        view="stable",
-        schema=AudioCodeSchema.FRAME,
+        names=("frame_0",),
+        vocab_sizes=(46_656,),
         sample_rate=16_000,
-        frame_rate=25.0,
-        frame_codebook_sizes=(46_656,),
+        frame_rates=(25.0,),
     )
     assert audio_spec("unicodec") == AudioCodeSpec(
-        view="unicodec",
-        schema=AudioCodeSchema.FRAME,
+        names=("frame_0",),
+        vocab_sizes=(16_384,),
         sample_rate=24_000,
-        frame_rate=75.0,
-        frame_codebook_sizes=(16_384,),
+        frame_rates=(75.0,),
     )
     assert audio_spec("dac") == AudioCodeSpec(
-        view="dac",
-        schema=AudioCodeSchema.FRAME,
+        names=tuple(f"frame_{index}" for index in range(9)),
+        vocab_sizes=(1024,) * 9,
         sample_rate=44_100,
-        frame_rate=44_100 / 512,
-        frame_codebook_sizes=(1024,) * 9,
+        frame_rates=(44_100 / 512,) * 9,
+    )
+
+
+def test_audio_code_spec_selects_and_excludes_named_streams() -> None:
+    spec = audio_spec("longcat")
+
+    assert spec.select(("acoustic_2", "semantic")) == AudioCodeSpec(
+        names=("acoustic_2", "semantic"),
+        vocab_sizes=(8100, 8192),
+        sample_rate=16_000,
+        frame_rates=(16_000 / 960, 16_000 / 960),
+    )
+    assert spec.exclude(("semantic",)).names == (
+        "acoustic_0",
+        "acoustic_1",
+        "acoustic_2",
     )
 
 
