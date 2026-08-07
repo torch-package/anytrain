@@ -97,7 +97,23 @@ class QwenTranslator:
             load_kwargs=load_kwargs,
             generate_kwargs=dict(generate_kwargs or {}),
         )
-        tokenizer = AutoTokenizer.from_pretrained(source, revision=revision)
+        tokenizer_options: dict[str, object] = {
+            name: value
+            for name, value in load_kwargs.items()
+            if name
+            in {
+                "cache_dir",
+                "force_download",
+                "local_files_only",
+                "proxies",
+                "subfolder",
+                "token",
+                "trust_remote_code",
+            }
+        }
+        if revision is not None:
+            tokenizer_options["revision"] = revision
+        tokenizer = AutoTokenizer.from_pretrained(source, **tokenizer_options)
         options = dict(load_kwargs)
         if revision is not None:
             options["revision"] = revision

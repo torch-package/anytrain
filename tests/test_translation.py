@@ -19,6 +19,43 @@ class TranslationProtocolTest(unittest.TestCase):
 
 
 class QwenTranslatorTest(unittest.TestCase):
+    def test_from_pretrained_omits_unset_revision(self):
+        with _fake_transformers():
+            QwenTranslator.from_pretrained("fake-qwen", device="cpu")
+
+        self.assertEqual(FakeTokenizer.loaded.load_args, ("fake-qwen", {}))
+        self.assertEqual(
+            FakeModel.loaded.load_args,
+            ("fake-qwen", {"device_map": "cpu"}),
+        )
+
+    def test_from_pretrained_forwards_tokenizer_hub_options(self):
+        with _fake_transformers():
+            QwenTranslator.from_pretrained(
+                "fake-qwen",
+                revision="main",
+                cache_dir="storage/hf",
+                local_files_only=True,
+                token="hf-token",
+                trust_remote_code=True,
+                device="cpu",
+                dtype=torch.bfloat16,
+            )
+
+        self.assertEqual(
+            FakeTokenizer.loaded.load_args,
+            (
+                "fake-qwen",
+                {
+                    "cache_dir": "storage/hf",
+                    "local_files_only": True,
+                    "revision": "main",
+                    "token": "hf-token",
+                    "trust_remote_code": True,
+                },
+            ),
+        )
+
     def test_from_pretrained_translates_plain_strings(self):
         with _fake_transformers():
             translator = QwenTranslator.from_pretrained(
