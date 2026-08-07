@@ -97,6 +97,12 @@ class QwenTranslator:
             load_kwargs=load_kwargs,
             generate_kwargs=dict(generate_kwargs or {}),
         )
+        resolved_source = _resolve_pretrained_source(
+            source,
+            cache_dir=load_kwargs.get("cache_dir"),
+            local_files_only=load_kwargs.get("local_files_only", False),
+            revision=revision,
+        )
         tokenizer_options: dict[str, object] = {
             name: value
             for name, value in load_kwargs.items()
@@ -113,13 +119,13 @@ class QwenTranslator:
         }
         if revision is not None:
             tokenizer_options["revision"] = revision
-        tokenizer = AutoTokenizer.from_pretrained(source, **tokenizer_options)
+        tokenizer = AutoTokenizer.from_pretrained(resolved_source, **tokenizer_options)
         options = dict(load_kwargs)
         if revision is not None:
             options["revision"] = revision
         if device is not None and "device_map" not in options:
             options["device_map"] = str(device)
-        loaded = AutoModelForCausalLM.from_pretrained(source, **options).eval()
+        loaded = AutoModelForCausalLM.from_pretrained(resolved_source, **options).eval()
         return cls(
             model=loaded,
             tokenizer=tokenizer,
@@ -246,6 +252,30 @@ def _device(model: object, value: str | torch.device | None) -> torch.device:
         except StopIteration:
             pass
     return torch.device("cpu")
+
+
+def _resolve_pretrained_source(
+    source: str,
+    *,
+    cache_dir: object,
+    local_files_only: object,
+    revision: str | None,
+) -> str:
+    if Path(source).expanduser().exists() or local_files_only is not True:
+        return source
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise ImportError(
+            "Local-only Qwen translation loading requires huggingface-hub; install "
+            '`anytrain[translation]`.'
+        ) from exc
+    return snapshot_download(
+        repo_id=source,
+        cache_dir=None if cache_dir is None else str(cache_dir),
+        local_files_only=True,
+        revision=revision,
+    )
 
 
 def _accepts_keyword(method: Any, name: str) -> bool:

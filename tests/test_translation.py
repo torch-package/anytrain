@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -30,7 +31,13 @@ class QwenTranslatorTest(unittest.TestCase):
         )
 
     def test_from_pretrained_forwards_tokenizer_hub_options(self):
-        with _fake_transformers():
+        with (
+            _fake_transformers(),
+            patch(
+                "huggingface_hub.snapshot_download",
+                return_value="/cache/qwen-snapshot",
+            ) as snapshot_download,
+        ):
             QwenTranslator.from_pretrained(
                 "fake-qwen",
                 revision="main",
@@ -42,10 +49,16 @@ class QwenTranslatorTest(unittest.TestCase):
                 dtype=torch.bfloat16,
             )
 
+        snapshot_download.assert_called_once_with(
+            repo_id="fake-qwen",
+            cache_dir="storage/hf",
+            local_files_only=True,
+            revision="main",
+        )
         self.assertEqual(
             FakeTokenizer.loaded.load_args,
             (
-                "fake-qwen",
+                "/cache/qwen-snapshot",
                 {
                     "cache_dir": "storage/hf",
                     "local_files_only": True,
@@ -54,6 +67,29 @@ class QwenTranslatorTest(unittest.TestCase):
                     "trust_remote_code": True,
                 },
             ),
+        )
+
+    def test_from_pretrained_resolves_cached_repo_for_local_only_loads(self):
+        with (
+            _fake_transformers(),
+            patch(
+                "huggingface_hub.snapshot_download",
+                return_value="/cache/qwen-snapshot",
+            ),
+        ):
+            QwenTranslator.from_pretrained(
+                "fake-qwen",
+                local_files_only=True,
+                device="cpu",
+            )
+
+        self.assertEqual(
+            FakeTokenizer.loaded.load_args[0],
+            "/cache/qwen-snapshot",
+        )
+        self.assertEqual(
+            FakeModel.loaded.load_args[0],
+            "/cache/qwen-snapshot",
         )
 
     def test_from_pretrained_translates_plain_strings(self):
