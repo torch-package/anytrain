@@ -10,7 +10,7 @@
                 }
             }
         ],
-        "./src/anytrain/codec/bicodec/codec.py": [
+        "./src/anytrain/audio/codec/bicodec/codec.py": [
             {
                 "code": "reportMissingImports",
                 "range": {
@@ -44,7 +44,7 @@
                 }
             }
         ],
-        "./src/anytrain/codec/dac/codec.py": [
+        "./src/anytrain/audio/codec/dac/codec.py": [
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -132,17 +132,9 @@
                     "endColumn": 74,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 18,
-                    "lineCount": 1
-                }
             }
         ],
-        "./src/anytrain/codec/longcat/assets.py": [
+        "./src/anytrain/audio/codec/longcat/assets.py": [
             {
                 "code": "reportIndexIssue",
                 "range": {
@@ -160,7 +152,7 @@
                 }
             }
         ],
-        "./src/anytrain/codec/longcat/codec.py": [
+        "./src/anytrain/audio/codec/longcat/codec.py": [
             {
                 "code": "reportMissingImports",
                 "range": {
@@ -170,7 +162,7 @@
                 }
             }
         ],
-        "./src/anytrain/codec/stable_codec/codec.py": [
+        "./src/anytrain/audio/codec/stable_codec/codec.py": [
             {
                 "code": "reportCallIssue",
                 "range": {
@@ -202,27 +194,19 @@
                     "endColumn": 49,
                     "lineCount": 1
                 }
-            },
+            }
+        ],
+        "./src/anytrain/audio/codec/unicodec/assets.py": [
             {
-                "code": "reportMissingImports",
+                "code": "reportAttributeAccessIssue",
                 "range": {
-                    "startColumn": 13,
-                    "endColumn": 25,
+                    "startColumn": 29,
+                    "endColumn": 48,
                     "lineCount": 1
                 }
             }
         ],
-        "./src/anytrain/codec/unicodec/assets.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 21,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/anytrain/codec/unicodec/codec.py": [
+        "./src/anytrain/audio/codec/unicodec/codec.py": [
             {
                 "code": "reportCallIssue",
                 "range": {
@@ -248,10 +232,10 @@
                 }
             },
             {
-                "code": "reportMissingImports",
+                "code": "reportAttributeAccessIssue",
                 "range": {
-                    "startColumn": 13,
-                    "endColumn": 21,
+                    "startColumn": 29,
+                    "endColumn": 37,
                     "lineCount": 1
                 }
             }
