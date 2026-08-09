@@ -44,3 +44,19 @@
 
 - 在预置官方 checkpoint 的环境里用真实短音频跑一次 encode/decode smoke，确认
   `DAC.from_pretrained(local_files_only=True)`、统一 codes 轴和多 `n_quantizers` 配置。
+
+## 类型债务（basedpyright 全量，baseline 已删除）
+
+背景：删除 `.basedpyright/baseline.json` 后类型错误全量暴露。修复后运行
+`"$PY312" -m basedpyright --pythonpath "$PY312"` 确认；当前 67 errors + 10 warnings。
+10 个 `reportMissingImports` 是 optional 依赖未安装（`audio` / `dac` / `unicodec` extras，
+以及声明的 soundfile / torchcodec），不是代码错误，按对应 extra 安装即可，不计入修复目标。
+
+- audio/codec（约 20）：dac/codec.py(12)、stable_codec/codec.py(5)、unicodec/codec.py(4)、
+  bicodec/codec.py(4)、longcat(3) 中除 optional 导入外的 `reportArgumentType` / `reportCallIssue`。
+- optim（12）：adamw.py(11)、muon.py(1)。
+- tts/qwen（10）：qwen/tts.py(10)。
+- module 系（15）：quantization/residual.py(7)、quantization/lookup.py(2)、dit.py(4)、
+  idspace/embedding.py(2)。
+- evaluator（4）：text/scores.py(3)、speech/audio.py(1)。
+- 散点（7）：example(3)、framework/flow_matching(2)、lightning/callback(1)、_compat.py(1)。
