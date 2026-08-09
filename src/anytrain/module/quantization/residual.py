@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 from torch import Tensor, nn
@@ -105,7 +107,9 @@ class ResidualVectorQuantizer(nn.Module):
         residual = latents.reshape(-1, self.input_dim)
 
         vector_list = []
-        for quantizer in self.quantizers[:active_count]:
+        for quantizer in cast(
+            Sequence[EmbeddingVectorQuantizer], self.quantizers[:active_count]
+        ):
             codebook_vectors = quantizer.latents_to_codebook_vectors(residual)
             vector_list.append(codebook_vectors)
             residual = residual - quantizer.project_codebook_vectors(codebook_vectors)
@@ -123,7 +127,12 @@ class ResidualVectorQuantizer(nn.Module):
             num_codebooks=self.num_codebooks,
         )
         indices = []
-        for index, quantizer in enumerate(self.quantizers[: codebook_vectors.shape[-2]]):
+        for index, quantizer in enumerate(
+            cast(
+                Sequence[EmbeddingVectorQuantizer],
+                self.quantizers[: codebook_vectors.shape[-2]],
+            )
+        ):
             indices.append(quantizer.codebook_vectors_to_indices(codebook_vectors[..., index, :]))
         return torch.stack(indices, dim=-1)
 
@@ -135,7 +144,12 @@ class ResidualVectorQuantizer(nn.Module):
             allow_inactive=True,
         )
         vectors = []
-        for index, quantizer in enumerate(self.quantizers[: indices.shape[-1]]):
+        for index, quantizer in enumerate(
+            cast(
+                Sequence[EmbeddingVectorQuantizer],
+                self.quantizers[: indices.shape[-1]],
+            )
+        ):
             indices_i = indices[..., index]
             mask = indices_i >= 0
             vectors_i = torch.zeros(
@@ -156,7 +170,12 @@ class ResidualVectorQuantizer(nn.Module):
             num_codebooks=self.num_codebooks,
         )
         projected = []
-        for index, quantizer in enumerate(self.quantizers[: codebook_vectors.shape[-2]]):
+        for index, quantizer in enumerate(
+            cast(
+                Sequence[EmbeddingVectorQuantizer],
+                self.quantizers[: codebook_vectors.shape[-2]],
+            )
+        ):
             projected.append(quantizer.project_codebook_vectors(codebook_vectors[..., index, :]))
         return torch.stack(projected, dim=-2).sum(dim=-2)
 

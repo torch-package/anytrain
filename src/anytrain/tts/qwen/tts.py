@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypedDict, Unpack, overload
+from typing import Any, TypedDict, Unpack, cast, overload
 
 import torch
 from torch import Tensor
@@ -64,7 +64,7 @@ class QwenCustomVoiceTTSConfig:
         }
         if self.speaker is not None:
             kwargs["speaker"] = self.speaker
-        return TTSOptions(**kwargs)
+        return TTSOptions(**cast(dict[str, Any], kwargs))
 
     def hash_dict(self) -> dict[str, object]:
         semantic_load_kwargs = {
@@ -147,7 +147,7 @@ class QwenCustomVoiceTTS:
         getter = getattr(self.model, "get_supported_speakers", None)
         if not callable(getter):
             return ()
-        speakers = tuple(getter())
+        speakers = tuple(cast(Iterable[str], getter()))
         if any(not isinstance(speaker, str) or not speaker for speaker in speakers):
             raise RuntimeError("Qwen3-TTS returned invalid supported speaker ids.")
         return speakers
@@ -355,7 +355,11 @@ def _outputs(
     default_sample_rate: int,
 ) -> list[TTSOutput]:
     waveforms, sample_rate = _generated_parts(generated, default_sample_rate)
-    values = [waveforms] if _is_waveform_value(waveforms) else list(waveforms)
+    values = (
+        [waveforms]
+        if _is_waveform_value(waveforms)
+        else list(cast(Iterable[object], waveforms))
+    )
     if len(values) != len(speakers):
         raise RuntimeError("Qwen3-TTS output count does not match text batch length.")
     return [

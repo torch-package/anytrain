@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from enum import StrEnum
 from itertools import zip_longest
-from typing import Self
+from typing import Self, cast
 
 __all__ = ["Self", "StrEnum", "strict_zip"]
 
@@ -14,4 +14,4 @@ def strict_zip[T1, T2](first: Iterable[T1], second: Iterable[T2]) -> Iterator[tu
     for left, right in zip_longest(first, second, fillvalue=_MISSING):
         if left is _MISSING or right is _MISSING:
             raise ValueError("zip() argument lengths differ")
-        yield left, right
+        yield cast(T1, left), cast(T2, right)

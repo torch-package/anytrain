@@ -272,6 +272,29 @@ class DiTBlock(nn.Module):
             raise RuntimeError("cross-attention is not configured.")
         return self.context_attention.project_kv(context)
 
+    def _cross_attention_forward(
+        self,
+        hidden: Tensor,
+        chunks: tuple[Tensor, ...],
+        mask: Tensor,
+        context_kv: AttentionKV,
+        context_mask: Tensor,
+    ) -> Tensor:
+        context_shift, context_scale, context_gate = (
+            chunks[3],
+            chunks[4],
+            chunks[5],
+        )
+        normalized = self.context_norm(hidden)
+        normalized = normalized * (1 + context_scale) + context_shift
+        attended = self.context_attention(
+            normalized,
+            kv_cache=context_kv,
+            key_mask=context_mask,
+        )
+        hidden = hidden + context_gate * attended
+        return hidden.masked_fill(~mask[..., None], 0)
+
     def forward(
         self,
         hidden: Tensor,
@@ -281,13 +304,13 @@ class DiTBlock(nn.Module):
         context_kv: AttentionKV | None = None,
         context_mask: Tensor | None = None,
     ) -> Tensor:
-        chunks = self.film(film).chunk(9 if self.cross_attention else 6, dim=-1)
+        cross = self.cross_attention
+        chunks = self.film(film).chunk(9 if cross else 6, dim=-1)
         attention_shift, attention_scale, attention_gate = chunks[:3]
-        if self.cross_attention:
-            context_shift, context_scale, context_gate = chunks[3:6]
-            ffn_shift, ffn_scale, ffn_gate = chunks[6:9]
+        if cross:
+            ffn_shift, ffn_scale, ffn_gate = chunks[6], chunks[7], chunks[8]
         else:
-            ffn_shift, ffn_scale, ffn_gate = chunks[3:6]
+            ffn_shift, ffn_scale, ffn_gate = chunks[3], chunks[4], chunks[5]
 
         normalized = self.attention_norm(hidden)
         normalized = normalized * (1 + attention_scale) + attention_shift
@@ -295,18 +318,16 @@ class DiTBlock(nn.Module):
         hidden = hidden + attention_gate * attended
         hidden = hidden.masked_fill(~mask[..., None], 0)
 
-        if self.cross_attention:
+        if cross:
             if context_kv is None or context_mask is None:
                 raise ValueError("cross-attention requires condition_state from prepare_condition.")
-            normalized = self.context_norm(hidden)
-            normalized = normalized * (1 + context_scale) + context_shift
-            attended = self.context_attention(
-                normalized,
-                kv_cache=context_kv,
-                key_mask=context_mask,
+            hidden = self._cross_attention_forward(
+                hidden,
+                chunks,
+                mask,
+                context_kv,
+                context_mask,
             )
-            hidden = hidden + context_gate * attended
-            hidden = hidden.masked_fill(~mask[..., None], 0)
 
         normalized = self.ffn_norm(hidden)
         normalized = normalized * (1 + ffn_scale) + ffn_shift
@@ -448,7 +469,9 @@ class DiT(nn.Module):
             context = self.condition(condition).masked_fill(~valid_mask[..., None], 0)
             return DiTConditionState(
                 condition_type=self.condition_type,
-                cross_kv=tuple(block.project_context(context) for block in self.blocks),
+                cross_kv=tuple(
+                    cast(DiTBlock, block).project_context(context) for block in self.blocks
+                ),
                 condition_mask=valid_mask,
             )
         raise ValueError(f"unsupported condition_type: {self.condition_type}")

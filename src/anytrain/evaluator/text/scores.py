@@ -30,7 +30,7 @@ def corpus_bleu_score(
         return 0.0
 
     try:
-        from sacrebleu.metrics import BLEU
+        from sacrebleu.metrics.bleu import BLEU
     except ImportError as exc:
         _warn_fallback("BLEU", "sacrebleu", exc)
         return _clip_percent(
@@ -84,7 +84,7 @@ def corpus_chrf_score(
         return 0.0
 
     try:
-        from sacrebleu.metrics import CHRF
+        from sacrebleu.metrics.chrf import CHRF
     except ImportError as exc:
         _warn_fallback("chrF", "sacrebleu", exc)
         return _clip_percent(
@@ -96,7 +96,7 @@ def corpus_chrf_score(
             )
         )
 
-    scorer = CHRF(char_order=max_order, beta=beta)
+    scorer = CHRF(char_order=max_order, beta=int(beta))
     return _clip_percent(float(scorer.corpus_score(list(predictions), [list(targets)]).score))
 
 

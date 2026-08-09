@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from typing import cast
 
 import torch
 from torch import nn
@@ -65,7 +66,7 @@ class Embedding(nn.Module):
         return frozenset(_selected_blocks(input_ids, self.layout))
 
     def _forward_homogeneous(self, input_ids: torch.Tensor, *, output_dim: int) -> torch.Tensor:
-        first = next(iter(self.embeddings.values()))
+        first = cast(nn.Embedding, next(iter(self.embeddings.values())))
         output = first.weight.new_empty((*input_ids.shape, output_dim))
         covered = torch.zeros(input_ids.shape, dtype=torch.bool, device=input_ids.device)
 
@@ -169,7 +170,7 @@ def _homogeneous_output_dim(
 ) -> int | None:
     if len(adapters) > 0:
         return None
-    output_dims = {embed.embedding_dim for embed in embeddings.values()}
+    output_dims = {cast(int, embed.embedding_dim) for embed in embeddings.values()}
     if len(output_dims) != 1:
         return None
     return output_dims.pop()

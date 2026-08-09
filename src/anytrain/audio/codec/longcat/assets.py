@@ -4,7 +4,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .._cache import hf_cache_dir, hf_file
 
@@ -185,7 +185,7 @@ def _validate_decoders(decoders: Sequence[LongCatDecoderName]) -> tuple[LongCatD
     return tuple(dict.fromkeys(decoders))
 
 
-def _read_default_config(stem: str) -> dict[str, object]:
+def _read_default_config(stem: str) -> dict[str, Any]:
     try:
         from longcat_audio_codec import default_config_path
     except ImportError as exc:

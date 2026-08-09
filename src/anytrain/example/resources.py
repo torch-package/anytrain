@@ -18,7 +18,7 @@ def list_example_audio() -> tuple[ExampleAudio, ...]:
 def example_audio_path(name: ExampleAudio | str) -> Path:
     audio = _audio(name)
     resource = files("anytrain.example").joinpath(*_relative_parts(audio))
-    return Path(resource)
+    return Path(str(resource))
 
 
 def vctk_path() -> Path:

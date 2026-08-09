@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Protocol
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from .._audio import model_frame_rate, resample
 from .._module import DeviceModule, resolve_device, validate_frame_codes
@@ -22,12 +22,28 @@ NUM_CHANNELS = 1
 DEFAULT_CODEBOOK_SIZE = 16_384
 
 
+class _UniCodecModel(Protocol):
+    feature_extractor: object
+
+    def encode_infer(
+        self,
+        audio: Tensor,
+        domains: tuple[str, ...],
+        *,
+        bandwidth_id: Tensor,
+    ) -> tuple[Tensor, Tensor]: ...
+
+    def decode(self, features: Tensor, *, bandwidth_id: Tensor) -> Tensor: ...
+
+    def codes_to_features(self, codes: Tensor) -> Tensor: ...
+
+
 class UniCodec(DeviceModule):
     name = "unicodec"
 
     def __init__(
         self,
-        model: nn.Module,
+        model: _UniCodecModel,
         device: torch.device,
         assets: UniCodecAssets,
         *,
@@ -179,7 +195,7 @@ def _bandwidth_id(bandwidth_id: int, device: torch.device) -> Tensor:
     return torch.tensor([bandwidth_id], device=device)
 
 
-def _codebook_sizes(model: nn.Module) -> tuple[int, ...]:
+def _codebook_sizes(model: object) -> tuple[int, ...]:
     feature_extractor = getattr(model, "feature_extractor", None)
     encodec = getattr(feature_extractor, "encodec", None)
     quantizer = getattr(encodec, "quantizer", None)

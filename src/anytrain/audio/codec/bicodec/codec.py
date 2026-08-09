@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor, nn
@@ -490,8 +490,15 @@ def _load_config(path: Path) -> dict[str, Any]:
             ) from exc
         DictConfig = None
         OmegaConf = None
-    if DictConfig is not None and isinstance(config, DictConfig):
-        config = OmegaConf.to_container(config, resolve=True)
+    if (
+        DictConfig is not None
+        and OmegaConf is not None
+        and isinstance(config, DictConfig)
+    ):
+        config = cast(
+            dict[str, Any],
+            OmegaConf.to_container(config, resolve=True),
+        )
     if not isinstance(config, dict):
         raise TypeError(f"BiCodec config must be a dict: {path}.")
     return config

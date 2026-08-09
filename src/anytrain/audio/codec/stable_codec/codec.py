@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from math import prod
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from .._audio import model_frame_rate, resample
 from .._module import DeviceModule, resolve_device, validate_frame_codes
@@ -32,6 +32,25 @@ POSTHOC_CODEBOOK_SIZES: dict[PosthocBottleneckPreset, tuple[int, ...]] = {
 }
 
 
+class _StableCodecModel(Protocol):
+    def set_posthoc_bottleneck(self, stages: PosthocBottleneck) -> None: ...
+
+    def encode(
+        self,
+        audio: Tensor,
+        *,
+        posthoc_bottleneck: bool,
+        normalize: bool,
+    ) -> tuple[Tensor, Tensor]: ...
+
+    def decode(
+        self,
+        tokens: Tensor | list[Tensor],
+        *,
+        posthoc_bottleneck: bool,
+    ) -> Tensor: ...
+
+
 class StableCodec(DeviceModule):
     name = "stable_codec"
     num_channels: int = NUM_CHANNELS
@@ -39,7 +58,7 @@ class StableCodec(DeviceModule):
 
     def __init__(
         self,
-        model: nn.Module,
+        model: _StableCodecModel,
         device: torch.device,
         *,
         posthoc_bottleneck: PosthocBottleneck | None = DEFAULT_POSTHOC_BOTTLENECK,

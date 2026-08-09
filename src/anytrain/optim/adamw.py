@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -31,9 +32,16 @@ def create_adamw_optimizer_from_plan(
     *,
     include_param_ids: Collection[int] | None = None,
 ) -> torch.optim.AdamW:
-    optimizer_options = dict(options)
-    lr = optimizer_options.pop("lr")
-    weight_decay = optimizer_options.pop("weight_decay", 0.1)
+    optimizer_options = cast(
+        dict[str, Any],
+        {
+            key: value
+            for key, value in options.items()
+            if key not in ("lr", "weight_decay")
+        },
+    )
+    lr = options["lr"]
+    weight_decay = options.get("weight_decay", 0.1)
 
     decay_params = plan.adamw_decay_params
     no_decay_params = plan.adamw_no_decay_params

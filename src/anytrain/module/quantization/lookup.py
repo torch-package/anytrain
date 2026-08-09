@@ -40,6 +40,7 @@ def nearest_codebook_indices(
 
     codebook_chunk_size = min(codebook.shape[0], max_lookup_elements)
     latent_chunk_size = max(1, max_lookup_elements // codebook_chunk_size)
+    codebook_squared_norm: Tensor | None = None
     if normalize:
         codebook_lookup = F.normalize(codebook, dim=-1)
     else:
@@ -58,6 +59,8 @@ def nearest_codebook_indices(
                 comparison = F.linear(lookup_chunk, codebook_lookup[start:end])
                 chunk_values, chunk_indices = comparison.max(dim=-1)
             else:
+                assert latent_squared_norm is not None
+                assert codebook_squared_norm is not None
                 distances = (
                     latent_squared_norm
                     - 2 * lookup_chunk @ codebook_lookup[start:end].t()

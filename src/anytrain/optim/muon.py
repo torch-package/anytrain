@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -91,9 +92,16 @@ def _create_muon_optimizer(
             "Muon requires a newer PyTorch."
         )
 
-    optimizer_options = dict(options)
-    lr = optimizer_options.pop("lr")
-    weight_decay = optimizer_options.pop("weight_decay", 0.1)
+    optimizer_options = cast(
+        dict[str, Any],
+        {
+            key: value
+            for key, value in options.items()
+            if key not in ("lr", "weight_decay")
+        },
+    )
+    lr = options["lr"]
+    weight_decay = options.get("weight_decay", 0.1)
     optimizer_options.setdefault("adjust_lr_fn", DEFAULT_MUON_ADJUST_LR_FN)
 
     param_groups = make_scaled_param_groups(

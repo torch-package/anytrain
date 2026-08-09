@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from .._audio import model_frame_rate, resample
 from .._module import DeviceModule, resolve_device, validate_frame_codes
@@ -21,12 +21,43 @@ from .assets import (
 NUM_CHANNELS = 1
 
 
+class _DACCodebook(Protocol):
+    def decode_code(self, codes: Tensor) -> Tensor: ...
+
+    @property
+    def out_proj(self) -> object: ...
+
+
+class _DACQuantizer(Protocol):
+    def from_codes(self, codes: Tensor) -> tuple[Tensor, Tensor, Tensor]: ...
+
+    @property
+    def quantizers(self) -> list[_DACCodebook]: ...
+
+
+class _DACModel(Protocol):
+    sample_rate: int
+    n_codebooks: int
+    codebook_size: int
+    quantizer: _DACQuantizer
+
+    def preprocess(self, audio: Tensor, sample_rate: int) -> Tensor: ...
+
+    def encode(self, audio: Tensor, *, n_quantizers: int) -> tuple[Tensor, ...]: ...
+
+    def decode(self, features: Tensor) -> Tensor: ...
+
+    def to(self, device: torch.device) -> _DACModel: ...
+
+    def eval(self) -> _DACModel: ...
+
+
 class DAC(DeviceModule):
     name = "dac"
 
     def __init__(
         self,
-        model: nn.Module,
+        model: _DACModel,
         device: torch.device,
         *,
         checkpoint: Path,
@@ -171,7 +202,7 @@ class DAC(DeviceModule):
             raise TypeError("DAC features must be floating point tensors.")
         return self.model.decode(features.transpose(1, 2).to(self.device))
 
-def _load_checkpoint(checkpoint: Path, device: torch.device) -> nn.Module:
+def _load_checkpoint(checkpoint: Path, device: torch.device) -> _DACModel:
     model_cls = _load_dac_model()
     model = model_cls.load(checkpoint)
     model = model.to(device)

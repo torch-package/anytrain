@@ -8,7 +8,8 @@ from torch import Tensor, nn
 
 from anytrain._compat import strict_zip
 from anytrain.module.qwen.qwen3 import build_qwen3_model
-from anytrain.utils import is_signed_integer_dtype, top_p_filter as _top_p_filter
+from anytrain.utils import is_signed_integer_dtype
+from anytrain.utils import top_p_filter as _top_p_filter
 
 
 class QwenMTPCodebookPredictor(nn.Module):

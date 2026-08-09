@@ -108,9 +108,12 @@ class ODESampler:
             time_grid=time_grid,
             return_intermediates=self.return_intermediates,
         )
+        final_states = (
+            states if isinstance(states, Tensor) else torch.stack(list(states))
+        )
         return FlowSampleOutput(
-            final=_final_state(states, self.return_intermediates),
-            states=states if self.return_intermediates else None,
+            final=_final_state(final_states, self.return_intermediates),
+            states=final_states if self.return_intermediates else None,
             time_grid=time_grid,
         )
 

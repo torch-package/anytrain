@@ -96,7 +96,10 @@ def _all_finite(tensors: Iterable[torch.Tensor]) -> bool:
 
     for (device, _), values in groups.items():
         try:
-            norms = torch._foreach_norm(values, float("inf"))
+            foreach_norm = getattr(torch, "_foreach_norm", None)
+            if foreach_norm is None:
+                raise RuntimeError("torch._foreach_norm is unavailable.")
+            norms = foreach_norm(values, float("inf"))
         except (RuntimeError, TypeError):
             reductions[device].extend(torch.isfinite(value).all() for value in values)
         else:
