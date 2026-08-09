@@ -10,7 +10,7 @@ LightningModule / objective 的 tensor-level 组件。第一版面向 two-stage 
 2. 训练时把 batch 转成 log-prob、reward 和 mask tensor，再调用 DPO / GRPO objective。
 
 anytrain 不接管采样入口、reward 模型、JSONL schema、dataset/collate、batch schema 或
-训练配置；这些仍由 anycodec、speech-to-speech 或其它下游项目拥有。
+训练配置；这些仍由下游项目拥有。
 
 ## Public API
 
@@ -245,7 +245,7 @@ policy 的 anchor / candidate latent 距离生成 `policy_neighbor_logps`，用 
 
 ## 离线数据边界
 
-离线生成建议由下游项目实现。以 speech-to-speech 为例，下游已有 generation request/result
+离线生成建议由下游项目实现。以下游项目为例，其已有 generation request/result
 概念，可以在其上记录：
 
     sample_id
@@ -274,27 +274,27 @@ policy 的 anchor / candidate latent 距离生成 `policy_neighbor_logps`，用 
 - 采样 symmetric anchors / timesteps，并构造 neighbor distance 或 surrogate logits。
 - 保存或重算 old_neighbor_logps，并生成 neighbor_mask。
 
-## audio-code-generator / s2s 适配边界
+## 下游适配边界
 
 强化学习能力按依赖方向分成三层：
 
 ```text
 anytrain.framework.rl
-  -> audio-code-generator.rl
-      -> s2s.rl
+  -> codec 适配层
+      -> 任务适配层
 ```
 
 `anytrain.framework.rl` 只保留 tensor-level objective 和最小 typed contract，不出现
 semantic code、acoustic/global code、source speech、ASR、speaker 或任务 prompt 字段。
 
-`audio-code-generator.rl` 拥有 structured codec rollout source，包括 frame-aligned
-semantic/acoustic 与 independent semantic/global contract。它可以定义 audio-code-generator 自己的 request、
+codec 适配层拥有 structured codec rollout source，包括 frame-aligned
+semantic/acoustic 与 independent semantic/global contract。它可以定义该层自己的 request、
 candidate、reward components 和 adapter，例如：
 
 ```python
-class AudioCodeGeneratorRLAdapter:
-    def rollout(self, source_batch) -> list[AudioCodeGeneratorCandidate]: ...
-    def score(self, candidates) -> AudioCodeGeneratorRewardBatch: ...
+class CodecRLAdapter:
+    def rollout(self, source_batch) -> list[CodecCandidate]: ...
+    def score(self, candidates) -> CodecRewardBatch: ...
     def to_grpo_batch(self, candidates, rewards) -> RolloutBatch: ...
     def to_continuous_grpo_batch(
         self,
@@ -304,24 +304,24 @@ class AudioCodeGeneratorRLAdapter:
     def to_neighbor_grpo_batch(self, candidates, rewards) -> NeighborRolloutBatch: ...
 ```
 
-audio-code-generator adapter 可以知道 structured codec 的 semantic ids、acoustic/global ids/features、decode
+codec adapter 可以知道 structured codec 的 semantic ids、acoustic/global ids/features、decode
 audio、decode_ok、old log-prob / old distance、codec metadata 和 codec-specific reward。
 它最终只把这些领域对象降维成 `anytrain.framework.rl` 的 tensor batch。
 
-`s2s.rl` 依赖 audio-code-generator adapter，但拥有 s2s source 和 task reward。它可以在 audio-code-generator candidate
+任务适配层依赖 codec adapter，但拥有自己的 source 和 task reward。它可以在 codec candidate
 之上定义 source speech、generation request/result、target text/semantic intent、ASR
 结果、speaker preservation、translation/semantic correctness 等字段，例如：
 
 ```python
-class S2SRLAdapter:
-    def __init__(self, sac_adapter: AudioCodeGeneratorRLAdapter): ...
-    def rollout(self, requests) -> list[S2SGenerationResult]: ...
-    def score(self, results) -> S2SRewardBatch: ...
+class TaskRLAdapter:
+    def __init__(self, codec_adapter: CodecRLAdapter): ...
+    def rollout(self, requests) -> list[TaskGenerationResult]: ...
+    def score(self, results) -> TaskRewardBatch: ...
     def to_grpo_batch(self, results, rewards) -> RolloutBatch: ...
 ```
 
-因此 s2s 可以复用 audio-code-generator 的 codec substrate 和 candidate construction，但 audio-code-generator 不理解 s2s
-任务语义；二者也都不把领域 schema 上推到 anytrain。
+因此任务层可以复用 codec 层的 codec substrate 和 candidate construction，但 codec 层不理解任务
+语义；二者也都不把领域 schema 上推到 anytrain。
 
 ## 非目标
 
