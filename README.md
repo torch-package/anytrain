@@ -159,8 +159,8 @@ PY312=/Users/zhuyin/miniconda3/envs/py312/bin/python
 "$PY312" -m basedpyright --pythonpath "$PY312"
 ```
 
-basedpyright 使用仓库 baseline 记录迁入组件已有的类型债务；新增诊断仍会让检查失败。修复已有
-诊断后运行同一命令确认通过，再用 `--writebaseline` 删除已经失效的 baseline 项。
+仓库不使用 basedpyright baseline：所有类型错误都会让检查失败，不通过基线豁免。
+修复诊断后运行同一命令确认通过；遗留的类型债务按 todo 渐进清理。
 
 Lightning 边界见 `docs/lightning.md`，组件分层见 `docs/components.md`，总体架构见
 `docs/architecture.md`，未实现需求见 `todo.md`。
