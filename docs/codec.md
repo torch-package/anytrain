@@ -37,6 +37,21 @@ rvq_0 = codes["rvq_0"]        # [batch, time]
 都是 `[batch, unit]` 的 signed integer ID；ABC 统一校验 stream inventory、batch、dtype 和
 vocabulary range。
 
+支持变长真 batch 的 tokenizer 还实现 `PaddedAudioTokenizer`：
+
+```python
+from anytrain.audio.tokenizer import PaddedAudioTokenizer
+
+if isinstance(tokenizer, PaddedAudioTokenizer):
+    encoded = tokenizer.tokenize_padded(audio, sample_rate, waveform_lengths)
+    codes = encoded.codes
+    valid_lengths = encoded.lengths
+```
+
+`audio` 是 `[batch, channel, padded_time]`；`waveform_lengths` 是未 padding 的输入长度。
+`PaddedAudioCodes.lengths` 按 stream 返回 `[batch]` 有效 unit 数，因为 fixed/global stream
+可以与 frame stream 使用不同长度。调用方只消费每条 stream 的有效前缀。
+
 ## Detokenizer
 
 ```python

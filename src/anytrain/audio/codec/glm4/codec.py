@@ -135,36 +135,53 @@ class GLM4Tokenizer(DeviceModule):
 
     @torch.inference_mode()
     def encode(self, audio: Tensor, sample_rate: int) -> Tensor:
-        if not isinstance(audio, Tensor):
-            raise TypeError("GLM-4 encode expects audio to be a Tensor.")
-        if audio.ndim != 3 or audio.shape[1] != 1:
-            raise ValueError("GLM-4 encode expects mono audio shape [batch, 1, time].")
-        if audio.shape[0] == 0 or audio.shape[-1] == 0:
-            raise ValueError("GLM-4 encode expects a non-empty waveform batch.")
-        if not audio.is_floating_point() or audio.is_complex():
-            raise TypeError("GLM-4 encode expects floating-point waveform samples.")
+        """Encode one equal-length waveform batch with one model forward."""
 
+        self._validate_audio(audio)
+        lengths = torch.full(
+            (audio.size(0),),
+            audio.size(-1),
+            dtype=torch.long,
+            device=audio.device,
+        )
+        codes, code_lengths = self.encode_padded(audio, sample_rate, lengths)
+        if not bool((code_lengths == code_lengths[0]).all()):
+            raise RuntimeError("Equal-length GLM-4 inputs produced unequal code lengths.")
+        return codes[:, : int(code_lengths[0].item())].contiguous()
+
+    @torch.inference_mode()
+    def encode_padded(
+        self,
+        audio: Tensor,
+        sample_rate: int,
+        lengths: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode a padded waveform batch and return codes plus valid lengths."""
+
+        self._validate_audio(audio)
+        valid_lengths = _waveform_lengths(
+            lengths,
+            batch_size=audio.size(0),
+            maximum=audio.size(-1),
+        )
         waveform = audio.detach().float().cpu()
-        waveform = resample(waveform, sample_rate, self.sample_rate)
-        rows = [self._encode_one(waveform[index, 0]) for index in range(waveform.shape[0])]
-        lengths = {int(row.numel()) for row in rows}
-        if len(lengths) != 1:
-            raise RuntimeError(
-                "GLM-4 encoded batch rows have different frame lengths; pass an "
-                "unpadded equal-length batch or tokenize samples separately."
-            )
-        codes = torch.stack(rows, dim=0).unsqueeze(-1).to(dtype=torch.long)
-        return validate_frame_codes(codes, self.codebook_sizes)
-
-    def _encode_one(self, waveform: Tensor) -> Tensor:
-        guarded_samples = int(waveform.numel()) + self._stft_guard_samples
+        rows = tuple(
+            resample(
+                waveform[index : index + 1, :, :length],
+                sample_rate,
+                self.sample_rate,
+            )[0, 0].contiguous()
+            for index, length in enumerate(valid_lengths)
+        )
+        maximum = max(int(row.numel()) for row in rows)
         padded_samples = (
-            (guarded_samples + self._pad_multiple - 1) // self._pad_multiple
+            (maximum + self._stft_guard_samples + self._pad_multiple - 1)
+            // self._pad_multiple
         ) * self._pad_multiple
 
         with _tf32_disabled():
             features = self.feature_extractor(
-                [waveform.contiguous().numpy()],
+                [row.numpy() for row in rows],
                 sampling_rate=self.sample_rate,
                 return_attention_mask=True,
                 return_tensors="pt",
@@ -177,8 +194,10 @@ class GLM4Tokenizer(DeviceModule):
             attention_mask = feature_mapping.get("attention_mask")
             if not isinstance(attention_mask, Tensor) or attention_mask.ndim != 2:
                 raise RuntimeError("GLM-4 feature extractor must return a 2D attention_mask.")
-            if attention_mask.shape[0] != 1:
-                raise RuntimeError("GLM-4 canonical extraction expects one feature row.")
+            if attention_mask.shape[0] != audio.size(0):
+                raise RuntimeError(
+                    "GLM-4 feature extractor attention_mask must align with the batch."
+                )
             model_inputs = {
                 key: value.to(device=self.device)
                 for key, value in feature_mapping.items()
@@ -187,8 +206,14 @@ class GLM4Tokenizer(DeviceModule):
             outputs = self.model(**model_inputs)
 
         ids = getattr(outputs, "quantized_token_ids", None)
-        if not isinstance(ids, Tensor) or ids.ndim != 2 or ids.shape[0] != 1:
-            raise RuntimeError("GLM-4 tokenizer must return [1, time] quantized_token_ids.")
+        if (
+            not isinstance(ids, Tensor)
+            or ids.ndim != 2
+            or ids.shape[0] != audio.size(0)
+        ):
+            raise RuntimeError(
+                "GLM-4 tokenizer must return [batch, time] quantized_token_ids."
+            )
         if ids.dtype is torch.bool or ids.is_floating_point() or ids.is_complex():
             raise TypeError("GLM-4 quantized_token_ids must contain integer ids.")
 
@@ -199,10 +224,22 @@ class GLM4Tokenizer(DeviceModule):
                 "GLM-4 token mask shape differs from quantized IDs: "
                 f"mask={tuple(token_mask.shape)}, ids={tuple(ids.shape)}."
             )
-        selected = ids[0, token_mask[0].to(device=ids.device, dtype=torch.bool)]
-        if selected.numel() == 0:
+        code_lengths = token_mask.to(dtype=torch.long).sum(dim=1)
+        if bool((code_lengths <= 0).any()):
             raise RuntimeError("GLM-4 tokenizer produced an empty valid sequence.")
-        return selected
+        codes = ids.unsqueeze(-1).to(dtype=torch.long)
+        return validate_frame_codes(codes, self.codebook_sizes), code_lengths
+
+    @staticmethod
+    def _validate_audio(audio: Tensor) -> None:
+        if not isinstance(audio, Tensor):
+            raise TypeError("GLM-4 encode expects audio to be a Tensor.")
+        if audio.ndim != 3 or audio.shape[1] != 1:
+            raise ValueError("GLM-4 encode expects mono audio shape [batch, 1, time].")
+        if audio.shape[0] == 0 or audio.shape[-1] == 0:
+            raise ValueError("GLM-4 encode expects a non-empty waveform batch.")
+        if not audio.is_floating_point() or audio.is_complex():
+            raise TypeError("GLM-4 encode expects floating-point waveform samples.")
 
 
 def _validate_source_root(source_root: str | Path) -> Path:
@@ -317,6 +354,24 @@ def _stride(convolution: nn.Module) -> int:
     if not isinstance(stride, tuple) or len(stride) != 1 or int(stride[0]) <= 0:
         raise TypeError("GLM-4 convolution must expose one positive stride.")
     return int(stride[0])
+
+
+def _waveform_lengths(
+    value: Tensor,
+    *,
+    batch_size: int,
+    maximum: int,
+) -> tuple[int, ...]:
+    if not isinstance(value, Tensor) or value.ndim != 1:
+        raise ValueError("GLM-4 padded waveform lengths must have shape [batch].")
+    if value.dtype not in {torch.int8, torch.int16, torch.int32, torch.int64}:
+        raise TypeError("GLM-4 padded waveform lengths must contain signed integers.")
+    if value.numel() != batch_size:
+        raise ValueError("GLM-4 padded waveform lengths must align with the batch.")
+    lengths = tuple(int(length) for length in value.detach().cpu().tolist())
+    if any(length <= 0 or length > maximum for length in lengths):
+        raise ValueError("GLM-4 padded waveform lengths exceed the waveform extent.")
+    return lengths
 
 
 def _require_contract(

@@ -44,14 +44,15 @@ class _FeatureExtractor:
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, arrays, **kwargs):
-        waveform = arrays[0]
         max_length = int(kwargs["max_length"])
         feature_frames = max_length // self.hop_length
-        valid_frames = math.ceil(len(waveform) / self.hop_length)
-        attention_mask = torch.arange(feature_frames).unsqueeze(0) < valid_frames
+        valid_frames = torch.tensor(
+            [math.ceil(len(waveform) / self.hop_length) for waveform in arrays]
+        )
+        attention_mask = torch.arange(feature_frames).unsqueeze(0) < valid_frames.unsqueeze(1)
         self.calls.append({"arrays": arrays, **kwargs})
         return {
-            "input_features": torch.zeros((1, 80, feature_frames)),
+            "input_features": torch.zeros((len(arrays), 80, feature_frames)),
             "attention_mask": attention_mask.to(dtype=torch.long),
         }
 
@@ -75,12 +76,17 @@ class _Model(nn.Module):
     def forward(self, input_features: Tensor, attention_mask: Tensor):
         del input_features
         token_frames = attention_mask[:, ::2][:, ::4].shape[1]
-        offset = self.first_id + self.calls * 10
+        offsets = (
+            torch.arange(attention_mask.size(0), device=attention_mask.device) * 10
+            + self.first_id
+            + self.calls * 100
+        )
         self.calls += 1
-        ids = torch.arange(token_frames, device=attention_mask.device) + offset
+        ids = torch.arange(token_frames, device=attention_mask.device).unsqueeze(0)
+        ids = ids + offsets.unsqueeze(1)
         if self.floating_ids:
             ids = ids.float()
-        return SimpleNamespace(quantized_token_ids=ids.unsqueeze(0))
+        return SimpleNamespace(quantized_token_ids=ids)
 
 
 def _tokenizer(
@@ -161,7 +167,7 @@ def test_glm4_tokenizer_is_directional_and_exposes_frozen_codebook() -> None:
     assert not hasattr(tokenizer, "decode")
 
 
-def test_glm4_encode_uses_canonical_single_sample_padding_and_shape() -> None:
+def test_glm4_encode_batches_equal_length_waveforms_in_one_model_call() -> None:
     model = _Model()
     feature_extractor = _FeatureExtractor()
     tokenizer = _tokenizer(model=model, feature_extractor=feature_extractor)
@@ -172,11 +178,55 @@ def test_glm4_encode_uses_canonical_single_sample_padding_and_shape() -> None:
     assert codes.shape == (2, 2, 1)
     torch.testing.assert_close(codes[0, :, 0], torch.tensor([0, 1]))
     torch.testing.assert_close(codes[1, :, 0], torch.tensor([10, 11]))
-    assert model.calls == 2
-    assert len(feature_extractor.calls) == 2
-    assert all(call["max_length"] == 3_840 for call in feature_extractor.calls)
-    assert all(call["pad_to_multiple_of"] == 1_280 for call in feature_extractor.calls)
-    assert all(call["device"] == "cpu" for call in feature_extractor.calls)
+    assert model.calls == 1
+    assert len(feature_extractor.calls) == 1
+    call = feature_extractor.calls[0]
+    assert len(call["arrays"]) == 2
+    assert call["max_length"] == 3_840
+    assert call["pad_to_multiple_of"] == 1_280
+    assert call["device"] == "cpu"
+
+
+def test_glm4_encode_padded_batches_once_and_reports_valid_token_lengths() -> None:
+    model = _Model()
+    feature_extractor = _FeatureExtractor()
+    tokenizer = _tokenizer(model=model, feature_extractor=feature_extractor)
+
+    codes, lengths = tokenizer.encode_padded(
+        torch.zeros((3, 1, 2_560)),
+        sample_rate=16_000,
+        lengths=torch.tensor([2_560, 1_280, 1]),
+    )
+
+    assert model.calls == 1
+    assert len(feature_extractor.calls) == 1
+    assert codes.shape == (3, 3, 1)
+    torch.testing.assert_close(lengths, torch.tensor([2, 1, 1]))
+    torch.testing.assert_close(codes[0, :2, 0], torch.tensor([0, 1]))
+    torch.testing.assert_close(codes[1, :1, 0], torch.tensor([10]))
+    torch.testing.assert_close(codes[2, :1, 0], torch.tensor([20]))
+
+
+def test_glm4_registry_tokenizer_exposes_padded_batch_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _tokenizer()
+    monkeypatch.setenv(GLM4_SOURCE_ROOT_ENV, "/opt/glm-4-voice")
+
+    with patch(
+        "anytrain.audio.codec.glm4.codec.GLM4Tokenizer.from_pretrained",
+        return_value=backend,
+    ):
+        tokenizer = load_audio_tokenizer("glm4", device="cpu")
+
+    encoded = tokenizer.tokenize_padded(
+        torch.zeros((2, 1, 2_560)),
+        16_000,
+        torch.tensor([2_560, 1_280]),
+    )
+
+    assert set(encoded.codes) == {"rvq_0"}
+    torch.testing.assert_close(encoded.lengths["rvq_0"], torch.tensor([2, 1]))
 
 
 def test_glm4_encode_resamples_before_canonical_extraction() -> None:
