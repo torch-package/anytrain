@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import torch
 from torch import Tensor
@@ -19,6 +20,53 @@ _SIGNED_INTEGER_DTYPES = frozenset(
         torch.int64,
     }
 )
+
+
+@dataclass(frozen=True)
+class PaddedAudioCodes:
+    """Named padded token streams and each stream's valid units per sample."""
+
+    codes: Mapping[str, Tensor]
+    lengths: Mapping[str, Tensor]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.codes, Mapping) or not isinstance(self.lengths, Mapping):
+            raise TypeError("padded audio codes and lengths must be mappings.")
+        if set(self.codes) != set(self.lengths):
+            raise ValueError("padded audio code streams and lengths must match.")
+        if not self.codes:
+            raise ValueError("padded audio codes must contain at least one stream.")
+        batch_size: int | None = None
+        for name, value in self.lengths.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("padded audio stream names must be non-empty strings.")
+            if not isinstance(value, Tensor) or value.ndim != 1:
+                raise ValueError(f"padded audio lengths for {name!r} must have shape [batch].")
+            if value.dtype not in _SIGNED_INTEGER_DTYPES:
+                raise TypeError(
+                    f"padded audio lengths for {name!r} must contain signed integers."
+                )
+            if value.numel() == 0 or bool((value <= 0).any()):
+                raise ValueError(f"padded audio lengths for {name!r} must be positive.")
+            if batch_size is None:
+                batch_size = value.size(0)
+            elif value.size(0) != batch_size:
+                raise ValueError("padded audio stream lengths must align on batch.")
+
+
+@runtime_checkable
+class PaddedAudioTokenizer(Protocol):
+    """Optional capability for one padded variable-length waveform batch."""
+
+    @property
+    def code_spec(self) -> AudioCodeSpec: ...
+
+    def tokenize_padded(
+        self,
+        audio: Tensor,
+        sample_rate: int,
+        lengths: Tensor,
+    ) -> PaddedAudioCodes: ...
 
 
 class AudioTokenizer(ABC):
@@ -69,4 +117,9 @@ class AudioTokenizer(ABC):
         return ordered
 
 
-__all__ = ["AudioCodes", "AudioTokenizer"]
+__all__ = [
+    "AudioCodes",
+    "AudioTokenizer",
+    "PaddedAudioCodes",
+    "PaddedAudioTokenizer",
+]

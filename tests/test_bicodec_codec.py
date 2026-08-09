@@ -13,7 +13,12 @@ from torch import nn
 
 from anytrain._buffer import register_buffer
 from anytrain.audio.codec.bicodec.assets import BiCodecAssets
-from anytrain.audio.codec.bicodec.codec import BICODEC_INSTALL_COMMAND, BiCodec
+from anytrain.audio.codec.bicodec.codec import (
+    BICODEC_INSTALL_COMMAND,
+    BiCodec,
+)
+from anytrain.audio.codec.bicodec.tokenizer import BiCodecTokenizer
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
 
 
 class BiCodecCodecTest(unittest.TestCase):
@@ -117,6 +122,47 @@ class BiCodecCodecTest(unittest.TestCase):
         self.assertEqual(tuple(model.batch["ref_wav"].shape), (2, 8000))
         self.assertEqual(tuple(model.batch["feat"].shape), (2, 4, 3))
         self.assertEqual(processor.sample_rate, 16000)
+
+    def test_semantic_code_lengths_follow_wav2vec2_convolution_boundaries(self):
+        codec = _codec(FakeBiCodecModel())
+        lengths = codec.semantic_code_lengths(
+            torch.tensor([400, 719, 720, 16_000]),
+            16_000,
+        )
+
+        self.assertTrue(torch.equal(lengths, torch.tensor([1, 1, 2, 49])))
+
+    def test_semantic_code_lengths_reject_short_waveforms(self):
+        codec = _codec(FakeBiCodecModel())
+
+        with self.assertRaisesRegex(ValueError, "receptive field"):
+            codec.semantic_code_lengths(torch.tensor([399]), 16_000)
+
+    def test_padded_tokenizer_encodes_once_and_reports_independent_lengths(self):
+        model = FakeBiCodecModel()
+        codec = _codec(model)
+        codec.feature_extractor.config.conv_kernel = [1]
+        codec.feature_extractor.config.conv_stride = [1]
+        tokenizer = BiCodecTokenizer(
+            codec,
+            AudioCodeSpec(
+                names=("semantic", "global"),
+                vocab_sizes=(8192, 4096),
+                sample_rate=16_000,
+                frame_rates=(50.0, None),
+            ),
+            AudioBackendIdentity("bicodec"),
+        )
+
+        encoded = tokenizer.tokenize_padded(
+            torch.zeros((2, 1, 5)),
+            16_000,
+            torch.tensor([5, 3]),
+        )
+
+        self.assertEqual(model.batch["wav"].shape, (2, 5))
+        self.assertTrue(torch.equal(encoded.lengths["semantic"], torch.tensor([5, 3])))
+        self.assertTrue(torch.equal(encoded.lengths["global"], torch.tensor([3, 3])))
 
     def test_bicodec_exposes_directional_backend_methods(self):
         codec = _codec(FakeBiCodecModel())
@@ -291,7 +337,11 @@ class FakeFeatureExtractor(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
-        self.config = SimpleNamespace(output_hidden_states=False)
+        self.config = SimpleNamespace(
+            output_hidden_states=False,
+            conv_kernel=[10, 3, 3, 3, 3, 2, 2],
+            conv_stride=[5, 2, 2, 2, 2, 2, 2],
+        )
         self.eval_called = False
         self.hidden_states = [torch.full((2, 4, 3), float(index)) for index in range(17)]
 

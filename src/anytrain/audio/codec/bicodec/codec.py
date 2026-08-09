@@ -15,6 +15,8 @@ from .assets import BiCodecAssets, ensure_bicodec_assets
 SAMPLE_RATE = 16_000
 NUM_CHANNELS = 1
 FEATURE_HIDDEN_STATE_INDEXES = (11, 14, 16)
+WAV2VEC2_CONV_KERNEL = (10, 3, 3, 3, 3, 2, 2)
+WAV2VEC2_CONV_STRIDE = (5, 2, 2, 2, 2, 2, 2)
 BICODEC_INSTALL_COMMAND = (
     'python -m pip install "spark-tts @ '
     "git+https://github.com/rookiejune/Spark-TTS.git@"
@@ -97,6 +99,57 @@ class BiCodec(DeviceModule):
     @property
     def frame_rate(self) -> float:
         return self.semantic_frame_rate
+
+    @torch.no_grad()
+    def semantic_code_lengths(self, lengths: Tensor, sample_rate: int) -> Tensor:
+        """Return semantic units produced by the source model for waveform lengths.
+
+        The Wav2Vec2 feature extractor uses unpadded convolutions, so its output
+        length is computed layer by layer instead of rounding by the nominal
+        50 Hz frame rate.  Any configured BiCodec encoder downsampling is then
+        applied to the feature timeline.
+        """
+
+        if isinstance(sample_rate, bool) or not isinstance(sample_rate, int):
+            raise TypeError("BiCodec sample_rate must be an integer.")
+        if sample_rate <= 0:
+            raise ValueError("BiCodec sample_rate must be positive.")
+        if not isinstance(lengths, Tensor) or lengths.ndim != 1:
+            raise ValueError("BiCodec waveform lengths must have shape [batch].")
+        if lengths.dtype not in {
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+        }:
+            raise TypeError("BiCodec waveform lengths must contain signed integers.")
+        if lengths.numel() == 0 or bool((lengths <= 0).any()):
+            raise ValueError("BiCodec waveform lengths must be positive.")
+
+        values = torch.div(
+            lengths.to(dtype=torch.long) * self.sample_rate + sample_rate - 1,
+            sample_rate,
+            rounding_mode="floor",
+        )
+        extractor_config = getattr(self.feature_extractor, "config", None)
+        kernels = _positive_int_tuple(
+            getattr(extractor_config, "conv_kernel", WAV2VEC2_CONV_KERNEL),
+            name="Wav2Vec2 conv_kernel",
+        )
+        strides = _positive_int_tuple(
+            getattr(extractor_config, "conv_stride", WAV2VEC2_CONV_STRIDE),
+            name="Wav2Vec2 conv_stride",
+        )
+        if len(kernels) != len(strides):
+            raise ValueError("Wav2Vec2 convolution kernels and strides must align.")
+        for kernel, stride in zip(kernels, strides, strict=True):
+            values = torch.div(values - kernel, stride, rounding_mode="floor") + 1
+        values = _apply_encoder_downsampling(values, getattr(self.model, "encoder", None))
+        if bool((values <= 0).any()):
+            raise ValueError(
+                "BiCodec waveform is shorter than the feature extractor receptive field."
+            )
+        return values.to(device=lengths.device, dtype=torch.long)
 
     @classmethod
     def from_pretrained(
@@ -519,4 +572,28 @@ __all__ = [
     "FEATURE_HIDDEN_STATE_INDEXES",
     "NUM_CHANNELS",
     "SAMPLE_RATE",
+    "WAV2VEC2_CONV_KERNEL",
+    "WAV2VEC2_CONV_STRIDE",
 ]
+
+
+def _positive_int_tuple(value: Any, *, name: str) -> tuple[int, ...]:
+    if not isinstance(value, (tuple, list)) or not value:
+        raise TypeError(f"{name} must be a non-empty integer sequence.")
+    result = tuple(int(item) for item in value)
+    if any(isinstance(item, bool) or item <= 0 for item in result):
+        raise ValueError(f"{name} must contain positive integers.")
+    return result
+
+
+def _apply_encoder_downsampling(values: Tensor, encoder: Any) -> Tensor:
+    downsample = getattr(encoder, "downsample", None)
+    if downsample is None:
+        return values
+    for module in downsample.modules():
+        scale = getattr(module, "downsample_scale", None)
+        if isinstance(scale, bool) or not isinstance(scale, int) or scale <= 0:
+            continue
+        if scale > 1:
+            values = torch.div(values, scale, rounding_mode="floor")
+    return values
