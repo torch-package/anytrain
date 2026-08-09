@@ -348,7 +348,7 @@ class MoETest(unittest.TestCase):
 
         self.assertEqual(actual.dtype, torch.float32)
         torch.testing.assert_close(actual, expected)
-        for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
             torch.testing.assert_close(actual_grad, expected_grad)
 
     def test_sparse_dispatch_promotes_accumulator_for_later_expert(self):
@@ -395,7 +395,7 @@ class MoETest(unittest.TestCase):
 
         self.assertEqual(actual.dtype, torch.float64)
         torch.testing.assert_close(actual, expected)
-        for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
             torch.testing.assert_close(actual_grad, expected_grad)
 
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
@@ -773,7 +773,7 @@ class MoETest(unittest.TestCase):
                     (hidden, expert_weight, route_values),
                 )
                 torch.testing.assert_close(actual, expected)
-                for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+                for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
                     torch.testing.assert_close(actual_grad, expected_grad)
 
     @unittest.skipUnless(
@@ -1158,7 +1158,7 @@ class MoETest(unittest.TestCase):
 
                 self.assertEqual(actual.dtype, torch.float32)
                 torch.testing.assert_close(actual, expected)
-                for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+                for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
                     torch.testing.assert_close(actual_grad, expected_grad)
 
         hidden = torch.ones(2, 2, dtype=torch.bfloat16, requires_grad=True)

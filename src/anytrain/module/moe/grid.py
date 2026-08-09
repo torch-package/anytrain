@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Union
+from typing import Literal
 
 PaddingMode = Literal["zeros", "reflect", "replicate", "circular"]
 Grid1dContext = Literal["global", "local"]
@@ -43,7 +43,7 @@ class Grid1d:
             raise ValueError(f"unsupported Grid1d.fill {self.fill!r}.")
 
 
-MoEGrid = Union[NativeGrid, Grid1d]
+MoEGrid = NativeGrid | Grid1d
 
 __all__ = [
     "Grid1dContext",

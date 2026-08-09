@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import Union
-
 import torch
 
-MetricValue = Union[float, torch.Tensor]
+MetricValue = float | torch.Tensor
 MetricDict = dict[str, MetricValue]
 
 

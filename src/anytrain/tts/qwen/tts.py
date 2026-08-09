@@ -5,11 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypedDict, overload
+from typing import Any, TypedDict, Unpack, overload
 
 import torch
 from torch import Tensor
-from typing_extensions import Unpack
 
 from anytrain.tts import (
     AudioReference,
@@ -361,7 +360,7 @@ def _outputs(
         raise RuntimeError("Qwen3-TTS output count does not match text batch length.")
     return [
         _output(value, sample_rate, speaker=speaker, language=language)
-        for value, speaker, language in zip(values, speakers, languages)
+        for value, speaker, language in zip(values, speakers, languages, strict=False)
     ]
 
 

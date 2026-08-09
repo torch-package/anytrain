@@ -134,6 +134,36 @@ class DAC(DeviceModule):
         return features.transpose(1, 2)
 
     @torch.no_grad()
+    def codebook_codes_to_features(self, index: int, codes: Tensor) -> Tensor:
+        if not 0 <= index < self.n_quantizers:
+            raise ValueError(f"DAC codebook index must be in [0, {self.n_quantizers}).")
+        if codes.dim() != 2:
+            raise ValueError("DAC codebook codes must have shape [batch, time].")
+        quantizers = getattr(self.model.quantizer, "quantizers", None)
+        if quantizers is None or len(quantizers) <= index:
+            raise TypeError(f"DAC quantizer must expose codebook {index}.")
+        quantizer = quantizers[index]
+        decode_code = getattr(quantizer, "decode_code", None)
+        out_proj = getattr(quantizer, "out_proj", None)
+        if not callable(decode_code) or not callable(out_proj):
+            raise TypeError("DAC codebooks must provide decode_code() and out_proj().")
+        features = out_proj(decode_code(codes.to(self.device)))
+        if not isinstance(features, Tensor):
+            raise TypeError("DAC codebook projection must return a Tensor.")
+        return features.transpose(1, 2)
+
+    @torch.no_grad()
+    def decode_codebook_features(self, features: tuple[Tensor, ...]) -> Tensor:
+        if len(features) != self.n_quantizers:
+            raise ValueError("DAC features must contain every configured codebook stream.")
+        combined = features[0]
+        for value in features[1:]:
+            if value.shape != combined.shape:
+                raise ValueError("DAC codebook features must share one shape.")
+            combined = combined + value
+        return self.decode_features(combined)
+
+    @torch.no_grad()
     def decode_features(self, features: Tensor) -> Tensor:
         if features.dim() != 3:
             raise ValueError("DAC features must have shape [batch, time, dim].")

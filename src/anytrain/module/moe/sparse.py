@@ -80,7 +80,7 @@ def sparse_dispatch(
     token_counts = dispatch_counts[: len(experts)].tolist()
 
     start = 0
-    for expert_index, (expert, token_count) in enumerate(zip(experts, token_counts)):
+    for expert_index, (expert, token_count) in enumerate(zip(experts, token_counts, strict=False)):
         if token_count == 0:
             continue
         end = start + token_count

@@ -52,6 +52,11 @@ observation 不能改变 forward 输出、autograd graph 或各 rank 的 kernel 
 `anytrain.module.moe.conv` 还公开 `eca_kernel_size`，用于按 channel 数计算 router 的 odd
 kernel size。
 
+新增子包：
+
+- `anytrain.module.stream`：任意命名的一维 stream 的声明式 DAG、layout 编译、payload 绑定与 embedding materialization。设计见
+  [`stream.md`](stream.md)；从显式子包导入，不从 `anytrain.module` 根包导出。
+
 ADT 用于 MoE/router logits 的自适应温度缩放和专家利用率统计，适合跨 audio、vision、text 等项目复用。
 公开构造面是 `AdaptiveDirichletTempering(num_experts, *, warmup_steps=0,
 min_temperature=None, max_temperature=None)`。dispersion / EMA / Minka / Gumbel /
@@ -191,6 +196,10 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
 
 多模态 token id space 和 block embedding 路由放在 `anytrain.module.idspace`，
 设计见 [`anytrain.module.idspace`](idspace.md)。
+
+多 stream 的 layout 编译、frame-major RVQ 展开和 embedding 对齐组合放在
+`anytrain.module.stream`，设计见 [`anytrain.module.stream`](stream.md)。它可以复用
+`idspace.Layout` 做 global/local id 编译，但不接管 tokenizer special-id、codec inventory 或生成依赖顺序。
 
 ## 依赖策略
 

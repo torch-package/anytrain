@@ -1,3 +1,4 @@
+from ..oom import OOMDiagnostics
 from .checkpoint import ModelCheckpoint
 from .debug import DebugCallback
 from .ema import EMACallback, ParameterEMA, find_ema_callback
@@ -38,6 +39,7 @@ __all__ = [
     "GradientTarget",
     "LossOutputProvider",
     "LossSummaryCallback",
+    "OOMDiagnostics",
     "ModuleSelector",
     "ModelCheckpoint",
     "ParameterPolicyCallback",

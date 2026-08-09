@@ -24,7 +24,7 @@ python -m pip install "wandb>=0.16" transformers "tokenizers>=0.20"
 python -m pip install -e ".[peft]"
 ```
 
-当前包要求 Python `>=3.9`，核心依赖包括 `torch>=2.4` 和 `lightning>=2.0`。Muon 是条件
+当前包要求 Python `>=3.12`，核心依赖包括 `torch>=2.4` 和 `lightning>=2.0`。Muon 是条件
 能力：只有当前 PyTorch 提供 `torch.optim.Muon` 时才可用。可以用
 `anytrain.optim.muon_available()` 查询当前环境能力。
 
@@ -123,6 +123,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
 | `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
+| `anytrain.module.stream` | named 1D stream 的声明式 layout、payload 绑定、embedding materialization 与 target routing。 |
 | `anytrain.audio` | waveform tokenizer / detokenizer / codec 与 frame BPE 的 optional 包入口。 |
 | `anytrain.audio.bpe` | 依赖 `bpe` extra 的 codec frame BPE。 |
 | `anytrain.audio.codec` | audio tokenizer / detokenizer capability view、静态 preset spec、frame / semantic-acoustic / semantic-global protocol、feature helper 和共享 backend 的 lazy registry；具体 backend 从 `anytrain.audio.codec.*` 子模块导入。 |
@@ -156,15 +157,6 @@ PY312=/Users/zhuyin/miniconda3/envs/py312/bin/python
 "$PY312" -m pytest
 "$PY312" -m ruff check .
 "$PY312" -m basedpyright --pythonpath "$PY312"
-```
-
-包的兼容下限仍是 Python 3.9；涉及公开 API、语法、类型或依赖下限的改动时，补跑：
-
-```bash
-PY39=/Users/zhuyin/miniconda3/envs/py39/bin/python
-"$PY39" -m pytest
-"$PY39" -m ruff check .
-"$PY39" -m basedpyright --pythonpath "$PY39"
 ```
 
 basedpyright 使用仓库 baseline 记录迁入组件已有的类型债务；新增诊断仍会让检查失败。修复已有

@@ -8,6 +8,7 @@ from torch import Tensor, nn
 
 from anytrain._compat import strict_zip
 from anytrain.module.qwen.qwen3 import build_qwen3_model
+from anytrain.utils import is_signed_integer_dtype, top_p_filter as _top_p_filter
 
 
 class QwenMTPCodebookPredictor(nn.Module):
@@ -398,7 +399,7 @@ def _validate_targets(
 ) -> None:
     if target_codes.shape != (condition.size(0), condition.size(1), codebooks):
         raise ValueError("target_codes must have shape [B, F, codebooks].")
-    if not _is_signed_integer_dtype(target_codes.dtype):
+    if not is_signed_integer_dtype(target_codes.dtype):
         raise TypeError("target_codes must use a signed integer dtype.")
     packed_targets = target_codes.flatten(0, 1)[frame_mask.flatten()]
     limits = torch.tensor(codebook_sizes, device=packed_targets.device, dtype=torch.long)
@@ -452,23 +453,5 @@ def _sample_logits(
 ) -> Tensor:
     scaled = logits / temperature
     if top_p < 1.0:
-        scaled = top_p_filter(scaled, top_p)
+        scaled = _top_p_filter(scaled, top_p)
     return torch.multinomial(scaled.softmax(dim=-1), 1, generator=generator)[:, 0]
-
-
-def top_p_filter(logits: Tensor, top_p: float) -> Tensor:
-    sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-    probabilities = sorted_logits.softmax(dim=-1)
-    remove = probabilities.cumsum(dim=-1) - probabilities >= top_p
-    remove[..., 0] = False
-    filtered = logits.new_full(logits.shape, float("-inf"))
-    filtered.scatter_(
-        dim=-1,
-        index=sorted_indices,
-        src=sorted_logits.masked_fill(remove, float("-inf")),
-    )
-    return filtered
-
-
-def _is_signed_integer_dtype(dtype: torch.dtype) -> bool:
-    return dtype in {torch.int8, torch.int16, torch.int32, torch.int64}

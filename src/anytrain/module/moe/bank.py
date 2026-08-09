@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Callable, cast
+from typing import cast
 
 import torch
 from torch import Tensor, nn

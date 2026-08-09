@@ -228,7 +228,7 @@ class LoRAMuon(Optimizer):
                     "both momentum buffers or neither."
                 )
 
-        for parameter, saved_momentum in zip(parameters, saved_momenta):
+        for parameter, saved_momentum in zip(parameters, saved_momenta, strict=False):
             if saved_momentum is None:
                 continue
             if saved_momentum.shape != parameter.shape:
@@ -243,7 +243,7 @@ class LoRAMuon(Optimizer):
         parameters = [parameter for group in self.param_groups for parameter in group["params"]]
         if len(saved_momenta) != len(parameters):
             return
-        for parameter, saved_momentum in zip(parameters, saved_momenta):
+        for parameter, saved_momentum in zip(parameters, saved_momenta, strict=False):
             if not isinstance(parameter, nn.Parameter) or saved_momentum is None:
                 continue
             self.state[parameter]["momentum_buffer"] = saved_momentum.detach().to(

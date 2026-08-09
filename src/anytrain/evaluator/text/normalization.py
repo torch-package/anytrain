@@ -3,11 +3,10 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Union
 
 from ._chinese import TRADITIONAL_TO_SIMPLIFIED
 
-TextInput = Union[str, Sequence[str]]
+TextInput = str | Sequence[str]
 
 
 @dataclass(frozen=True)

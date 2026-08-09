@@ -7,12 +7,11 @@ name = "anytrain"
 version = "0.1.0"
 description = "Components for building PyTorch and Lightning training code."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "torch>=2.4",
     "lightning>=2.0",
     "einops>=0.7",
-    "typing-extensions>=4.12",
 ]
 
 [project.optional-dependencies]
@@ -71,16 +70,16 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "UP040", "UP046", "UP047"]
 
 [tool.basedpyright]
 include = ["src", "examples"]
 exclude = ["tests"]
-pythonVersion = "3.9"
+pythonVersion = "3.12"
 typeCheckingMode = "standard"
 reportMissingImports = "warning"
 reportMissingModuleSource = "warning"

@@ -17,10 +17,10 @@ python -m pip install -U flash-attn --no-build-isolation
 当前官方 `stable-codec==0.1.2` 的 `setup.py` 硬性依赖 `torch==2.4` 和
 `torchaudio==2.4`。`anytrain` 的核心下限也是 `torch>=2.4`，因此元数据不再冲突；但
 Stable Codec 还要求特定 CUDA、FlashAttention 和旧构建链，所以暂不放进自动安装的 extra。
-需要使用时应先创建匹配上游约束的独立环境，再安装 `anytrain` 和 Stable Codec。
+需要使用时应先创建匹配上游约束的独立环境（Python 3.9 / torch 2.4）。
 
-为了避免 pip 重新解析已固定的 Torch 栈，可以先固定下面的 Stable Codec 依赖，再以
-`--no-deps` 安装 `anytrain`，或从 checkout 暴露 wrapper 源码：
+`anytrain` 本身要求 Python >=3.12，桥接环境不满足该下限，不能从元数据解析安装；
+为避免 pip 重新解析已固定的 Torch 栈，直接从 checkout 暴露 wrapper 源码：
 
 ```bash
 export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH

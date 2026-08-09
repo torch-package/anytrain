@@ -314,7 +314,7 @@ def gradient_group_cosine(
     dot = parameters[0].new_zeros(())
     norm_a2 = parameters[0].new_zeros(())
     norm_b2 = parameters[0].new_zeros(())
-    for grad_a, grad_b in zip(gradients_a, gradients_b):
+    for grad_a, grad_b in zip(gradients_a, gradients_b, strict=False):
         detached_a = None if grad_a is None else grad_a.detach()
         detached_b = None if grad_b is None else grad_b.detach()
         if detached_a is not None:

@@ -4,16 +4,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import auto
 from os import PathLike
-from typing import Protocol, TypedDict, Union, overload
+from typing import Protocol, TypedDict, Unpack, overload
 
 from torch import Tensor
-from typing_extensions import Unpack
 
 from anytrain._compat import StrEnum
 
 from ._common import positive_int, validate_mapping
 
-PathAudioReference = Union[str, PathLike[str]]
+PathAudioReference = str | PathLike[str]
 
 
 @dataclass(frozen=True, eq=False)
@@ -57,11 +56,11 @@ class EncodedAudioReference:
             raise ValueError("suffix must be a file suffix such as '.wav' or '.flac'.")
 
 
-AudioReference = Union[
-    PathAudioReference,
-    WaveformReference,
-    EncodedAudioReference,
-]
+AudioReference = (
+    PathAudioReference
+    | WaveformReference
+    | EncodedAudioReference
+)
 
 
 class TTSVoiceMode(StrEnum):

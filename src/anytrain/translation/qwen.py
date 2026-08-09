@@ -156,7 +156,7 @@ class QwenTranslator:
         )
         prompts = [
             translation_prompt(text, source_language=source, target_language=target, tokenizer=self.tokenizer)
-            for text, source, target in zip(values, sources, targets)
+            for text, source, target in zip(values, sources, targets, strict=False)
         ]
         inputs = self.tokenizer(
             prompts,

@@ -10,7 +10,6 @@ from torch import Tensor, nn
 
 from .._audio import resample
 from .._module import DeviceModule, integer_tensor, resolve_device
-from ..protocol import SemanticGlobalCodes
 from .assets import BiCodecAssets, ensure_bicodec_assets
 
 SAMPLE_RATE = 16_000
@@ -152,14 +151,14 @@ class BiCodec(DeviceModule):
         )
 
     @torch.no_grad()
-    def tokenize(
+    def encode_codes(
         self,
         audio: Tensor,
         sample_rate: int,
         *,
         ref_audio: Tensor | None = None,
         ref_sample_rate: int | None = None,
-    ) -> SemanticGlobalCodes:
+    ) -> tuple[Tensor, Tensor]:
         wav = self._audio(audio, sample_rate)
         ref_wav = (
             self._audio(ref_audio, ref_sample_rate or sample_rate)
@@ -182,12 +181,15 @@ class BiCodec(DeviceModule):
         if not isinstance(result, tuple) or len(result) != 2:
             raise TypeError("BiCodec tokenize() must return semantic and global tensors.")
         semantic, backend_global = result
-        codes = SemanticGlobalCodes(
-            semantic=_semantic_tokens(semantic).unsqueeze(-1),
-            global_codes=_global_tokens(backend_global).transpose(1, 2).contiguous(),
-        )
-        self._validate_codes(codes)
-        return codes
+        semantic_codes = _semantic_tokens(semantic)
+        global_codes = _global_tokens(backend_global).transpose(1, 2).contiguous()
+        semantic_values = _semantic_codes(semantic_codes[..., None])
+        global_values = self._validate_global_codes(global_codes)
+        if bool((semantic_values[..., 0] >= self.semantic_codebook_sizes[0]).any()):
+            raise ValueError("semantic codes contain an ID outside the semantic codebook.")
+        if semantic_values.size(0) != global_values.size(0):
+            raise ValueError("semantic and global codes must align on batch.")
+        return semantic_codes, global_codes[..., 0]
 
     @torch.no_grad()
     def extract_features(self, wav: Tensor) -> Tensor:
@@ -223,13 +225,6 @@ class BiCodec(DeviceModule):
             raise ValueError("BiCodec wav2vec2 mixed features must have shape [batch, time, dim].")
         return features
 
-    @torch.no_grad()
-    def detokenize(self, codes: SemanticGlobalCodes) -> Tensor:
-        self._validate_codes(codes)
-        return self._detokenize(
-            codes.semantic[..., 0],
-            codes.global_codes.transpose(1, 2).contiguous(),
-        )
 
     @torch.no_grad()
     def global_codes_to_features(self, global_codes: Tensor) -> Tensor:
@@ -251,12 +246,10 @@ class BiCodec(DeviceModule):
         return features
 
     @torch.no_grad()
-    def decode_features(self, semantic_codes: Tensor, global_features: Tensor) -> Tensor:
-        """Decode semantic ids and continuous global speaker features."""
-        semantic = _semantic_codes(semantic_codes)
+    def semantic_codes_to_features(self, semantic_codes: Tensor) -> Tensor:
+        semantic = _semantic_codes(semantic_codes[..., None])
         if bool((semantic[..., 0] >= self.semantic_codebook_sizes[0]).any()):
             raise ValueError("semantic codes contain an ID outside the semantic codebook.")
-        self._validate_global_features(global_features, batch_size=semantic.size(0))
         quantizer = getattr(self.model, "quantizer", None)
         detokenize = getattr(quantizer, "detokenize", None)
         if not callable(detokenize):
@@ -264,6 +257,19 @@ class BiCodec(DeviceModule):
         z_q = detokenize(semantic[..., 0].to(self.device))
         if not isinstance(z_q, Tensor) or z_q.dim() != 3:
             raise ValueError("BiCodec semantic quantizer must return [batch, feature, time].")
+        return z_q.transpose(1, 2).contiguous()
+
+    @torch.no_grad()
+    def decode_feature_streams(
+        self,
+        semantic_features: Tensor,
+        global_features: Tensor,
+    ) -> Tensor:
+        if not isinstance(semantic_features, Tensor) or semantic_features.dim() != 3:
+            raise ValueError("BiCodec semantic features must have shape [batch, time, feature].")
+        if not torch.is_floating_point(semantic_features) or semantic_features.is_complex():
+            raise TypeError("BiCodec semantic features must be floating point tensors.")
+        self._validate_global_features(global_features, batch_size=semantic_features.size(0))
 
         speaker_encoder = getattr(self.model, "speaker_encoder", None)
         project = getattr(speaker_encoder, "project", None)
@@ -272,7 +278,7 @@ class BiCodec(DeviceModule):
         d_vector = project(
             global_features.to(self.device)
             .transpose(1, 2)
-            .reshape(semantic.size(0), -1)
+            .reshape(semantic_features.size(0), -1)
         )
         if not isinstance(d_vector, Tensor) or d_vector.dim() != 2:
             raise ValueError("BiCodec speaker project() must return [batch, speaker_dim].")
@@ -280,22 +286,11 @@ class BiCodec(DeviceModule):
         decoder = getattr(self.model, "decoder", None)
         if not callable(prenet) or not callable(decoder):
             raise TypeError("BiCodec model must provide prenet and decoder modules.")
-        x = prenet(z_q, d_vector)
+        x = prenet(semantic_features.transpose(1, 2).to(self.device), d_vector)
         if not isinstance(x, Tensor) or x.dim() != 3:
             raise ValueError("BiCodec prenet must return [batch, feature, time].")
         audio = decoder(x + d_vector.unsqueeze(-1))
         return _audio_tensor(audio)
-
-    def _detokenize(self, semantic: Tensor, global_tokens: Tensor) -> Tensor:
-        detokenize = getattr(self.model, "detokenize", None)
-        if not callable(detokenize):
-            raise TypeError("BiCodec model must provide detokenize().")
-        return _audio_tensor(
-            detokenize(
-                semantic.to(self.device),
-                global_tokens.to(self.device),
-            )
-        )
 
     def _audio(self, audio: Tensor, sample_rate: int) -> Tensor:
         if audio.dim() != 3:
@@ -316,15 +311,6 @@ class BiCodec(DeviceModule):
             repeats = math.ceil(length / wav.size(-1))
             wav = wav.repeat(1, repeats)
         return wav[:, :length]
-
-    def _validate_codes(self, codes: SemanticGlobalCodes) -> None:
-        semantic = _semantic_codes(codes.semantic)
-        global_codes = self._validate_global_codes(codes.global_codes)
-        semantic_size = self.semantic_codebook_sizes[0]
-        if bool((semantic[..., 0] >= semantic_size).any()):
-            raise ValueError("semantic codes contain an ID outside the semantic codebook.")
-        if semantic.size(0) != global_codes.size(0):
-            raise ValueError("semantic and global codes must align on batch.")
 
     def _validate_global_codes(self, global_codes: Tensor) -> Tensor:
         codes = integer_tensor(global_codes, "global codes")

@@ -204,7 +204,7 @@ def _selected_blocks(input_ids: torch.Tensor, layout: Layout) -> set[str]:
         raise ValueError(f"input_ids contains id outside space: {bad_id}.")
     return {
         name
-        for name, hit in zip(layout.block_names, selected)
+        for name, hit in zip(layout.block_names, selected, strict=False)
         if hit
     }
 

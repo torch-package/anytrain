@@ -1020,7 +1020,7 @@ class LossTest(unittest.TestCase):
         )
         logits = tuple(
             torch.nn.functional.one_hot(value, classes).to(dtype=torch.float32)
-            for value, classes in zip(predictions, (3, 4))
+            for value, classes in zip(predictions, (3, 4), strict=False)
         )
 
         with patch("anytrain.loss.codebook.emit_diagnostics") as emit:

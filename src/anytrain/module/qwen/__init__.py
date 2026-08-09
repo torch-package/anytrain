@@ -1,4 +1,4 @@
-from .mtp import QwenMTPCodebookPredictor, top_p_filter
+from .mtp import QwenMTPCodebookPredictor
 from .qwen3 import (
     build_qwen3_attention,
     build_qwen3_decoder_layer,
@@ -12,7 +12,6 @@ from .qwen3 import (
 
 __all__ = [
     "QwenMTPCodebookPredictor",
-    "top_p_filter",
     "build_qwen3_attention",
     "build_qwen3_decoder_layer",
     "build_qwen3_mlp",

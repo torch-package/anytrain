@@ -10,12 +10,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from typing import Any, cast, overload
+from typing import Any, Unpack, cast, overload
 from warnings import warn
 
 import torch
 from torch import nn
-from typing_extensions import Unpack
 
 from anytrain.tts import (
     AudioReference,

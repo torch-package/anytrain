@@ -466,7 +466,7 @@ class _AutoGroupVectorQuantizer(nn.Module):
         return _group_indices_to_indices(group_indices, index_basis=self._index_basis)
 
 
-def _typed_module_list(
+def _typed_module_list[ModuleT: nn.Module](
     modules: nn.ModuleList,
     module_type: type[ModuleT],
 ) -> tuple[ModuleT, ...]:

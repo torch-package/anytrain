@@ -185,7 +185,7 @@ def _records(state: Mapping[str, Any], name: str, *, prefix: str) -> list[Record
     records = [_record(value, prefix=prefix) for value in values]
     if any(
         current["step"] <= previous["step"]
-        for previous, current in zip(records, records[1:])
+        for previous, current in zip(records, records[1:], strict=False)
     ):
         raise ValueError(
             f"validation history state {name!r} must be strictly step ordered."

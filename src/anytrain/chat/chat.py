@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from os import PathLike
 from pathlib import Path
 from threading import Lock
-from typing import TypeVar, Union
+from typing import TypeVar
 
 from ._openrouter import resolve_models
 from ._provider import (
@@ -33,7 +33,7 @@ from .types import (
 )
 
 _ChatT = TypeVar("_ChatT", bound="Chat")
-ImageInput = Union[str, PathLike[str]]
+ImageInput = str | PathLike[str]
 
 
 class Chat:

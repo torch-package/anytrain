@@ -7,6 +7,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from anytrain.utils import is_signed_integer_dtype
+
 from ._observation import emit_diagnostics, loss_with_diagnostics
 from ._validation import scalar
 from .abc import LossABC
@@ -106,7 +108,7 @@ def _validate_inputs(logits: Sequence[Tensor], labels: Tensor, mask: Tensor) -> 
         raise ValueError(
             "codebook labels and mask must have shapes [B, F, Q] and [B, F]."
         )
-    if not _is_signed_integer_dtype(labels.dtype):
+    if not is_signed_integer_dtype(labels.dtype):
         raise TypeError("codebook labels must use a signed integer dtype.")
     if mask.dtype != torch.bool:
         raise TypeError("codebook target mask must be boolean.")
@@ -135,7 +137,7 @@ def _validate_packed_inputs(packed: PackedCodebookLogits) -> None:
     labels = packed.labels
     if labels.ndim != 2:
         raise ValueError("packed codebook labels must have shape [N, Q].")
-    if not _is_signed_integer_dtype(labels.dtype):
+    if not is_signed_integer_dtype(labels.dtype):
         raise TypeError("packed codebook labels must use a signed integer dtype.")
     if len(packed.logits) != labels.size(-1):
         raise ValueError("packed codebook logits must provide one tensor per codebook.")
@@ -154,15 +156,5 @@ def _validate_packed_inputs(packed: PackedCodebookLogits) -> None:
     valid_targets = labels.to(dtype=torch.long)
     if bool(((valid_targets < 0) | (valid_targets >= limits)).any()):
         raise ValueError("packed codebook target is outside its logits vocabulary.")
-
-
-def _is_signed_integer_dtype(dtype: torch.dtype) -> bool:
-    return dtype in {
-        torch.int8,
-        torch.int16,
-        torch.int32,
-        torch.int64,
-    }
-
 
 __all__ = ["MaskedCodebookCrossEntropyLoss", "PackedCodebookLogits"]

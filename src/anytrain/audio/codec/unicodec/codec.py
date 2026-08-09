@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Union
+from typing import Any
 
 import torch
 from torch import Tensor, nn
-from typing_extensions import TypeAlias
 
 from .._audio import model_frame_rate, resample
 from .._module import DeviceModule, resolve_device, validate_frame_codes
@@ -17,7 +16,7 @@ from .assets import (
     ensure_unicodec_assets,
 )
 
-Domain: TypeAlias = Union[str, int]
+type Domain = str | int
 SAMPLE_RATE = 24_000
 NUM_CHANNELS = 1
 DEFAULT_CODEBOOK_SIZE = 16_384
@@ -154,6 +153,20 @@ class UniCodec(DeviceModule):
         validate_frame_codes(codes, self.codebook_sizes)
         backend_codes = codes.permute(2, 0, 1).contiguous().to(self.device)
         return self.model.codes_to_features(backend_codes).transpose(1, 2)
+
+    @torch.no_grad()
+    def codebook_codes_to_features(self, index: int, codes: Tensor) -> Tensor:
+        if index != 0 or len(self.codebook_sizes) != 1:
+            raise ValueError("UniCodec detokenizer preset requires exactly one codebook.")
+        if codes.dim() != 2:
+            raise ValueError("UniCodec codebook codes must have shape [batch, time].")
+        return self.codes_to_features(codes[..., None])
+
+    @torch.no_grad()
+    def decode_codebook_features(self, features: tuple[Tensor, ...]) -> Tensor:
+        if len(features) != 1:
+            raise ValueError("UniCodec features must contain exactly one codebook stream.")
+        return self.decode_features(features[0])
 
 def _domain(domain: Domain) -> str:
     value = str(domain)

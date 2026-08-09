@@ -2634,10 +2634,10 @@ def _schema_from_state(value: object) -> _HistogramSchema:
     ranges = _tuple_float_tuples(value.get("ranges"), "observation histogram ranges")
     if len(bucket_limits) != len(sizes) or len(ranges) != len(sizes):
         raise ValueError("observation histogram schema group metadata must align.")
-    for size, limits, bounds in zip(sizes, bucket_limits, ranges):
+    for size, limits, bounds in zip(sizes, bucket_limits, ranges, strict=False):
         if len(limits) != size or len(bounds) != 2:
             raise ValueError("observation histogram schema bin metadata is invalid.")
-        if any(right <= left for left, right in zip(limits, limits[1:])):
+        if any(right <= left for left, right in zip(limits, limits[1:], strict=False)):
             raise ValueError("observation histogram bucket limits must increase.")
         if bounds[1] < bounds[0]:
             raise ValueError("observation histogram ranges must be ordered.")
@@ -2656,7 +2656,7 @@ def _profile_schema_from_state(value: object) -> _ProfileSchema:
     edges = _tuple_floats(value.get("edges"), "observation profile edges")
     if len(edges) < 2:
         raise ValueError("observation profile edges must contain at least two values.")
-    if any(right <= left for left, right in zip(edges, edges[1:])):
+    if any(right <= left for left, right in zip(edges, edges[1:], strict=False)):
         raise ValueError("observation profile edges must be strictly increasing.")
     return _ProfileSchema(edges)
 

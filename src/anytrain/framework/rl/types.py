@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, TypedDict
 
 from torch import Tensor
-from typing_extensions import TypedDict
 
 TokenReduction = Literal["token_mean", "sequence_mean"]
 SequenceReduction = Literal["sum", "mean"]

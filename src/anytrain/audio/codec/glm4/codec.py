@@ -31,7 +31,7 @@ class GLM4Tokenizer(DeviceModule):
 
     The upstream tokenizer is not a decoder. This wrapper deliberately exposes
     only ``encode`` and is therefore a ``FrameTokenizerBackend``, not a
-    bidirectional ``FrameCodec``.
+    bidirectional waveform codec.
     """
 
     name = "glm4"

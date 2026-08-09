@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 import torch
 from torch import Tensor
-from typing_extensions import TypeGuard
 
 from ...env import torch_home
 from ..abc import EvaluatorABC, MetricDict

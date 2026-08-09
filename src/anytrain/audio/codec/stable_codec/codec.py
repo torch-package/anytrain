@@ -3,11 +3,10 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from math import prod
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 import torch
 from torch import Tensor, nn
-from typing_extensions import TypeAlias
 
 from .._audio import model_frame_rate, resample
 from .._module import DeviceModule, resolve_device, validate_frame_codes
@@ -18,10 +17,7 @@ PosthocBottleneckPreset = Literal[
     "2x15625_700bps",
     "4x729_1000bps",
 ]
-PosthocBottleneck: TypeAlias = Union[
-    PosthocBottleneckPreset,
-    Sequence[tuple[Sequence[int], float]],
-]
+type PosthocBottleneck = PosthocBottleneckPreset | Sequence[tuple[Sequence[int], float]]
 
 DEFAULT_VERSION: SupportedVersion = "speech-16k"
 DEFAULT_PRETRAINED_MODEL = f"stabilityai/stable-codec-{DEFAULT_VERSION}"
@@ -159,6 +155,59 @@ class StableCodec(DeviceModule):
             backend_tokens,
             posthoc_bottleneck=self.posthoc_bottleneck,
         )
+
+    @torch.no_grad()
+    def codebook_codes_to_features(self, index: int, codes: Tensor) -> Tensor:
+        if not 0 <= index < len(self.codebook_sizes):
+            raise ValueError(
+                f"Stable Codec codebook index must be in [0, {len(self.codebook_sizes)})."
+            )
+        if codes.dim() != 2:
+            raise ValueError("Stable Codec codebook codes must have shape [batch, time].")
+        if self.posthoc_bottleneck:
+            residual = getattr(self.model, "residual_fsq", None)
+            quantizers = getattr(residual, "quantizers", None)
+            if quantizers is None or len(quantizers) <= index:
+                raise TypeError(f"Stable Codec is missing posthoc quantizer {index}.")
+            convert = getattr(quantizers[index], "indices_to_codes", None)
+            if not callable(convert):
+                raise TypeError("Stable Codec posthoc quantizers must provide indices_to_codes().")
+            features = convert(codes[..., None].to(self.device))
+        else:
+            if index != 0 or len(self.codebook_sizes) != 1:
+                raise ValueError("Stable Codec native detokenizer requires one codebook.")
+            bottleneck = getattr(getattr(self.model, "model", None), "bottleneck", None)
+            convert = getattr(bottleneck, "decode_tokens", None)
+            if not callable(convert):
+                raise TypeError("Stable Codec bottleneck must provide decode_tokens().")
+            features = convert(codes[..., None].to(self.device))
+            if not isinstance(features, Tensor) or features.dim() != 3:
+                raise ValueError("Stable Codec native features must be three-dimensional.")
+            features = features.transpose(1, 2)
+        if not isinstance(features, Tensor) or features.dim() != 3:
+            raise ValueError(
+                "Stable Codec codebook features must have shape [batch, time, feature]."
+            )
+        return features
+
+    @torch.no_grad()
+    def decode_codebook_features(self, features: tuple[Tensor, ...]) -> Tensor:
+        if len(features) != len(self.codebook_sizes):
+            raise ValueError("Stable Codec features must contain every codebook stream.")
+        combined = features[0]
+        for value in features[1:]:
+            if value.shape != combined.shape:
+                raise ValueError("Stable Codec codebook features must share one shape.")
+            combined = combined + value
+        autoencoder = getattr(self.model, "model", None)
+        decode = getattr(autoencoder, "decode_audio", None)
+        if not callable(decode):
+            raise TypeError("Stable Codec model must provide decode_audio().")
+        latents = combined.transpose(1, 2) if self.posthoc_bottleneck else combined
+        audio = decode(latents.to(self.device))
+        if not isinstance(audio, Tensor):
+            raise TypeError("Stable Codec decode_audio() must return a Tensor.")
+        return audio
 
     def set_posthoc_bottleneck(self, stages: PosthocBottleneck) -> None:
         self.model.set_posthoc_bottleneck(stages)

@@ -24,7 +24,7 @@ def validate_tag_part(value: object, name: str = "tag") -> str:
     return text
 
 
-def unique_tag_items(
+def unique_tag_items[ValueT](
     items: Iterable[tuple[object, ValueT]],
     *,
     name: str = "monitor name",

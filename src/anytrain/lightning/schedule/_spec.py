@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Union
 
 from ._curve import LRCurve, curve_ratio
 from ._data import UnitProvider, require_unit_name
@@ -41,7 +40,7 @@ class UnitClock:
             raise TypeError("allow_external_lr_changes must be a boolean.")
 
 
-Clock = Union[StepClock, UnitClock]
+Clock = StepClock | UnitClock
 
 
 @dataclass(frozen=True)

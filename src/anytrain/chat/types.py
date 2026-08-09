@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import auto
-from typing import Literal, NamedTuple, TypedDict, Union
+from typing import Literal, NamedTuple, TypedDict
 
 from anytrain._compat import StrEnum
 
@@ -27,8 +27,8 @@ class ChatImageUrlPart(TypedDict):
     image_url: ChatImageUrl
 
 
-ChatContentPart = Union[ChatTextPart, ChatImageUrlPart]
-ChatContent = Union[str, list[ChatContentPart]]
+ChatContentPart = ChatTextPart | ChatImageUrlPart
+ChatContent = str | list[ChatContentPart]
 
 
 class ChatMessage(TypedDict):

@@ -5,8 +5,9 @@ import os
 from torch import device as TorchDevice
 
 from anytrain.audio.codec._registry import CodecEntry
+from anytrain.audio.codec._tokenizer import represent_frame_tokenizer
 from anytrain.audio.codec.protocol import AudioCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
 
 DEFAULT_GLM4_ARTIFACT = "zai-org/glm-4-voice-tokenizer"
 DEFAULT_GLM4_REVISION = "a5f2404e63c84e92f5238908e1706316324ebafa"
@@ -41,16 +42,15 @@ def _load_tokenizer(*, device: str | TorchDevice | None = None):
 
 ENTRY = CodecEntry(
     name="glm4",
-    capabilities=frozenset(),
     loader=_load_tokenizer,
     audio_capabilities=frozenset({AudioCapability.TOKENIZER}),
-    audio_schema=AudioCodeSchema.FRAME,
     audio_spec=AudioCodeSpec(
-        names=("frame_0",),
+        names=("rvq_0",),
         vocab_sizes=(16_384,),
         sample_rate=16_000,
         frame_rates=(12.5,),
     ),
+    tokenizer=represent_frame_tokenizer,
     identity=AudioBackendIdentity(
         preset="glm4",
         artifact=DEFAULT_GLM4_ARTIFACT,

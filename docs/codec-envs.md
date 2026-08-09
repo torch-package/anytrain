@@ -22,7 +22,7 @@ codes/cache，再由主训练环境读取产物。
 - batch：为避免已观察到的 batch-shape token 漂移，wrapper 对 batch 内每条 waveform 运行同一个
   canonical single-sample extraction，再堆叠等长结果。
 
-默认 `anytrain` py312/py39 环境当前使用 Transformers 4.57.6，且 BiCodec extra 要求
+默认 `anytrain` py312 环境当前使用 Transformers 4.57.6，且 BiCodec extra 要求
 `transformers>=4.46`、module extra 要求 `transformers>=4.51.0`。因此不要为 GLM-4 增加一个会让
 resolver 产生冲突的组合 extra，也不要把 fake 单测当作新版本兼容性证据。推荐部署是独立
 Transformers 4.44.1 GLM producer 持续生成/publish raw GLM codes，主训练环境同时消费这些 codes

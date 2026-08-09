@@ -4,16 +4,19 @@ Concrete backends live under ``anytrain.audio.codec``; this package only exposes
 the tokenizer direction of the shared audio protocol.
 """
 
+from anytrain.audio._tokenizer import AudioCodes, AudioTokenizer
 from anytrain.audio.codec import (
-    AudioTokenizer,
-    FrameTokenizerBackend,
+    AudioCodeSpec,
+    audio_spec,
     can_load_audio_tokenizer,
     load_audio_tokenizer,
 )
 
 __all__ = [
+    "AudioCodes",
+    "AudioCodeSpec",
     "AudioTokenizer",
-    "FrameTokenizerBackend",
+    "audio_spec",
     "can_load_audio_tokenizer",
     "load_audio_tokenizer",
 ]

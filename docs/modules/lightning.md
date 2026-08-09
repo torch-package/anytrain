@@ -16,6 +16,7 @@ src/anytrain/lightning/
   experiment.py
   materialization.py
   service.py
+  oom.py
   validation.py
   schedule/
     __init__.py
@@ -63,6 +64,8 @@ src/anytrain/lightning/
 - `PerformanceCallback`
 - `PerformanceReport`
 - `ObservationCallback`
+- `OOMDiagnostics`
+- `oom`：OOM context 标注、输入摘要、错误识别和显式报告 helper
 - `RankLogMode`
 - `prefixed_log_dict`
 
@@ -171,6 +174,12 @@ callback 负责。
 `on_after_backward()` 只重复检查可训练参数与已有梯度。正常路径在设备端聚合 finite 状态，只做少量主机
 同步；遇到 NaN 或 Inf 时才定位并打印第一个异常参数或梯度的 name、index、value、shape、dtype、
 device，然后直接抛错。正式运行不需要时仍可从 callback 列表移除。
+
+`OOMDiagnostics` 在调用方显式加入 callback 列表时启用。它记录 train/validation batch 当前所处的
+Lightning phase，并在未捕获的 Torch OOM 或兼容的 `RuntimeError("out of memory")` 上输出错误、rank、
+CUDA memory 和调用上下文。下游通过 `input_reporter` 注入 batch/request 摘要；callback 不解释具体
+batch schema，也不重试或拆分 batch。生成、评估等 callback 外调用可以用 `annotate()` 附加调用点上下文，
+再由 `report_oom()` 交给已安装的 `OOMDiagnostics`。
 
 `EMACallback` 维护可训练浮点参数的 float32 指数滑动平均。它在 `trainer.global_step` 前进时更新
 shadow weights，并在 validation / test / predict 开始时把 EMA 权重 swap 进模块、结束时 restore。

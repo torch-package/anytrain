@@ -7,7 +7,8 @@ from unittest.mock import patch
 import torch
 from torch import nn
 
-from anytrain.module.qwen import QwenMTPCodebookPredictor, top_p_filter
+from anytrain.module.qwen import QwenMTPCodebookPredictor
+from anytrain.utils import top_p_filter
 
 TRANSFORMERS_AVAILABLE = importlib.util.find_spec("transformers") is not None
 

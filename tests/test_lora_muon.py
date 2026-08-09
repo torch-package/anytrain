@@ -354,7 +354,7 @@ class LoRAMuonTest(unittest.TestCase):
             restored_optimizer.state[restored_left]["momentum_buffer"],
             restored_optimizer.state[restored_right]["momentum_buffer"],
         ]
-        for actual, expected in zip(restored_momenta, expected_momenta):
+        for actual, expected in zip(restored_momenta, expected_momenta, strict=False):
             self.assertEqual(actual.dtype, torch.float32)
             torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
 
@@ -403,7 +403,7 @@ class LoRAMuonTest(unittest.TestCase):
             restored_optimizer.state[restored_left]["momentum_buffer"],
             restored_optimizer.state[restored_right]["momentum_buffer"],
         ]
-        for actual, original in zip(restored_momenta, original_momenta):
+        for actual, original in zip(restored_momenta, original_momenta, strict=False):
             self.assertEqual(actual.dtype, torch.float32)
             torch.testing.assert_close(actual, (original + 1.0) * 2.0, rtol=0.0, atol=0.0)
 

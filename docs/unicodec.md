@@ -24,9 +24,9 @@ python -m pip install "unicodec @ git+https://github.com/rookiejune/UniCodec.git
 
 但 extra 不会替用户解开 UniCodec 的旧 `fairseq`/torch 构建链。当前真实 smoke 只在独立
 Python 3.9、pip 24、torch 2.4 环境通过；Python 3.12 + 新版 pip 下 `fairseq` 仍会在解析或
-构建阶段失败。虽然这个环境满足 `anytrain` 的 `torch>=2.4` 元数据约束，仍不要在主训练
-环境直接解析 `[unicodec]`，因为旧 `fairseq` 构建链可能改写共享依赖。兼容环境先固定上游
-依赖，再安装 `anytrain --no-deps` 或从 checkout 暴露 thin wrapper：
+构建阶段失败。仍不要在主训练环境直接解析 `[unicodec]`，因为旧 `fairseq` 构建链可能改写
+共享依赖。兼容桥接环境不满足 `anytrain` 的 Python >=3.12 下限，不从元数据解析安装
+`anytrain`，改为从 checkout 暴露 thin wrapper：
 
 ```bash
 export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH

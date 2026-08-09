@@ -53,7 +53,7 @@ class Metric:
             raise TypeError("weighted metric weights must be real-valued counts.")
 
 
-def reduce(metrics: Mapping[Name, Metric]) -> dict[Name, tuple[Tensor, int]]:
+def reduce[Name](metrics: Mapping[Name, Metric]) -> dict[Name, tuple[Tensor, int]]:
     if not isinstance(metrics, Mapping):
         raise TypeError("weighted metrics must be a mapping.")
     if not metrics:

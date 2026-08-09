@@ -8,7 +8,7 @@ from enum import auto
 from multiprocessing import get_context
 from multiprocessing.process import BaseProcess
 from queue import Empty
-from typing import Generic, Optional, Protocol, TypeVar, cast
+from typing import Protocol, TypeVar, cast
 
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
@@ -54,7 +54,7 @@ class Materialization(Protocol):
     def close(self) -> None: ...
 
 
-MaterializationProvider = Callable[[Trainer], Optional[Materialization]]
+MaterializationProvider = Callable[[Trainer], Materialization | None]
 
 
 class _ResultQueue(Protocol):
@@ -74,7 +74,7 @@ class _WorkerResult:
     traceback: str = ""
 
 
-class BackgroundMaterialization(Generic[T]):
+class BackgroundMaterialization[T]:
     """Run one publish operation in a spawned background process."""
 
     def __init__(

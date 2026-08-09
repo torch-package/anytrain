@@ -158,9 +158,9 @@ class MyPLModule(pl.LightningModule):
 
 `anytrain.audio` 收拢 waveform I/O 与 frame-sequence BPE：
 
-- `audio.tokenizer` / `audio.detokenizer`：方向 capability view 与 loader。
-- `audio.codec`：双向组合（`AudioCodec = tokenizer ∩ detokenizer`）、protocol、静态 preset spec、
-  lazy registry 和 concrete backend；相同 resolved identity 与 device 共享 backend 实例。
+- `audio.tokenizer` / `audio.detokenizer`：named-stream 方向 ABC 与 loader。
+- `audio.codec`：静态 preset spec、directional lazy registry 与 concrete backend；
+  相同 resolved identity 与 device 可以共享 backend 实例，但不对调用方暴露通用 `AudioCodec`。
 - `audio.bpe`：离散 codec frame 上的 int BPE，不加载神经网络 codec；需要 `bpe` extra。
 
 `tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。它们都不接管数据集、

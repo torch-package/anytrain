@@ -4,14 +4,14 @@ import signal
 from collections.abc import Callable
 from contextlib import suppress
 from types import FrameType
-from typing import Any, Optional, Protocol, cast
+from typing import Any, Protocol, cast
 
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
 
 from . import _capability
 
-_SignalHandler = Callable[[int, Optional[FrameType]], Any]
+_SignalHandler = Callable[[int, FrameType | None], Any]
 
 
 class ManagedService(Protocol):
@@ -24,7 +24,7 @@ class ManagedService(Protocol):
     def close(self, *, owner: bool) -> None: ...
 
 
-ManagedServiceProvider = Callable[[Trainer], Optional[ManagedService]]
+ManagedServiceProvider = Callable[[Trainer], ManagedService | None]
 
 
 class _OnceSignalHandler:

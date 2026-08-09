@@ -302,10 +302,10 @@ class UnitScheduleCallback(pl.Callback):
         if self._base_lrs is None:
             self._base_lrs = _current_lrs(optimizers)
         self._validate_lr_owner(optimizers)
-        for optimizer, base_lrs in zip(optimizers, self._base_lrs):
+        for optimizer, base_lrs in zip(optimizers, self._base_lrs, strict=False):
             if len(optimizer.param_groups) != len(base_lrs):
                 raise RuntimeError("optimizer param group count changed during unit scheduling.")
-            for group, base_lr in zip(optimizer.param_groups, base_lrs):
+            for group, base_lr in zip(optimizer.param_groups, base_lrs, strict=False):
                 group["lr"] = float(base_lr) * ratio
         self._last_lrs = _current_lrs(optimizers)
 
@@ -315,10 +315,10 @@ class UnitScheduleCallback(pl.Callback):
         current = _current_lrs(optimizers)
         if len(current) != len(self._last_lrs):
             raise RuntimeError("optimizer count changed during unit scheduling.")
-        for optimizer_index, (actual_group, expected_group) in enumerate(zip(current, self._last_lrs)):
+        for optimizer_index, (actual_group, expected_group) in enumerate(zip(current, self._last_lrs, strict=False)):
             if len(actual_group) != len(expected_group):
                 raise RuntimeError("optimizer param group count changed during unit scheduling.")
-            for group_index, (actual, expected) in enumerate(zip(actual_group, expected_group)):
+            for group_index, (actual, expected) in enumerate(zip(actual_group, expected_group, strict=False)):
                 if not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-12):
                     raise RuntimeError(
                         "optimizer lr was modified outside UnitScheduleCallback "

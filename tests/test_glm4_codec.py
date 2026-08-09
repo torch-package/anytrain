@@ -12,7 +12,6 @@ from torch import Tensor, nn
 
 from anytrain.audio.codec import (
     AudioCapability,
-    FrameTokenizerBackend,
     audio_capabilities,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
@@ -154,7 +153,6 @@ def test_glm4_registry_requires_explicit_source_root(
 def test_glm4_tokenizer_is_directional_and_exposes_frozen_codebook() -> None:
     tokenizer = _tokenizer()
 
-    assert FrameTokenizerBackend.__name__ == "FrameTokenizerBackend"
     assert tokenizer.name == "glm4"
     assert tokenizer.codebook_sizes == (16_384,)
     assert tokenizer.semantic_codebook.shape == (16_384, 2)

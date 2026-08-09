@@ -1,4 +1,4 @@
-from . import experiment, schedule, validation
+from . import experiment, oom, schedule, validation
 from .callback.checkpoint import ModelCheckpoint
 from .callback.debug import DebugCallback
 from .callback.ema import EMACallback, ParameterEMA, find_ema_callback
@@ -34,6 +34,11 @@ from .materialization import (
     MaterializationProvider,
 )
 from .mixin import LightningLogMixin, RankLogMode, prefixed_log_dict
+from .oom import (
+    InputReporter,
+    OOMContext,
+    OOMDiagnostics,
+)
 from .service import ManagedService, ManagedServiceCallback, ManagedServiceProvider
 
 __all__ = [
@@ -74,6 +79,10 @@ __all__ = [
     "prefixed_log_dict",
     "schedule",
     "ObservationCallback",
+    "InputReporter",
+    "OOMContext",
+    "OOMDiagnostics",
+    "oom",
     "window_summary",
     "validation",
 ]

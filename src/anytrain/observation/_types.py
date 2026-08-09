@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import auto
 from numbers import Real
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from torch import Tensor, nn
@@ -195,14 +195,14 @@ class Reduction(StrEnum):
     Merge = auto()
 
 
-Observation = Union[Curve, Distribution, Profile, Bins, Heatmap]
-ObservationResult = Union[Observation, Mapping[str, Observation], None]
+Observation = Curve | Distribution | Profile | Bins | Heatmap
+ObservationResult = Observation | Mapping[str, Observation] | None
 OutputCollector = Callable[
     [nn.Module, tuple[Any, ...], Mapping[str, Any], object],
     ObservationResult,
 ]
 BackwardCollector = Callable[
-    [nn.Module, tuple[Optional[Tensor], ...]],
+    [nn.Module, tuple[Tensor | None, ...]],
     ObservationResult,
 ]
 StateCollector = Callable[[nn.Module], ObservationResult]
@@ -277,12 +277,12 @@ ForwardObservation = OutputObservation
 PollObservation = StateObservation
 
 
-ObservationSpec = Union[
-    OutputObservation,
-    BackwardObservation,
-    StateObservation,
-    ForwardEvent,
-]
+ObservationSpec = (
+    OutputObservation
+    | BackwardObservation
+    | StateObservation
+    | ForwardEvent
+)
 
 
 def _edges(values: tuple[float, ...], *, name: str) -> None:

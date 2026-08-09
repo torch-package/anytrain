@@ -64,17 +64,23 @@ codes = codec.encode(
 )
 audio_24k = codec.decode(codes)
 
-units = codec.tokenize(audio, sample_rate=16000)
-audio_from_units = codec.detokenize(units)
+from anytrain.audio.detokenizer import load_audio_detokenizer
+from anytrain.audio.tokenizer import load_audio_tokenizer
 
-acoustic_features = codec.acoustic_codes_to_features(
-    codes[..., 1:],
-)
-audio_from_features = codec.decode_features(
-    codes[..., :1],
-    acoustic_features,
-)
+tokenizer = load_audio_tokenizer("longcat", device="cuda")
+detokenizer = load_audio_detokenizer("longcat", device="cuda")
+named_codes = tokenizer.tokenize(audio, sample_rate=16000)
+audio_from_codes = detokenizer.detokenize(named_codes)
 ```
+
+## Debug Boundary
+
+Set `ANYTRAIN_LONGCAT_DEBUG_LOG` to a JSONL path for an explicit performance
+probe. Each `LongCat.encode()` call appends one boundary record with the input
+shape and audio seconds, encoder output shapes, synchronized elapsed time, CUDA
+current/peak memory when running on CUDA, and an error status if the encoder
+fails. The switch is disabled by default and records no waveform or token
+values.
 
 主离散接口遵循统一 codec 契约：`audio` 是 `[batch, channels, time]`，`codes` 是
 `[batch, frame, codebook]`。4-codebook decoder 的 `codebook_sizes` 是
@@ -82,21 +88,16 @@ audio_from_features = codec.decode_features(
 codebook 由两个 size-90 factor codebook 组成，wrapper 对外将其展平为 `90**2 == 8100` 个
 local id，并在调用上游 decoder 时还原。调用方不需要拆分 semantic/acoustic 或 factor ids。
 
-LongCat 同时满足 `FrameCodec` 和 `SemanticAcousticCodec`。structured 路径中，
-`units.semantic` 是 `[batch, frame, 1]`，`units.acoustic` 是
-`[batch, frame, acoustic_codebook]`，`acoustic_layout` 为 `FRAME_ALIGNED`。
-`encode()` / `decode()` 保留原有拼接 tensor 契约；需要独立 semantic/acoustic 边界时使用
-`tokenize()` / `detokenize()`。
+LongCat preset 把四个单码本解释为 `semantic`、`rvq_0`、`rvq_1`、`rvq_2`；每个 stream
+都是 `[batch, frame]`。`encode()` / `decode()` 是 concrete backend 内部保留的拼接 tensor
+接口，公共调用使用 tokenizer / detokenizer 的 named streams。
 
 `codec.sample_rate` 是所选 decoder 的输出采样率。encoder 内部固定使用 16 kHz，
 `encode(audio, sample_rate)` 会把输入采样率交给上游预处理逻辑。
 
-`acoustic_codes_to_features()` 是 LongCat 专用扩展，输入仍遵循统一的
-`[batch, time, codebook]` 契约，并显式调用 decoder 的 acoustic dequantizer，对外返回
-`[batch, time, dim]` 的连续 acoustic features。`decode_features()` 的 semantic codes
-同样保留 codebook 轴；LongCat 当前要求 `[batch, time, 1]`。wrapper 负责转换成上游
-decoder 的内部 shape，调用方不做转置或 squeeze。下游 DiT 或 flow sampler 应该接这个
-feature 边界；只有原始 codec roundtrip 才直接使用离散 `acoustic_codes`。
+`codes_to_features(stream, codes)` 对单个 named stream 返回 `[batch, time, dim]` 连续特征；
+`decode_features()` 组合 semantic 与 RVQ feature streams。下游 DiT 或 flow sampler 直接接这个
+feature 边界，不依赖 concrete backend 的 factor codebook 布局。
 
 默认从 Hugging Face 仓库 `meituan-longcat/LongCat-Audio-Codec` 下载：
 

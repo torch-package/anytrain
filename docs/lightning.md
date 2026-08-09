@@ -16,6 +16,7 @@
 - 自动发现普通 module registry 声明的 Curve/Distribution/Profile/Bins/Heatmap observation，并记录
   optimizer-step、EMA 和 render-only image 状态；这是 module 中间量 logging 的唯一 callback。
 - non-finite loss 检查等训练调试 callback。
+- OOM phase/context/CUDA diagnostics callback；输入摘要由下游 `input_reporter` 提供，不负责重试或拆 batch。
 - NFS 等慢文件系统场景下可选的异步 checkpoint 落盘 callback。
 - global rank 所有的 task-agnostic 长驻服务启动、健康检查、错误同步和清理 callback。
 - 训练效率观测 callback，记录参数量、step time、硬件峰值算力和 MFU。
@@ -511,6 +512,12 @@ group 名通常是 `batch`，而且这些 Tensor 必须仍连接需要探测的 
 `DebugCallback` 在调用方显式加入 callback 列表时启用。全部初始参数在 train start 检查一次；每次
 backward 后只重复检查可训练参数与现有梯度，因此冻结参数不会反复扫描。正常路径按 device/dtype 用 foreach norm 聚合后再做一次
 主机判定，只有发现异常时才逐 tensor 定位。
+
+`OOMDiagnostics` 在调用方显式加入 callback 列表时启用。它记录 train/validation batch 当前的
+Lightning phase，并在 Torch OOM 或兼容的 `RuntimeError("out of memory")` 上输出错误、rank、CUDA
+memory 和调用上下文。下游通过 `input_reporter` 提供 JSON-compatible 的 batch/request 摘要；callback
+不解释 batch schema，不重试或拆分 batch。生成或评估路径可以用 `annotate()` 附加调用点上下文，再用
+`report_oom()` 把上下文交给已安装的 callback。
 
 `PerformanceCallback` 在调用方显式加入 callback 列表时启用。它记录：
 

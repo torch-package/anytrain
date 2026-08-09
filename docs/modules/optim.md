@@ -138,9 +138,9 @@ optimizer = create_lora_muon_optimizer(
 )
 ```
 
-`anytrain.optim.peft` 支持 PEFT `>=0.17.1,<0.21`。Python 3.9 会由包解析器选择仍支持
-该 Python 版本的 PEFT 0.17.1；Python 3.10+ 可以使用 0.20.x。`adapter_names=None`
-默认收集每个 `LoraLayer` 当前 active adapter，也可以显式传多个 adapter name。
+`anytrain.optim.peft` 支持 PEFT `>=0.17.1,<0.21`。在 anytrain 的 Python >=3.12 下限下，
+包解析器会在上限内选择最新 0.20.x。`adapter_names=None` 默认收集每个 `LoraLayer`
+当前 active adapter，也可以显式传多个 adapter name。
 
 - `create_lora_muon_optimizer()` 要求模型所有 trainable parameter 都属于选中的 LoRA A/B。
 - `create_lora_muon_adamw_optimizer()` 用于混合训练：LoRA 因子走 `LoRAMuon`，其余 trainable

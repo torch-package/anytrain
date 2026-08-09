@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from torch import device as TorchDevice
 
+from anytrain.audio.codec._detokenizer import represent_frame_detokenizer
 from anytrain.audio.codec._registry import CodecEntry
-from anytrain.audio.codec.protocol import AudioCapability, CodecCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSchema, AudioCodeSpec
+from anytrain.audio.codec._tokenizer import represent_frame_tokenizer
+from anytrain.audio.codec.protocol import AudioCapability
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
 
 _DEFAULT_ARTIFACT = "stabilityai/stable-codec-speech-16k"
 
@@ -17,7 +19,6 @@ def _load_frame(*, device: str | TorchDevice | None = None):
 
 ENTRY = CodecEntry(
     name="stable_codec",
-    capabilities=frozenset({CodecCapability.FRAME_CODES}),
     loader=_load_frame,
     audio_capabilities=frozenset(
         {
@@ -25,9 +26,8 @@ ENTRY = CodecEntry(
             AudioCapability.DETOKENIZER,
         }
     ),
-    audio_schema=AudioCodeSchema.FRAME,
     audio_spec=AudioCodeSpec(
-        names=("frame_0",),
+        names=("rvq_0",),
         vocab_sizes=(46_656,),
         sample_rate=16_000,
         frame_rates=(25.0,),
@@ -36,6 +36,8 @@ ENTRY = CodecEntry(
         preset="stable_codec",
         artifact=_DEFAULT_ARTIFACT,
     ),
+    tokenizer=represent_frame_tokenizer,
+    detokenizer=represent_frame_detokenizer,
 )
 
 __all__ = ["ENTRY"]
