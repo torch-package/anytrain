@@ -3,7 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -12,6 +13,10 @@ from torch import nn
 from anytrain._buffer import register_buffer
 from anytrain.audio.codec.unicodec.assets import UniCodecAssets
 from anytrain.audio.codec.unicodec.codec import UniCodec
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class UniCodecCodecTest(unittest.TestCase):
@@ -44,7 +49,7 @@ class UniCodecCodecTest(unittest.TestCase):
             self.assertEqual(codec.name, "unicodec")
             self.assertEqual(codec.sample_rate, 24000)
             self.assertEqual(codec.codebook_sizes, (16384,))
-            self.assertTrue(codec.model.eval_called)
+            self.assertTrue(cast(Any, codec.model).eval_called)
 
     def test_encode_returns_codes_and_passes_domain_contract(self):
         model = FakeUniCodecModel()
@@ -61,6 +66,7 @@ class UniCodecCodecTest(unittest.TestCase):
 
         self.assertEqual(tuple(codes.shape), (2, 4, 1))
         self.assertEqual(model.domains, ("0", "0"))
+        assert model.bandwidth_id is not None
         self.assertTrue(torch.equal(model.bandwidth_id, torch.tensor([3])))
 
     def test_encode_features_exposes_upstream_feature_boundary(self):
@@ -73,6 +79,7 @@ class UniCodecCodecTest(unittest.TestCase):
         self.assertEqual(tuple(features.shape), (2, 4, 3))
         self.assertEqual(tuple(codes.shape), (2, 4, 1))
         self.assertEqual(model.domains, ("0", "0"))
+        assert model.bandwidth_id is not None
         self.assertTrue(torch.equal(model.bandwidth_id, torch.tensor([0])))
 
     def test_decode_converts_codes_before_decode(self):
@@ -89,6 +96,7 @@ class UniCodecCodecTest(unittest.TestCase):
 
         self.assertEqual(tuple(audio.shape), (2, 1, 16))
         self.assertTrue(model.codes_to_features_called)
+        assert model.bandwidth_id is not None
         self.assertTrue(torch.equal(model.bandwidth_id, torch.tensor([2])))
 
     def test_decode_features_uses_continuous_feature_boundary(self):
@@ -106,6 +114,7 @@ class UniCodecCodecTest(unittest.TestCase):
         self.assertEqual(tuple(audio.shape), (2, 1, 16))
         self.assertTrue(model.decode_called)
         self.assertFalse(model.codes_to_features_called)
+        assert model.bandwidth_id is not None
         self.assertTrue(torch.equal(model.bandwidth_id, torch.tensor([2])))
 
     def test_encode_rejects_unknown_domain(self):
@@ -127,7 +136,7 @@ class UniCodecCodecTest(unittest.TestCase):
         codec.to("meta")
 
         self.assertEqual(codec.device, torch.device("meta"))
-        self.assertEqual(codec.model.device_probe.device, codec.device)
+        self.assertEqual(cast(Any, codec.model).device_probe.device, codec.device)
         self.assertNotIn("_device", codec.state_dict())
 
     def test_constructor_moves_backend_to_requested_device(self):
@@ -138,7 +147,7 @@ class UniCodecCodecTest(unittest.TestCase):
         )
 
         self.assertEqual(codec.device, torch.device("meta"))
-        self.assertEqual(codec.model.device_probe.device, codec.device)
+        self.assertEqual(cast(Any, codec.model).device_probe.device, codec.device)
 
 
 class FakeUniCodecFactory:
@@ -169,8 +178,14 @@ class FakeUniCodecModel(nn.Module):
         self.eval_called = True
         return super().eval()
 
-    def encode_infer(self, audio: torch.Tensor, domain, *, bandwidth_id: torch.Tensor):
-        self.domains = tuple(domain)
+    def encode_infer(
+        self,
+        audio: torch.Tensor,
+        domains: tuple[str, ...],
+        *,
+        bandwidth_id: torch.Tensor,
+    ):
+        self.domains = domains
         self.bandwidth_id = bandwidth_id
         batch = audio.size(0)
         return torch.ones((batch, 3, 4)), torch.ones((1, batch, 4), dtype=torch.long)

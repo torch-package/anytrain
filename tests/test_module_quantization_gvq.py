@@ -69,9 +69,11 @@ class GroupedVectorQuantizerTest(unittest.TestCase):
         (output.quantized_latents.sum() + output.loss.total).backward()
 
         self.assertIsNotNone(x.grad)
+        assert x.grad is not None
         self.assertTrue(torch.isfinite(x.grad).all())
         for codebook in quantizer.codebooks:
             self.assertIsNotNone(codebook.grad)
+            assert codebook.grad is not None
             self.assertTrue(torch.isfinite(codebook.grad).all())
 
     def test_non_normalized_group_lookup(self):

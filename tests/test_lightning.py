@@ -2,7 +2,14 @@ import unittest
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+
+from lightning import pytorch as pl
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class _LogModule:
@@ -28,16 +35,39 @@ class _CheckpointStrategy:
         self.barrier_count += 1
 
 
-class _CheckpointTrainer:
+if TYPE_CHECKING:
+
+    class _CheckpointTrainerBase(pl.Trainer):
+        pass
+
+else:
+
+    class _CheckpointTrainerBase:
+        pass
+
+
+class _CheckpointTrainer(_CheckpointTrainerBase):
     def __init__(self, payload: bytes = b"checkpoint"):
-        self.global_step = 7
-        self.is_global_zero = True
-        self.loggers = []
-        self.strategy = _CheckpointStrategy()
+        cast(Any, self).global_step = 7
+        cast(Any, self).is_global_zero = True
+        cast(Any, self).loggers = []
+        self.strategy: Any = _CheckpointStrategy()
+        cast(Any, self).world_size = 1
+        self.ckpt_path: str | None = None
+        self.callback_metrics: dict[str, object] = {}
+        cast(Any, self).current_epoch = 0
+        self.fast_dev_run = False
+        self.sanity_checking = False
         self.saved_paths = []
         self.payload = payload
 
-    def save_checkpoint(self, filepath, weights_only):
+    def save_checkpoint(
+        self,
+        filepath: str | Path,
+        weights_only: bool | None = None,
+        storage_options: Any = None,
+    ) -> None:
+        del storage_options
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(self.payload)
@@ -52,7 +82,6 @@ def _loss_summary_ddp_worker(
 ) -> None:
     import json
     from datetime import timedelta
-    from types import SimpleNamespace
 
     import torch
     from lightning.pytorch.strategies import DDPStrategy
@@ -140,7 +169,7 @@ class LightningTest(unittest.TestCase):
                 self.clean = torch.nn.Linear(1, 1, bias=False)
                 self.bad = torch.nn.Linear(1, 1, bias=False)
 
-        module = Module()
+        module: Any = Module()
         module.clean.weight.grad = torch.ones_like(module.clean.weight)
         module.bad.weight.grad = torch.full_like(module.bad.weight, float("inf"))
         trainer = SimpleNamespace(current_epoch=0, global_step=0, global_rank=0)
@@ -158,7 +187,7 @@ class LightningTest(unittest.TestCase):
 
         from anytrain.lightning import DebugCallback
 
-        module = torch.nn.Linear(1, 1, bias=False)
+        module: Any = torch.nn.Linear(1, 1, bias=False)
         module.weight.requires_grad_(False)
         module.weight.fill_(float("nan"))
         trainer = SimpleNamespace(current_epoch=0, global_step=0, global_rank=0)
@@ -176,7 +205,7 @@ class LightningTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Non-finite loss"):
             DebugCallback().on_before_backward(
                 trainer,
-                torch.nn.Linear(1, 1),
+                cast(Any, torch.nn.Linear(1, 1)),
                 torch.tensor(float("nan"), requires_grad=True),
             )
 
@@ -187,7 +216,7 @@ class LightningTest(unittest.TestCase):
 
         from anytrain.lightning import DebugCallback
 
-        module = torch.nn.Sequential(*(torch.nn.Linear(2, 2, bias=False) for _ in range(8)))
+        module: Any = torch.nn.Sequential(*(torch.nn.Linear(2, 2, bias=False) for _ in range(8)))
         for parameter in module.parameters():
             parameter.grad = torch.ones_like(parameter)
         trainer = SimpleNamespace(current_epoch=0, global_step=0, global_rank=0)
@@ -441,23 +470,19 @@ class LightningTest(unittest.TestCase):
 
         import torch
 
-        if not (
-            torch.distributed.is_available()
-            and torch.distributed.is_gloo_available()
-        ):
+        if not (torch.distributed.is_available() and torch.distributed.is_gloo_available()):
             self.skipTest("Gloo distributed backend is unavailable")
 
         with TemporaryDirectory() as tmp_dir:
             init_method = (Path(tmp_dir) / "init").as_uri()
-            torch.multiprocessing.spawn(
+            torch.multiprocessing.spawn(  # pyright: ignore[reportPrivateImportUsage]
                 _loss_summary_ddp_worker,
                 args=(2, init_method, tmp_dir),
                 nprocs=2,
                 join=True,
             )
             payloads = [
-                json.loads((Path(tmp_dir) / f"rank-{rank}.json").read_text())
-                for rank in range(2)
+                json.loads((Path(tmp_dir) / f"rank-{rank}.json").read_text()) for rank in range(2)
             ]
 
         self.assertEqual(payloads[0], payloads[1])
@@ -501,7 +526,10 @@ class LightningTest(unittest.TestCase):
             enable_progress_bar=False,
         )
 
-        trainer.fit(Module(), train_dataloaders=DataLoader(torch.ones(2), batch_size=1))
+        trainer.fit(
+            Module(),
+            train_dataloaders=DataLoader(cast(Any, torch.ones(2)), batch_size=1),
+        )
 
         summary = callback.report()["loss"]
         self.assertEqual(summary["steps"], 2)
@@ -538,7 +566,10 @@ class LightningTest(unittest.TestCase):
             enable_progress_bar=False,
         )
 
-        trainer.fit(Module(), train_dataloaders=DataLoader(torch.ones(1), batch_size=1))
+        trainer.fit(
+            Module(),
+            train_dataloaders=DataLoader(cast(Any, torch.ones(1)), batch_size=1),
+        )
 
         self.assertEqual(callback.report(), {})
 
@@ -581,7 +612,7 @@ class LightningTest(unittest.TestCase):
             def log(self, name, value, **kwargs):
                 self.log_calls.append((name, float(value), kwargs))
 
-        module = Module()
+        module: Any = Module()
         trainer = SimpleNamespace(global_step=1)
         callback = GradientProbeLoggerCallback(
             (
@@ -635,7 +666,7 @@ class LightningTest(unittest.TestCase):
             def log(self, name, value, **kwargs):
                 self.log_calls.append((name, float(value), kwargs))
 
-        module = Module()
+        module: Any = Module()
         trainer = SimpleNamespace(global_step=2)
         callback = GradientProbeLoggerCallback(
             (
@@ -679,15 +710,13 @@ class LightningTest(unittest.TestCase):
             def current_gradient_loss_groups(self):
                 return {
                     "tts": {"token": self.weight.sum().square()},
-                    "mt": {
-                        "token": (self.weight[0] - self.weight[1]).square()
-                    },
+                    "mt": {"token": (self.weight[0] - self.weight[1]).square()},
                 }
 
             def log(self, name, value, **kwargs):
                 self.log_calls.append((name, float(value), kwargs))
 
-        module = Module()
+        module: Any = Module()
         trainer = SimpleNamespace(global_step=1)
         callback = GradientProbeLoggerCallback(
             comparisons=(
@@ -748,13 +777,11 @@ class LightningTest(unittest.TestCase):
         ):
             callback.on_before_backward(
                 SimpleNamespace(global_step=0),
-                Module(),
+                cast(Any, Module()),
                 torch.tensor(0.0),
             )
 
     def test_gradient_probe_logger_rejects_invalid_loss_group_structure(self):
-        from typing import Any, cast
-
         import torch
 
         from anytrain.lightning import (
@@ -786,7 +813,7 @@ class LightningTest(unittest.TestCase):
         ):
             callback.on_before_backward(
                 SimpleNamespace(global_step=0),
-                Module(),
+                cast(Any, Module()),
                 torch.tensor(0.0),
             )
 
@@ -796,7 +823,7 @@ class LightningTest(unittest.TestCase):
         class Module(LightningLogMixin, _LogModule):
             pass
 
-        module = Module()
+        module: Any = Module()
         module.log_prefixed_dict("val", {"loss": 2.0}, sync_dist=True)
 
         self.assertEqual(module.log_dict_calls, [({"val/loss": 2.0}, {"sync_dist": True})])
@@ -838,7 +865,7 @@ class LightningTest(unittest.TestCase):
             def experiment(self):
                 return self._experiment
 
-        logger = Logger()
+        logger: Any = Logger()
 
         class Module(LightningLogMixin):
             global_step = 3
@@ -849,7 +876,7 @@ class LightningTest(unittest.TestCase):
                 global_rank=2,
             )
 
-        module = Module()
+        module: Any = Module()
         module.log_audio("sample", torch.zeros(1, 8), sample_rate=16000)
         module.log_figure("figure", object())
 
@@ -881,7 +908,7 @@ class LightningTest(unittest.TestCase):
             def experiment(self):
                 return self._experiment
 
-        logger = Logger()
+        logger: Any = Logger()
         figure = object()
 
         class Module(LightningLogMixin):
@@ -893,7 +920,7 @@ class LightningTest(unittest.TestCase):
                 global_rank=2,
             )
 
-        module = Module()
+        module: Any = Module()
         module.log_audio("sample", torch.zeros(1, 8), sample_rate=16000, rank_mode="all")
         module.log_figure("figure", figure, rank_mode="all")
 
@@ -914,7 +941,7 @@ class LightningTest(unittest.TestCase):
             callbacks=[callback],
         )
 
-        self.assertTrue(any(item is callback for item in trainer.callbacks))
+        self.assertTrue(any(item is callback for item in cast(Any, trainer).callbacks))
 
     def test_model_checkpoint_matches_lightning_checkpoint_interface(self):
         import inspect
@@ -976,9 +1003,15 @@ class LightningTest(unittest.TestCase):
         class RankNonZeroTrainer(_CheckpointTrainer):
             def __init__(self):
                 super().__init__(payload=b"ignored")
-                self.is_global_zero = False
+                cast(Any, self).is_global_zero = False
 
-            def save_checkpoint(self, filepath, weights_only):
+            def save_checkpoint(
+                self,
+                filepath: str | Path,
+                weights_only: bool | None = None,
+                storage_options: Any = None,
+            ) -> None:
+                del storage_options
                 # Mimic DDP: non-zero ranks enter the collective but do not write.
                 self.saved_paths.append((Path(filepath), weights_only))
 
@@ -1039,7 +1072,7 @@ class LightningTest(unittest.TestCase):
                 target = Path(tmp_dir) / "nfs" / "model.ckpt"
                 logger = Logger(target)
                 trainer = _CheckpointTrainer(payload=b"saved")
-                trainer.loggers = [logger]
+                cast(Any, trainer).loggers = [logger]
 
                 callback._save_checkpoint(trainer, str(target))
 
@@ -1071,8 +1104,13 @@ class LightningTest(unittest.TestCase):
         from anytrain.lightning import ModelCheckpoint
 
         class DirectoryCheckpointTrainer(_CheckpointTrainer):
-            def save_checkpoint(self, filepath, weights_only):
-                del weights_only
+            def save_checkpoint(
+                self,
+                filepath: str | Path,
+                weights_only: bool | None = None,
+                storage_options: Any = None,
+            ) -> None:
+                del weights_only, storage_options
                 path = Path(filepath)
                 path.mkdir(parents=True, exist_ok=True)
 
@@ -1282,7 +1320,7 @@ class LightningTest(unittest.TestCase):
                 second = Path(tmp_dir) / "nfs" / "second.ckpt"
                 logger = Logger()
                 trainer = _CheckpointTrainer(payload=b"saved")
-                trainer.loggers = [logger]
+                cast(Any, trainer).loggers = [logger]
 
                 with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
                     callback._save_checkpoint(trainer, str(first))
@@ -1351,11 +1389,11 @@ class LightningTest(unittest.TestCase):
                         failed.result()
 
                 trainer_zero = _CheckpointTrainer(payload=b"rank-zero")
-                trainer_zero.world_size = 2
+                cast(Any, trainer_zero).world_size = 2
                 trainer_zero.strategy = Strategy(state)
                 trainer_nonzero = _CheckpointTrainer(payload=b"rank-one")
-                trainer_nonzero.world_size = 2
-                trainer_nonzero.is_global_zero = False
+                cast(Any, trainer_nonzero).world_size = 2
+                cast(Any, trainer_nonzero).is_global_zero = False
                 trainer_nonzero.strategy = Strategy(state)
 
                 with self.assertRaisesRegex(
@@ -1421,11 +1459,11 @@ class LightningTest(unittest.TestCase):
                 )
 
             trainer_zero = _CheckpointTrainer(payload=b"rank-zero")
-            trainer_zero.world_size = 2
+            cast(Any, trainer_zero).world_size = 2
             trainer_zero.strategy = Strategy(state)
             trainer_nonzero = _CheckpointTrainer(payload=b"rank-one")
-            trainer_nonzero.world_size = 2
-            trainer_nonzero.is_global_zero = False
+            cast(Any, trainer_nonzero).world_size = 2
+            cast(Any, trainer_nonzero).is_global_zero = False
             trainer_nonzero.strategy = Strategy(state)
             module = SimpleNamespace()
 
@@ -1462,7 +1500,7 @@ class LightningTest(unittest.TestCase):
             target = Path(tmp_dir) / "model.ckpt"
             trainer = _CheckpointTrainer(payload=b"saved")
             logger = Logger()
-            trainer.loggers = [logger]
+            cast(Any, trainer).loggers = [logger]
             callback._save_checkpoint(trainer, str(target))
             local = trainer.saved_paths[0][0]
 
@@ -1521,6 +1559,7 @@ class LightningTest(unittest.TestCase):
                     enable_version_counter=False,
                     async_save=True,
                 )
+                assert callback.dirpath is not None
                 checkpoint_dir = Path(callback.dirpath)
                 topk = checkpoint_dir / "step-07.ckpt"
                 last = checkpoint_dir / "last.ckpt"
@@ -1528,13 +1567,19 @@ class LightningTest(unittest.TestCase):
                 expected_payload = str(last).encode()
 
                 class StateTrainer(_CheckpointTrainer):
-                    def save_checkpoint(self, filepath, weights_only):
+                    def save_checkpoint(
+                        self,
+                        filepath: str | Path,
+                        weights_only: bool | None = None,
+                        storage_options: Any = None,
+                    ) -> None:
+                        del storage_options
                         self.payload = callback.last_model_path.encode()
                         super().save_checkpoint(filepath, weights_only)
 
                 trainer = StateTrainer()
                 logger = Logger(topk, last)
-                trainer.loggers = [logger]
+                cast(Any, trainer).loggers = [logger]
                 candidates = {
                     "epoch": torch.tensor(1),
                     "step": torch.tensor(7),
@@ -1545,9 +1590,7 @@ class LightningTest(unittest.TestCase):
                     if target == topk:
                         copy_started.set()
                         if not release_copy.wait(timeout=5):
-                            raise TimeoutError(
-                                "test did not release asynchronous checkpoint copy"
-                            )
+                            raise TimeoutError("test did not release asynchronous checkpoint copy")
                     original_copy(source, target)
 
                 with patch.object(callback, "_copy_to_target", side_effect=blocked_copy):
@@ -1775,6 +1818,7 @@ class LightningTest(unittest.TestCase):
                 callback._save_last_checkpoint(trainer, candidates)
                 callback.wait_async_saves()
 
+                assert callback.dirpath is not None
                 last = Path(callback.dirpath) / "last.ckpt"
                 self.assertEqual(len(trainer.saved_paths), 1)
                 self.assertEqual(last.read_bytes(), b"last-only")
@@ -1803,7 +1847,7 @@ class LightningTest(unittest.TestCase):
                 )
                 trainer = _CheckpointTrainer(payload=b"exception")
                 trainer.callback_metrics = {}
-                trainer.current_epoch = 1
+                cast(Any, trainer).current_epoch = 1
                 trainer.fast_dev_run = False
                 trainer.sanity_checking = False
 
@@ -1813,6 +1857,7 @@ class LightningTest(unittest.TestCase):
                     RuntimeError("training failed"),
                 )
 
+                assert callback.dirpath is not None
                 checkpoint_dir = Path(callback.dirpath)
                 self.assertEqual(len(trainer.saved_paths), 1)
                 self.assertEqual(
@@ -1869,6 +1914,7 @@ class LightningTest(unittest.TestCase):
                     callback._save_last_checkpoint(trainer, candidates)
                     callback.wait_async_saves()
 
+                assert callback.dirpath is not None
                 last = Path(callback.dirpath) / "last.ckpt"
                 self.assertFalse(last.is_symlink())
                 self.assertEqual(last.read_bytes(), b"saved")
@@ -1886,6 +1932,7 @@ class LightningTest(unittest.TestCase):
 
         release_copy = Event()
         copy_started = Event()
+        callback: Any = None
 
         try:
             with TemporaryDirectory() as tmp_dir:
@@ -1900,9 +1947,7 @@ class LightningTest(unittest.TestCase):
                 def blocked_copy(source, target):
                     copy_started.set()
                     if not release_copy.wait(timeout=5):
-                        raise TimeoutError(
-                            "test did not release asynchronous checkpoint copy"
-                        )
+                        raise TimeoutError("test did not release asynchronous checkpoint copy")
                     original_copy(source, target)
 
                 target = Path(tmp_dir) / "epoch=1.ckpt"
@@ -1929,7 +1974,8 @@ class LightningTest(unittest.TestCase):
                 self.assertFalse(local.exists())
         finally:
             release_copy.set()
-            callback._close_async_storage()
+            if callback is not None:
+                callback._close_async_storage()
 
     def test_model_checkpoint_save_last_link_falls_back_to_persistent_copy(self):
         from tempfile import TemporaryDirectory
@@ -1955,9 +2001,7 @@ class LightningTest(unittest.TestCase):
                 def blocked_copy(source, target):
                     copy_started.set()
                     if not release_copy.wait(timeout=5):
-                        raise TimeoutError(
-                            "test did not release asynchronous checkpoint copy"
-                        )
+                        raise TimeoutError("test did not release asynchronous checkpoint copy")
                     original_copy(source, target)
 
                 target = Path(tmp_dir) / "epoch=1.ckpt"

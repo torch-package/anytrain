@@ -3,8 +3,8 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -23,6 +23,10 @@ from anytrain.module.quantization import (
     RVQConfig,
     VQConfig,
 )
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class _Writer:
@@ -71,11 +75,10 @@ class _Observed(nn.Module):
                 output,
                 sizes=module.sizes,
                 group_dim=None if len(module.sizes) == 1 else -1,
-                group_names=tuple(
-                    f"book_{index}" for index in range(len(module.sizes))
-                ),
+                group_names=tuple(f"book_{index}" for index in range(len(module.sizes))),
             ),
         }
+
 
 observation.registry.register(
     _Observed,
@@ -167,8 +170,9 @@ class _Module(pl.LightningModule):
         self.observed = _Observed() if observed is None else observed
         self.log_dict_calls = []
 
-    def log_dict(self, values, **kwargs):
-        self.log_dict_calls.append((values, kwargs))
+    def log_dict(self, dictionary, *args, **kwargs):
+        del args
+        self.log_dict_calls.append((dictionary, kwargs))
 
 
 def _trainer(
@@ -461,8 +465,7 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(values[f"{prefix}/total/value"].item(), 0.5)
         self.assertEqual(
             values[
-                "train/reconstruction/module/observed.child/stats/codes/book_0/"
-                "step/observations"
+                "train/reconstruction/module/observed.child/stats/codes/book_0/step/observations"
             ].item(),
             2.0,
         )
@@ -480,9 +483,7 @@ class ObservationCallbackTest(unittest.TestCase):
 
         values, kwargs = module.log_dict_calls[-1]
         self.assertEqual(
-            values[
-                "val/module/observed/stats/codes/book_0/step/observations"
-            ].item(),
+            values["val/module/observed/stats/codes/book_0/step/observations"].item(),
             2.0,
         )
         self.assertFalse(kwargs["on_step"])
@@ -576,21 +577,15 @@ class ObservationCallbackTest(unittest.TestCase):
         values, kwargs = module.log_dict_calls[-1]
         self.assertEqual(kwargs["sync_dist"], False)
         self.assertEqual(
-            values[
-                "module/observed/stats/codes/book_0/step/observations"
-            ].item(),
+            values["module/observed/stats/codes/book_0/step/observations"].item(),
             4.0,
         )
         self.assertEqual(
-            values[
-                "module/observed/stats/codes/book_0/step/occupied_count"
-            ].item(),
+            values["module/observed/stats/codes/book_0/step/occupied_count"].item(),
             1.0,
         )
         self.assertEqual(
-            values[
-                "module/observed/stats/codes/book_0/ema/occupied_count"
-            ].item(),
+            values["module/observed/stats/codes/book_0/ema/occupied_count"].item(),
             2.0,
         )
 
@@ -775,15 +770,9 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(metrics[f"{prefix}/profile/step/bin_0/count"].item(), 2.0)
         self.assertEqual(metrics[f"{prefix}/profile/step/bin_1/count"].item(), 2.0)
         distribution = next(
-            kwargs
-            for tag, kwargs in writer.histograms
-            if tag == f"{prefix}/distribution/step"
+            kwargs for tag, kwargs in writer.histograms if tag == f"{prefix}/distribution/step"
         )
-        bins = next(
-            kwargs
-            for tag, kwargs in writer.histograms
-            if tag == f"{prefix}/bins/step"
-        )
+        bins = next(kwargs for tag, kwargs in writer.histograms if tag == f"{prefix}/bins/step")
         self.assertEqual(distribution["bucket_counts"], [3.0, 1.0])
         self.assertEqual(bins["bucket_counts"], [3.0, 1.0])
 
@@ -1367,23 +1356,20 @@ class ObservationCallbackTest(unittest.TestCase):
     def test_real_gloo_synchronizes_observation_and_writer_errors(self):
         import json
 
-        if not (
-            torch.distributed.is_available()
-            and torch.distributed.is_gloo_available()
-        ):
+        if not (torch.distributed.is_available() and torch.distributed.is_gloo_available()):
             self.skipTest("Gloo distributed backend is unavailable")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             init_method = (Path(tmp_dir) / "init").as_uri()
-            torch.multiprocessing.spawn(
+            multiprocessing: Any = torch.multiprocessing
+            multiprocessing.spawn(
                 _distributed_error_worker,
                 args=(2, init_method, tmp_dir),
                 nprocs=2,
                 join=True,
             )
             payloads = [
-                json.loads((Path(tmp_dir) / f"rank-{rank}.json").read_text())
-                for rank in range(2)
+                json.loads((Path(tmp_dir) / f"rank-{rank}.json").read_text()) for rank in range(2)
             ]
 
         for payload in payloads:
@@ -1552,9 +1538,7 @@ class ObservationCallbackTest(unittest.TestCase):
             if tag == "module/observed/stats/values/step"
         )
         ema = next(
-            kwargs
-            for tag, kwargs in writer.histograms
-            if tag == "module/observed/stats/values/ema"
+            kwargs for tag, kwargs in writer.histograms if tag == "module/observed/stats/values/ema"
         )
         self.assertEqual(step["bucket_counts"], [1.0, 1.0])
         self.assertEqual(ema["bucket_counts"], [1.0, 1.0])
@@ -1830,7 +1814,7 @@ class ObservationCallbackTest(unittest.TestCase):
             (
                 observation.PollObservation(
                     "state",
-                    lambda module: observation.Curve(module.current),
+                    lambda module: observation.Curve(cast(Any, module).current),
                 ),
             ),
         )
@@ -1878,6 +1862,7 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(len(module.observed._backward_hooks), 0)
         value = torch.tensor(1.0, requires_grad=True)
         module.observed(value).backward()
+        assert value.grad is not None
         self.assertEqual(value.grad.item(), 2.0)
 
     def test_default_observation_hooks_only_attach_on_global_zero(self):
@@ -1975,8 +1960,9 @@ class ObservationCallbackTest(unittest.TestCase):
                 self.module(value)
                 return value
 
-            def log_dict(self, values, **kwargs):
-                self.log_dict_calls.append((values, kwargs))
+            def log_dict(self, dictionary, *args, **kwargs):
+                del args
+                self.log_dict_calls.append((dictionary, kwargs))
 
         def collect_root(module, inputs, kwargs, output):
             del module, inputs, kwargs
@@ -2232,9 +2218,7 @@ class ObservationCallbackTest(unittest.TestCase):
             )
             resumed.fit(Tiny(), loader, ckpt_path=str(checkpoint))
             histogram = restored.state_dict()["histograms"]["codes/stats/codes"]
-            self.assertTrue(
-                torch.equal(histogram["ema_mass"], torch.tensor([[1.0, 1.0]]))
-            )
+            self.assertTrue(torch.equal(histogram["ema_mass"], torch.tensor([[1.0, 1.0]])))
 
     def test_only_general_callback_is_exported_from_lightning_root(self):
         from anytrain import lightning

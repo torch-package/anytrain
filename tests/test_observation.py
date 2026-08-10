@@ -1,6 +1,8 @@
 import copy
 import unittest
 import warnings
+from collections.abc import Mapping
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -26,7 +28,7 @@ from anytrain.module.quantization import (
 def _curve(
     module: nn.Module,
     inputs: tuple[object, ...],
-    kwargs: dict[str, object],
+    kwargs: Mapping[str, Any],
     output: object,
 ):
     del module, inputs, kwargs
@@ -52,7 +54,7 @@ class ObservationTypeTest(unittest.TestCase):
 
     def test_context_prefix_requires_a_non_empty_string(self):
         with self.assertRaisesRegex(TypeError, "must be a string"):
-            observation.context(1).__enter__()
+            observation.context(cast(Any, 1)).__enter__()
         with self.assertRaisesRegex(ValueError, "non-empty"):
             observation.context("/").__enter__()
         with self.assertRaisesRegex(ValueError, "empty path parts"):
@@ -73,14 +75,14 @@ class ObservationTypeTest(unittest.TestCase):
     def test_profile_requires_aligned_floating_1d_pairs(self):
         with self.assertRaisesRegex(TypeError, "Profile.values must be a Tensor"):
             observation.Profile(
-                [1.0],
+                cast(Any, [1.0]),
                 torch.tensor([0.5]),
                 edges=(0.0, 1.0),
             )
         with self.assertRaisesRegex(TypeError, "Profile.coordinates must be a Tensor"):
             observation.Profile(
                 torch.tensor([1.0]),
-                [0.5],
+                cast(Any, [0.5]),
                 edges=(0.0, 1.0),
             )
         with self.assertRaisesRegex(ValueError, "both be 1D"):
@@ -134,13 +136,13 @@ class ObservationTypeTest(unittest.TestCase):
 
     def test_repeated_forward_observations_require_an_explicit_reduction(self):
         with self.assertRaisesRegex(TypeError, "required positional argument: 'reduction'"):
-            observation.OutputObservation("value", _curve)
+            cast(Any, observation.OutputObservation)("value", _curve)
         with self.assertRaisesRegex(TypeError, "required positional argument: 'reduction'"):
-            observation.ForwardEvent("value")
+            cast(Any, observation.ForwardEvent)("value")
 
     def test_observation_reduction_requires_the_enum_and_compatible_history(self):
         with self.assertRaisesRegex(TypeError, "must be a Reduction"):
-            observation.OutputObservation("value", _curve, reduction="mean")
+            observation.OutputObservation("value", _curve, reduction=cast(Any, "mean"))
         with self.assertRaisesRegex(ValueError, "requires EMAHistory"):
             observation.OutputObservation(
                 "value",
@@ -228,7 +230,7 @@ class ObservationTypeTest(unittest.TestCase):
             ),
         )
         for module in modules:
-            specs = observation.registry.specs(module)
+            specs: Any = observation.registry.specs(module)
             self.assertEqual(
                 tuple(spec.name for spec in specs),
                 ("quantization", "quantization/loss"),
@@ -372,9 +374,7 @@ class ObservationTypeTest(unittest.TestCase):
             warnings.simplefilter("always")
             module(torch.tensor(1.0))
         matching = [
-            item
-            for item in records
-            if issubclass(item.category, observation.RecommendationWarning)
+            item for item in records if issubclass(item.category, observation.RecommendationWarning)
         ]
         self.assertEqual(len(matching), 1)
         self.assertIn("Child", str(matching[0].message))

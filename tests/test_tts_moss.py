@@ -1,7 +1,8 @@
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -15,6 +16,10 @@ from anytrain.tts import (
     WaveformReference,
 )
 from anytrain.tts.moss import DEFAULT_CODEC_MODEL, MossTTS, MossTTSConfig
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class TTSProtocolTest(unittest.TestCase):
@@ -203,7 +208,7 @@ class MossTTSAdapterTest(unittest.TestCase):
             model=model,
             processor=processor,
             config=MossTTSConfig(sample_rate=24000, language="Chinese"),
-            device="cpu",
+            device=torch.device("cpu"),
         )
 
         output = tts.synthesize(
@@ -244,7 +249,7 @@ class MossTTSAdapterTest(unittest.TestCase):
             model=model,
             processor=processor,
             config=MossTTSConfig(sample_rate=24000, language="Chinese"),
-            device="cpu",
+            device=torch.device("cpu"),
         )
 
         outputs = tts.synthesize(
@@ -271,7 +276,9 @@ class MossTTSAdapterTest(unittest.TestCase):
         tts = MossTTS(model=model, processor=processor)
 
         with self.assertWarnsRegex(DeprecationWarning, "reference_audios"):
-            tts.synthesize(["hello", "world"], None, ["assets/one.wav", "assets/two.wav"])
+            cast(Any, tts).synthesize(
+                ["hello", "world"], None, ["assets/one.wav", "assets/two.wav"]
+            )
 
         self.assertEqual(
             [message["reference"] for message in processor.messages],
@@ -355,6 +362,7 @@ class MossTTSAdapterTest(unittest.TestCase):
 
         waveform = saved["waveform"]
         self.assertIsInstance(waveform, torch.Tensor)
+        assert isinstance(waveform, torch.Tensor)
         self.assertEqual(waveform.device.type, "cpu")
         self.assertEqual(waveform.dtype, torch.float32)
         self.assertTrue(torch.equal(waveform, torch.tensor([[-1.0, 0.5, 1.0]])))
@@ -420,7 +428,7 @@ class MossTTSAdapterTest(unittest.TestCase):
         tts = MossTTS(model=FakeMossModel(), processor=FakeMossProcessor())
 
         with self.assertRaisesRegex(TypeError, "unsupported"):
-            tts.synthesize("hello", prompt_audio_path="assets/prompt.wav")
+            cast(Any, tts).synthesize("hello", prompt_audio_path="assets/prompt.wav")
 
     def test_seeded_generation_restores_global_rng_state(self):
         model = FakeRandomMossModel()
@@ -516,7 +524,8 @@ class FakeMossProcessor:
         self.messages.append(kwargs)
         return kwargs
 
-    def __call__(self, conversations, **kwargs):
+    def __call__(self, value: object, **kwargs: object):
+        conversations: Any = value
         self.batch_modes.append(kwargs["mode"])
         batch_size = len(conversations)
         return {
@@ -544,10 +553,10 @@ class ReferenceCheckingProcessor(FakeMossProcessor):
         self.reference_paths.append(path)
         return super().build_user_message(**kwargs)
 
-    def __call__(self, conversations, **kwargs):
+    def __call__(self, value: object, **kwargs: object):
         for path in self.reference_paths:
             self._assert_reference(path)
-        return super().__call__(conversations, **kwargs)
+        return super().__call__(value, **kwargs)
 
     def decode(self, value):
         for path in self.reference_paths:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import torch
@@ -9,6 +10,10 @@ from lightning import LightningModule, Trainer
 from torch.utils.data import DataLoader, TensorDataset
 
 from anytrain.lightning import validation
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class _UnequalCountModule(LightningModule):
@@ -234,7 +239,7 @@ class ValidationTest(unittest.TestCase):
 
     def test_history_rejects_invalid_configuration_and_state(self):
         with self.assertRaisesRegex(TypeError, "strict mode must be boolean"):
-            validation.History(strict=1)
+            validation.History(strict=cast(Any, 1))
 
         history = validation.History()
         state = history.state_dict()

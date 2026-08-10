@@ -1,5 +1,10 @@
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class LightningCapabilityTest(unittest.TestCase):

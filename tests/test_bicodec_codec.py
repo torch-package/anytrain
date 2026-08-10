@@ -5,7 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -19,6 +20,10 @@ from anytrain.audio.codec.bicodec.codec import (
 )
 from anytrain.audio.codec.bicodec.tokenizer import BiCodecTokenizer
 from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class BiCodecCodecTest(unittest.TestCase):
@@ -92,7 +97,7 @@ class BiCodecCodecTest(unittest.TestCase):
         self.assertEqual(codec.name, "bicodec")
         self.assertEqual(codec.semantic_codebook_sizes, (8192,))
         self.assertEqual(codec.global_codebook_sizes, (4096,))
-        self.assertTrue(codec.feature_extractor.config.output_hidden_states)
+        self.assertTrue(cast(Any, codec.feature_extractor).config.output_hidden_states)
         self.assertTrue(codec.model.eval_called)
 
     def test_encode_codes_returns_canonical_semantic_and_global_codes(self):
@@ -141,8 +146,9 @@ class BiCodecCodecTest(unittest.TestCase):
     def test_padded_tokenizer_encodes_once_and_reports_independent_lengths(self):
         model = FakeBiCodecModel()
         codec = _codec(model)
-        codec.feature_extractor.config.conv_kernel = [1]
-        codec.feature_extractor.config.conv_stride = [1]
+        extractor: Any = codec.feature_extractor
+        extractor.config.conv_kernel = [1]
+        extractor.config.conv_stride = [1]
         tokenizer = BiCodecTokenizer(
             codec,
             AudioCodeSpec(
@@ -283,7 +289,7 @@ class FakeBiCodecModel(nn.Module):
             perceiver_sampler=SimpleNamespace(latents=torch.zeros(3, 128)),
         )
         self.eval_called = False
-        self.batch = None
+        self.batch: dict[str, torch.Tensor] = {}
         self.semantic = None
         self.global_tokens = None
         self.detokenized_audio = None
@@ -343,7 +349,9 @@ class FakeFeatureExtractor(nn.Module):
             conv_stride=[5, 2, 2, 2, 2, 2, 2],
         )
         self.eval_called = False
-        self.hidden_states = [torch.full((2, 4, 3), float(index)) for index in range(17)]
+        self.hidden_states: list[torch.Tensor] | None = [
+            torch.full((2, 4, 3), float(index)) for index in range(17)
+        ]
 
     @classmethod
     def from_pretrained(cls, path):

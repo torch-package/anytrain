@@ -1,7 +1,12 @@
 import unittest
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class PerfTest(unittest.TestCase):
@@ -149,6 +154,10 @@ class _Module:
         self.log_dict_calls.append((values, kwargs))
 
 
+def _module() -> Any:
+    return _Module()
+
+
 class _FlopsProvider:
     def __init__(self):
         self.calls = []
@@ -204,7 +213,7 @@ class PerformanceCallbackTest(unittest.TestCase):
         trainer = SimpleNamespace(global_step=0, world_size=1)
         callback = PerformanceCallback(sync_cuda=True)
 
-        cuda_module = _Module()
+        cuda_module = _module()
         cuda_module.device = torch.device("cuda", 3)
         with (
             patch("torch.cuda.synchronize") as synchronize,
@@ -222,7 +231,7 @@ class PerformanceCallbackTest(unittest.TestCase):
         self.assertEqual(synchronize.call_count, 2)
         synchronize.assert_called_with(cuda_module.device)
 
-        cpu_module = _Module()
+        cpu_module = _module()
         cpu_callback = PerformanceCallback(sync_cuda=True)
         with (
             patch("torch.cuda.is_available", return_value=True),
@@ -249,7 +258,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             loggers=[logger],
             global_step=0,
         )
-        module = _Module()
+        module = _module()
         callback = PerformanceCallback(
             model_flops_per_step=100.0,
             hardware_peak_flops=200.0,
@@ -288,7 +297,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             global_step=0,
             world_size=1,
         )
-        module = _Module()
+        module = _module()
         provider = _FlopsProvider()
         callback = PerformanceCallback(
             model_flops_per_batch=provider,
@@ -338,7 +347,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             global_step=0,
             world_size=1,
         )
-        module = _Module()
+        module = _module()
         provider = _FlopsProvider()
         callback = PerformanceCallback(
             model_flops_per_batch=provider,
@@ -387,7 +396,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             world_size=2,
             strategy=_DistributedStrategy(),
         )
-        module = _Module()
+        module = _module()
         callback = PerformanceCallback(
             model_flops_per_batch=_FlopsProvider(),
             hardware_peak_flops=200.0,
@@ -425,7 +434,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             world_size=2,
             strategy=_AlternatingSlowRankStrategy(),
         )
-        module = _Module()
+        module = _module()
         callback = PerformanceCallback(
             model_flops_per_batch=_FlopsProvider(),
             hardware_peak_flops=200.0,
@@ -472,7 +481,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             global_step=0,
             world_size=1,
         )
-        module = _Module()
+        module = _module()
         callback = PerformanceCallback(
             model_flops_per_batch=_FlopsProvider(),
             hardware_peak_flops=200.0,
@@ -518,7 +527,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             global_step=0,
             world_size=1,
         )
-        module = _Module()
+        module = _module()
         callback = PerformanceCallback(
             model_flops_per_batch=_FlopsProvider(),
             hardware_peak_flops=200.0,
@@ -689,7 +698,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             world_size=1,
             should_stop=False,
         )
-        module = _Module()
+        module = _module()
         provider = _FlopsProvider()
         callback = PerformanceCallback(
             model_flops_per_batch=provider,
@@ -806,7 +815,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(TypeError, "stop_after_measurement must be a boolean"):
-            PerformanceCallback(stop_after_measurement=1)
+            PerformanceCallback(stop_after_measurement=cast(Any, 1))
 
     def test_callback_rejects_invalid_dynamic_flops(self):
         from anytrain.lightning import PerformanceCallback
@@ -822,7 +831,7 @@ class PerformanceCallbackTest(unittest.TestCase):
             global_step=0,
             world_size=1,
         )
-        module = _Module()
+        module = _module()
         callback = PerformanceCallback(
             model_flops_per_batch=InvalidProvider(),
             hardware_peak_flops=200.0,

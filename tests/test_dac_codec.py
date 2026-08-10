@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -45,7 +46,7 @@ class DACCodecTest(unittest.TestCase):
             self.assertEqual(codec.name, "dac")
             self.assertEqual(codec.sample_rate, 24000)
             self.assertEqual(codec.codebook_sizes, (1024, 1024))
-            self.assertTrue(codec.model.eval_called)
+            self.assertTrue(cast(Any, codec.model).eval_called)
 
     def test_from_checkpoint_exposes_missing_file(self):
         with self.assertRaisesRegex(FileNotFoundError, "does not exist"):
@@ -86,6 +87,8 @@ class DACCodecTest(unittest.TestCase):
         audio = codec.decode(codes)
 
         self.assertEqual(tuple(audio.shape), (1, 1, 12))
+        assert model.quantizer.codes is not None
+        assert model.decoded_features is not None
         self.assertTrue(torch.equal(model.quantizer.codes, codes.transpose(1, 2)))
         self.assertEqual(tuple(model.decoded_features.shape), (1, 6, 3))
 
@@ -111,18 +114,18 @@ class DACCodecTest(unittest.TestCase):
         codec.to("meta")
 
         self.assertEqual(codec.device, torch.device("meta"))
-        self.assertEqual(codec.model.device_probe.device, codec.device)
+        self.assertEqual(cast(Any, codec.model).device_probe.device, codec.device)
         self.assertNotIn("_device", codec.state_dict())
 
     def test_constructor_moves_backend_to_requested_device(self):
         codec = DAC(
-            model=FakeDACModel(),
+            model=cast(Any, FakeDACModel()),
             device=torch.device("meta"),
             checkpoint=Path("weights.pth"),
         )
 
         self.assertEqual(codec.device, torch.device("meta"))
-        self.assertEqual(codec.model.device_probe.device, codec.device)
+        self.assertEqual(cast(Any, codec.model).device_probe.device, codec.device)
 
     def test_load_state_dict_rejects_assign(self):
         codec = _codec(FakeDACModel())
@@ -195,7 +198,7 @@ class FakeDACModel(nn.Module):
 
 def _codec(model: FakeDACModel, *, n_quantizers: int | None = None) -> DAC:
     return DAC(
-        model=model,
+        model=cast(Any, model),
         device=torch.device("cpu"),
         checkpoint=Path("weights.pth"),
         n_quantizers=n_quantizers,

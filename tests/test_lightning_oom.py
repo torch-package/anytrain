@@ -4,16 +4,21 @@ import io
 import json
 import unittest
 from contextlib import redirect_stderr
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 
 import torch
 
 from anytrain.lightning import OOMDiagnostics, oom
 
 
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
+
+
 class OOMDiagnosticsTest(unittest.TestCase):
     def test_callback_uses_downstream_input_reporter(self) -> None:
-        callback = OOMDiagnostics(lambda batch: {"batch_size": len(batch)})
+        callback = OOMDiagnostics(lambda batch: {"batch_size": len(cast(Any, batch))})
         trainer = _trainer(callback)
         module = SimpleNamespace(device=torch.device("cpu"))
 
@@ -83,7 +88,7 @@ class OOMDiagnosticsTest(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
 
 
-def _trainer(callback: OOMDiagnostics) -> SimpleNamespace:
+def _trainer(callback: OOMDiagnostics) -> Any:
     return SimpleNamespace(
         callbacks=[callback],
         current_epoch=2,
@@ -95,10 +100,10 @@ def _trainer(callback: OOMDiagnostics) -> SimpleNamespace:
 
 def _payload(
     callback: OOMDiagnostics,
-    trainer: SimpleNamespace,
-    module: SimpleNamespace,
+    trainer: Any,
+    module: Any,
     error: BaseException,
-) -> dict[str, object]:
+) -> Any:
     output = io.StringIO()
     with redirect_stderr(output):
         callback.on_exception(trainer, module, error)

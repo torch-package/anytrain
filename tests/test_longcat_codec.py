@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import torch
@@ -129,6 +130,8 @@ class LongCatCodecTest(unittest.TestCase):
         audio = codec.decode(codes)
 
         self.assertEqual(tuple(audio.shape), (2, 1, 6))
+        assert decoder.semantic_codes is not None
+        assert decoder.acoustic is not None
         self.assertTrue(torch.equal(decoder.semantic_codes, codes[..., 0]))
         self.assertTrue(torch.equal(decoder.acoustic, codes[..., 1:].transpose(1, 2)))
 
@@ -169,9 +172,8 @@ class LongCatCodecTest(unittest.TestCase):
 
         self.assertEqual(tuple(audio.shape), (1, 1, 6))
         self.assertIsNone(decoder.semantic_codes)
-        self.assertTrue(
-            torch.equal(decoder.acoustic[:, 3:], acoustic_features.transpose(1, 2))
-        )
+        assert decoder.acoustic is not None
+        self.assertTrue(torch.equal(decoder.acoustic[:, 3:], acoustic_features.transpose(1, 2)))
 
     def test_decode_features_requires_semantic_and_acoustic_time_alignment(self):
         codec = LongCat(
@@ -264,6 +266,8 @@ class FakeLongCatEncoder(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
+        self.input_sample_rate: Any = 16000
+        self.hop_length: Any = 960
 
     def forward(
         self,

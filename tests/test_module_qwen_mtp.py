@@ -1,7 +1,8 @@
 import importlib.util
 import unittest
 from collections import OrderedDict
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import torch
@@ -9,6 +10,11 @@ from torch import nn
 
 from anytrain.module.qwen import QwenMTPCodebookPredictor
 from anytrain.utils import top_p_filter
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
+
 
 TRANSFORMERS_AVAILABLE = importlib.util.find_spec("transformers") is not None
 
@@ -145,9 +151,7 @@ class QwenMTPModuleTest(unittest.TestCase):
                 mtp_heads=1,
             )
 
-        legacy = OrderedDict(
-            (key, value.clone()) for key, value in predictor.state_dict().items()
-        )
+        legacy = OrderedDict((key, value.clone()) for key, value in predictor.state_dict().items())
         legacy["mtp.embed_tokens.weight"] = torch.randn(1, 4)
         result = predictor.load_state_dict(legacy, strict=True)
 
@@ -172,7 +176,7 @@ class QwenMTPModuleTest(unittest.TestCase):
         mask = torch.tensor([[True, True, False]])
 
         logits = predictor(condition, target, mask=mask)
-        loss = sum(value[mask].float().mean() for value in logits)
+        loss = torch.stack([value[mask].float().mean() for value in logits]).sum()
         loss.backward()
         generated = predictor.generate(
             condition,

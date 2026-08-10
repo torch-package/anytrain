@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -33,11 +34,7 @@ def _group_param_ids(optimizer: torch.optim.Optimizer) -> set[int]:
 
 
 def _group_lrs_by_param_id(optimizer: torch.optim.Optimizer) -> dict[int, float]:
-    return {
-        id(param): group["lr"]
-        for group in optimizer.param_groups
-        for param in group["params"]
-    }
+    return {id(param): group["lr"] for group in optimizer.param_groups for param in group["params"]}
 
 
 def _adamw_options(lr: float, weight_decay: float = 0.1) -> AdamWOptions:
@@ -257,7 +254,7 @@ class SplitMuonParamsTest(unittest.TestCase):
 
     def test_split_muon_params_rejects_non_module(self):
         with self.assertRaisesRegex(TypeError, "torch.nn.Module"):
-            split_muon_params(torch.tensor(1.0))
+            split_muon_params(cast(Any, torch.tensor(1.0)))
 
     def test_split_muon_params_rejects_excluded_module_outside_root(self):
         with self.assertRaisesRegex(ValueError, "belong"):
@@ -406,6 +403,7 @@ class AdamWOptimizerTest(unittest.TestCase):
                 selected_params=[nn.Parameter(torch.randn(4, 4))],
             )
 
+
 @unittest.skipUnless(MUON_AVAILABLE, "torch.optim.Muon is not available")
 class MuonAdamWOptimizerTest(unittest.TestCase):
     def test_composite_optimizer_plans_parameters_in_one_traversal(self):
@@ -463,9 +461,9 @@ class MuonAdamWOptimizerTest(unittest.TestCase):
 
     def test_create_muon_adamw_optimizer_requires_child_option_lrs(self):
         with self.assertRaisesRegex(KeyError, "lr"):
-            create_muon_adamw_optimizer(TinyLLM(), muon={}, adamw=_adamw_options(1.0))
+            create_muon_adamw_optimizer(TinyLLM(), muon=cast(Any, {}), adamw=_adamw_options(1.0))
         with self.assertRaisesRegex(KeyError, "lr"):
-            create_muon_adamw_optimizer(TinyLLM(), muon=_muon_options(1.0), adamw={})
+            create_muon_adamw_optimizer(TinyLLM(), muon=_muon_options(1.0), adamw=cast(Any, {}))
 
     def test_create_muon_adamw_optimizer_applies_lr_scale_rules_to_child_optimizers(self):
         model = TinyLLM()
@@ -636,6 +634,7 @@ class LLMOptimizerTest(unittest.TestCase):
         )
 
         self.assertIsInstance(optimizer, CompositeOptimizer)
+        assert isinstance(optimizer, CompositeOptimizer)
         self.assertNotIn(id(model.lm_head.weight), _group_param_ids(optimizer.optimizers["muon"]))
         self.assertIn(id(model.lm_head.weight), _group_param_ids(optimizer.optimizers["adamw"]))
 
@@ -799,7 +798,7 @@ class LLMOptimizerTest(unittest.TestCase):
                 schedule="wsd",
                 stable_steps=1,
                 decay_steps=1,
-                total_steps=3.0,
+                total_steps=cast(Any, 3.0),
             )
         with self.assertRaisesRegex(ValueError, "must equal"):
             create_scheduler(
@@ -821,6 +820,7 @@ class LLMOptimizerTest(unittest.TestCase):
         )
 
         self.assertIsInstance(optimizer, CompositeOptimizer)
+        assert isinstance(optimizer, CompositeOptimizer)
         muon_group = optimizer.optimizers["muon"].param_groups[0]
         adamw_optimizer = optimizer.optimizers["adamw"]
         self.assertEqual(muon_group["lr"], 3e-4)
@@ -830,7 +830,7 @@ class LLMOptimizerTest(unittest.TestCase):
 
     def test_llm_flat_optimizer_does_not_accept_muon_options(self):
         with self.assertRaisesRegex(TypeError, "muon_lr"):
-            create_llm_optimizer(
+            cast(Any, create_llm_optimizer)(
                 TinyLLM(),
                 preset="pretrain",
                 optimizer="muon",

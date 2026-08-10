@@ -159,8 +159,8 @@ PY312=/Users/zhuyin/miniconda3/envs/py312/bin/python
 "$PY312" -m basedpyright --pythonpath "$PY312"
 ```
 
-仓库不使用 basedpyright baseline：配置纳入的源码、示例和 GLM-4 契约测试诊断都会让检查失败，
-不通过基线豁免。修复诊断后运行同一命令确认通过；其余测试类型债务按 todo 渐进清理。
+仓库不使用 basedpyright baseline：源码、示例和测试诊断都会让检查失败，不通过基线豁免。
+修复诊断后运行同一命令确认通过。
 
 Lightning 边界见 `docs/lightning.md`，组件分层见 `docs/components.md`，总体架构见
 `docs/architecture.md`，未实现需求见 `todo.md`。

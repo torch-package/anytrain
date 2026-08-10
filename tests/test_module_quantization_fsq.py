@@ -111,6 +111,7 @@ class FiniteScalarQuantizerTest(unittest.TestCase):
         quantizer(x).quantized_latents.sum().backward()
 
         self.assertIsNotNone(x.grad)
+        assert x.grad is not None
         self.assertTrue(torch.isfinite(x.grad).all())
 
     def test_bound_scale_reduces_tanh_saturation_for_large_values(self):
@@ -124,6 +125,8 @@ class FiniteScalarQuantizerTest(unittest.TestCase):
 
         self.assertIsNotNone(x_small.grad)
         self.assertIsNotNone(x_large.grad)
+        assert x_small.grad is not None
+        assert x_large.grad is not None
         self.assertGreater(x_large.grad.abs().item(), x_small.grad.abs().item())
 
     def test_invalid_config_fails_clearly(self):

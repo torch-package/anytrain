@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import FrozenInstanceError
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -134,13 +135,14 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
                 num_groups=3,
             )
         )
+        books: Any = quantizer.quantizers
         weights = (
             torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
             torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.0, -1.0]]),
             torch.tensor([[1.0, 1.0], [-1.0, 1.0], [1.0, -1.0]]),
         )
         with torch.no_grad():
-            for book in quantizer.quantizers:
+            for book in books:
                 for codebook, weight in strict_zip(book.codebooks, weights):
                     codebook.weight.copy_(weight)
         indices = torch.tensor([[0, 1], [5, 26]])
@@ -210,7 +212,7 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         quantizer = AutoGroupResidualVectorQuantizer(config)
 
         with self.assertRaises(FrozenInstanceError):
-            config.dropout = 1.0
+            cast(Any, config).dropout = 1.0
         returned = quantizer.set_dropout(0.5)
 
         self.assertIs(returned, quantizer)
@@ -258,8 +260,10 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         (output.quantized_latents.sum() + output.loss.total).backward()
 
         self.assertIsNotNone(x.grad)
+        assert x.grad is not None
         self.assertTrue(torch.isfinite(x.grad).all())
-        for book in quantizer.quantizers:
+        books: Any = quantizer.quantizers
+        for book in books:
             for codebook in book.codebooks:
                 self.assertIsNotNone(codebook.weight.grad)
 

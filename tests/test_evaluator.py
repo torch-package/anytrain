@@ -1,13 +1,14 @@
 import unittest
+from typing import Any, cast
 
 import torch
 from torch import nn
 
-from anytrain.evaluator import EvaluatorABC, EvaluatorGroup
+from anytrain.evaluator import EvaluatorABC, EvaluatorGroup, MetricDict
 
 
 class ErrorEvaluator(EvaluatorABC):
-    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor):
+    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor) -> MetricDict:
         error = prediction - target
         return {
             "mae": error.abs().mean(),
@@ -16,22 +17,22 @@ class ErrorEvaluator(EvaluatorABC):
 
 
 class FloatEvaluator(EvaluatorABC):
-    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor):
+    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor) -> MetricDict:
         return {"score": float((prediction - target).abs().mean())}
 
 
 class IntegerValueEvaluator(EvaluatorABC):
-    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor):
+    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor) -> Any:
         return {"score": 1}
 
 
 class VectorTensorEvaluator(EvaluatorABC):
-    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor):
+    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor) -> MetricDict:
         return {"score": (prediction - target).abs()}
 
 
 class SeparatorKeyEvaluator(EvaluatorABC):
-    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor):
+    def evaluate(self, prediction: torch.Tensor, target: torch.Tensor) -> MetricDict:
         return {"a/b": (prediction - target).abs().mean()}
 
 
@@ -40,13 +41,13 @@ class StatefulValueEvaluator(EvaluatorABC):
         super().__init__()
         self.value = value
 
-    def evaluate(self):
+    def evaluate(self) -> MetricDict:
         return {"score": 1.0}
 
     def update(self):
         pass
 
-    def compute(self):
+    def compute(self) -> Any:
         return {"score": self.value}
 
     def reset(self):
@@ -106,6 +107,7 @@ class EvaluatorTest(unittest.TestCase):
 
         metrics = evaluator.evaluate(prediction, target)
 
+        assert isinstance(metrics["mae"], torch.Tensor)
         self.assertTrue(metrics["mae"].requires_grad)
 
     def test_evaluator_call_returns_validated_metric_dict_without_storing(self):
@@ -154,7 +156,7 @@ class EvaluatorTest(unittest.TestCase):
 
     def test_evaluator_group_rejects_non_string_metric_names(self):
         with self.assertRaisesRegex(TypeError, "string"):
-            EvaluatorGroup({1: ErrorEvaluator()})
+            EvaluatorGroup(cast(Any, {1: ErrorEvaluator()}))
 
     def test_evaluator_group_uses_moduledict_name_rules(self):
         with self.assertRaisesRegex(KeyError, "attribute"):
@@ -172,7 +174,7 @@ class EvaluatorTest(unittest.TestCase):
 
     def test_evaluator_group_rejects_evaluator_sequences(self):
         with self.assertRaisesRegex(TypeError, "mapping"):
-            EvaluatorGroup([ErrorEvaluator()])
+            EvaluatorGroup(cast(Any, [ErrorEvaluator()]))
 
     def test_evaluator_group_accepts_structurally_compatible_module(self):
         class PlainEvaluator(nn.Module):
@@ -189,7 +191,7 @@ class EvaluatorTest(unittest.TestCase):
 
     def test_evaluator_group_rejects_non_modules(self):
         with self.assertRaisesRegex(TypeError, "torch.nn.Module"):
-            EvaluatorGroup({"plain": lambda: {"score": 1.0}})
+            EvaluatorGroup(cast(Any, {"plain": lambda: {"score": 1.0}}))
 
 
 if __name__ == "__main__":

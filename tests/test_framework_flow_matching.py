@@ -2,6 +2,7 @@ import math
 import sys
 import unittest
 from importlib import import_module, util
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -172,10 +173,12 @@ class FlowMatchingComponentTest(unittest.TestCase):
         self.assertIsInstance(ContinuousFlowRuntime().time_sampler, UniformTimeSampler)
         self.assertIsInstance(discrete.time_sampler, UniformTimeSampler)
         self.assertIs(DiscreteGeneralizedKLObjective(discrete).runtime, discrete)
-        self.assertEqual(ContinuousFlowRuntime().time_sampler.t_min, 0.0)
-        self.assertEqual(ContinuousFlowRuntime().time_sampler.t_max, 1.0)
-        self.assertEqual(discrete.time_sampler.t_min, 0.0)
-        self.assertLess(discrete.time_sampler.t_max, 1.0)
+        continuous_sampler: Any = ContinuousFlowRuntime().time_sampler
+        discrete_sampler: Any = discrete.time_sampler
+        self.assertEqual(continuous_sampler.t_min, 0.0)
+        self.assertEqual(continuous_sampler.t_max, 1.0)
+        self.assertEqual(discrete_sampler.t_min, 0.0)
+        self.assertLess(discrete_sampler.t_max, 1.0)
 
     def test_continuous_loss_backward_and_sample_shape(self):
         from anytrain.framework.flow_matching import (
@@ -312,7 +315,7 @@ class FlowMatchingComponentTest(unittest.TestCase):
             return model(x_t, t)
 
         model = RecordingModel()
-        sampler = ODESampler(solver_factory=FakeSolver)
+        sampler = ODESampler(solver_factory=cast(Any, FakeSolver))
         runtime = ContinuousFlowRuntime(sampler=sampler, call_model=call_model)
         output = runtime.sample(model, torch.zeros(4, 3), condition=torch.ones(4, 1))
 
@@ -348,11 +351,12 @@ class FlowMatchingComponentTest(unittest.TestCase):
                 return solver
 
             x_0 = torch.zeros(2, 3, dtype=dtype)
-            output = ODESampler(solver_factory=factory).sample(
+            output = ODESampler(solver_factory=cast(Any, factory)).sample(
                 RecordingModel(),
                 x_0,
             )
 
+            assert output.time_grid is not None
             self.assertEqual(output.time_grid.dtype, dtype)
             self.assertEqual(solver_dtypes, [dtype])
             self.assertEqual(model_dtypes, [dtype])

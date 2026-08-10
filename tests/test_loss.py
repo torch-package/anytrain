@@ -1,5 +1,6 @@
 import importlib
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -47,14 +48,14 @@ class VectorLoss(LossABC):
 
 
 class TupleLoss(LossABC):
-    def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor):
+    def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor) -> Any:
         loss = (prediction - target).abs().mean()
         return loss, {"raw": loss}
 
 
 class SumLossBalancer(LossBalancerABC):
-    def compute_loss(self, losses):
-        return sum(losses.values())
+    def compute_loss(self, losses) -> torch.Tensor:
+        return cast(torch.Tensor, sum(losses.values()))
 
 
 class CustomWeightedLossBalancer(WeightedLossBalancerABC):
@@ -118,12 +119,12 @@ class LossTest(unittest.TestCase):
     def test_fixed_weight_loss_balancer_rejects_nonfinite_weights(self):
         for value in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite"):
-                FixedWeightLossBalancer({"loss": value})
+                FixedWeightLossBalancer(cast(Any, {"loss": value}))
 
     def test_fixed_weight_loss_balancer_does_not_coerce_weights(self):
         for value in (True, "1.0"):
             with self.subTest(value=value), self.assertRaisesRegex(TypeError, "real number"):
-                FixedWeightLossBalancer({"loss": value})
+                FixedWeightLossBalancer(cast(Any, {"loss": value}))
 
     def test_fixed_weight_loss_balancer_rejects_dtype_overflow(self):
         value = float(torch.finfo(torch.get_default_dtype()).max) * 2
@@ -133,11 +134,11 @@ class LossTest(unittest.TestCase):
 
     def test_fixed_weight_normalization_flag_requires_bool(self):
         with self.assertRaisesRegex(TypeError, "normalize_weights must be a bool"):
-            FixedWeightLossBalancer({"loss": 1.0}, normalize_weights=1)
+            FixedWeightLossBalancer({"loss": 1.0}, normalize_weights=cast(Any, 1))
 
     def test_uncertainty_normalization_requires_known_string_enum(self):
         with self.assertRaisesRegex(TypeError, "UncertaintyNormalization or string"):
-            UncertaintyLossBalancer(["loss"], normalization=1)
+            UncertaintyLossBalancer(["loss"], normalization=cast(Any, 1))
         with self.assertRaisesRegex(ValueError, "Unknown uncertainty normalization"):
             UncertaintyLossBalancer(["loss"], normalization="mean")
 
@@ -194,9 +195,7 @@ class LossTest(unittest.TestCase):
         raw_weights = torch.exp(-log_var)
         weight_sum = raw_weights.sum()
         expected_total = (
-            raw_weights[0] * first.detach()
-            + raw_weights[1] * second.detach()
-            + log_var.sum()
+            raw_weights[0] * first.detach() + raw_weights[1] * second.detach() + log_var.sum()
         ) / weight_sum
         torch.testing.assert_close(total.detach(), expected_total)
         torch.testing.assert_close(first.grad, raw_weights[0] / weight_sum)
@@ -300,7 +299,7 @@ class LossTest(unittest.TestCase):
 
         for blend in (True, torch.tensor(0.5)):
             with self.subTest(blend=blend), self.assertRaisesRegex(TypeError, "host real"):
-                InterpolatedLossBalancer(fixed=fixed, dynamic=dynamic, blend=blend)
+                InterpolatedLossBalancer(fixed=fixed, dynamic=dynamic, blend=cast(Any, blend))
         for blend in (float("nan"), float("inf"), -0.1, 1.1):
             with self.subTest(blend=blend), self.assertRaisesRegex(ValueError, "between 0 and 1"):
                 InterpolatedLossBalancer(fixed=fixed, dynamic=dynamic, blend=blend)
@@ -310,7 +309,7 @@ class LossTest(unittest.TestCase):
                 dynamic=UncertaintyLossBalancer(["second", "first"]),
             )
         with self.assertRaisesRegex(TypeError, "WeightedLossBalancerABC"):
-            InterpolatedLossBalancer(fixed=fixed, dynamic=MeanLossBalancer())
+            InterpolatedLossBalancer(fixed=fixed, dynamic=cast(Any, MeanLossBalancer()))
 
     def test_interpolated_loss_balancer_computes_dynamic_weights_once_per_forward(self):
         balancer = InterpolatedLossBalancer(
@@ -384,9 +383,12 @@ class LossTest(unittest.TestCase):
                 for name, value in target.state_dict().items()
                 if isinstance(value, torch.Tensor)
             }
-            with self.subTest(type=type(source)), self.assertRaisesRegex(
-                RuntimeError,
-                "loss_names do not match",
+            with (
+                self.subTest(type=type(source)),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "loss_names do not match",
+                ),
             ):
                 target.load_state_dict(source.state_dict())
             after = {
@@ -500,8 +502,8 @@ class LossTest(unittest.TestCase):
             blend=0.25,
         )
         with torch.no_grad():
-            source.dynamic.log_var.fill_(1.0)
-            target.dynamic.log_var.fill_(2.0)
+            cast(Any, source.dynamic).log_var.fill_(1.0)
+            cast(Any, target.dynamic).log_var.fill_(2.0)
         before = {
             name: value.clone()
             for name, value in target.state_dict().items()
@@ -532,8 +534,8 @@ class LossTest(unittest.TestCase):
             blend=0.25,
         )
         with torch.no_grad():
-            source.dynamic.log_var.fill_(1.0)
-            target.dynamic.log_var.fill_(2.0)
+            cast(Any, source.dynamic).log_var.fill_(1.0)
+            cast(Any, target.dynamic).log_var.fill_(2.0)
         state = source.state_dict()
         dynamic_state = dict(state["dynamic._extra_state"])
         dynamic_state["normalization"] = UncertaintyNormalization.NONE.value
@@ -563,7 +565,7 @@ class LossTest(unittest.TestCase):
             blend=0.75,
         )
         with torch.no_grad():
-            source.dynamic.log_var.fill_(1.0)
+            cast(Any, source.dynamic).log_var.fill_(1.0)
 
         cases = (
             ("shape", torch.zeros(2)),
@@ -584,16 +586,19 @@ class LossTest(unittest.TestCase):
                 blend=0.25,
             )
             with torch.no_grad():
-                target.dynamic.log_var.fill_(2.0)
+                cast(Any, target.dynamic).log_var.fill_(2.0)
             before = {
                 name: tensor.clone()
                 for name, tensor in target.state_dict().items()
                 if isinstance(tensor, torch.Tensor)
             }
 
-            with self.subTest(kind=kind), self.assertRaisesRegex(
-                RuntimeError,
-                "checkpoint (tensor|keys)",
+            with (
+                self.subTest(kind=kind),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "checkpoint (tensor|keys)",
+                ),
             ):
                 target.load_state_dict(state, strict=False)
 
@@ -613,7 +618,7 @@ class LossTest(unittest.TestCase):
             blend=0.75,
         )
         with torch.no_grad():
-            source.dynamic.log_var.fill_(1.0)
+            cast(Any, source.dynamic).log_var.fill_(1.0)
         cases = (
             (None, "missing blend state"),
             (torch.tensor(2.0), "finite and between 0 and 1"),
@@ -632,7 +637,7 @@ class LossTest(unittest.TestCase):
                 blend=0.25,
             )
             with torch.no_grad():
-                target.dynamic.log_var.fill_(2.0)
+                cast(Any, target.dynamic).log_var.fill_(2.0)
             before = {
                 name: value.clone()
                 for name, value in target.state_dict().items()
@@ -669,7 +674,7 @@ class LossTest(unittest.TestCase):
         state = source.state_dict()
         state.pop("balancer.blend")
         with torch.no_grad():
-            target.balancer.dynamic.log_var.fill_(2.0)
+            cast(Any, target.balancer).dynamic.log_var.fill_(2.0)
         before = {
             name: value.clone()
             for name, value in target.balancer.state_dict().items()
@@ -746,9 +751,12 @@ class LossTest(unittest.TestCase):
         )
 
         for balancer in balancers:
-            with self.subTest(type=type(balancer)), self.assertRaisesRegex(
-                RuntimeError,
-                "same device",
+            with (
+                self.subTest(type=type(balancer)),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "same device",
+                ),
             ):
                 balancer(losses)
 
@@ -798,9 +806,12 @@ class LossTest(unittest.TestCase):
             FixedWeightLossBalancer({"loss": 1.0}),
             UncertaintyLossBalancer(["loss"]),
         ):
-            with self.subTest(type=type(balancer)), self.assertRaisesRegex(
-                ValueError,
-                "scalar tensor",
+            with (
+                self.subTest(type=type(balancer)),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "scalar tensor",
+                ),
             ):
                 balancer({"loss": torch.ones(2)})
 
@@ -936,9 +947,12 @@ class LossTest(unittest.TestCase):
         mask = torch.zeros(2, 3, dtype=torch.bool)
 
         for loss_fn in (MaskedFrameMSELoss(), MaskedCosineAlignmentLoss(), TeacherLoss()):
-            with self.subTest(type=type(loss_fn)), self.assertRaisesRegex(
-                ValueError,
-                "at least one frame",
+            with (
+                self.subTest(type=type(loss_fn)),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "at least one frame",
+                ),
             ):
                 loss_fn(prediction, target, mask)
 
@@ -999,12 +1013,12 @@ class LossTest(unittest.TestCase):
             ("beta", float("-inf")),
         ):
             with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, "finite"):
-                teacher_loss(prediction, target, mask, **{name: value})
+                teacher_loss(prediction, target, mask, **cast(Any, {name: value}))
             with (
                 self.subTest(name=f"module_{name}", value=value),
                 self.assertRaisesRegex(ValueError, "finite"),
             ):
-                TeacherLoss(**{name: value})
+                TeacherLoss(**cast(Any, {name: value}))
 
     def test_masked_codebook_cross_entropy_emits_masked_top1(self):
         labels = torch.tensor(
@@ -1093,6 +1107,7 @@ class LossTest(unittest.TestCase):
         self.assertEqual(observed_shapes, [(3, 3), (3, 4)])
         for value in logits:
             self.assertIsNotNone(value.grad)
+            assert value.grad is not None
             self.assertTrue(torch.equal(value.grad[~mask], torch.zeros_like(value.grad[~mask])))
 
     def test_packed_codebook_cross_entropy_matches_masked_contract(self):
@@ -1205,10 +1220,10 @@ class LossTest(unittest.TestCase):
 
     def test_loss_group_rejects_invalid_inputs(self):
         with self.assertRaisesRegex(TypeError, "LossBalancerABC"):
-            LossGroup({"loss": nn.L1Loss()}, balancer=nn.Identity())
+            LossGroup({"loss": nn.L1Loss()}, balancer=cast(Any, nn.Identity()))
 
         with self.assertRaisesRegex(TypeError, "mapping"):
-            LossGroup([nn.L1Loss()])
+            LossGroup(cast(Any, [nn.L1Loss()]))
 
     def test_sdr_loss_is_near_zero_for_identical_audio(self):
         audio = torch.randn(2, 1, 64)
@@ -1288,9 +1303,9 @@ class LossTest(unittest.TestCase):
 
         self.assertEqual(htk_mel.transform.mel_scale, "htk")
         self.assertEqual(slaney_mel.transform.mel_scale, "slaney")
-        self.assertFalse(
-            torch.allclose(htk_mel.transform.mel_filter, slaney_mel.transform.mel_filter)
-        )
+        htk_transform: Any = htk_mel.transform
+        slaney_transform: Any = slaney_mel.transform
+        self.assertFalse(torch.allclose(htk_transform.mel_filter, slaney_transform.mel_filter))
 
     def test_mel_loss_forwards_mel_scale(self):
         mel_loss = MelLoss(sample_rate=16000, n_fft=32, n_mels=8, mel_scale="slaney")
@@ -1302,7 +1317,8 @@ class LossTest(unittest.TestCase):
         )
 
         self.assertEqual(mel_loss.transform.mel_scale, "slaney")
-        self.assertEqual(multi_mel_loss.losses["mel_32_8"].transform.mel_scale, "slaney")
+        multi_mel_losses: Any = multi_mel_loss.losses
+        self.assertEqual(multi_mel_losses["mel_32_8"].transform.mel_scale, "slaney")
 
     def test_mel_loss_rejects_unknown_mel_scale(self):
         with self.assertRaisesRegex(ValueError, "mel_scale"):
@@ -1350,7 +1366,7 @@ class LossTest(unittest.TestCase):
 
         for scales in ((16.0,), ("16",), (True,)):
             with self.subTest(scales=scales), self.assertRaisesRegex(TypeError, "integers"):
-                MultiScaleSTFTLoss(n_fft_list=scales)
+                MultiScaleSTFTLoss(n_fft_list=cast(Any, scales))
 
         with self.assertRaisesRegex(ValueError, "positive"):
             MultiScaleSTFTLoss(n_fft_list=(0,))
@@ -1363,8 +1379,9 @@ class LossTest(unittest.TestCase):
             mel_n_mels_list=(8, 4),
             stft_n_fft_list=(16, 8),
         )
-        mel = loss.losses["multi_mel"].losses["mel_16_8"].transform.stft
-        stft = loss.losses["multi_stft"].losses["stft_16"].transform
+        losses: Any = loss.losses
+        mel = losses["multi_mel"].losses["mel_16_8"].transform.stft
+        stft = losses["multi_stft"].losses["stft_16"].transform
 
         self.assertIsNot(mel, stft)
 
@@ -1374,7 +1391,7 @@ class LossTest(unittest.TestCase):
 
         self.assertEqual(set(dac_loss.losses), {"multi_mel"})
         self.assertEqual(set(dynacodec_loss.losses), {"si_sdr", "multi_mel", "multi_stft"})
-        self.assertIn("si_sdr", dynacodec_loss.balancer.loss_names)
+        self.assertIn("si_sdr", cast(Any, dynacodec_loss.balancer).loss_names)
 
     def test_codec_loss_task_import_is_not_provided(self):
         with self.assertRaises(ModuleNotFoundError):

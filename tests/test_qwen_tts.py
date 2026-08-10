@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from typing import Any, ClassVar, cast
 
 import torch
 
@@ -40,6 +41,7 @@ class QwenTTSAdapterTest(unittest.TestCase):
             languages=["English", "Chinese"],
             options=TTSOptions(max_new_tokens=128),
         )
+        assert isinstance(outputs, list)
 
         self.assertEqual(
             FakeQwen3TTSModel.loaded.generate_calls,
@@ -96,7 +98,7 @@ class QwenTTSAdapterTest(unittest.TestCase):
             tts = QwenCustomVoiceTTS.from_pretrained("fake-qwen", speaker="Vivian")
 
         with self.assertRaises(TypeError):
-            tts.synthesize("hello", None, "assets/reference.wav")
+            cast(Any, tts).synthesize("hello", None, "assets/reference.wav")
 
     def test_rejects_unsupported_speaker_id(self):
         with _fake_qwen_tts():
@@ -192,7 +194,7 @@ class QwenTTSConfigTest(unittest.TestCase):
 
 
 class FakeQwen3TTSModel:
-    loaded = None
+    loaded: ClassVar[Any] = None
 
     def __init__(self, load_args):
         self.load_args = load_args
@@ -211,7 +213,10 @@ class FakeQwen3TTSModel:
         text = kwargs["text"]
         if isinstance(text, list):
             return (
-                [torch.tensor([float(index * 2), float(index * 2 + 1)]) for index in range(len(text))],
+                [
+                    torch.tensor([float(index * 2), float(index * 2 + 1)])
+                    for index in range(len(text))
+                ],
                 16000,
             )
         return torch.tensor([1.0, 2.0]), 16000
@@ -222,7 +227,7 @@ class _fake_qwen_tts:
         self.previous = {}
 
     def __enter__(self):
-        module = types.ModuleType("qwen_tts")
+        module: Any = types.ModuleType("qwen_tts")
         module.Qwen3TTSModel = FakeQwen3TTSModel
         self.previous = {"qwen_tts": sys.modules.get("qwen_tts")}
         sys.modules["qwen_tts"] = module

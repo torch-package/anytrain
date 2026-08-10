@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import fields
+from typing import Any, cast
 
 import torch
 
@@ -391,7 +392,7 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "divisible"):
             ADTConfig(num_experts=5, temperature_groups=2)
         with self.assertRaisesRegex(ValueError, "stat_ema_decays"):
-            ADTConfig(num_experts=4, stat_ema_decays=(0.9, 0.9))
+            ADTConfig(num_experts=4, stat_ema_decays=cast(Any, (0.9, 0.9)))
         with self.assertRaisesRegex(ValueError, "warmup_steps"):
             ADTConfig(num_experts=4, warmup_steps=-1)
         with self.assertRaisesRegex(ValueError, "min_temperature"):

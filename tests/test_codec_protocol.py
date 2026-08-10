@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -100,7 +101,11 @@ def test_audio_detokenizer_abc_requires_exact_stream_inventory() -> None:
         detokenizer.detokenize({"left": torch.tensor([[1]])})
     with pytest.raises(ValueError, match="unexpected=.*extra"):
         detokenizer.detokenize(
-            {"left": torch.tensor([[1]]), "right": torch.tensor([[1]]), "extra": torch.tensor([[1]])}
+            {
+                "left": torch.tensor([[1]]),
+                "right": torch.tensor([[1]]),
+                "extra": torch.tensor([[1]]),
+            }
         )
 
 
@@ -143,11 +148,13 @@ class _FrameBackend:
 
 def test_directional_views_share_one_backend() -> None:
     backend = _FrameBackend()
-    with patch("anytrain.audio.codec.unicodec.UniCodec.from_pretrained", return_value=backend) as load:
+    with patch(
+        "anytrain.audio.codec.unicodec.UniCodec.from_pretrained", return_value=backend
+    ) as load:
         tokenizer = load_audio_tokenizer("unicodec", device="cpu")
         detokenizer = load_audio_detokenizer("unicodec", device=torch.device("cpu"))
     load.assert_called_once_with(device="cpu")
-    assert tokenizer.backend is detokenizer.backend is backend
+    assert cast(Any, tokenizer).backend is cast(Any, detokenizer).backend is backend
     audio = torch.zeros((2, 1, 8))
     codes = tokenizer.tokenize(audio, 24_000)
     waveform = detokenizer.detokenize(codes)

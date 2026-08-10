@@ -1,12 +1,11 @@
 import importlib.util
 import unittest
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import nn
 
-PEFT_AVAILABLE = importlib.util.find_spec("peft") is not None
-
-if PEFT_AVAILABLE:
+if TYPE_CHECKING:
     from peft import LoraConfig, get_peft_model
     from peft.tuners.lora import Linear as PeftLinear
     from transformers.pytorch_utils import Conv1D
@@ -17,6 +16,21 @@ if PEFT_AVAILABLE:
         create_lora_muon_optimizer,
         lora_factor_pairs,
     )
+
+    PEFT_AVAILABLE = True
+else:
+    PEFT_AVAILABLE = importlib.util.find_spec("peft") is not None
+    if PEFT_AVAILABLE:
+        from peft import LoraConfig, get_peft_model
+        from peft.tuners.lora import Linear as PeftLinear
+        from transformers.pytorch_utils import Conv1D
+
+        from anytrain.optim import CompositeOptimizer, LoRAMuon, create_llm_optimizer
+        from anytrain.optim.peft import (
+            create_lora_muon_adamw_optimizer,
+            create_lora_muon_optimizer,
+            lora_factor_pairs,
+        )
 
 
 @unittest.skipUnless(PEFT_AVAILABLE, "PEFT is not installed")
@@ -74,7 +88,7 @@ class PeftLoRAMuonTest(unittest.TestCase):
         self.assertAlmostEqual(pair.scale, 4 / (2**0.5))
 
         conv1d_model = get_peft_model(
-            nn.Sequential(Conv1D(5, 4)),
+            cast(Any, nn.Sequential(Conv1D(5, 4))),
             LoraConfig(
                 r=2,
                 lora_alpha=4,
@@ -140,14 +154,14 @@ class PeftLoRAMuonTest(unittest.TestCase):
             lora_factor_pairs(bias_model)
 
         conv_model = get_peft_model(
-            nn.Sequential(nn.Conv2d(2, 3, kernel_size=1)),
+            cast(Any, nn.Sequential(nn.Conv2d(2, 3, kernel_size=1))),
             LoraConfig(r=1, target_modules=["0"], init_lora_weights=False),
         )
         with self.assertRaisesRegex(TypeError, "only vanilla PEFT Linear"):
             lora_factor_pairs(conv_model)
 
         embedding_model = get_peft_model(
-            nn.Sequential(nn.Embedding(8, 4)),
+            cast(Any, nn.Sequential(nn.Embedding(8, 4))),
             LoraConfig(r=2, target_modules=["0"], init_lora_weights=False),
         )
         with self.assertRaisesRegex(TypeError, "only vanilla PEFT Linear"):
@@ -160,9 +174,12 @@ class PeftLoRAMuonTest(unittest.TestCase):
             create_lora_muon_optimizer(model, lr=0.03)
 
         model = get_peft_model(
-            nn.Sequential(
-                nn.Linear(4, 4, bias=False),
-                nn.Linear(4, 5, bias=False),
+            cast(
+                Any,
+                nn.Sequential(
+                    nn.Linear(4, 4, bias=False),
+                    nn.Linear(4, 5, bias=False),
+                ),
             ),
             LoraConfig(
                 r=2,
@@ -180,10 +197,13 @@ class PeftLoRAMuonTest(unittest.TestCase):
         left_before = layer.lora_B["default"].weight.detach().clone()
         bias_before = layer.base_layer.bias.detach().clone()
 
-        optimizer = create_lora_muon_adamw_optimizer(
-            model,
-            lr=0.03,
-            adamw={"lr": 0.03, "weight_decay": 0.0},
+        optimizer = cast(
+            CompositeOptimizer,
+            create_lora_muon_adamw_optimizer(
+                model,
+                lr=0.03,
+                adamw={"lr": 0.03, "weight_decay": 0.0},
+            ),
         )
         loss = model(torch.randn(6, 4)).square().mean()
         loss.backward()
@@ -212,7 +232,10 @@ class PeftLoRAMuonTest(unittest.TestCase):
     def test_llm_helper_routes_muon_to_lora_muon_for_peft(self):
         model = _linear_model(bias="all", init_lora_weights=False)
 
-        optimizer = create_llm_optimizer(model, preset="sft", optimizer="muon", lr=0.03)
+        optimizer = cast(
+            CompositeOptimizer,
+            create_llm_optimizer(model, preset="sft", optimizer="muon", lr=0.03),
+        )
 
         self.assertIsInstance(optimizer, CompositeOptimizer)
         self.assertEqual(set(optimizer.optimizers), {"lora_muon", "adamw"})
@@ -240,9 +263,12 @@ class PeftLoRAMuonTest(unittest.TestCase):
 
     def test_rejects_factor_storage_aliases(self):
         model = get_peft_model(
-            nn.Sequential(
-                nn.Linear(4, 4, bias=False),
-                nn.Linear(4, 4, bias=False),
+            cast(
+                Any,
+                nn.Sequential(
+                    nn.Linear(4, 4, bias=False),
+                    nn.Linear(4, 4, bias=False),
+                ),
             ),
             LoraConfig(
                 r=2,
@@ -252,15 +278,13 @@ class PeftLoRAMuonTest(unittest.TestCase):
             ),
         )
         first, second = _linear_layers(model)
-        second.lora_A["default"].weight = nn.Parameter(
-            first.lora_A["default"].weight.detach()
-        )
+        second.lora_A["default"].weight = nn.Parameter(first.lora_A["default"].weight.detach())
 
         with self.assertRaisesRegex(ValueError, "shares storage"):
             lora_factor_pairs(model)
 
 
-def _config(**overrides):
+def _config(**overrides: Any) -> Any:
     values = {
         "r": 2,
         "lora_alpha": 4,
@@ -271,11 +295,11 @@ def _config(**overrides):
     return LoraConfig(**values)
 
 
-def _linear_model(*, config=None, **overrides):
+def _linear_model(*, config: Any = None, **overrides: Any) -> Any:
     if config is None:
         config = _config(**overrides)
-    return get_peft_model(nn.Sequential(nn.Linear(4, 5, bias=True)), config)
+    return get_peft_model(cast(Any, nn.Sequential(nn.Linear(4, 5, bias=True))), config)
 
 
-def _linear_layers(module):
+def _linear_layers(module: nn.Module) -> list[Any]:
     return [child for child in module.modules() if type(child) is PeftLinear]

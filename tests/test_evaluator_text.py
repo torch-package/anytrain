@@ -1,7 +1,8 @@
 import unittest
+from typing import Any
 from unittest.mock import patch
 
-from anytrain.evaluator import EvaluatorABC, EvaluatorGroup
+from anytrain.evaluator import EvaluatorABC, EvaluatorGroup, MetricDict
 from anytrain.evaluator.text import TextComparisonEvaluator
 from anytrain.evaluator.text.scores import corpus_chrf_score, word_error_rate
 
@@ -51,7 +52,8 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
 
         for name, expected in direct.items():
             self.assertAlmostEqual(running[name], expected)
-        self.assertAlmostEqual(running["wer"], 1.0 / 11.0)
+        running_wer: Any = running["wer"]
+        self.assertAlmostEqual(running_wer, 1.0 / 11.0)
 
     def test_running_scores_reset_clears_corpus(self):
         evaluator = TextComparisonEvaluator()
@@ -86,7 +88,7 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
 
     def test_group_rejects_mixed_lifecycle_before_updating_stateful_evaluator(self):
         class StatelessEvaluator(EvaluatorABC):
-            def evaluate(self, prediction_text, target_text):
+            def evaluate(self, prediction_text, target_text) -> MetricDict:
                 del prediction_text, target_text
                 return {"score": 1.0}
 

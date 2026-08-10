@@ -3,6 +3,7 @@ from dataclasses import fields
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import mock
 
 import torch
@@ -139,8 +140,10 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         (output.quantized_latents.sum() + output.loss.total).backward()
 
         self.assertIsNotNone(x.grad)
+        assert x.grad is not None
         self.assertTrue(torch.isfinite(x.grad).all())
         self.assertIsNotNone(quantizer.codebook.weight.grad)
+        assert quantizer.codebook.weight.grad is not None
         self.assertTrue(torch.isfinite(quantizer.codebook.weight.grad).all())
 
     def test_ema_updates_with_commitment_loss_without_codebook_grad(self):
@@ -180,9 +183,7 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
                 kmeans_iters=4,
             )
         )
-        latents = torch.tensor(
-            [[-2.0, 0.0], [-1.9, 0.0], [1.9, 0.0], [2.0, 0.0]]
-        ).repeat(8, 1)
+        latents = torch.tensor([[-2.0, 0.0], [-1.9, 0.0], [1.9, 0.0], [2.0, 0.0]]).repeat(8, 1)
 
         self.assertFalse(quantizer.ema_counts.any())
         _ = quantizer(latents)
@@ -245,9 +246,7 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         )
         with torch.no_grad():
             quantizer._ema_counts.copy_(torch.tensor([3.0, 0.0, 3.0, 0.0]))
-            quantizer._ema_sums.copy_(
-                quantizer.codebook.weight * quantizer._ema_counts[:, None]
-            )
+            quantizer._ema_sums.copy_(quantizer.codebook.weight * quantizer._ema_counts[:, None])
         candidates = torch.tensor([[10.0, 0.0], [0.0, 10.0]])
 
         quantizer._prepare_ema(candidates)
@@ -269,7 +268,8 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
     def test_distributed_kmeans_allows_a_rank_without_assignments(self):
         with TemporaryDirectory() as tmp_dir:
             init_method = (Path(tmp_dir) / "init").as_uri()
-            torch.multiprocessing.spawn(
+            multiprocessing: Any = torch.multiprocessing
+            multiprocessing.spawn(
                 _distributed_kmeans_worker,
                 args=(2, init_method),
                 nprocs=2,
@@ -323,9 +323,7 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(quantizer.codebook.weight).all())
 
     def test_empty_distributed_ema_participation_preserves_state(self):
-        quantizer = EmbeddingVectorQuantizer(
-            VQConfig(input_dim=2, codebook_size=4, use_ema=True)
-        )
+        quantizer = EmbeddingVectorQuantizer(VQConfig(input_dim=2, codebook_size=4, use_ema=True))
         before_counts = quantizer._ema_counts.clone()
         before_sums = quantizer._ema_sums.clone()
         before_weight = quantizer.codebook.weight.clone()

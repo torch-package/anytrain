@@ -46,6 +46,7 @@ class DiTModuleTest(unittest.TestCase):
         self.assertEqual(output.shape, (2, 4, 7))
         self.assertTrue(torch.equal(output[1, 2:], torch.zeros_like(output[1, 2:])))
         self.assertIsNotNone(model.input.weight.grad)
+        assert model.input.weight.grad is not None
         self.assertTrue(torch.isfinite(model.input.weight.grad).all())
 
     def test_vector_film_condition_broadcasts(self):
@@ -66,6 +67,7 @@ class DiTModuleTest(unittest.TestCase):
         output = model(x_t, t, condition_state=state)
 
         self.assertIsInstance(state, DiTConditionState)
+        assert state.film is not None
         self.assertEqual(state.film.shape, (2, 1, 8))
         self.assertEqual(output.shape, x_t.shape)
 
@@ -90,6 +92,7 @@ class DiTModuleTest(unittest.TestCase):
         cached = model(x_t, t, condition_state=state)
         raw = model(x_t, t, condition=condition, condition_mask=condition_mask)
 
+        assert state.cross_kv is not None
         self.assertEqual(len(state.cross_kv), 2)
         self.assertEqual(state.cross_kv[0].key.shape, (2, 2, 3, 4))
         torch.testing.assert_close(cached, raw)

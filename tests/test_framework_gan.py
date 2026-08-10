@@ -1,5 +1,6 @@
 import sys
 import unittest
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -144,8 +145,8 @@ class LossTest(unittest.TestCase):
         weights = state.collect(loss_fn)
         self.assertIsInstance(weights, dict)
         assert isinstance(weights, dict)
-        torch.testing.assert_close(weights["feature_weight"].value, torch.tensor(0.5))
-        torch.testing.assert_close(weights["gp_weight"].value, torch.tensor(2.0))
+        torch.testing.assert_close(cast(Any, weights["feature_weight"]).value, torch.tensor(0.5))
+        torch.testing.assert_close(cast(Any, weights["gp_weight"]).value, torch.tensor(2.0))
 
     def test_compatibility_objective_methods_run_forward_hooks(self):
         loss_fn = Loss(IdentityDiscriminator())
@@ -412,7 +413,7 @@ class LossTest(unittest.TestCase):
 
     def test_from_preset_requires_preset_enum(self):
         with self.assertRaisesRegex(TypeError, "Preset"):
-            Loss.from_preset("dac")
+            Loss.from_preset(cast(Any, "dac"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import torch
@@ -139,7 +140,7 @@ class FakeBatch(dict):
 
 
 class FakeTokenizer:
-    loaded = None
+    loaded: ClassVar[Any] = None
 
     def __init__(self, load_args=None):
         self.load_args = load_args
@@ -174,7 +175,7 @@ class FakeTokenizer:
 
 
 class FakeModel:
-    loaded = None
+    loaded: ClassVar[Any] = None
 
     def __init__(self, load_args=None):
         self.load_args = load_args
@@ -199,7 +200,7 @@ class FakeModel:
 
 class _fake_transformers:
     def __enter__(self):
-        module = types.ModuleType("transformers")
+        module: Any = types.ModuleType("transformers")
         module.AutoModelForCausalLM = FakeModel
         module.AutoTokenizer = FakeTokenizer
         self.previous = sys.modules.get("transformers")

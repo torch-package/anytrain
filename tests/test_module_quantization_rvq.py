@@ -4,6 +4,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import mock
 
 import torch
@@ -88,9 +89,10 @@ def _distributed_ema_dropout_worker(rank: int, world_size: int, init_method: str
             quantizer,
             find_unused_parameters=True,
         )
+        books: Any = quantizer.quantizers
         before = [
             (book._ema_counts.clone(), book._ema_sums.clone(), book.codebook.weight.clone())
-            for book in quantizer.quantizers
+            for book in books
         ]
         active_mask = torch.tensor(
             [[True, rank == 1, False]],
@@ -106,7 +108,7 @@ def _distributed_ema_dropout_worker(rank: int, world_size: int, init_method: str
 
         if not torch.equal(output.active_codebook_mask, active_mask):
             raise AssertionError("RVQ did not preserve the rank-local dropout mask.")
-        for index, book in enumerate(quantizer.quantizers):
+        for index, book in enumerate(books):
             if index == 2:
                 for value, initial in strict_zip(
                     (book._ema_counts, book._ema_sums, book.codebook.weight),
@@ -187,12 +189,13 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
                 dropout=1.0,
             )
         )
-        before_counts = [book.ema_counts.clone() for book in quantizer.quantizers]
+        books: Any = quantizer.quantizers
+        before_counts = [book.ema_counts.clone() for book in books]
 
         vectors = quantizer.latents_to_codebook_vectors(torch.randn(16, 4))
 
         self.assertEqual(vectors.shape, (16, 3, 4))
-        for book, before in strict_zip(quantizer.quantizers, before_counts):
+        for book, before in strict_zip(books, before_counts):
             self.assertTrue(torch.equal(book.ema_counts, before))
 
     def test_dropout_marks_inactive_codebooks_during_training(self):
@@ -213,7 +216,8 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
     def test_distributed_ema_dropout_keeps_collectives_aligned(self):
         with TemporaryDirectory() as tmp_dir:
             init_method = (Path(tmp_dir) / "init").as_uri()
-            torch.multiprocessing.spawn(
+            multiprocessing: Any = torch.multiprocessing
+            multiprocessing.spawn(
                 _distributed_ema_dropout_worker,
                 args=(2, init_method),
                 nprocs=2,
@@ -323,6 +327,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
         (output.quantized_latents.sum() + output.loss.total).backward()
 
         self.assertIsNotNone(x.grad)
+        assert x.grad is not None
         self.assertTrue(torch.isfinite(x.grad).all())
 
     def test_invalid_config_fails_clearly(self):

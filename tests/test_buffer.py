@@ -15,8 +15,8 @@ class RegisterBufferTest(unittest.TestCase):
         self.assertIsNone(register_buffer(module, "persistent", persistent))
         self.assertIsNone(register_buffer(module, "transient", transient, persistent=False))
 
-        self.assertTrue(torch.equal(module.persistent, persistent))
-        self.assertTrue(torch.equal(module.transient, transient))
+        self.assertTrue(torch.equal(module.get_buffer("persistent"), persistent))
+        self.assertTrue(torch.equal(module.get_buffer("transient"), transient))
         if modern:
             self.assertIsInstance(module.persistent, nn.Buffer)
             self.assertIsInstance(module.transient, nn.Buffer)

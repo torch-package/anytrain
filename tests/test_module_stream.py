@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 
 import torch
 from torch import Tensor, nn
@@ -119,15 +120,26 @@ class StreamLayoutTest(unittest.TestCase):
 
         targets = bind_targets(
             layout,
-            {
-                "a": bound.values["a"],
-                "b": bound.values["b"],
-            },
+            cast(
+                Any,
+                {
+                    "a": bound.values["a"],
+                    "b": bound.values["b"],
+                },
+            ),
         )
         self.assertEqual(targets.values.tolist(), [[1, 2, 100, 100, 100, 100]])
         with self.assertRaisesRegex(ValueError, "non-carrier"):
             bind_targets(
-                layout, {"a": bound.values["a"], "b": bound.values["b"], "c": bound.values["c"]}
+                layout,
+                cast(
+                    Any,
+                    {
+                        "a": bound.values["a"],
+                        "b": bound.values["b"],
+                        "c": bound.values["c"],
+                    },
+                ),
             )
 
     def test_direct_features_can_use_pool_then_add(self):

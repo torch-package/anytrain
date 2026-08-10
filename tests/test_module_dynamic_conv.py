@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any, Literal, cast
 
 import torch
 from torch import nn
@@ -60,7 +61,7 @@ def make_conv1d_moe(
     groups: int = 1,
     bias: bool = True,
     padding: int | None = None,
-    padding_mode: str = "zeros",
+    padding_mode: Literal["zeros", "reflect", "replicate", "circular"] = "zeros",
     segment_size: int | None = None,
     causal: bool = False,
     context: str | None = None,
@@ -187,7 +188,11 @@ def make_conv2d_moe(
     padding: int | tuple[int, int] | None = None,
     router: nn.Module | None = None,
 ) -> MoE:
-    kernel = torch.Size([kernel_size, kernel_size]) if isinstance(kernel_size, int) else torch.Size(kernel_size)
+    kernel = (
+        torch.Size([kernel_size, kernel_size])
+        if isinstance(kernel_size, int)
+        else torch.Size(kernel_size)
+    )
     stride_size = torch.Size([stride, stride]) if isinstance(stride, int) else torch.Size(stride)
     dilation_size = torch.Size([dilation, dilation])
     if padding is None:
@@ -205,10 +210,10 @@ def make_conv2d_moe(
         nn.Conv2d(
             in_channels,
             out_channels,
-            kernel_size=tuple(kernel),
-            stride=tuple(stride_size),
-            padding=tuple(padding_size),
-            dilation=tuple(dilation_size),
+            kernel_size=cast(tuple[int, int], tuple(kernel)),
+            stride=cast(tuple[int, int], tuple(stride_size)),
+            padding=cast(tuple[int, int], tuple(padding_size)),
+            dilation=cast(tuple[int, int], tuple(dilation_size)),
             groups=groups,
             bias=bias,
         ),
@@ -268,7 +273,9 @@ class Conv1dMoETest(unittest.TestCase):
         y = moe.forward_manually(x, routing).hidden_states
 
         cells, _features, layout = moe.partitioner.partition(x)
-        bank_padding = int(bank.expert.padding)
+        bank_padding = int(cast(Any, bank.expert).padding)
+        assert routing.indices is not None
+        assert routing.weights is not None
         expected_cells = []
         for cell_index in range(cells.size(0)):
             mixed = None
@@ -380,9 +387,7 @@ class ConvTranspose1dMoETest(unittest.TestCase):
     def test_segmented_forward_matches_full_conv_with_bias(self):
         torch.manual_seed(0)
         full = make_conv_transpose1d_moe(8, 8, kernel_size=3, num_experts=2)
-        segmented = make_conv_transpose1d_moe(
-            8, 8, kernel_size=3, num_experts=2, segment_size=8
-        )
+        segmented = make_conv_transpose1d_moe(8, 8, kernel_size=3, num_experts=2, segment_size=8)
         bank_full = full.expert_bank
         bank_seg = segmented.expert_bank
         with torch.no_grad():
@@ -444,7 +449,8 @@ class Conv2dMoETest(unittest.TestCase):
         )
         moe = make_conv2d_moe(1, 32, kernel_size=3, num_experts=4, stride=(2, 1), padding=0)
         bank = moe.expert_bank
-        source_conv = baseline[1]
+        source_conv: Any = baseline[1]
+        source_pad: Any = baseline[0]
         with torch.no_grad():
             bank.weight.copy_(source_conv.weight.unsqueeze(0).expand_as(bank.weight))
             assert source_conv.bias is not None and bank.bias is not None
@@ -452,7 +458,7 @@ class Conv2dMoETest(unittest.TestCase):
         x = torch.randn(3, 1, 20, 80)
         expert_weights = torch.rand(3, 4)
         expert_weights = expert_weights / expert_weights.sum(dim=-1, keepdim=True)
-        y = run_manual(moe, baseline[0](x), expert_weights)
+        y = run_manual(moe, source_pad(x), expert_weights)
         self.assertTrue(torch.allclose(y, baseline(x), atol=1e-6))
 
 

@@ -90,6 +90,7 @@ class ChatApiTest(unittest.TestCase):
 
         self.assertEqual(plain, "done-2")
         self.assertIsInstance(client.last_response, ChatResponse)
+        assert client.last_response is not None
         self.assertEqual(client.last_response.text, "done-2")
         self.assertEqual(client.last_usage, {"input_tokens": 3, "output_tokens": 4})
         self.assertEqual(client.last_request_id, "req-2")

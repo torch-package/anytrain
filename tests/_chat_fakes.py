@@ -31,10 +31,11 @@ def models_requests(catalog):
             return {"data": catalog}
 
     class FakeRequests:
+        calls: list[dict[str, object]] = []
+
         @staticmethod
-        def get(**kwargs):
+        def get(**kwargs: object):
             FakeRequests.calls.append(kwargs)
             return FakeResponse()
 
-    FakeRequests.calls = []
     return FakeRequests

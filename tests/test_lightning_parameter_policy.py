@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 
 import torch
 
@@ -12,13 +13,17 @@ from anytrain.lightning.callback import __all__ as callback_exports
 from anytrain.lightning.callback import apply_parameter_trainability as apply_export
 
 
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
+
+
 class ParameterPolicyTest(unittest.TestCase):
     def test_apply_parameter_trainability_freezes_and_summarizes(self):
         module = torch.nn.Sequential(torch.nn.Linear(2, 3), torch.nn.Linear(3, 1))
 
         summary = apply_parameter_trainability(
             module,
-            lambda _module, name, _parameter: name.endswith("bias"),
+            lambda module, name, parameter: name.endswith("bias"),
         )
 
         self.assertEqual(summary.tensors, 4)
@@ -35,14 +40,15 @@ class ParameterPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "boolean"):
             apply_parameter_trainability(
                 torch.nn.Linear(1, 1),
-                lambda _module, _name, _parameter: 1,
+                lambda module, name, parameter: cast(Any, 1),
             )
 
     def test_parameter_policy_callback_applies_once_on_fit_start(self):
-        module = torch.nn.Sequential(torch.nn.Linear(1, 1))
+        module: Any = torch.nn.Sequential(torch.nn.Linear(1, 1))
         calls = []
 
-        def trainable(_module, name, _parameter):
+        def trainable(module, name, parameter):
+            del module, parameter
             calls.append(name)
             return False
 
@@ -81,7 +87,8 @@ class ParameterPolicyTest(unittest.TestCase):
                 self.opt_names = [name for name, _ in trainable]
                 return torch.optim.SGD([parameter for _, parameter in trainable], lr=0.1)
 
-        def trainable(_module, name, _parameter):
+        def trainable(module, name, parameter):
+            del module, parameter
             return name.endswith("bias")
 
         model = Tiny()
@@ -106,7 +113,9 @@ class ParameterPolicyTest(unittest.TestCase):
         self.assertFalse(model.net.weight.requires_grad)
         self.assertTrue(model.net.bias.requires_grad)
         optimizer = trainer.optimizers[0]
-        opt_ids = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+        opt_ids = {
+            id(parameter) for group in optimizer.param_groups for parameter in group["params"]
+        }
         self.assertNotIn(id(model.net.weight), opt_ids)
         self.assertIn(id(model.net.bias), opt_ids)
 

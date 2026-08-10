@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 
 import torch
 from torch import nn
 
 from anytrain.lightning import EMACallback, ParameterEMA, find_ema_callback
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class _LinearModule(nn.Module):
@@ -98,7 +103,7 @@ class EMACallbackTests(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 0)  # type: ignore[arg-type]
         module.weight.data.fill_(1.0)
 
-        with callback.average_parameters(module):
+        with callback.average_parameters(cast(Any, module)):
             self.assertTrue(torch.allclose(module.weight, torch.full((2, 2), 7.0)))
         self.assertTrue(torch.allclose(module.weight, torch.ones(2, 2)))
 
@@ -172,9 +177,7 @@ class EMACallbackTests(unittest.TestCase):
         restored.on_fit_start(trainer, module)  # type: ignore[arg-type]
         assert restored.ema is not None
         self.assertEqual(restored.ema.num_updates, source.ema.num_updates)
-        self.assertTrue(
-            torch.equal(restored.ema.shadow["weight"], source.ema.shadow["weight"])
-        )
+        self.assertTrue(torch.equal(restored.ema.shadow["weight"], source.ema.shadow["weight"]))
         self.assertEqual(restored._last_global_step, 1)
         self.assertIsNone(restored._pending_ema)
 
@@ -290,7 +293,8 @@ class EMACallbackTests(unittest.TestCase):
                 logger=False,
                 callbacks=[checkpoint, ema],
             )
-            self.assertLess(trainer.callbacks.index(ema), trainer.callbacks.index(checkpoint))
+            callbacks: Any = cast(Any, trainer).callbacks
+            self.assertLess(callbacks.index(ema), callbacks.index(checkpoint))
 
             with self.assertRaisesRegex(RuntimeError, "validation failed"):
                 trainer.fit(module, loader, loader)
@@ -309,9 +313,7 @@ class EMACallbackTests(unittest.TestCase):
             self.assertTrue(torch.equal(saved["state_dict"]["weight"], module.training_weight))
             saved_ema = saved["callbacks"][ema.state_key]["ema"]
             self.assertEqual(saved_ema["num_updates"], ema.ema.num_updates)
-            self.assertTrue(
-                torch.equal(saved_ema["shadow"]["weight"], ema.ema.shadow["weight"])
-            )
+            self.assertTrue(torch.equal(saved_ema["shadow"]["weight"], ema.ema.shadow["weight"]))
 
 
 if __name__ == "__main__":

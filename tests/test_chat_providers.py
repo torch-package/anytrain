@@ -8,6 +8,7 @@ import types
 import unittest
 from contextlib import suppress
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 from anytrain.chat import Chat
@@ -32,7 +33,7 @@ class ChatProviderTest(unittest.TestCase):
     def test_async_lock_releases_after_repeated_cancellation_while_acquiring(self):
         client = _chat_for_request_tests()
         lock = _BlockingLock()
-        client._lock = lock
+        cast(Any, client)._lock = lock
 
         async def run() -> None:
             task = asyncio.create_task(client.async_call("cancel"))
@@ -50,9 +51,7 @@ class ChatProviderTest(unittest.TestCase):
             finally:
                 if not released:
                     lock.release()
-                    await asyncio.wait_for(
-                        asyncio.to_thread(lock.acquired.wait), timeout=1
-                    )
+                    await asyncio.wait_for(asyncio.to_thread(lock.acquired.wait), timeout=1)
                 if not task.done():
                     task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -86,7 +85,7 @@ class ChatProviderTest(unittest.TestCase):
                 second = asyncio.create_task(client.async_call("second"))
                 await asyncio.sleep(0)
                 release_first.set()
-                return await asyncio.gather(first, second)
+                return list(await asyncio.gather(first, second))
 
         self.assertEqual(asyncio.run(run()), ["first", "second"])
         self.assertEqual(
@@ -130,7 +129,7 @@ class ChatProviderTest(unittest.TestCase):
                 await asyncio.sleep(0)
                 self.assertEqual(len(messages), 1)
                 release_first.set()
-                return await asyncio.gather(first, second)
+                return list(await asyncio.gather(first, second))
 
         self.assertEqual(asyncio.run(run()), ["first", "second"])
         self.assertEqual(
@@ -167,6 +166,7 @@ class ChatProviderTest(unittest.TestCase):
                 {"role": "assistant", "content": "first"},
             ],
         )
+
     def test_deepseek_backend_uses_openai_client(self):
         calls = []
 
@@ -786,7 +786,7 @@ class ChatProviderTest(unittest.TestCase):
 def _chat_for_request_tests() -> Chat:
     client = Chat.__new__(Chat)
     client.model_type = ModelType.GLM
-    client._config = types.SimpleNamespace(model="test", models=())
+    cast(Any, client)._config = types.SimpleNamespace(model="test", models=())
     client._client = object()
     client._async_client = None
     client._async_client_loop = None

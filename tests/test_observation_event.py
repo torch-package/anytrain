@@ -1,7 +1,8 @@
 import gc
 import unittest
 import weakref
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -12,6 +13,10 @@ import anytrain.lightning.callback.observation as observation_callback
 from anytrain import observation
 from anytrain.lightning import ObservationCallback
 from anytrain.observation import _binding as observation_binding
+
+
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
 
 
 class _Writer:
@@ -32,8 +37,9 @@ class _PLModule(pl.LightningModule):
         self.observed = observed
         self.log_dict_calls = []
 
-    def log_dict(self, values, **kwargs):
-        self.log_dict_calls.append((values, kwargs))
+    def log_dict(self, dictionary, *args, **kwargs):
+        del args
+        self.log_dict_calls.append((dictionary, kwargs))
 
 
 def _trainer(
@@ -83,7 +89,7 @@ class ObservationEventTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-empty"):
             observation.Heatmap(torch.empty(0, 3))
         with self.assertRaisesRegex(TypeError, "pair"):
-            observation.Heatmap(torch.zeros(2, 3), value_range=[0.0, 1.0])
+            observation.Heatmap(torch.zeros(2, 3), value_range=cast(Any, [0.0, 1.0]))
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
             observation.Heatmap(torch.zeros(2, 3), value_range=(1.0, 1.0))
 
@@ -105,6 +111,7 @@ class ObservationEventTest(unittest.TestCase):
             )
 
         local.sum().backward()
+        assert source.grad is not None
         self.assertTrue(torch.equal(source.grad, 2 * source.detach()))
         del local
         gc.collect()
@@ -195,9 +202,7 @@ class ObservationEventTest(unittest.TestCase):
         _run_step(callback, trainer, module, torch.tensor([1, 1, 1, 1]), batch_idx=1)
 
         ema = next(
-            kwargs
-            for tag, kwargs in writer.histograms
-            if tag == "module/observed/codes/value/ema"
+            kwargs for tag, kwargs in writer.histograms if tag == "module/observed/codes/value/ema"
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
 

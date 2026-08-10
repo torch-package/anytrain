@@ -77,7 +77,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501", "UP040", "UP046", "UP047"]
 
 [tool.basedpyright]
-include = ["src", "examples", "tests/test_glm4_codec.py"]
+include = ["src", "examples", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 reportMissingImports = "error"

@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 
 import torch
 
@@ -16,7 +17,7 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(layout.block_name_for_id(0), "text")
         self.assertEqual(layout.block_name_for_id(12), "audio")
         with self.assertRaises(TypeError):
-            layout.blocks["image"] = (20, 21)
+            cast(Any, layout.blocks)["image"] = (20, 21)
 
     def test_to_global_converts_local_ids(self):
         layout = Layout(text=(3, 7), audio=(7, 9))
@@ -80,7 +81,7 @@ class LayoutTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one"):
             Layout()
         with self.assertRaisesRegex(TypeError, "tuple"):
-            Layout(text=[0, 1])
+            Layout(text=cast(Any, [0, 1]))
         with self.assertRaisesRegex(ValueError, "greater than start"):
             Layout(text=(1, 1))
         with self.assertRaisesRegex(ValueError, "overlap"):

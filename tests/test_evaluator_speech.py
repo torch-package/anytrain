@@ -5,6 +5,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -217,15 +218,18 @@ class SpeechEvaluatorTest(unittest.TestCase):
                 )
             ],
         )
-        self.assertEqual(utmos.backend.calls, [(audio, 16000)])
+        self.assertEqual(cast(Any, utmos.backend).calls, [(audio, 16000)])
 
     def test_speech_evaluator_validates_children(self):
         with self.assertRaisesRegex(TypeError, "asr"):
-            SpeechEvaluator(asr=UTMOSEvaluator(backend=FakeUTMOSBackend(4.0)))
+            SpeechEvaluator(asr=cast(Any, UTMOSEvaluator(backend=FakeUTMOSBackend(4.0))))
         with self.assertRaisesRegex(TypeError, "utmos"):
             SpeechEvaluator(
                 asr=FakeWhisperASREvaluator({"bleu": 99.0, "wer": 0.0, "chrf": 99.0}),
-                utmos=FakeWhisperASREvaluator({"bleu": 99.0, "wer": 0.0, "chrf": 99.0}),
+                utmos=cast(
+                    Any,
+                    FakeWhisperASREvaluator({"bleu": 99.0, "wer": 0.0, "chrf": 99.0}),
+                ),
             )
 
     def test_whisper_asr_loads_openai_whisper_and_returns_text_metrics(self):
@@ -331,9 +335,9 @@ class SpeechEvaluatorTest(unittest.TestCase):
 
     def test_whisper_asr_rejects_backend_or_model_injection(self):
         with self.assertRaisesRegex(TypeError, "backend"):
-            WhisperASREvaluator(backend=object())
+            cast(Any, WhisperASREvaluator)(backend=object())
         with self.assertRaisesRegex(TypeError, "model"):
-            WhisperASREvaluator(model=object())
+            cast(Any, WhisperASREvaluator)(model=object())
 
     def test_whisper_asr_transcribes_in_inference_mode(self):
         model = FakeWhisperModel({"text": "hello world"})
@@ -440,9 +444,12 @@ class SpeechEvaluatorTest(unittest.TestCase):
                 "tensor": torch.tensor([3.0, nonfinite]),
             }
             for name, score in cases.items():
-                with self.subTest(name=name, nonfinite=nonfinite), self.assertRaisesRegex(
-                    ValueError,
-                    "finite",
+                with (
+                    self.subTest(name=name, nonfinite=nonfinite),
+                    self.assertRaisesRegex(
+                        ValueError,
+                        "finite",
+                    ),
                 ):
                     UTMOSEvaluator(backend=FakeUTMOSBackend(score))(
                         torch.zeros(16000),
@@ -481,9 +488,10 @@ class SpeechEvaluatorTest(unittest.TestCase):
         evaluator = UTMOSEvaluator(device="cpu")
 
         self.assertIsInstance(evaluator.backend, TorchHubUTMOSBackend)
-        self.assertEqual(evaluator.backend.model_name, "utmos22_strong")
-        self.assertIsNone(evaluator.backend.model)
-        self.assertFalse(evaluator.backend.allow_remote_code)
+        backend: Any = evaluator.backend
+        self.assertEqual(backend.model_name, "utmos22_strong")
+        self.assertIsNone(backend.model)
+        self.assertFalse(backend.allow_remote_code)
 
     def test_torch_hub_utmos_backend_requires_remote_code_opt_in(self):
         backend = TorchHubUTMOSBackend(device="cpu")

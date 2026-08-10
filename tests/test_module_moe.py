@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -139,6 +140,7 @@ class MoETest(unittest.TestCase):
         self.assertEqual(batch_sizes, [2, 3, 3])
         actual.sum().backward()
         self.assertIsNotNone(selected_weights.grad)
+        assert selected_weights.grad is not None
         self.assertNotEqual(float(selected_weights.grad[1, 0]), 0.0)
 
     def test_topk_generic_all_masked_uses_empty_shape_probe(self):
@@ -189,7 +191,7 @@ class MoETest(unittest.TestCase):
             indices=torch.tensor([[0], [2]], dtype=torch.long),
             weights=torch.ones(2, 1),
         )
-        experts = nn.ModuleList(
+        experts: Any = nn.ModuleList(
             [
                 nn.Linear(2, 2, bias=False),
                 nn.Linear(2, 2, bias=False),
@@ -271,6 +273,8 @@ class MoETest(unittest.TestCase):
             mask=torch.zeros(4, dtype=torch.bool),
         )
         expert = nn.BatchNorm1d(2)
+        assert expert.running_mean is not None
+        assert expert.num_batches_tracked is not None
         before = expert.running_mean.detach().clone()
         before_batches = expert.num_batches_tracked.detach().clone()
 
@@ -309,9 +313,7 @@ class MoETest(unittest.TestCase):
         assert hidden.grad is not None
         assert expert.weight.grad is not None
         self.assertTrue(torch.equal(hidden.grad, torch.zeros_like(hidden.grad)))
-        self.assertTrue(
-            torch.equal(expert.weight.grad, torch.zeros_like(expert.weight.grad))
-        )
+        self.assertTrue(torch.equal(expert.weight.grad, torch.zeros_like(expert.weight.grad)))
 
     def test_sparse_dispatch_promotes_bfloat16_expert_and_float32_routes(self):
         from anytrain.module.moe.sparse import sparse_dispatch
@@ -370,7 +372,7 @@ class MoETest(unittest.TestCase):
             indices=torch.tensor([[0], [1]]),
             weights=selected_weights,
         )
-        experts = nn.ModuleList(
+        experts: Any = nn.ModuleList(
             [
                 Scale(torch.bfloat16, 1.5),
                 Scale(torch.float64, -0.5),
@@ -413,9 +415,7 @@ class MoETest(unittest.TestCase):
             indices=indices,
             weights=torch.ones(32, 1, device=device),
         )
-        experts = nn.ModuleList(
-            [nn.Linear(8, 8, bias=False).to(device) for _ in range(4)]
-        )
+        experts: Any = nn.ModuleList([nn.Linear(8, 8, bias=False).to(device) for _ in range(4)])
         with torch.no_grad():
             for expert in experts:
                 expert.weight.copy_(torch.eye(8, device=device))
@@ -484,6 +484,7 @@ class MoETest(unittest.TestCase):
         template = nn.Conv1d(1, 1, kernel_size=1, bias=True)
         with torch.no_grad():
             template.weight.fill_(2.0)
+            assert template.bias is not None
             template.bias.fill_(3.0)
         expert, weight, bias = expand_expert(template, num_experts=1, init="copy")
         assert bias is not None
@@ -511,8 +512,10 @@ class MoETest(unittest.TestCase):
         conv2d = nn.Conv2d(1, 1, kernel_size=1, bias=True)
         with torch.no_grad():
             conv1d.weight.fill_(2.0)
+            assert conv1d.bias is not None
             conv1d.bias.fill_(3.0)
             conv2d.weight.fill_(2.0)
+            assert conv2d.bias is not None
             conv2d.bias.fill_(3.0)
 
         moe_1d = MoE.from_module(conv1d, num_experts=1)
@@ -531,6 +534,7 @@ class MoETest(unittest.TestCase):
         template = nn.ConvTranspose1d(1, 1, kernel_size=3, stride=2, bias=True)
         with torch.no_grad():
             template.weight.zero_()
+            assert template.bias is not None
             template.bias.fill_(2.0)
         moe = MoE.from_module(
             template,
@@ -629,6 +633,7 @@ class MoETest(unittest.TestCase):
         template = nn.ConvTranspose1d(1, 1, kernel_size=3, stride=2, bias=True)
         with torch.no_grad():
             template.weight.zero_()
+            assert template.bias is not None
             template.bias.fill_(2.0)
         moe = MoE.from_module(
             template,
@@ -650,6 +655,7 @@ class MoETest(unittest.TestCase):
         template = nn.ConvTranspose1d(1, 1, kernel_size=3, stride=2, bias=True)
         with torch.no_grad():
             template.weight.zero_()
+            assert template.bias is not None
             template.bias.fill_(2.0)
         moe = MoE.from_module(
             template,
@@ -946,7 +952,7 @@ class MoETest(unittest.TestCase):
                     logits=logits,
                     probabilities=probabilities,
                     mask=torch.tensor([True, False]),
-                    **kwargs,
+                    **cast(Any, kwargs),
                 )
                 moe = MoE(
                     num_experts=2,
@@ -1115,10 +1121,7 @@ class MoETest(unittest.TestCase):
                     )
                     route_values = probabilities
                     expert_outputs = torch.stack(
-                        [
-                            bfloat16_expert(hidden, expert_weight[index])
-                            for index in range(3)
-                        ],
+                        [bfloat16_expert(hidden, expert_weight[index]) for index in range(3)],
                         dim=1,
                     )
                     expected = (probabilities.unsqueeze(-1) * expert_outputs).sum(dim=1)
@@ -1133,8 +1136,7 @@ class MoETest(unittest.TestCase):
                     )
                     route_values = selected_weights
                     expert_outputs = (
-                        hidden.float().unsqueeze(1)
-                        * expert_weight[indices].unsqueeze(-1)
+                        hidden.float().unsqueeze(1) * expert_weight[indices].unsqueeze(-1)
                     ).to(dtype=torch.bfloat16)
                     expected = (selected_weights.unsqueeze(-1) * expert_outputs).sum(dim=1)
                 moe = MoE(
@@ -1251,7 +1253,7 @@ class MoETest(unittest.TestCase):
             MoE(
                 num_experts=2,
                 router=LinearRouter(2, 2),
-                expert=_scale_expert,
+                expert=cast(Any, _scale_expert),
                 weight=nn.Parameter(torch.ones(2)),
                 top_k=1,
             )
@@ -1290,6 +1292,8 @@ class ExpertRoutingTest(unittest.TestCase):
         sparse = materialize_routing(logits, probs, top_k=2)
         selected_logits, indices = logits.topk(2, dim=-1)
         expected = selected_logits.softmax(dim=-1)
+        assert sparse.indices is not None
+        assert sparse.weights is not None
         self.assertTrue(torch.equal(sparse.indices, indices))
         self.assertTrue(torch.allclose(sparse.weights, expected))
         renorm = probs.gather(-1, indices)
@@ -1415,7 +1419,7 @@ class MoEMetricsTest(unittest.TestCase):
                     logits=torch.tensor([[0.0, 0.0], [float("nan"), float("inf")]]),
                     probabilities=torch.tensor([[0.75, 0.25], [float("nan"), float("nan")]]),
                     mask=torch.tensor([True, False]),
-                    **kwargs,
+                    **cast(Any, kwargs),
                 )
 
                 metrics = moe_routing_metrics(routing)
@@ -1459,9 +1463,7 @@ class ExpandExpertTest(unittest.TestCase):
         )
         # Router is unused for forward_manually; LinearRouter dim is irrelevant here.
         x = torch.randn(2, 4, 16)
-        expected = torch.nn.functional.conv1d(
-            x, template.weight, template.bias, padding=1
-        )
+        expected = torch.nn.functional.conv1d(x, template.weight, template.bias, padding=1)
         dense = moe.forward_manually(
             x, expert_routing_from_weights(torch.ones(2, 3) / 3)
         ).hidden_states
@@ -1484,7 +1486,7 @@ class ExpandExpertTest(unittest.TestCase):
             init="empty",
         )
         self.assertIsInstance(expert, Conv1dExpert)
-        self.assertTrue(expert.causal)
+        self.assertTrue(cast(Any, expert).causal)
         self.assertEqual(weight.shape, (2, 5, 4, 3))
         self.assertIsNotNone(bias)
 
@@ -1514,7 +1516,9 @@ class MoELossTest(unittest.TestCase):
         )
         expected = output.balance_loss * 0.1 + output.z_loss * 0.01
         torch.testing.assert_close(output.total, expected)
-        self.assertEqual(set(output.details()), {"balance", "z", "weighted_balance", "weighted_z", "total"})
+        self.assertEqual(
+            set(output.details()), {"balance", "z", "weighted_balance", "weighted_z", "total"}
+        )
 
 
 if __name__ == "__main__":

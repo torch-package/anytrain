@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -24,6 +25,10 @@ from anytrain.lightning.schedule import (
 )
 
 
+def SimpleNamespace(**kwargs: object) -> Any:
+    return _SimpleNamespace(**kwargs)
+
+
 class _Module:
     def __init__(self) -> None:
         self.log_dict_calls = []
@@ -40,6 +45,10 @@ class _Provider:
     def __call__(self, **kwargs):
         del kwargs
         return self.batches.pop(0)
+
+
+def _module() -> Any:
+    return _Module()
 
 
 def _optimizer(lr: float = 1.0) -> torch.optim.Optimizer:
@@ -78,9 +87,9 @@ class ScheduleTest(unittest.TestCase):
         for value in (True, torch.tensor(1.0)):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(TypeError, "host real number"):
-                    UnitBatch(valid=value, unit="tokens")
+                    UnitBatch(valid=cast(Any, value), unit="tokens")
                 with self.assertRaisesRegex(TypeError, "host real number"):
-                    UnitBatch(valid=0.0, padded=value, unit="tokens")
+                    UnitBatch(valid=0.0, padded=cast(Any, value), unit="tokens")
 
     def test_step_clock_runtime_returns_lightning_scheduler(self):
         optimizer = _optimizer()
@@ -122,7 +131,7 @@ class ScheduleTest(unittest.TestCase):
         runtime = ScheduleRuntime(schedule)
         callback = runtime.callbacks()[0]
         trainer = SimpleNamespace(global_step=0, optimizers=[optimizer], lr_scheduler_configs=[])
-        module = _Module()
+        module = _module()
 
         self.assertIs(runtime.configure_optimizers(optimizer), optimizer)
         callback.on_train_start(trainer, module)
@@ -167,7 +176,7 @@ class ScheduleTest(unittest.TestCase):
             lr_scheduler_configs=[],
             should_stop=False,
         )
-        module = _Module()
+        module = _module()
 
         callback.on_train_start(trainer, module)
         with patch("time.perf_counter", side_effect=[1.0, 2.0]):
@@ -206,7 +215,7 @@ class ScheduleTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "Lightning lr_schedulers"):
-            callback.on_train_start(trainer, _Module())
+            callback.on_train_start(trainer, _module())
 
     def test_unit_clock_rejects_external_lr_changes(self):
         optimizer = _optimizer()
@@ -221,7 +230,7 @@ class ScheduleTest(unittest.TestCase):
             )
         )
         trainer = SimpleNamespace(global_step=0, optimizers=[optimizer], lr_scheduler_configs=[])
-        module = _Module()
+        module = _module()
         callback.on_train_start(trainer, module)
         with patch("time.perf_counter", side_effect=[1.0, 2.0, 3.0, 4.0]):
             callback.on_train_batch_start(trainer, module, batch=None, batch_idx=0)
@@ -254,7 +263,7 @@ class ScheduleTest(unittest.TestCase):
             world_size=2,
             strategy=Strategy(),
         )
-        module = _Module()
+        module = _module()
         callback.on_train_start(trainer, module)
         with patch("time.perf_counter", side_effect=[1.0, 2.0]):
             callback.on_train_batch_start(trainer, module, batch=None, batch_idx=0)
@@ -284,10 +293,7 @@ class ScheduleTest(unittest.TestCase):
                     clock=UnitClock(
                         unit="tokens",
                         provider=_Provider(
-                            *(
-                                UnitBatch(valid=1.0, unit="tokens")
-                                for _ in range(local_batches)
-                            )
+                            *(UnitBatch(valid=1.0, unit="tokens") for _ in range(local_batches))
                         ),
                     ),
                     phases=[Phase("main", duration=20.0, lr=Constant(1.0))],
@@ -300,7 +306,7 @@ class ScheduleTest(unittest.TestCase):
                 world_size=3,
                 strategy=Strategy(),
             )
-            module = _Module()
+            module = _module()
             callback.on_train_start(trainer, module)
 
             with (
@@ -348,9 +354,7 @@ class ScheduleTest(unittest.TestCase):
                             *(
                                 UnitBatch(
                                     valid=1.0,
-                                    padded=(
-                                        1.0 if batch_idx < local_padded_batches else None
-                                    ),
+                                    padded=(1.0 if batch_idx < local_padded_batches else None),
                                     unit="tokens",
                                 )
                                 for batch_idx in range(2)
@@ -367,7 +371,7 @@ class ScheduleTest(unittest.TestCase):
                 world_size=3,
                 strategy=Strategy(),
             )
-            module = _Module()
+            module = _module()
             callback.on_train_start(trainer, module)
 
             with (
@@ -426,7 +430,7 @@ class ScheduleTest(unittest.TestCase):
             world_size=2,
             strategy=strategy,
         )
-        module = _Module()
+        module = _module()
 
         with (
             patch("torch.cuda.is_available", return_value=True),
@@ -510,7 +514,7 @@ class ScheduleTest(unittest.TestCase):
             world_size=2,
             strategy=strategy,
         )
-        module = _Module()
+        module = _module()
         callback.on_train_start(trainer, module)
 
         with patch("time.perf_counter", side_effect=[0.0, 1.0, 10.0, 15.0]):
@@ -555,7 +559,7 @@ class ScheduleTest(unittest.TestCase):
             optimizers=[optimizer],
             lr_scheduler_configs=[],
         )
-        module = _Module()
+        module = _module()
         module.device = torch.device("cuda", 3)
 
         with (
@@ -601,7 +605,7 @@ class ScheduleTest(unittest.TestCase):
             optimizers=[optimizer],
             lr_scheduler_configs=[],
         )
-        module = _Module()
+        module = _module()
 
         with (
             patch("torch.cuda.is_available", return_value=True),
@@ -643,7 +647,7 @@ class ScheduleTest(unittest.TestCase):
             optimizers=[optimizer],
             lr_scheduler_configs=[],
         )
-        module = _Module()
+        module = _module()
         callback.on_train_start(trainer, module)
 
         with patch("time.perf_counter", side_effect=[0.0, 2.0, 10.0, 11.0]):
@@ -684,7 +688,7 @@ class ScheduleTest(unittest.TestCase):
             optimizers=[optimizer],
             lr_scheduler_configs=[],
         )
-        module = _Module()
+        module = _module()
         callback.on_train_start(trainer, module)
 
         with patch("time.perf_counter", return_value=1.0):

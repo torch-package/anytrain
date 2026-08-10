@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, call, patch
 
 from anytrain.audio.bpe import CodecBPE
@@ -357,8 +358,7 @@ class BPETest(unittest.TestCase):
         tqdm.return_value.close.assert_called_once_with()
         self.assertFalse(
             any(
-                progress_call.args
-                and progress_call.args[0].startswith("CodecBPE corpus:")
+                progress_call.args and progress_call.args[0].startswith("CodecBPE corpus:")
                 for progress_call in tqdm.write.call_args_list
             )
         )
@@ -420,7 +420,7 @@ class BPETest(unittest.TestCase):
                 CodecBPE.train(
                     replay([[[1], [2]]]),
                     codebook_sizes=(16,),
-                    max_frames=max_frames,
+                    max_frames=cast(Any, max_frames),
                     show_progress=False,
                 )
 
@@ -615,9 +615,7 @@ class BPETest(unittest.TestCase):
             sum(top["frequency"] for top in stats["top_token_counts"]),
             1.0,
         )
-        self.assertAlmostEqual(
-            stats["vocab_coverage"], stats["num_used_tokens"] / bpe.vocab_size
-        )
+        self.assertAlmostEqual(stats["vocab_coverage"], stats["num_used_tokens"] / bpe.vocab_size)
         self.assertGreater(stats["entropy"], 0.0)
         self.assertEqual(stats["used_token_length_counts"], (0, 0, 1, 2))
         self.assertEqual(stats["used_token_length_frequencies"], (0.0, 0.0, 1 / 3, 2 / 3))
