@@ -31,6 +31,7 @@ chat = ["openai>=1.0", "requests>=2.31", "zai-sdk>=0.2.3"]
 dac = ["descript-audio-codec>=1.0"]
 logger = ["wandb>=0.16"]
 module = ["transformers>=4.51.0"]
+muon = ["torch>=2.9"]
 peft = ["peft>=0.17.1,<0.21"]
 bpe = ["tokenizers>=0.20", "tqdm>=4.0"]
 text = ["jiwer>=4.0", "sacrebleu>=2.0"]
@@ -51,10 +52,6 @@ longcat = [
 moss-tts = ["torchaudio>=2.0", "transformers"]
 qwen-tts = [
     "qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@022e286b98fbec7e1e916cb940cdf532cd9f488e",
-]
-unicodec = [
-    "huggingface-hub>=0.23",
-    "unicodec @ git+https://github.com/rookiejune/UniCodec.git@004f1437956885a8c0e0f23e406844452238d84a",
 ]
 test = ["basedpyright>=1.31", "pytest>=8.0", "ruff>=0.8"]
 

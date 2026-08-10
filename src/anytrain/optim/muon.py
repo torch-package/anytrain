@@ -89,7 +89,7 @@ def _create_muon_optimizer(
     if muon_cls is None:
         raise RuntimeError(
             "torch.optim.Muon is not available in this PyTorch version. "
-            "Muon requires a newer PyTorch."
+            "Install 'anytrain[muon]' to require torch>=2.9."
         )
 
     optimizer_options = cast(

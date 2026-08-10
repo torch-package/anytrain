@@ -7,41 +7,14 @@
 
 ## 安装
 
-官方安装方式：
+`anytrain` 要求 Python `>=3.12`。当前官方 `stable-codec==0.1.2` 仍依赖固定的
+`torch==2.4`、`torchaudio==2.4`、特定 CUDA、FlashAttention 和旧构建链；其依赖链在
+Python 3.12 环境中尚未形成受支持的安装组合。因此 Stable Codec 暂不提供 extra，wrapper
+源码仅保留集成边界，不应通过较低 Python 版本或 `PYTHONPATH` bridge 绕过 anytrain 的包约束。
 
-```bash
-python -m pip install stable-codec
-python -m pip install -U flash-attn --no-build-isolation
-```
-
-当前官方 `stable-codec==0.1.2` 的 `setup.py` 硬性依赖 `torch==2.4` 和
-`torchaudio==2.4`。`anytrain` 的核心下限也是 `torch>=2.4`，因此元数据不再冲突；但
-Stable Codec 还要求特定 CUDA、FlashAttention 和旧构建链，所以暂不放进自动安装的 extra。
-需要使用时应先创建匹配上游约束的独立环境（Python 3.9 / torch 2.4）。
-
-`anytrain` 本身要求 Python >=3.12，桥接环境不满足该下限，不能从元数据解析安装；
-为避免 pip 重新解析已固定的 Torch 栈，直接从 checkout 暴露 wrapper 源码：
-
-```bash
-export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH
-```
-
-这个桥接环境只用于 `anytrain.audio.codec.stable_codec` 推理和离线生成 codes/latents；其它 anytrain
-模块仍需满足各自依赖和运行环境约束。
-
-Stable Codec 官方 README 还说明当前模型依赖 FlashAttention，不建议 CPU 推理。
-
-在 `121` 上已验证 `stable-codec==0.1.2` 可以在独立 `py39` 环境安装并导入：
-`python==3.9.25`、`torch==2.4.0+cu121`、`torchaudio==2.4.0+cu121`。安装时
-`pypesq==1.2.4` 需要旧构建链，先安装 `numpy==1.23.5`、`Cython`、
-`pip==24.0`、`setuptools==59.8.0`，再执行：
-
-```bash
-CFLAGS="-fcommon" python -m pip install --no-build-isolation pypesq==1.2.4
-CFLAGS="-fcommon" python -m pip install stable-codec==0.1.2
-```
-
-复旦环境的完整记录见 `docs/codec-envs.md`。
+历史环境和 API smoke 记录保留在 `docs/codec-envs.md`，只作为上游行为证据，不代表当前支持
+策略。待上游依赖链支持 Python 3.12 后，再为该 wrapper 恢复可执行的安装说明。Stable Codec
+官方 README 还说明当前模型依赖 FlashAttention，不建议 CPU 推理。
 
 ## 使用
 

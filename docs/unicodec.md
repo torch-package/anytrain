@@ -1,39 +1,17 @@
 # UniCodec
 
 `anytrain.audio.codec.unicodec` 是对 `rookiejune/UniCodec` fork 的 optional 集成层。
-它不进入 core import，只在用户显式安装 `unicodec` extra 并调用相关 API 时使用。
+它不进入 core import，只在用户显式调用相关 API 时加载上游包。
 
 ## 安装
 
-UniCodec 源码维护在可安装 fork：
+当前不提供 `unicodec` extra。UniCodec 的旧 `fairseq`/torch 构建链在 Python `>=3.12`
+环境中仍会在解析或构建阶段失败，因此真实 UniCodec backend 暂无受支持的安装组合。不要通过较低 Python 版本或
+`PYTHONPATH` bridge 绕过 anytrain 的包约束，也不要在主训练环境中尝试让 resolver 自由改写
+共享 Torch 依赖。
 
-```bash
-python -m pip install -e ../../UniCodec
-```
-
-`unicodec` extra 声明 fork 和 Hugging Face 依赖：
-
-```bash
-python -m pip install "unicodec @ git+https://github.com/rookiejune/UniCodec.git" "huggingface-hub>=0.23"
-```
-
-`unicodec` extra 依赖：
-
-- `unicodec @ git+https://github.com/rookiejune/UniCodec.git`
-- `huggingface-hub`
-
-但 extra 不会替用户解开 UniCodec 的旧 `fairseq`/torch 构建链。当前真实 smoke 只在独立
-Python 3.9、pip 24、torch 2.4 环境通过；Python 3.12 + 新版 pip 下 `fairseq` 仍会在解析或
-构建阶段失败。仍不要在主训练环境直接解析 `[unicodec]`，因为旧 `fairseq` 构建链可能改写
-共享依赖。兼容桥接环境不满足 `anytrain` 的 Python >=3.12 下限，不从元数据解析安装
-`anytrain`，改为从 checkout 暴露 thin wrapper：
-
-```bash
-export PYTHONPATH=/path/to/anytrain/src:$PYTHONPATH
-```
-
-该兼容路径只用于运行 `anytrain.audio.codec.unicodec` 并离线生成 codes/features；不要把它当成
-完整 anytrain 环境。已验证版本和安装记录见 `docs/codec-envs.md`。
+历史 smoke 的版本和结果保留在 `docs/codec-envs.md`，只作为上游行为证据。待旧依赖链完成
+Python 3.12 兼容后，再恢复 `unicodec` extra 和可执行安装说明。
 
 ## 缓存路径
 

@@ -21,12 +21,14 @@ python -m pip install -e ".[test]"
 
 ```bash
 python -m pip install "wandb>=0.16" transformers "tokenizers>=0.20"
+python -m pip install -e ".[muon]"
 python -m pip install -e ".[peft]"
 ```
 
-当前包要求 Python `>=3.12`，核心依赖包括 `torch>=2.4` 和 `lightning>=2.0`。Muon 是条件
-能力：只有当前 PyTorch 提供 `torch.optim.Muon` 时才可用。可以用
-`anytrain.optim.muon_available()` 查询当前环境能力。
+当前包要求 Python `>=3.12`，核心依赖包括 `torch>=2.4` 和 `lightning>=2.0`。原生 Muon
+通过 `muon` extra 安装，该 extra 将 PyTorch 约束提升为 `torch>=2.9`；未安装时 AdamW、
+scheduler 和参数分组等其余 core API 仍可用。可以用 `anytrain.optim.muon_available()` 查询
+当前环境能力。
 
 ## Quick Start
 

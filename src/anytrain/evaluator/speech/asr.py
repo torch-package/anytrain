@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -17,6 +17,13 @@ class _ASRTranscriber(Protocol):
 
     def transcribe(self, audio: Any, sample_rate: int, **decode_options: Any) -> TextInput:
         ...
+
+    def transcribe_batch(
+        self,
+        audios: Sequence[Any],
+        sample_rates: Sequence[int],
+        **decode_options: Any,
+    ) -> list[str]: ...
 
 
 class WhisperASREvaluator(EvaluatorABC):
@@ -79,6 +86,48 @@ class WhisperASREvaluator(EvaluatorABC):
             return output
         return self._normalize_text_input(output, label="prediction_text")
 
+    def call_batch(
+        self,
+        audios: Sequence[Any],
+        sample_rates: Sequence[int],
+        reference_texts: Sequence[str],
+        **decode_options: Any,
+    ) -> tuple[MetricDict, ...]:
+        """Return per-clip ASR metrics from one batched transcription call."""
+
+        audio_values = tuple(audios)
+        rate_values = tuple(sample_rates)
+        references = tuple(
+            coerce_text_batch(
+                reference_texts,
+                name="reference_texts",
+            )
+        )
+        self._validate_batch_lengths(audio_values, rate_values, references)
+        if not audio_values:
+            return ()
+
+        options = dict(self.decode_options)
+        options.update(decode_options)
+        predictions = self._backend.transcribe_batch(
+            audio_values,
+            tuple(validate_sample_rate(rate) for rate in rate_values),
+            **options,
+        )
+        if len(predictions) != len(references):
+            raise ValueError(
+                "prediction/reference text counts must match: "
+                f"got {len(predictions)} predictions and {len(references)} references."
+            )
+
+        output: list[MetricDict] = []
+        for prediction, reference in zip(predictions, references, strict=True):
+            metrics = self.text_evaluator.evaluate(prediction, reference)
+            output.append(
+                self._validate_metric_dict(self._extract_required_metrics(metrics))
+            )
+        return tuple(output)
+
     def _text_evaluator(
         self,
         text_evaluator: TextComparisonEvaluator | None,
@@ -130,3 +179,16 @@ class WhisperASREvaluator(EvaluatorABC):
         if not isinstance(decode_options, Mapping):
             raise TypeError("decode_options must be a mapping.")
         return dict(decode_options)
+
+    def _validate_batch_lengths(
+        self,
+        audios: Sequence[Any],
+        sample_rates: Sequence[int],
+        reference_texts: Sequence[str],
+    ) -> None:
+        lengths = (len(audios), len(sample_rates), len(reference_texts))
+        if len(set(lengths)) != 1:
+            raise ValueError(
+                "audios, sample_rates, and reference_texts must have the same "
+                f"batch length: got {lengths[0]}, {lengths[1]}, and {lengths[2]}."
+            )

@@ -184,9 +184,9 @@ def test_glm4_tokenizer_is_directional_and_exposes_frozen_codebook() -> None:
 
     assert tokenizer.name == "glm4"
     assert tokenizer.codebook_sizes == (16_384,)
-    assert tokenizer.semantic_codebook.shape == (16_384, 2)
-    assert tokenizer.semantic_feature_dim == 2
-    assert not tokenizer.semantic_codebook.requires_grad
+    assert tokenizer.codebook.shape == (16_384, 2)
+    assert tokenizer.codebook_dim == 2
+    assert not tokenizer.codebook.requires_grad
     assert not hasattr(tokenizer, "decode")
 
 

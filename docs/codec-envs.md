@@ -2,8 +2,8 @@
 
 `anytrain.audio.codec` 的边界是 optional thin wrapper：core 包不安装具体 codec
 上游依赖，wrapper 只在用户显式调用时导入上游包。codec 依赖如果能和主训练环境共存，
-可以放进 extra；如果上游 pin 旧版 torch、Python 或 pip，就使用独立环境先离线生成
-codes/cache，再由主训练环境读取产物。
+可以放进 extra；如果上游只支持低于 anytrain 下限的 Python 或不兼容的 Torch/PIP 链，
+则该 backend 暂不属于受支持运行路径。下文中的旧环境 smoke 仅作为历史验证记录。
 
 ## GLM-4 online tokenizer
 
@@ -55,17 +55,15 @@ prepared/online exact ID parity、batch-single parity 和吞吐/显存 gate。
 - UniCodec：本地 `UniCodec` 源码在 `py312` 下能被加入 `PYTHONPATH`，但导入
   `Unicodec` 时缺 `fairseq`。`fairseq` 在 `py312` + pip 26 下解析/构建失败；
   在 isolated `py39` 中降到 pip 24.0 后，metadata 问题消失，但 resolver 会继续拉取
-  大体积 torch wheel。UniCodec 不应进入 core；如果需要真实 smoke，先在 codec 专用
-  环境里固定 torch，再安装 `fairseq` 等旧依赖。
+  大体积 torch wheel。该 py39 结果只记录历史排障过程，不是当前兼容方案。
 - Stable Codec：`stable-codec==0.1.2` 在 `py312` dry-run 中要求
   `torch==2.4`、`torchaudio==2.4`、`stable-audio-tools==0.0.17`，并在
-  `pandas==2.0.2` 处开始源码构建后失败。`121` 上 isolated `py39` 环境已完成真实安装：
+  `pandas==2.0.2` 处开始源码构建后失败。历史上曾在 `121` 的 isolated `py39` 环境完成真实安装：
   `python==3.9.25`、`stable-codec==0.1.2`、`torch==2.4.0+cu121`、
   `torchaudio==2.4.0+cu121`、`torchvision==0.19.0+cu121`，CUDA 可见
   `NVIDIA A100-PCIE-40GB`。安装前需要先处理 `pypesq==1.2.4` 的旧构建链：
   `numpy==1.23.5`、`Cython`、`pip==24.0`、`setuptools==59.8.0`，再用
-  `CFLAGS="-fcommon" pip install --no-build-isolation pypesq==1.2.4`。Stable Codec
-  应使用独立 py39/torch2.4 环境，不放进 `anytrain` extra 自动安装。安装匹配
+  `CFLAGS="-fcommon" pip install --no-build-isolation pypesq==1.2.4`。安装匹配
   torch 2.4/CUDA 12.1 的 `flash-attn==2.7.4.post1` 后，已在 `121` A100 上用统一接口
   完成未启用 posthoc 的真实 1 秒静音 roundtrip：native
   `codebook_sizes == (24137569,)`，codes shape 是 `(1, 25, 1)`，decode 输出
@@ -73,14 +71,15 @@ prepared/online exact ID parity、batch-single parity 和吞吐/显存 gate。
 
 ## Policy
 
-- `anytrain` core 继续保持宽 Python 约束和当前 torch 主线，不为旧 codec 整体降级。
+- `anytrain` core 保持 Python `>=3.12` 和当前 torch 主线，不为旧 codec 降级，也不维护
+  低版本 Python bridge。
 - DAC 已作为普通 optional codec wrapper 接入；wrapper 使用显式 `cache_dir` 或
   `ANYTRAIN_HOME/dac`，不调用上游硬编码到 `Path.home()/.cache/descript/dac` 的下载入口。
 - 远程 checkpoint/snapshot 下载默认要求可复现 pin：Hugging Face 路径传
   `revision=<commit-sha>`，DAC 路径需要 SHA-256 元数据；旧式浮动/未校验下载必须显式 opt in。
-- UniCodec wrapper 保持 optional；不要让 pip 在主环境里自由解析 `fairseq` 和 torch。
-- Stable Codec wrapper 保持 optional；文档要求用户在独立兼容环境中安装上游包和
-  FlashAttention。
+- UniCodec wrapper 保持 optional；在其依赖链支持 Python 3.12 前，不作为受支持 backend。
+- Stable Codec wrapper 保持 optional；在上游包和 FlashAttention 形成 Python 3.12 可安装组合前，
+  不作为受支持 backend。
 - GLM-4 wrapper 保持 tokenizer-only；允许 source fork，但必须满足已验证 API/数值契约；HF 权重
   revision 和 Transformers 版本继续固定。与主环境依赖冲突时使用独立 producer，不为方便安装
   静默放宽版本约束。
@@ -137,45 +136,9 @@ Stable Codec 的转写在最后一个词变成 `Vig-`；原始音频、LongCat �
 reference 一致。完整 WAV、codec metadata、候选筛选结果和 evaluator JSON 位于顶层
 `debug/codec-speech-eval-20260713/`。这里只验证单条样本，不能据此推导总体 codec 排名。
 
-## Stable Codec py39 recipe
+## Stable Codec historical API snapshot
 
-`121` 已验证环境位置：
-
-```bash
-base=/mnt/pami202/zhuyin/dynamic/debug/stable-codec-py39
-python=$base/env/bin/python
-```
-
-推荐复现步骤：
-
-```bash
-export TMPDIR=$base/tmp
-export PIP_CACHE_DIR=$base/pip-cache
-export CONDA_PKGS_DIRS=$base/conda-pkgs
-
-conda create -y -p "$base/env" python=3.9
-"$python" -m pip install pip==24.0 setuptools==59.8.0 wheel Cython numpy==1.23.5
-CFLAGS="-fcommon" "$python" -m pip install --no-build-isolation pypesq==1.2.4
-CFLAGS="-fcommon" "$python" -m pip install stable-codec==0.1.2
-```
-
-验证命令：
-
-```bash
-CUDA_VISIBLE_DEVICES=0 "$python" - <<'PY'
-import inspect
-import torch
-from stable_codec import StableCodec
-
-print(torch.__version__, torch.version.cuda, torch.cuda.is_available())
-print(inspect.signature(StableCodec))
-print(inspect.signature(StableCodec.encode))
-print(inspect.signature(StableCodec.decode))
-print(inspect.signature(StableCodec.set_posthoc_bottleneck))
-PY
-```
-
-`stable-codec==0.1.2` 的上游 API：
+历史 smoke 中 `stable-codec==0.1.2` 的上游 API：
 
 - `StableCodec(model_config_path=None, ckpt_path=None, pretrained_model=None, device=torch.device("cpu"))`
 - `encode(audio, posthoc_bottleneck=False, normalize=True, **kwargs)` 返回

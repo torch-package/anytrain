@@ -1,5 +1,6 @@
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -842,9 +843,11 @@ class OptimConfigTest(unittest.TestCase):
     def test_muon_availability_matches_torch(self):
         self.assertEqual(MUON_AVAILABLE, getattr(torch.optim, "Muon", None) is not None)
 
-    @unittest.skipIf(MUON_AVAILABLE, "requires a PyTorch version without Muon")
-    def test_muon_creation_reports_version_requirement(self):
-        with self.assertRaisesRegex(RuntimeError, "Python 3.9"):
+    def test_muon_creation_reports_optional_dependency(self):
+        with (
+            patch.object(torch.optim, "Muon", None, create=True),
+            self.assertRaisesRegex(RuntimeError, r"anytrain\[muon\].*torch>=2\.9"),
+        ):
             create_muon_adamw_optimizer(
                 TinyLLM(),
                 muon=_muon_options(1e-4),

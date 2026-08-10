@@ -129,6 +129,9 @@ optim 负责 optimizer / scheduler 构造 helper，不接管训练流程。
 - `CompositeOptimizer`：把 Muon 和 AdamW 包成一个 optimizer，方便 Lightning 和 scheduler 使用。
 - LLM helper：按 `pretrain` / `cpt` / `sft` stage 生成 AdamW 或 Muon+AdamW optimizer，并提供 `constant` / `warmup_cosine` / `wsd` 命名 scheduler。
 
+core 保持 `torch>=2.4`；原生 Muon 路径通过 `muon` extra 要求 `torch>=2.9`。未安装该 extra
+时，其余 optimizer、scheduler 和参数分组 API 仍可用。
+
 optim 不提供魔法 LightningModule 基类。下游在自己的 `configure_optimizers()` 里显式调用 helper。
 
 ## Module

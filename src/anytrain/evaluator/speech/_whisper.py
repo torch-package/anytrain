@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
 from anytrain._compat import strict_zip
 
@@ -91,6 +92,82 @@ class _OpenAIWhisperTranscriber:
                 for sample in wave
             ]
         return predictions[0] if len(predictions) == 1 else predictions
+
+    def transcribe_batch(
+        self,
+        audios: Sequence[Any],
+        sample_rates: Sequence[int],
+        **decode_options: Any,
+    ) -> list[str]:
+        """Transcribe independent clips while batching the short decode path."""
+
+        audio_values = tuple(audios)
+        rate_values = tuple(sample_rates)
+        if len(audio_values) != len(rate_values):
+            raise ValueError(
+                "audios and sample_rates must have the same batch length: "
+                f"got {len(audio_values)} and {len(rate_values)}."
+            )
+        if not audio_values:
+            return []
+
+        waves = tuple(
+            self._single_waveform(audio, sample_rate)
+            for audio, sample_rate in strict_zip(audio_values, rate_values)
+        )
+        predictions: list[str | None] = [None] * len(waves)
+        short_indexes = [
+            index
+            for index, wave in enumerate(waves)
+            if wave.shape[-1] <= _WHISPER_CHUNK_SAMPLES
+        ]
+        if short_indexes:
+            batch = pad_sequence(
+                [waves[index] for index in short_indexes],
+                batch_first=True,
+            )
+            short_predictions = self._prediction_batch(
+                self.transcribe(
+                    batch,
+                    self.target_sample_rate,
+                    **decode_options,
+                ),
+                expected=len(short_indexes),
+            )
+            for index, prediction in strict_zip(short_indexes, short_predictions):
+                predictions[index] = prediction
+
+        for index, wave in enumerate(waves):
+            if predictions[index] is not None:
+                continue
+            prediction = self.transcribe(
+                wave,
+                self.target_sample_rate,
+                **decode_options,
+            )
+            predictions[index] = self._prediction_batch(prediction, expected=1)[0]
+
+        if any(prediction is None for prediction in predictions):
+            raise RuntimeError("Whisper batch transcription left an input without text.")
+        return [prediction for prediction in predictions if prediction is not None]
+
+    def _single_waveform(self, audio: Any, sample_rate: int) -> torch.Tensor:
+        wave, sample_rate = load_wave_batch(audio, sample_rate)
+        wave = resample_wave(wave, sample_rate, self.target_sample_rate)
+        if wave.shape[0] != 1:
+            raise ValueError(
+                "Whisper transcribe_batch() inputs must each contain exactly one waveform."
+            )
+        return wave[0]
+
+    def _prediction_batch(self, value: TextInput, *, expected: int) -> list[str]:
+        predictions = [value] if isinstance(value, str) else list(value)
+        if len(predictions) != expected:
+            raise ValueError(
+                "Whisper batch transcription result count must match the input count: "
+                f"got {len(predictions)} and {expected}."
+            )
+        return predictions
 
     def _load_model(self) -> Any:
         if self.model is not None:

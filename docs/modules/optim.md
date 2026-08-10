@@ -50,9 +50,10 @@ src/anytrain/optim/
 - `anytrain.optim.scheduler`: `create_scheduler`
 - `anytrain.optim.llm`: `create_optimizer`
 
-`anytrain` 的最低依赖是 `torch>=2.4`。Muon 是条件能力：`muon_available()` 在当前
-PyTorch 提供 `torch.optim.Muon` 时返回 `True`。旧版 PyTorch 仍可使用 AdamW、scheduler、
-参数分组等 API，但创建 Muon optimizer 会直接抛出带版本说明的 `RuntimeError`。
+`anytrain` 的 core 最低依赖是 `torch>=2.4`。原生 Muon 是显式 optional dependency：安装
+`anytrain[muon]` 会将 PyTorch 约束提升为 `torch>=2.9`。`muon_available()` 在当前 PyTorch
+提供 `torch.optim.Muon` 时返回 `True`；未安装该 extra 的环境仍可使用 AdamW、scheduler、
+参数分组等 API，但创建 Muon optimizer 会直接抛出带安装说明的 `RuntimeError`。
 
 AdamW / Muon 的高级入口接收 typed dict options，不再提供 dataclass config，也不重复校验
 torch 原生参数。`anytrain` 只校验自己定义的边界：参数分组、排除 module、lr scale rules、
@@ -176,13 +177,19 @@ optimizer = create_adamw_optimizer(model, {"lr": 3e-4}, excluded_modules=(model.
 
 ## Muon
 
+安装原生 Muon 依赖：
+
+```bash
+python -m pip install "anytrain[muon]"
+```
+
 调用 Muon 入口前可以显式检查环境：
 
 ```python
 from anytrain.optim import muon_available
 
 if not muon_available():
-    raise RuntimeError("Muon requires a newer Python/PyTorch environment.")
+    raise RuntimeError("Install anytrain[muon] to require torch>=2.9.")
 ```
 
 `split_muon_params(module)` 默认将 hidden 2D weight 放入 Muon，其余参数留给 AdamW。默认排除：

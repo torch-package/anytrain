@@ -123,6 +123,53 @@ class UTMOSEvaluator(EvaluatorABC):
         scores = self._normalize_scores(score)
         return {"utmos": sum(scores) / len(scores)}
 
+    def call_batch(
+        self,
+        audios: Sequence[Any],
+        sample_rates: Sequence[int],
+    ) -> tuple[MetricDict, ...]:
+        """Return one UTMOS score per independent clip without length padding."""
+
+        audio_values = tuple(audios)
+        rate_values = tuple(sample_rates)
+        if len(audio_values) != len(rate_values):
+            raise ValueError(
+                "audios and sample_rates must have the same batch length: "
+                f"got {len(audio_values)} and {len(rate_values)}."
+            )
+        if not audio_values:
+            return ()
+
+        waves = tuple(
+            self._single_waveform(audio, sample_rate)
+            for audio, sample_rate in zip(audio_values, rate_values, strict=True)
+        )
+        groups: dict[tuple[int, int], list[int]] = {}
+        for index, (wave, sample_rate) in enumerate(waves):
+            groups.setdefault((sample_rate, wave.shape[-1]), []).append(index)
+
+        output: list[MetricDict | None] = [None] * len(waves)
+        for (sample_rate, _length), indexes in groups.items():
+            batch = torch.stack([waves[index][0] for index in indexes])
+            scores = self._normalize_scores(
+                self.backend.score(batch, sample_rate),
+                expected=len(indexes),
+            )
+            for index, score in zip(indexes, scores, strict=True):
+                output[index] = self._validate_metric_dict({"utmos": score})
+
+        if any(metrics is None for metrics in output):
+            raise RuntimeError("UTMOS batch scoring left an input without metrics.")
+        return tuple(metrics for metrics in output if metrics is not None)
+
+    def _single_waveform(self, audio: Any, sample_rate: int) -> tuple[Tensor, int]:
+        wave, sample_rate = load_wave_batch(audio, sample_rate)
+        if wave.shape[0] != 1:
+            raise ValueError(
+                "UTMOSEvaluator.call_batch() inputs must each contain exactly one waveform."
+            )
+        return wave, sample_rate
+
     def _backend(
         self,
         backend: UTMOSBackendProtocol | None,
@@ -156,17 +203,24 @@ class UTMOSEvaluator(EvaluatorABC):
             raise TypeError("UTMOSEvaluator backend must implement score(audio, sample_rate).")
         return backend
 
-    def _normalize_scores(self, score: float | Sequence[float] | Tensor) -> list[float]:
+    def _normalize_scores(
+        self,
+        score: float | Sequence[float] | Tensor,
+        *,
+        expected: int | None = None,
+    ) -> list[float]:
         if isinstance(score, Tensor):
             if score.dtype == torch.bool:
                 raise TypeError("UTMOS backend score tensor must contain floats.")
             values = score.detach().cpu().flatten()
             if values.numel() == 0:
                 raise ValueError("UTMOS backend score tensor must contain at least one value.")
-            return [self._finite_score(value, name="tensor") for value in values.tolist()]
+            scores = [self._finite_score(value, name="tensor") for value in values.tolist()]
+            return self._validate_score_count(scores, expected=expected)
 
         if self._is_number(score):
-            return [self._finite_score(score, name="scalar")]
+            scores = [self._finite_score(score, name="scalar")]
+            return self._validate_score_count(scores, expected=expected)
 
         if isinstance(score, (bytes, bytearray, str)) or not isinstance(score, Sequence):
             raise TypeError("UTMOS backend score must be a float or a sequence of floats.")
@@ -178,7 +232,21 @@ class UTMOSEvaluator(EvaluatorABC):
         for index, value in enumerate(scores):
             if not self._is_number(value):
                 raise TypeError(f"UTMOS backend score[{index}] must be a float.")
-        return [self._finite_score(value, name=f"[{index}]") for index, value in enumerate(scores)]
+        values = [self._finite_score(value, name=f"[{index}]") for index, value in enumerate(scores)]
+        return self._validate_score_count(values, expected=expected)
+
+    def _validate_score_count(
+        self,
+        scores: list[float],
+        *,
+        expected: int | None,
+    ) -> list[float]:
+        if expected is not None and len(scores) != expected:
+            raise ValueError(
+                "UTMOS backend score count must match the batch length: "
+                f"got {len(scores)} scores for {expected} inputs."
+            )
+        return scores
 
     def _finite_score(self, value: object, *, name: str) -> float:
         if not self._is_number(value):

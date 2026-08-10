@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from ..abc import EvaluatorABC, MetricDict
@@ -40,6 +41,38 @@ class SpeechEvaluator(EvaluatorABC):
                 raise ValueError(f"Duplicate speech metric key {name!r}.")
             metrics[name] = value
         return metrics
+
+    def call_batch(
+        self,
+        audios: Sequence[Any],
+        sample_rates: Sequence[int],
+        reference_texts: Sequence[str],
+        **decode_options: Any,
+    ) -> tuple[MetricDict, ...]:
+        """Return one speech metric dict per independent audio clip."""
+
+        asr_metrics = self.asr.call_batch(
+            audios,
+            sample_rates,
+            reference_texts,
+            **decode_options,
+        )
+        utmos_metrics = self.utmos.call_batch(audios, sample_rates)
+        if len(asr_metrics) != len(utmos_metrics):
+            raise ValueError(
+                "ASR and UTMOS batch evaluators returned different counts: "
+                f"{len(asr_metrics)} and {len(utmos_metrics)}."
+            )
+
+        output: list[MetricDict] = []
+        for asr_item, utmos_item in zip(asr_metrics, utmos_metrics, strict=True):
+            metrics = dict(asr_item)
+            for name, value in utmos_item.items():
+                if name in metrics:
+                    raise ValueError(f"Duplicate speech metric key {name!r}.")
+                metrics[name] = value
+            output.append(self._validate_metric_dict(metrics))
+        return tuple(output)
 
     def _asr(self, asr: WhisperASREvaluator | None) -> WhisperASREvaluator:
         if asr is None:

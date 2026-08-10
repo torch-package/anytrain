@@ -47,13 +47,14 @@
 - `anytrain.module.idspace`：local/global token id 映射和 block embedding 路由。
 
 Lightning、Torch 和 einops 是 core 依赖。`module` 顶层只导出少量稳定组件；MoE、
-MoE conv、quantization、Qwen 和 idspace 从子模块显式导入。只有 Qwen3 builder 需要 `module` extra。Muon 是否可用取决于当前
-PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
+MoE conv、quantization、Qwen 和 idspace 从子模块显式导入。只有 Qwen3 builder 需要 `module`
+extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，不影响其余 core API。
 
 ### Optional General
 
 当前已实现的组件不绑定具体领域，但需要额外依赖：
 
+- `anytrain.optim` 的原生 Muon 路径：`muon` extra 提供 `torch>=2.9`。
 - `anytrain.optim.peft`：从 Hugging Face PEFT 的 vanilla Linear adapter 构造 LoRA-Muon。
 - `chat`：环境变量驱动的大模型调用入口，用于训练工程里的实验总结、日志解释和 LLM 辅助评估原型。
 - `anytrain.audio.bpe`：基于 Hugging Face `tokenizers` 的 codec frame BPE（`bpe` extra）。
@@ -69,9 +70,9 @@ PyTorch 是否提供 `torch.optim.Muon`，不影响其余 core API。
 对应 extra；只依赖 core torch 的 temporal/spectral loss 不额外要求 audio extra：
 
 - temporal/spectral audio loss：使用 core PyTorch 实现，不依赖 `audio` extra。
-- `anytrain.audio.codec` wrapper：DAC、LongCat、BiCodec、UniCodec 分别使用 `dac`、`longcat`、
-  `bicodec`、`unicodec` backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装
-  codec 模型。Stable Codec 的 torch pin 与 core 冲突，按 `docs/stable-codec.md` 使用独立兼容环境。
+- `anytrain.audio.codec` wrapper：DAC、LongCat、BiCodec 分别使用 `dac`、`longcat`、`bicodec`
+  backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装 codec 模型。UniCodec
+  和 Stable Codec wrapper 保留边界，但当前上游依赖链未形成 Python 3.12 的受支持组合。
 - text evaluator：安装 `text` extra 使用 sacreBLEU/jiwer backend；无 extra 时有显式 warning
   的轻量 fallback。
 - speech evaluator：安装 `speech` extra 使用 Whisper、UTMOS 和 speech text metrics。

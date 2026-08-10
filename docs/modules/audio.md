@@ -34,5 +34,5 @@ codes
 ## 依赖
 
 - waveform 工具：`audio` extra（torchcodec / torchaudio），不安装 codec 模型。
-- concrete codec backend：`dac` / `longcat` / `bicodec` / `unicodec` 等。
+- concrete codec backend：`dac` / `longcat` / `bicodec` 等；UniCodec 和 Stable Codec 目前只保留 wrapper 边界，暂不提供受支持 extra。
 - BPE：`bpe` extra。

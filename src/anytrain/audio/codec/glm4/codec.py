@@ -91,14 +91,14 @@ class GLM4Tokenizer(DeviceModule):
         self._init_device(device)
 
     @property
-    def semantic_codebook(self) -> Tensor:
+    def codebook(self) -> Tensor:
         """Return the frozen VQ table used by GLM audio-token embeddings."""
 
         return _codebook(self.model).weight.detach()
 
     @property
-    def semantic_feature_dim(self) -> int:
-        return int(self.semantic_codebook.shape[1])
+    def codebook_dim(self) -> int:
+        return int(self.codebook.shape[1])
 
     @classmethod
     def from_pretrained(

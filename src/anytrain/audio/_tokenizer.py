@@ -37,21 +37,39 @@ class PaddedAudioCodes:
         if not self.codes:
             raise ValueError("padded audio codes must contain at least one stream.")
         batch_size: int | None = None
-        for name, value in self.lengths.items():
+        for name, lengths in self.lengths.items():
             if not isinstance(name, str) or not name:
                 raise ValueError("padded audio stream names must be non-empty strings.")
-            if not isinstance(value, Tensor) or value.ndim != 1:
+            codes = self.codes[name]
+            if not isinstance(codes, Tensor) or codes.ndim != 2:
+                raise ValueError(
+                    f"padded audio codes for {name!r} must have shape [batch, unit]."
+                )
+            if codes.dtype not in _SIGNED_INTEGER_DTYPES:
+                raise TypeError(
+                    f"padded audio codes for {name!r} must contain signed integer IDs."
+                )
+            if codes.numel() == 0:
+                raise ValueError(f"padded audio codes for {name!r} must not be empty.")
+            if not isinstance(lengths, Tensor) or lengths.ndim != 1:
                 raise ValueError(f"padded audio lengths for {name!r} must have shape [batch].")
-            if value.dtype not in _SIGNED_INTEGER_DTYPES:
+            if lengths.dtype not in _SIGNED_INTEGER_DTYPES:
                 raise TypeError(
                     f"padded audio lengths for {name!r} must contain signed integers."
                 )
-            if value.numel() == 0 or bool((value <= 0).any()):
-                raise ValueError(f"padded audio lengths for {name!r} must be positive.")
+            if codes.size(0) != lengths.size(0):
+                raise ValueError(
+                    f"padded audio codes and lengths for {name!r} must align on batch."
+                )
             if batch_size is None:
-                batch_size = value.size(0)
-            elif value.size(0) != batch_size:
-                raise ValueError("padded audio stream lengths must align on batch.")
+                batch_size = lengths.size(0)
+            elif lengths.size(0) != batch_size:
+                raise ValueError("padded audio streams must align on batch.")
+            if bool(((lengths <= 0) | (lengths > codes.size(1))).any()):
+                raise ValueError(
+                    f"padded audio lengths for {name!r} must be positive and not exceed "
+                    "the code extent."
+                )
 
 
 @runtime_checkable
