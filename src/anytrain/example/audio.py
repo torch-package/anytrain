@@ -83,12 +83,16 @@ def _load_audio_with_torchcodec(
     start_seconds: float,
     duration: float | None,
 ) -> tuple[Tensor, int]:
-    from torchcodec.decoders import AudioDecoder
+    from torchcodec.decoders import AudioDecoder  # pyright: ignore[reportPrivateImportUsage]
 
     decoder = AudioDecoder(str(path))
     metadata = decoder.metadata
-    sample_rate = int(metadata.sample_rate)
-    total_duration = float(metadata.duration_seconds)
+    sample_rate = metadata.sample_rate
+    if sample_rate is None:
+        raise RuntimeError("torchcodec audio metadata does not expose a sample rate.")
+    total_duration = metadata.duration_seconds
+    if total_duration is None:
+        raise RuntimeError("torchcodec audio metadata does not expose a duration.")
     stop_seconds = _stop_seconds(
         start_seconds=start_seconds,
         duration=duration,

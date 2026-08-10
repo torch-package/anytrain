@@ -210,7 +210,7 @@ def _load_checkpoint(checkpoint: Path, device: torch.device) -> _DACModel:
     return model
 def _load_dac_model() -> Any:
     try:
-        import dac
+        import dac  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(
             'DAC requires the `descript-audio-codec` package. Install it with `python -m pip install "descript-audio-codec>=1.0"`.'

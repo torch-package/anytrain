@@ -51,7 +51,7 @@ def ensure_unicodec_assets(
 
 def _default_config_path(name: str) -> Path:
     try:
-        from unicodec import default_config_path
+        from unicodec import default_config_path  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(
             "UniCodec integration requires the installable UniCodec fork. Install it with "

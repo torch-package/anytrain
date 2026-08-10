@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from torch import Size, Tensor
 from torch.nn import functional as F
 
-from .grid import Grid1d, MoEGrid, NativeGrid
+from .grid import Grid1d, MoEGrid, NativeGrid, PaddingMode
 
 if TYPE_CHECKING:
     from .bank import ParamExpertBank
@@ -207,7 +207,7 @@ class Conv1dExpert:
     dilation: int = 1
     groups: int = 1
     causal: bool = False
-    padding_mode: str = "zeros"
+    padding_mode: PaddingMode = "zeros"
 
     def __post_init__(self) -> None:
         if self.groups <= 0:
@@ -297,7 +297,7 @@ class Conv1dExpert:
             stride=self.stride,
             dilation=self.dilation,
             padding=self.padding,
-            fill=fill,  # type: ignore[arg-type]
+            fill=fill,
             cell_size=cell_size,
             causal=self.causal,
             context=context,

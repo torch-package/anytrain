@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 DEFAULT_GLM4_ARTIFACT = "zai-org/glm-4-voice-tokenizer"
 DEFAULT_GLM4_REVISION = "a5f2404e63c84e92f5238908e1706316324ebafa"
+GLM4_IDENTITY_REVISION = f"{DEFAULT_GLM4_REVISION}+anytrain-batched-chunked-v1"
 GLM4_SOURCE_ROOT_ENV = "GLM4_VOICE_SOURCE_ROOT"
 GLM4_RUNTIME_GUIDANCE = (
     f"Set {GLM4_SOURCE_ROOT_ENV} to the root of a GLM-4-Voice checkout or fork "
@@ -68,7 +69,7 @@ ENTRY = CodecEntry(
     identity=AudioBackendIdentity(
         preset="glm4",
         artifact=DEFAULT_GLM4_ARTIFACT,
-        revision=DEFAULT_GLM4_REVISION,
+        revision=GLM4_IDENTITY_REVISION,
     ),
 )
 
@@ -76,6 +77,7 @@ __all__ = [
     "DEFAULT_GLM4_ARTIFACT",
     "DEFAULT_GLM4_REVISION",
     "ENTRY",
+    "GLM4_IDENTITY_REVISION",
     "GLM4_RUNTIME_GUIDANCE",
     "GLM4_SOURCE_ROOT_ENV",
 ]

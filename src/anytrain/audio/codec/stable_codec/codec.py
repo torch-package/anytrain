@@ -235,7 +235,9 @@ class StableCodec(DeviceModule):
 
 def _load_stable_codec_model() -> Any:
     try:
-        from stable_codec import StableCodec as UpstreamStableCodec
+        from stable_codec import (  # pyright: ignore[reportMissingImports]
+            StableCodec as UpstreamStableCodec,
+        )
     except ImportError as exc:
         raise ImportError(
             "StableCodec requires the `stable-codec` package. Install "

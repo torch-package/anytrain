@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 import sys
+from collections.abc import Sequence, Sized
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, TypedDict, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from torch import Tensor, nn
 
 from anytrain.audio.codec import (
     AudioCapability,
+    audio_backend_identity,
     audio_capabilities,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
@@ -22,10 +25,12 @@ from anytrain.audio.codec import (
 from anytrain.audio.codec.glm4 import (
     DEFAULT_GLM4_ARTIFACT,
     DEFAULT_GLM4_REVISION,
+    GLM4_IDENTITY_REVISION,
     GLM4_SOURCE_ROOT_ENV,
     GLM4Tokenizer,
 )
 from anytrain.audio.codec.glm4.codec import CODEBOOK_SIZE, _load_runtime, _validate_source_root
+from anytrain.audio.codec.glm4.tokenizer import GLM4AudioTokenizer
 
 
 @pytest.fixture(autouse=True)
@@ -35,22 +40,36 @@ def _isolated_backend_cache():
     clear_audio_backend_cache()
 
 
+class _FeatureCall(TypedDict):
+    arrays: Sequence[Sized]
+    max_length: int
+    pad_to_multiple_of: int
+    device: str
+
+
 class _FeatureExtractor:
     sampling_rate = 16_000
     hop_length = 160
     n_fft = 400
 
     def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[_FeatureCall] = []
 
-    def __call__(self, arrays, **kwargs):
+    def __call__(self, arrays: Sequence[Sized], **kwargs: Any) -> dict[str, Tensor]:
         max_length = int(kwargs["max_length"])
         feature_frames = max_length // self.hop_length
         valid_frames = torch.tensor(
             [math.ceil(len(waveform) / self.hop_length) for waveform in arrays]
         )
         attention_mask = torch.arange(feature_frames).unsqueeze(0) < valid_frames.unsqueeze(1)
-        self.calls.append({"arrays": arrays, **kwargs})
+        self.calls.append(
+            {
+                "arrays": arrays,
+                "max_length": max_length,
+                "pad_to_multiple_of": int(kwargs["pad_to_multiple_of"]),
+                "device": str(kwargs["device"]),
+            }
+        )
         return {
             "input_features": torch.zeros((len(arrays), 80, feature_frames)),
             "attention_mask": attention_mask.to(dtype=torch.long),
@@ -63,9 +82,13 @@ class _Model(nn.Module):
         *,
         first_id: int = 0,
         floating_ids: bool = False,
+        max_source_positions: int = 1_500,
     ) -> None:
         super().__init__()
-        self.config = SimpleNamespace(pooling_kernel_size=4)
+        self.config = SimpleNamespace(
+            pooling_kernel_size=4,
+            max_source_positions=max_source_positions,
+        )
         self.conv1 = nn.Conv1d(1, 1, kernel_size=1, stride=1, bias=False)
         self.conv2 = nn.Conv1d(1, 1, kernel_size=1, stride=2, bias=False)
         self.codebook = nn.Embedding(CODEBOOK_SIZE, 2)
@@ -129,8 +152,8 @@ def test_glm4_registry_exposes_only_online_tokenizer(monkeypatch: pytest.MonkeyP
         "anytrain.audio.codec.glm4.codec.GLM4Tokenizer.from_pretrained",
         return_value=backend,
     ) as load:
-        first = load_audio_tokenizer("glm4", device="cpu")
-        second = load_audio_tokenizer("glm4", device="cpu")
+        first = cast(GLM4AudioTokenizer, load_audio_tokenizer("glm4", device="cpu"))
+        second = cast(GLM4AudioTokenizer, load_audio_tokenizer("glm4", device="cpu"))
 
     assert audio_capabilities("glm4") == frozenset({AudioCapability.TOKENIZER})
     assert can_load_audio_tokenizer("glm4")
@@ -207,6 +230,64 @@ def test_glm4_encode_padded_batches_once_and_reports_valid_token_lengths() -> No
     torch.testing.assert_close(codes[2, :1, 0], torch.tensor([20]))
 
 
+def test_glm4_encode_chunks_audio_beyond_official_whisper_context() -> None:
+    model = _Model()
+    feature_extractor = _FeatureExtractor()
+    tokenizer = _tokenizer(model=model, feature_extractor=feature_extractor)
+
+    codes = tokenizer.encode(torch.zeros((1, 1, 483_840)), sample_rate=16_000)
+
+    assert model.calls == 2
+    assert codes.shape == (1, 378, 1)
+    torch.testing.assert_close(codes[0, :374, 0], torch.arange(374))
+    torch.testing.assert_close(codes[0, 374:, 0], torch.arange(100, 104))
+    assert [len(call["arrays"][0]) for call in feature_extractor.calls] == [478_720, 5_120]
+    assert [call["max_length"] for call in feature_extractor.calls] == [480_000, 6_400]
+
+
+def test_glm4_encode_padded_preserves_mixed_short_and_long_rows() -> None:
+    model = _Model()
+    feature_extractor = _FeatureExtractor()
+    tokenizer = _tokenizer(model=model, feature_extractor=feature_extractor)
+
+    codes, lengths = tokenizer.encode_padded(
+        torch.zeros((2, 1, 483_840)),
+        sample_rate=16_000,
+        lengths=torch.tensor([483_840, 2_560]),
+    )
+
+    assert model.calls == 2
+    assert codes.shape == (2, 378, 1)
+    torch.testing.assert_close(lengths, torch.tensor([378, 2]))
+    torch.testing.assert_close(codes[0, :374, 0], torch.arange(374))
+    torch.testing.assert_close(codes[0, 374:, 0], torch.arange(100, 104))
+    torch.testing.assert_close(codes[1, :2, 0], torch.tensor([10, 11]))
+    assert [len(call["arrays"]) for call in feature_extractor.calls] == [2, 1]
+
+
+def test_glm4_encode_padded_concatenates_multiple_chunk_rounds_per_row() -> None:
+    model = _Model(max_source_positions=12)
+    feature_extractor = _FeatureExtractor()
+    tokenizer = _tokenizer(model=model, feature_extractor=feature_extractor)
+
+    codes, lengths = tokenizer.encode_padded(
+        torch.zeros((2, 1, 6_400)),
+        sample_rate=16_000,
+        lengths=torch.tensor([6_400, 3_840]),
+    )
+
+    assert model.calls == 3
+    assert codes.shape == (2, 5, 1)
+    torch.testing.assert_close(lengths, torch.tensor([5, 3]))
+    torch.testing.assert_close(codes[0, :, 0], torch.tensor([0, 1, 100, 101, 200]))
+    torch.testing.assert_close(codes[1, :3, 0], torch.tensor([10, 11, 110]))
+    assert [[len(waveform) for waveform in call["arrays"]] for call in feature_extractor.calls] == [
+        [2_560, 2_560],
+        [2_560, 1_280],
+        [1_280],
+    ]
+
+
 def test_glm4_registry_tokenizer_exposes_padded_batch_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,7 +298,7 @@ def test_glm4_registry_tokenizer_exposes_padded_batch_capability(
         "anytrain.audio.codec.glm4.codec.GLM4Tokenizer.from_pretrained",
         return_value=backend,
     ):
-        tokenizer = load_audio_tokenizer("glm4", device="cpu")
+        tokenizer = cast(GLM4AudioTokenizer, load_audio_tokenizer("glm4", device="cpu"))
 
     encoded = tokenizer.tokenize_padded(
         torch.zeros((2, 1, 2_560)),
@@ -437,3 +518,7 @@ def test_glm4_runtime_rejects_incompatible_source_api(
 def test_glm4_constants_pin_model_weights() -> None:
     assert DEFAULT_GLM4_ARTIFACT == "zai-org/glm-4-voice-tokenizer"
     assert DEFAULT_GLM4_REVISION == "a5f2404e63c84e92f5238908e1706316324ebafa"
+    assert GLM4_IDENTITY_REVISION == (
+        "a5f2404e63c84e92f5238908e1706316324ebafa+anytrain-batched-chunked-v1"
+    )
+    assert audio_backend_identity("glm4").revision == GLM4_IDENTITY_REVISION

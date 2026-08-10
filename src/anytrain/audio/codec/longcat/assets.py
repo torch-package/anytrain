@@ -187,7 +187,9 @@ def _validate_decoders(decoders: Sequence[LongCatDecoderName]) -> tuple[LongCatD
 
 def _read_default_config(stem: str) -> dict[str, Any]:
     try:
-        from longcat_audio_codec import default_config_path
+        from longcat_audio_codec import (  # pyright: ignore[reportMissingImports]
+            default_config_path,
+        )
     except ImportError as exc:
         raise ImportError(
             "LongCat integration requires the installable fork. Install it with "

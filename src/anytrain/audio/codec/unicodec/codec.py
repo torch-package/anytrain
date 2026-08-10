@@ -212,7 +212,7 @@ def _codebook_sizes(model: object) -> tuple[int, ...]:
 
 def _load_unicodec_model() -> Any:
     try:
-        from unicodec import Unicodec
+        from unicodec import Unicodec  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(
             "UniCodec requires the installable UniCodec fork. Install it with "

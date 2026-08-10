@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
@@ -24,6 +24,7 @@ SAMPLE_RATE = 16_000
 FRAME_RATE = 12.5
 CODEBOOK_SIZE = 16_384
 FEATURE_DIM = 1_280
+MAX_SOURCE_POSITIONS = 1_500
 
 
 class GLM4Tokenizer(DeviceModule):
@@ -63,6 +64,7 @@ class GLM4Tokenizer(DeviceModule):
         convolution_stride = _stride(_module(model, "conv1")) * _stride(_module(model, "conv2"))
         config = _config(model)
         pooling = _positive_integer_attribute(config, "pooling_kernel_size")
+        max_source_positions = _positive_integer_attribute(config, "max_source_positions")
         codebook = _codebook(model)
         if strict_contract:
             _require_contract(
@@ -71,6 +73,7 @@ class GLM4Tokenizer(DeviceModule):
                 n_fft=n_fft,
                 convolution_stride=convolution_stride,
                 pooling=pooling,
+                max_source_positions=max_source_positions,
                 codebook=codebook,
             )
 
@@ -78,6 +81,13 @@ class GLM4Tokenizer(DeviceModule):
         self._pooling = pooling
         self._pad_multiple = convolution_stride * pooling * hop_length
         self._stft_guard_samples = n_fft // 2
+        maximum_model_samples = max_source_positions * convolution_stride * hop_length
+        maximum_padded_samples = (maximum_model_samples // self._pad_multiple) * self._pad_multiple
+        self._maximum_chunk_samples = (
+            (maximum_padded_samples - self._stft_guard_samples) // self._pad_multiple
+        ) * self._pad_multiple
+        if self._maximum_chunk_samples <= 0:
+            raise RuntimeError("GLM-4 model context is too short for one tokenizer frame.")
         self._init_device(device)
 
     @property
@@ -173,6 +183,34 @@ class GLM4Tokenizer(DeviceModule):
             )[0, 0].contiguous()
             for index, length in enumerate(valid_lengths)
         )
+        if all(int(row.numel()) <= self._maximum_chunk_samples for row in rows):
+            return self._encode_rows(rows)
+        return self._encode_chunked_rows(rows)
+
+    def _encode_chunked_rows(self, rows: tuple[Tensor, ...]) -> tuple[Tensor, Tensor]:
+        chunks = tuple(row.split(self._maximum_chunk_samples) for row in rows)
+        encoded: list[list[Tensor]] = [[] for _ in rows]
+        for chunk_index in range(max(len(row_chunks) for row_chunks in chunks)):
+            row_indices = tuple(
+                index for index, row_chunks in enumerate(chunks) if chunk_index < len(row_chunks)
+            )
+            chunk_rows = tuple(chunks[index][chunk_index] for index in row_indices)
+            chunk_codes, chunk_lengths = self._encode_rows(chunk_rows)
+            for batch_index, row_index in enumerate(row_indices):
+                length = int(chunk_lengths[batch_index].item())
+                encoded[row_index].append(chunk_codes[batch_index, :length])
+
+        joined = tuple(torch.cat(row_codes, dim=0) for row_codes in encoded)
+        code_lengths = torch.tensor(
+            [row.size(0) for row in joined],
+            dtype=torch.long,
+        )
+        codes = joined[0].new_zeros((len(joined), int(code_lengths.max().item()), 1))
+        for index, row in enumerate(joined):
+            codes[index, : row.size(0)] = row
+        return validate_frame_codes(codes, self.codebook_sizes), code_lengths
+
+    def _encode_rows(self, rows: tuple[Tensor, ...]) -> tuple[Tensor, Tensor]:
         maximum = max(int(row.numel()) for row in rows)
         padded_samples = (
             (maximum + self._stft_guard_samples + self._pad_multiple - 1)
@@ -194,7 +232,7 @@ class GLM4Tokenizer(DeviceModule):
             attention_mask = feature_mapping.get("attention_mask")
             if not isinstance(attention_mask, Tensor) or attention_mask.ndim != 2:
                 raise RuntimeError("GLM-4 feature extractor must return a 2D attention_mask.")
-            if attention_mask.shape[0] != audio.size(0):
+            if attention_mask.shape[0] != len(rows):
                 raise RuntimeError(
                     "GLM-4 feature extractor attention_mask must align with the batch."
                 )
@@ -209,7 +247,7 @@ class GLM4Tokenizer(DeviceModule):
         if (
             not isinstance(ids, Tensor)
             or ids.ndim != 2
-            or ids.shape[0] != audio.size(0)
+            or ids.shape[0] != len(rows)
         ):
             raise RuntimeError(
                 "GLM-4 tokenizer must return [batch, time] quantized_token_ids."
@@ -381,6 +419,7 @@ def _require_contract(
     n_fft: int,
     convolution_stride: int,
     pooling: int,
+    max_source_positions: int,
     codebook: nn.Embedding,
 ) -> None:
     observed = {
@@ -389,6 +428,7 @@ def _require_contract(
         "n_fft": n_fft,
         "convolution_stride": convolution_stride,
         "pooling_kernel_size": pooling,
+        "max_source_positions": max_source_positions,
         "codebook_size": codebook.num_embeddings,
         "feature_dim": codebook.embedding_dim,
     }
@@ -398,6 +438,7 @@ def _require_contract(
         "n_fft": 400,
         "convolution_stride": 2,
         "pooling_kernel_size": 4,
+        "max_source_positions": MAX_SOURCE_POSITIONS,
         "codebook_size": CODEBOOK_SIZE,
         "feature_dim": FEATURE_DIM,
     }
@@ -436,7 +477,7 @@ def _with_guidance(message: str) -> str:
 
 
 @contextmanager
-def _tf32_disabled() -> Iterator[None]:
+def _tf32_disabled() -> Generator[None, None, None]:
     cudnn = torch.backends.cudnn
     matmul = torch.backends.cuda.matmul
     previous_cudnn = cudnn.allow_tf32
@@ -456,5 +497,6 @@ __all__ = [
     "FRAME_RATE",
     "GLM4Tokenizer",
     "GLM4_TRANSFORMERS_VERSION",
+    "MAX_SOURCE_POSITIONS",
     "SAMPLE_RATE",
 ]

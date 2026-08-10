@@ -341,7 +341,10 @@ def _embedding_dim(value: object, name: str) -> int:
 
 def _load_longcat_loaders():
     try:
-        from longcat_audio_codec import load_decoder, load_encoder
+        from longcat_audio_codec import (  # pyright: ignore[reportMissingImports]
+            load_decoder,
+            load_encoder,
+        )
     except ImportError as exc:
         raise ImportError(
             "LongCat requires the installable LongCat fork. Install it with "

@@ -70,7 +70,7 @@ def _load_audio_file_with_torchaudio(path: Path) -> tuple[Tensor, int]:
 
 
 def _load_audio_file_with_soundfile(path: Path) -> tuple[Tensor, int]:
-    import soundfile
+    import soundfile  # pyright: ignore[reportMissingImports]
 
     data, sample_rate = soundfile.read(str(path), dtype="float32", always_2d=True)
     sample_rate = validate_sample_rate(int(sample_rate))

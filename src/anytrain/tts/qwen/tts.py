@@ -104,7 +104,7 @@ class QwenCustomVoiceTTS:
         **load_kwargs: Unpack[QwenLoadKwargs],
     ) -> QwenCustomVoiceTTS:
         try:
-            from qwen_tts import Qwen3TTSModel  # type: ignore[import-not-found]
+            from qwen_tts import Qwen3TTSModel  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
             raise ImportError(
                 "anytrain.tts.qwen requires Qwen3-TTS. "

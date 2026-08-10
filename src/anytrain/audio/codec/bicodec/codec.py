@@ -513,7 +513,9 @@ def _quantizer_codebook(quantizer: Any, *, device: torch.device) -> Tensor:
 
 def _load_bicodec_model() -> Any:
     try:
-        from sparktts.models.bicodec import BiCodec as UpstreamBiCodec
+        from sparktts.models.bicodec import (  # pyright: ignore[reportMissingImports]
+            BiCodec as UpstreamBiCodec,
+        )
     except ImportError as exc:
         raise ImportError(
             "BiCodec requires the Spark-TTS source package and its runtime dependencies. "
@@ -525,7 +527,7 @@ def _load_bicodec_model() -> Any:
 
 def _load_config(path: Path) -> dict[str, Any]:
     try:
-        from sparktts.utils.file import load_config
+        from sparktts.utils.file import load_config  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(
             "BiCodec config loading requires the Spark-TTS source package. "

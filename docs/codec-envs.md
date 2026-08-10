@@ -22,10 +22,14 @@ codes/cache，再由主训练环境读取产物。
 - batch：wrapper 对一个采样率分组执行一次 padded feature extraction 和一次 model
   forward；每条 waveform 在重采样前按真实长度裁剪，有效 token 长度由 feature
   `attention_mask` 依次按 convolution stride 和 pooling stride 下采样得到。固定 16 kHz
-  输入下等价于 `ceil(samples / 1280)`；尾部 padded IDs 不进入返回的逻辑序列；
-- identity：真实 batch 的有效位置 ID 允许因 batch shape 的浮点数值路径而不同于历史
-  single-sample extraction。调用方必须为该执行语义使用新的 provider/materialization identity，
-  不得与旧 GLM-4 store 混合 resume。
+  输入下等价于 `ceil(samples / 1280)`；尾部 padded IDs 不进入返回的逻辑序列。短音频
+  仍使用一次 padded batch forward；超过官方 Whisper 1500 source-position 上限的长音频
+  按连续的 478720-sample（374-token）安全块分轮编码，再按原 waveform 顺序拼接。该边界
+  同时满足 1280-sample token 网格和 200-sample STFT guard，因此不会丢失或重复 token；
+- identity：真实 batch 和长音频 chunking 的有效位置 ID 允许因 batch shape 的浮点数值路径而
+  不同于历史 single-sample extraction。registry identity 使用带
+  `anytrain-batched-chunked-v1` 后缀的执行 revision；下游 provider/materialization identity
+  必须包含该 identity，不得与旧 GLM-4 store 混合 resume。
 
 默认 `anytrain` py312 环境当前使用 Transformers 4.57.6，且 BiCodec extra 要求
 `transformers>=4.46`、module extra 要求 `transformers>=4.51.0`。因此不要为 GLM-4 增加一个会让
