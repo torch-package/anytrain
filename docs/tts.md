@@ -17,6 +17,17 @@ needed:
 python -m pip install git+https://github.com/QwenLM/Qwen3-TTS.git
 ```
 
+CosyVoice 2/3 uses the official source tree because the upstream runtime also
+depends on its Matcha-TTS submodule. Keep a production checkout pinned by the
+calling project, initialize submodules, install its requirements, and make the
+checkout importable before constructing the backend:
+
+```bash
+git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /path/to/CosyVoice
+python -m pip install -r /path/to/CosyVoice/requirements.txt
+export PYTHONPATH=/path/to/CosyVoice:$PYTHONPATH
+```
+
 The stable public boundary is:
 
 ```python
@@ -115,6 +126,45 @@ batch_audio = tts.synthesize_custom_voice(
     languages=["English", "Chinese"],
 )
 ```
+
+CosyVoice 2 and 3 share one adapter and the same `TTSOptions` contract. A
+reference plus `prompt_text` selects zero-shot synthesis; a reference without
+prompt text selects cross-lingual synthesis; `instruction` selects instruct2.
+SFT checkpoints can instead use `speaker` without a reference:
+
+```python
+from anytrain.tts import TTSOptions
+from anytrain.tts.cosyvoice import CosyVoiceTTS
+
+tts = CosyVoiceTTS.from_pretrained(
+    version="v3",
+    device="cuda:0",
+    load_vllm=True,
+    max_concurrency=4,
+    runtime_kwargs={"speed": 1.0, "text_frontend": True},
+)
+audio = tts.synthesize(
+    "目标文本",
+    TTSOptions(prompt_text="参考音频转写"),
+    reference_audio="assets/reference.wav",
+)
+batch_audio = tts.synthesize(
+    ["目标一", "目标二"],
+    TTSOptions(prompt_text=["参考一", "参考二"]),
+    reference_audios=["assets/one.wav", "assets/two.wav"],
+)
+```
+
+The default model ids are `FunAudioLLM/CosyVoice2-0.5B` and
+`FunAudioLLM/Fun-CosyVoice3-0.5B`. Prompt audio is converted to mono 16 kHz,
+upstream `tts_speech` generator chunks are concatenated, and output remains one
+variable-length `TTSOutput` per input. Upstream exposes scalar `inference_*`
+methods rather than an end-to-end `list[str]` API. With `load_vllm=True` and
+`max_concurrency=N`, AnyTrain submits up to `N` scalar requests concurrently so
+the upstream vLLM request queue can dynamically batch the LLM stage; results are
+returned in input order. Flow and HiFT decoding remain per-request, so this is
+not full-pipeline native batching. `max_concurrency` is an execution setting and
+does not change `config_hash`; values greater than one require `load_vllm=True`.
 
 Spark-TTS is exposed as a reference-audio backend. It does not create or persist
 speaker ids. The caller supplies one transcript aligned with each reference
