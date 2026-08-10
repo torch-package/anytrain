@@ -150,7 +150,7 @@ class UTMOSEvaluator(EvaluatorABC):
 
         output: list[MetricDict | None] = [None] * len(waves)
         for (sample_rate, _length), indexes in groups.items():
-            batch = torch.stack([waves[index][0] for index in indexes])
+            batch = torch.cat([waves[index][0] for index in indexes])
             scores = self._normalize_scores(
                 self.backend.score(batch, sample_rate),
                 expected=len(indexes),

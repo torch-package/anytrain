@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -33,6 +34,18 @@ class FakeUTMOSBackend:
     def score(self, audio, sample_rate):
         self.calls.append((audio, sample_rate))
         return self.output
+
+
+class FakeCallableUTMOSBackend:
+    def __init__(self, output: Callable[[torch.Tensor, int], torch.Tensor]):
+        self.output = output
+        self.calls: list[tuple[torch.Tensor, int]] = []
+
+    def score(self, audio: Any, sample_rate: int) -> torch.Tensor:
+        if not isinstance(audio, torch.Tensor):
+            raise TypeError("fake UTMOS audio must be a Tensor.")
+        self.calls.append((audio, sample_rate))
+        return self.output(audio, sample_rate)
 
 
 class FakeWhisperModule(ModuleType):
@@ -411,6 +424,81 @@ class SpeechEvaluatorTest(unittest.TestCase):
         )
         self.assertEqual([call[1].temperature for call in model.decode_calls], [0.0, 0.2])
         self.assertEqual(model.calls, [])
+
+    def test_speech_evaluator_call_batch_returns_per_clip_metrics(self):
+        texts = ("hello world", "good morning")
+
+        def decode(mel, _options):
+            return [FakeDecodingResult(text) for text in texts[: mel.shape[0]]]
+
+        model = FakeWhisperModel(decode)
+        whisper = FakeWhisperModule(model)
+        asr = WhisperASREvaluator(model_name="tiny", device="cpu")
+        utmos_backend = FakeCallableUTMOSBackend(
+            lambda audio, _sample_rate: audio.mean(dim=-1).mul(10.0)
+        )
+        evaluator = SpeechEvaluator(
+            asr=asr,
+            utmos=UTMOSEvaluator(backend=utmos_backend),
+        )
+        audios = (
+            torch.full((1, 8000), 0.4),
+            torch.full((1, 16000), 0.5),
+        )
+
+        with patch.dict("sys.modules", {"whisper": whisper}):
+            metrics = evaluator.call_batch(
+                audios,
+                (16000, 16000),
+                texts,
+                temperature=0.0,
+            )
+
+        self.assertEqual(
+            [
+                {name: value for name, value in item.items() if name != "utmos"}
+                for item in metrics
+            ],
+            [
+                {"bleu": 100.0, "wer": 0.0, "chrf": 100.0},
+                {"bleu": 100.0, "wer": 0.0, "chrf": 100.0},
+            ],
+        )
+        torch.testing.assert_close(
+            torch.tensor([item["utmos"] for item in metrics]),
+            torch.tensor([4.0, 5.0]),
+        )
+        self.assertEqual(len(model.decode_calls), 1)
+        self.assertEqual(model.decode_calls[0][0], torch.Size([2, 80, 3000]))
+        self.assertEqual(model.calls, [])
+        self.assertEqual(
+            [call[0].shape for call in utmos_backend.calls],
+            [torch.Size([1, 8000]), torch.Size([1, 16000])],
+        )
+
+    def test_utmos_call_batch_groups_equal_lengths_and_restores_order(self):
+        backend = FakeCallableUTMOSBackend(
+            lambda audio, _sample_rate: audio.mean(dim=-1).mul(10.0)
+        )
+        evaluator = UTMOSEvaluator(backend=backend)
+
+        metrics = evaluator.call_batch(
+            (
+                torch.full((1, 4), 0.3),
+                torch.full((1, 6), 0.4),
+                torch.full((1, 4), 0.5),
+            ),
+            (16000, 16000, 16000),
+        )
+
+        torch.testing.assert_close(
+            torch.tensor([item["utmos"] for item in metrics]),
+            torch.tensor([3.0, 4.0, 5.0]),
+        )
+        self.assertEqual(
+            [call[0].shape for call in backend.calls],
+            [torch.Size([2, 4]), torch.Size([1, 6])],
+        )
 
     def test_utmos_returns_batch_mean(self):
         audio = torch.zeros(3, 16000)
