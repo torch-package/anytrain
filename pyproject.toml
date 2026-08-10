@@ -23,7 +23,7 @@ bicodec = [
     "safetensors>=0.5",
     "soundfile>=0.12",
     "soxr>=0.5",
-    "spark-tts @ git+https://github.com/rookiejune/Spark-TTS.git@cf5302b0da797aeffc18af172de4dda0bb6ab718",
+    "spark-tts @ git+https://github.com/rookiejune/Spark-TTS.git@44ddcbf8b382ce5a55a7d500f5e9266c05516bb0",
     "torchaudio>=2.5",
     "transformers>=4.46",
 ]
@@ -52,6 +52,11 @@ longcat = [
 moss-tts = ["torchaudio>=2.0", "transformers"]
 qwen-tts = [
     "qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@022e286b98fbec7e1e916cb940cdf532cd9f488e",
+]
+spark-tts = [
+    "huggingface-hub>=0.23",
+    "spark-tts @ git+https://github.com/rookiejune/Spark-TTS.git@44ddcbf8b382ce5a55a7d500f5e9266c05516bb0",
+    "torchaudio>=2.5",
 ]
 test = ["basedpyright>=1.31", "pytest>=8.0", "ruff>=0.8"]
 

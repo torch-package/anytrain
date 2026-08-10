@@ -32,7 +32,7 @@ class BiCodecCodecTest(unittest.TestCase):
             BICODEC_INSTALL_COMMAND,
             'python -m pip install "spark-tts @ '
             "git+https://github.com/rookiejune/Spark-TTS.git@"
-            'cf5302b0da797aeffc18af172de4dda0bb6ab718"',
+            '44ddcbf8b382ce5a55a7d500f5e9266c05516bb0"',
         )
         subprocess.run(
             ["/bin/sh", "-n"],

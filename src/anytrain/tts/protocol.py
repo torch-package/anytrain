@@ -123,6 +123,8 @@ class TTSCapabilities:
 class TTSKwargs(TypedDict, total=False):
     speaker: str | Sequence[str] | None
     language: str | None
+    prompt_text: str | Sequence[str] | None
+    instruction: str | Sequence[str] | None
     sample_rate: int | None
     max_new_tokens: int | None
     temperature: float | None
@@ -138,6 +140,8 @@ _TTS_OPTION_KEYS = frozenset(TTSKwargs.__annotations__)
 class TTSOptions:
     speaker: str | Sequence[str] | None = None
     language: str | None = None
+    prompt_text: str | Sequence[str] | None = None
+    instruction: str | Sequence[str] | None = None
     sample_rate: int | None = None
     max_new_tokens: int | None = None
     temperature: float | None = None
@@ -154,6 +158,8 @@ class TTSOptions:
 
         self.speaker = kwargs.get("speaker")
         self.language = kwargs.get("language")
+        self.prompt_text = kwargs.get("prompt_text")
+        self.instruction = kwargs.get("instruction")
         self.sample_rate = kwargs.get("sample_rate")
         self.max_new_tokens = kwargs.get("max_new_tokens")
         self.temperature = kwargs.get("temperature")
@@ -167,6 +173,8 @@ class TTSOptions:
         if self.sample_rate is not None:
             positive_int(self.sample_rate, "sample_rate")
         _validate_speaker(self.speaker)
+        _validate_text_option(self.prompt_text, "prompt_text")
+        _validate_text_option(self.instruction, "instruction")
         if self.max_new_tokens is not None:
             positive_int(self.max_new_tokens, "max_new_tokens")
         if self.temperature is not None and self.temperature <= 0:
@@ -185,6 +193,12 @@ class TTSOptions:
         options = TTSOptions(
             speaker=override.speaker if override._has("speaker") else self.speaker,
             language=override.language if override._has("language") else self.language,
+            prompt_text=(
+                override.prompt_text if override._has("prompt_text") else self.prompt_text
+            ),
+            instruction=(
+                override.instruction if override._has("instruction") else self.instruction
+            ),
             sample_rate=override.sample_rate
             if override._has("sample_rate")
             else self.sample_rate,
@@ -298,3 +312,24 @@ def _validate_speaker_id(value: object, name: str) -> None:
         raise TypeError(f"{name} must be a string.")
     if not value:
         raise ValueError(f"{name} must be non-empty.")
+
+
+def _validate_text_option(
+    value: str | Sequence[str] | None,
+    name: str,
+) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValueError(f"{name} must be non-empty when set.")
+        return
+    if isinstance(value, bytes) or not isinstance(value, Sequence):
+        raise TypeError(f"{name} must be a string, a sequence of strings, or None.")
+    if not value:
+        raise ValueError(f"{name} sequence must not be empty.")
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise TypeError(f"{name}[{index}] must be a string.")
+        if not item.strip():
+            raise ValueError(f"{name}[{index}] must be non-empty.")

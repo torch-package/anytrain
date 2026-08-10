@@ -115,3 +115,33 @@ batch_audio = tts.synthesize_custom_voice(
     languages=["English", "Chinese"],
 )
 ```
+
+Spark-TTS is exposed as a reference-audio backend. It does not create or persist
+speaker ids. The caller supplies one transcript aligned with each reference
+audio through `TTSOptions.prompt_text`:
+
+```python
+from anytrain.tts import TTSOptions
+from anytrain.tts.spark import SparkTTS
+
+tts = SparkTTS.from_pretrained(
+    "SparkAudio/Spark-TTS-0.5B",
+    device="cuda:0",
+)
+audio = tts.synthesize(
+    "目标文本",
+    TTSOptions(prompt_text="参考音频转写"),
+    reference_audio="assets/reference.wav",
+)
+batch_audio = tts.synthesize(
+    ["目标一", "目标二"],
+    TTSOptions(prompt_text=["参考一", "参考二"]),
+    reference_audios=["assets/one.wav", "assets/two.wav"],
+)
+```
+
+The upstream Spark runtime currently exposes single-item inference. The
+anytrain batch API preserves aligned variable-length outputs but executes those
+items sequentially; it must not be reported as native model batching. Treat
+this backend as smoke/probe-only and do not use it for long-running production
+materialization until the upstream runtime provides native batched inference.
