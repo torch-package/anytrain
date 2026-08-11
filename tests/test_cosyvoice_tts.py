@@ -79,7 +79,7 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
                 (
                     "zero_shot",
                     "你好",
-                    "参考文本",
+                    "You are a helpful assistant.<|endofprompt|>参考文本",
                     (".wav", True),
                     "reference.wav",
                     "",
@@ -103,8 +103,31 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
         )
 
         self.assertEqual(len(outputs), 2)
-        self.assertEqual([call[2] for call in model.calls], ["one", "two"])
+        self.assertEqual(
+            [call[2] for call in model.calls],
+            [
+                "You are a helpful assistant.<|endofprompt|>one",
+                "You are a helpful assistant.<|endofprompt|>two",
+            ],
+        )
         self.assertEqual([call[3] for call in model.calls], [(".wav", True)] * 2)
+
+    def test_v2_prompt_text_is_unchanged(self):
+        model = FakeCosyVoiceModel()
+        backend = CosyVoiceTTS(
+            model,
+            CosyVoiceTTSConfig(
+                version=CosyVoiceVersion.V2,
+                model=DEFAULT_MODEL_V2,
+            ),
+        )
+        backend.synthesize(
+            "hello",
+            TTSOptions(prompt_text="prompt"),
+            reference_audio=WaveformReference(torch.ones(1, 16), 16_000),
+        )
+
+        self.assertEqual(model.calls[0][2], "prompt")
 
     def test_path_reference_is_passed_through(self):
         model = FakeCosyVoiceModel()

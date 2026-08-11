@@ -39,6 +39,7 @@ from anytrain.tts._common import config_hash, hashable_mapping, validate_mapping
 
 DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
 DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+_V3_PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
 _RUNTIME_KEYS = frozenset(("speed", "text_frontend"))
 
 
@@ -291,7 +292,7 @@ class CosyVoiceTTS:
                 elif prompt_text is not None:
                     generated = self.model.inference_zero_shot(
                         text,
-                        prompt_text,
+                        _prompt_text(prompt_text, self.config.version),
                         prompt_audio,
                         zero_shot_spk_id=zero_shot_spk_id,
                         stream=False,
@@ -502,6 +503,12 @@ def _mono_waveform(waveform: Tensor) -> Tensor:
     if tensor.shape[0] > 1:
         tensor = tensor.mean(dim=0, keepdim=True)
     return tensor.contiguous()
+
+
+def _prompt_text(value: str, version: CosyVoiceVersion) -> str:
+    if version is CosyVoiceVersion.V3 and "<|endofprompt|>" not in value:
+        return f"{_V3_PROMPT_PREFIX}{value}"
+    return value
 
 
 def _waveform(value: object) -> Tensor:

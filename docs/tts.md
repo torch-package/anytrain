@@ -161,8 +161,11 @@ the upstream frontend. In-memory waveform references are converted to mono and
 materialized as request-scoped WAV files; encoded references retain their
 original bytes and suffix. Temporary files remain available until the upstream
 generator is fully consumed. Upstream `tts_speech` chunks are concatenated, and
-output remains one variable-length `TTSOutput` per input. Upstream exposes
-scalar `inference_*` methods rather than an end-to-end `list[str]` API. With `load_vllm=True` and
+output remains one variable-length `TTSOutput` per input. For CosyVoice3,
+AnyTrain adds the required `You are a helpful assistant.<|endofprompt|>` marker
+internally; callers continue to pass only the reference transcript. CosyVoice2
+prompt text is unchanged. Upstream exposes scalar `inference_*` methods rather
+than an end-to-end `list[str]` API. With `load_vllm=True` and
 `max_concurrency=N`, AnyTrain submits up to `N` scalar requests concurrently so
 the upstream vLLM request queue can dynamically batch the LLM stage; results are
 returned in input order. Flow and HiFT decoding remain per-request, so this is
