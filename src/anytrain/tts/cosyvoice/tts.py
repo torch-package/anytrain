@@ -140,13 +140,13 @@ class CosyVoiceTTS:
                 "and its Matcha-TTS submodule. Install the pinned CosyVoice checkout "
                 "before loading this backend."
             ) from exc
-        if load_kwargs.get("load_vllm") is True:
-            _register_vllm_model()
         try:
             with _device_context(device), _vllm_device_visibility(
                 device,
                 enabled=load_kwargs.get("load_vllm") is True,
             ):
+                if load_kwargs.get("load_vllm") is True:
+                    _register_vllm_model()
                 loaded = AutoModel(model_dir=resolved_model, **load_kwargs)
         except Exception as exc:
             raise RuntimeError(

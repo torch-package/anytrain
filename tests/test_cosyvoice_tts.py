@@ -63,6 +63,7 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
                 CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
 
             self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "7")
+            self.assertEqual(FakeModelRegistry.registration_visibility, ["7"])
             self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "6,7")
 
     def test_vllm_load_preserves_uuid_visibility_token(self):
@@ -411,10 +412,12 @@ class ConcurrentCosyVoiceModel:
 
 class FakeModelRegistry:
     registered: ClassVar[list[tuple[str, object]]] = []
+    registration_visibility: ClassVar[list[str | None]] = []
 
     @classmethod
     def register_model(cls, name: str, model: object) -> None:
         cls.registered.append((name, model))
+        cls.registration_visibility.append(os.environ.get("CUDA_VISIBLE_DEVICES"))
 
 
 class _fake_cosyvoice:
@@ -424,6 +427,7 @@ class _fake_cosyvoice:
     def __enter__(self):
         cosyvoice_module._register_vllm_model.cache_clear()
         FakeModelRegistry.registered = []
+        FakeModelRegistry.registration_visibility = []
         root = types.ModuleType("cosyvoice")
         cli = types.ModuleType("cosyvoice.cli")
         module = types.ModuleType("cosyvoice.cli.cosyvoice")
