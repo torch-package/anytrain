@@ -14,11 +14,13 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from enum import auto
 from functools import cache
+from multiprocessing.process import BaseProcess
 from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import RLock
 from typing import Any, TypedDict, Unpack, cast, overload
+from unittest.mock import patch
 from warnings import warn
 
 import torch
@@ -140,13 +142,13 @@ class CosyVoiceTTS:
                 "and its Matcha-TTS submodule. Install the pinned CosyVoice checkout "
                 "before loading this backend."
             ) from exc
+        if load_kwargs.get("load_vllm") is True:
+            _register_vllm_model()
         try:
-            with _device_context(device), _vllm_device_visibility(
+            with _device_context(device), _vllm_engine_process_visibility(
                 device,
                 enabled=load_kwargs.get("load_vllm") is True,
             ):
-                if load_kwargs.get("load_vllm") is True:
-                    _register_vllm_model()
                 loaded = AutoModel(model_dir=resolved_model, **load_kwargs)
         except Exception as exc:
             raise RuntimeError(
@@ -364,7 +366,7 @@ def _device_context(device: str | torch.device | None):
 
 
 @contextmanager
-def _vllm_device_visibility(
+def _vllm_engine_process_visibility(
     device: str | torch.device | None,
     *,
     enabled: bool,
@@ -378,29 +380,42 @@ def _vllm_device_visibility(
         return
 
     with _VLLM_DEVICE_VISIBILITY_LOCK:
-        index = resolved.index
-        if index is None:
-            index = torch.cuda.current_device()
-        previous = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if previous is None:
-            selected = str(index)
-        else:
-            visible = [token.strip() for token in previous.split(",")]
-            if index >= len(visible) or not visible[index]:
-                raise ValueError(
-                    f"CosyVoice requested cuda:{index}, but CUDA_VISIBLE_DEVICES="
-                    f"{previous!r} does not expose that logical device."
-                )
-            selected = visible[index]
+        selected = _selected_cuda_device(resolved)
+        original_start = BaseProcess.start
 
-        os.environ["CUDA_VISIBLE_DEVICES"] = selected
-        try:
+        # vLLM drops CUDA indexes from DeviceConfig, so isolate only its engine child.
+        def start(process: BaseProcess) -> None:
+            if not process.name.startswith("EngineCore"):
+                original_start(process)
+                return
+            previous = os.environ.get("CUDA_VISIBLE_DEVICES")
+            os.environ["CUDA_VISIBLE_DEVICES"] = selected
+            try:
+                original_start(process)
+            finally:
+                if previous is None:
+                    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                else:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = previous
+
+        with patch.object(BaseProcess, "start", start):
             yield
-        finally:
-            if previous is None:
-                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-            else:
-                os.environ["CUDA_VISIBLE_DEVICES"] = previous
+
+
+def _selected_cuda_device(device: torch.device) -> str:
+    index = device.index
+    if index is None:
+        index = torch.cuda.current_device()
+    visibility = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visibility is None:
+        return str(index)
+    visible = [token.strip() for token in visibility.split(",")]
+    if index >= len(visible) or not visible[index]:
+        raise ValueError(
+            f"CosyVoice requested cuda:{index}, but CUDA_VISIBLE_DEVICES="
+            f"{visibility!r} does not expose that logical device."
+        )
+    return visible[index]
 
 
 def _available_speakers(model: object) -> tuple[str, ...]:
