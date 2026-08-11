@@ -7,6 +7,7 @@ belong to AnyDataset and downstream workspace resources.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -16,6 +17,7 @@ from functools import cache
 from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import RLock
 from typing import Any, TypedDict, Unpack, cast, overload
 from warnings import warn
 
@@ -41,6 +43,7 @@ DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
 DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 _V3_PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
 _RUNTIME_KEYS = frozenset(("speed", "text_frontend"))
+_VLLM_DEVICE_VISIBILITY_LOCK = RLock()
 
 
 class CosyVoiceVersion(StrEnum):
@@ -140,7 +143,10 @@ class CosyVoiceTTS:
         if load_kwargs.get("load_vllm") is True:
             _register_vllm_model()
         try:
-            with _device_context(device):
+            with _device_context(device), _vllm_device_visibility(
+                device,
+                enabled=load_kwargs.get("load_vllm") is True,
+            ):
                 loaded = AutoModel(model_dir=resolved_model, **load_kwargs)
         except Exception as exc:
             raise RuntimeError(
@@ -355,6 +361,46 @@ def _device_context(device: str | torch.device | None):
             )
         return nullcontext()
     raise ValueError(f"CosyVoice does not support device type {resolved.type!r}.")
+
+
+@contextmanager
+def _vllm_device_visibility(
+    device: str | torch.device | None,
+    *,
+    enabled: bool,
+) -> Iterator[None]:
+    if not enabled or device is None or str(device) == "auto":
+        yield
+        return
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        yield
+        return
+
+    with _VLLM_DEVICE_VISIBILITY_LOCK:
+        index = resolved.index
+        if index is None:
+            index = torch.cuda.current_device()
+        previous = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if previous is None:
+            selected = str(index)
+        else:
+            visible = [token.strip() for token in previous.split(",")]
+            if index >= len(visible) or not visible[index]:
+                raise ValueError(
+                    f"CosyVoice requested cuda:{index}, but CUDA_VISIBLE_DEVICES="
+                    f"{previous!r} does not expose that logical device."
+                )
+            selected = visible[index]
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = selected
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = previous
 
 
 def _available_speakers(model: object) -> tuple[str, ...]:

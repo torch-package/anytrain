@@ -1,10 +1,13 @@
+import os
 import sys
 import threading
 import types
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import torch
 
@@ -48,6 +51,59 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
                 )
             ],
         )
+
+    def test_vllm_load_isolates_explicit_cuda_device_and_restores_visibility(self):
+        FakeCosyVoiceModel.loaded = None
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "6,7"}):
+            with (
+                patch.object(torch.cuda, "is_available", return_value=True),
+                patch.object(torch.cuda, "device", return_value=nullcontext()),
+                _fake_cosyvoice(),
+            ):
+                CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
+
+            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "7")
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "6,7")
+
+    def test_vllm_load_preserves_uuid_visibility_token(self):
+        FakeCosyVoiceModel.loaded = None
+        visible = "GPU-aaaaaaaa,MIG-bbbbbbbb"
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": visible}):
+            with (
+                patch.object(torch.cuda, "is_available", return_value=True),
+                patch.object(torch.cuda, "device", return_value=nullcontext()),
+                _fake_cosyvoice(),
+            ):
+                CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
+
+            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "MIG-bbbbbbbb")
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], visible)
+
+    def test_non_vllm_load_keeps_full_cuda_visibility(self):
+        FakeCosyVoiceModel.loaded = None
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "6,7"}):
+            with (
+                patch.object(torch.cuda, "is_available", return_value=True),
+                patch.object(torch.cuda, "device", return_value=nullcontext()),
+                _fake_cosyvoice(),
+            ):
+                CosyVoiceTTS.from_pretrained(device="cuda:1")
+
+            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "6,7")
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "6,7")
+
+    def test_vllm_load_rejects_device_outside_cuda_visibility(self):
+        with (
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "6"}),
+            patch.object(torch.cuda, "is_available", return_value=True),
+            patch.object(torch.cuda, "device", return_value=nullcontext()),
+            _fake_cosyvoice(),
+            self.assertRaises(RuntimeError) as captured,
+        ):
+            CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
+
+        self.assertIsInstance(captured.exception.__cause__, ValueError)
+        self.assertRegex(str(captured.exception.__cause__), "does not expose")
 
     def test_capabilities_expose_reference_and_available_speakers(self):
         backend = CosyVoiceTTS(FakeCosyVoiceModel())
@@ -252,6 +308,7 @@ class FakeCosyVoiceModel:
 
     def __init__(self, load_kwargs: dict[str, object] | None = None) -> None:
         self.load_kwargs = load_kwargs
+        self.cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
         self.sample_rate = 24_000
         self.calls: list[tuple[Any, ...]] = []
         type(self).loaded = self
