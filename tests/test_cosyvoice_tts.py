@@ -2,6 +2,8 @@ import sys
 import threading
 import types
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
 
 import torch
@@ -78,7 +80,8 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
                     "zero_shot",
                     "你好",
                     "参考文本",
-                    tuple(reference.waveform.shape),
+                    (".wav", True),
+                    "reference.wav",
                     "",
                     {"stream": False, "text_frontend": False},
                 )
@@ -101,7 +104,22 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
 
         self.assertEqual(len(outputs), 2)
         self.assertEqual([call[2] for call in model.calls], ["one", "two"])
-        self.assertEqual([call[3] for call in model.calls], [(1, 16), (1, 32)])
+        self.assertEqual([call[3] for call in model.calls], [(".wav", True)] * 2)
+
+    def test_path_reference_is_passed_through(self):
+        model = FakeCosyVoiceModel()
+        backend = CosyVoiceTTS(model)
+        with TemporaryDirectory() as directory:
+            reference = Path(directory, "prompt.wav")
+            reference.touch()
+            backend.synthesize(
+                "hello",
+                TTSOptions(prompt_text="prompt"),
+                reference_audio=reference,
+            )
+
+        self.assertEqual(model.calls[0][3], (".wav", True))
+        self.assertEqual(model.calls[0][4], "prompt.wav")
 
     def test_vllm_batch_submits_concurrently_and_preserves_order(self):
         model = ConcurrentCosyVoiceModel()
@@ -231,7 +249,8 @@ class FakeCosyVoiceModel:
                 "zero_shot",
                 text,
                 prompt_text,
-                tuple(prompt_speech.shape),
+                (Path(prompt_speech).suffix, Path(prompt_speech).is_file()),
+                Path(prompt_speech).name,
                 zero_shot_spk_id,
                 kwargs,
             )
@@ -250,7 +269,8 @@ class FakeCosyVoiceModel:
             (
                 "cross_lingual",
                 text,
-                tuple(prompt_speech.shape),
+                (Path(prompt_speech).suffix, Path(prompt_speech).is_file()),
+                Path(prompt_speech).name,
                 zero_shot_spk_id,
                 kwargs,
             )
@@ -270,7 +290,8 @@ class FakeCosyVoiceModel:
                 "instruct2",
                 text,
                 instruction,
-                tuple(prompt_speech.shape),
+                (Path(prompt_speech).suffix, Path(prompt_speech).is_file()),
+                Path(prompt_speech).name,
                 zero_shot_spk_id,
                 kwargs,
             )

@@ -7,15 +7,15 @@ belong to AnyDataset and downstream workspace resources.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from enum import auto
 from functools import cache
-from io import BytesIO
 from os import PathLike
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, TypedDict, Unpack, cast, overload
 from warnings import warn
 
@@ -39,7 +39,6 @@ from anytrain.tts._common import config_hash, hashable_mapping, validate_mapping
 
 DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
 DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-PROMPT_SAMPLE_RATE = 16_000
 _RUNTIME_KEYS = frozenset(("speed", "text_frontend"))
 
 
@@ -275,39 +274,40 @@ class CosyVoiceTTS:
                 **runtime,
             )
             mode = "sft"
+            waveform = _waveform(generated)
         else:
-            prompt_speech = _prompt_speech(reference)
-            zero_shot_spk_id = "" if speaker is None else speaker
-            if instruction is not None:
-                generated = self.model.inference_instruct2(
-                    text,
-                    instruction,
-                    prompt_speech,
-                    zero_shot_spk_id=zero_shot_spk_id,
-                    stream=False,
-                    **runtime,
-                )
-                mode = "instruct2"
-            elif prompt_text is not None:
-                generated = self.model.inference_zero_shot(
-                    text,
-                    prompt_text,
-                    prompt_speech,
-                    zero_shot_spk_id=zero_shot_spk_id,
-                    stream=False,
-                    **runtime,
-                )
-                mode = "zero_shot"
-            else:
-                generated = self.model.inference_cross_lingual(
-                    text,
-                    prompt_speech,
-                    zero_shot_spk_id=zero_shot_spk_id,
-                    stream=False,
-                    **runtime,
-                )
-                mode = "cross_lingual"
-        waveform = _waveform(generated)
+            with _prompt_audio(reference) as prompt_audio:
+                zero_shot_spk_id = "" if speaker is None else speaker
+                if instruction is not None:
+                    generated = self.model.inference_instruct2(
+                        text,
+                        instruction,
+                        prompt_audio,
+                        zero_shot_spk_id=zero_shot_spk_id,
+                        stream=False,
+                        **runtime,
+                    )
+                    mode = "instruct2"
+                elif prompt_text is not None:
+                    generated = self.model.inference_zero_shot(
+                        text,
+                        prompt_text,
+                        prompt_audio,
+                        zero_shot_spk_id=zero_shot_spk_id,
+                        stream=False,
+                        **runtime,
+                    )
+                    mode = "zero_shot"
+                else:
+                    generated = self.model.inference_cross_lingual(
+                        text,
+                        prompt_audio,
+                        zero_shot_spk_id=zero_shot_spk_id,
+                        stream=False,
+                        **runtime,
+                    )
+                    mode = "cross_lingual"
+                waveform = _waveform(generated)
         meta: dict[str, object] = {
             "backend": self.name,
             "model": self.config.model,
@@ -475,16 +475,25 @@ def _resolve_reference_aliases(
     return reference_audio, reference_audios
 
 
-def _prompt_speech(reference: AudioReference) -> Tensor:
-    if isinstance(reference, WaveformReference):
-        waveform = reference.waveform
-        sample_rate = reference.sample_rate
-    elif isinstance(reference, EncodedAudioReference):
-        waveform, sample_rate = _torchaudio().load(BytesIO(reference.data))
-    elif isinstance(reference, (str, PathLike)):
-        waveform, sample_rate = _torchaudio().load(str(Path(reference).expanduser()))
-    else:
-        raise TypeError("unsupported CosyVoice reference audio type.")
+@contextmanager
+def _prompt_audio(reference: AudioReference) -> Iterator[str]:
+    if isinstance(reference, (str, PathLike)):
+        yield str(Path(reference).expanduser())
+        return
+    with TemporaryDirectory(prefix="anytrain-cosyvoice-") as directory:
+        if isinstance(reference, EncodedAudioReference):
+            path = Path(directory, f"reference{reference.suffix}")
+            path.write_bytes(reference.data)
+        elif isinstance(reference, WaveformReference):
+            path = Path(directory, "reference.wav")
+            waveform = _mono_waveform(reference.waveform)
+            _torchaudio().save(str(path), waveform, reference.sample_rate)
+        else:
+            raise TypeError("unsupported CosyVoice reference audio type.")
+        yield str(path)
+
+
+def _mono_waveform(waveform: Tensor) -> Tensor:
     tensor = torch.as_tensor(waveform, dtype=torch.float32).detach().cpu()
     if tensor.ndim == 1:
         tensor = tensor.unsqueeze(0)
@@ -492,12 +501,6 @@ def _prompt_speech(reference: AudioReference) -> Tensor:
         raise ValueError("CosyVoice reference waveform must have shape [channels, time].")
     if tensor.shape[0] > 1:
         tensor = tensor.mean(dim=0, keepdim=True)
-    if sample_rate != PROMPT_SAMPLE_RATE:
-        tensor = _torchaudio().functional.resample(
-            tensor,
-            sample_rate,
-            PROMPT_SAMPLE_RATE,
-        )
     return tensor.contiguous()
 
 
@@ -533,7 +536,7 @@ def _torchaudio() -> Any:
         import torchaudio
     except ImportError as exc:
         raise ImportError(
-            "CosyVoice encoded/path references and resampling require torchaudio."
+            "CosyVoice in-memory waveform references require torchaudio."
         ) from exc
     return torchaudio
 
