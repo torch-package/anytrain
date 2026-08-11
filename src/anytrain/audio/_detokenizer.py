@@ -28,12 +28,12 @@ class AudioDetokenizer(ABC):
     def detokenize(self, codes: Mapping[str, Tensor | None]) -> Tensor:
         streams = self._ordered(codes, value_name="codes")
         features: dict[str, Tensor | None] = {}
-        for stream in self.code_spec.names:
-            stream_codes = streams[stream]
-            features[stream] = (
+        for stream in self.code_spec.streams:
+            stream_codes = streams[stream.name]
+            features[stream.name] = (
                 None
                 if stream_codes is None
-                else self.codes_to_features(stream, stream_codes)
+                else self.codes_to_features(stream.name, stream_codes)
             )
         return self.decode_features(features)
 
@@ -45,21 +45,27 @@ class AudioDetokenizer(ABC):
     ) -> dict[str, Tensor | None]:
         if not isinstance(values, Mapping):
             raise TypeError(f"{value_name} must be a mapping from stream names to tensors.")
-        expected = set(self.code_spec.names)
+        expected = {stream.name for stream in self.code_spec.streams}
         actual = set(values)
         if actual != expected:
-            missing = tuple(name for name in self.code_spec.names if name not in actual)
+            missing = tuple(
+                stream.name
+                for stream in self.code_spec.streams
+                if stream.name not in actual
+            )
             unexpected = tuple(name for name in values if name not in expected)
             raise ValueError(
                 f"{value_name} do not match code_spec: "
                 f"missing={missing!r}, unexpected={unexpected!r}."
             )
         ordered: dict[str, Tensor | None] = {}
-        for stream in self.code_spec.names:
-            value = values[stream]
+        for stream in self.code_spec.streams:
+            value = values[stream.name]
             if value is not None and not isinstance(value, Tensor):
-                raise TypeError(f"{value_name}[{stream!r}] must be a Tensor or None.")
-            ordered[stream] = value
+                raise TypeError(
+                    f"{value_name}[{stream.name!r}] must be a Tensor or None."
+                )
+            ordered[stream.name] = value
         return ordered
 
 

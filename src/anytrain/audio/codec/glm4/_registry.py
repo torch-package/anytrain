@@ -7,7 +7,11 @@ from torch import device as TorchDevice
 
 from anytrain.audio.codec._registry import CodecEntry
 from anytrain.audio.codec.protocol import AudioCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+from anytrain.audio.codec.spec import (
+    AudioBackendIdentity,
+    AudioCodeSpec,
+    AudioCodeStreamSpec,
+)
 
 if TYPE_CHECKING:
     from anytrain.audio._tokenizer import AudioTokenizer
@@ -60,10 +64,8 @@ ENTRY = CodecEntry(
     loader=_load_tokenizer,
     audio_capabilities=frozenset({AudioCapability.TOKENIZER}),
     audio_spec=AudioCodeSpec(
-        names=("rvq_0",),
-        vocab_sizes=(16_384,),
         sample_rate=16_000,
-        frame_rates=(12.5,),
+        streams=(AudioCodeStreamSpec("rvq_0", 16_384, frame_rate=12.5),),
     ),
     tokenizer=_represent_tokenizer,
     identity=AudioBackendIdentity(

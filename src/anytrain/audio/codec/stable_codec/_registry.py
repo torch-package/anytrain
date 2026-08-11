@@ -6,7 +6,11 @@ from anytrain.audio.codec._detokenizer import represent_frame_detokenizer
 from anytrain.audio.codec._registry import CodecEntry
 from anytrain.audio.codec._tokenizer import represent_frame_tokenizer
 from anytrain.audio.codec.protocol import AudioCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+from anytrain.audio.codec.spec import (
+    AudioBackendIdentity,
+    AudioCodeSpec,
+    AudioCodeStreamSpec,
+)
 
 _DEFAULT_ARTIFACT = "stabilityai/stable-codec-speech-16k"
 
@@ -27,10 +31,8 @@ ENTRY = CodecEntry(
         }
     ),
     audio_spec=AudioCodeSpec(
-        names=("rvq_0",),
-        vocab_sizes=(46_656,),
         sample_rate=16_000,
-        frame_rates=(25.0,),
+        streams=(AudioCodeStreamSpec("rvq_0", 46_656, frame_rate=25.0),),
     ),
     identity=AudioBackendIdentity(
         preset="stable_codec",

@@ -6,14 +6,14 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._observation import (
+from ..abc import LossABC
+from ..observation import (
     emit_diagnostics,
     loss_with_diagnostics,
 )
-from .._observation import (
+from ..observation import (
     loss as register_loss,
 )
-from ..abc import LossABC
 
 
 def _magnitude(spectrum: Tensor) -> Tensor:

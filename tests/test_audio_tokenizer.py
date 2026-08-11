@@ -5,15 +5,17 @@ import pytest
 import torch
 from torch import Tensor
 
+from anytrain.audio.codec import AudioCodeStreamSpec
 from anytrain.audio.tokenizer import AudioCodeSpec, AudioTokenizer, PaddedAudioCodes
 
 
 class _ExampleTokenizer(AudioTokenizer):
     _code_spec = AudioCodeSpec(
-        names=("semantic", "rvq_0"),
-        vocab_sizes=(4, 8),
         sample_rate=16_000,
-        frame_rates=(50.0, 50.0),
+        streams=(
+            AudioCodeStreamSpec("semantic", 4, frame_rate=50.0),
+            AudioCodeStreamSpec("rvq_0", 8, frame_rate=50.0),
+        ),
     )
 
     def __init__(self, output: Mapping[str, Tensor]) -> None:

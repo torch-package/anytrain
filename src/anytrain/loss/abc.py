@@ -6,8 +6,8 @@ from typing import Any
 import torch
 from torch import nn
 
-from ._observation import recommend
 from ._validation import scalar
+from .observation import recommend
 
 
 class LossABC(nn.Module, ABC):

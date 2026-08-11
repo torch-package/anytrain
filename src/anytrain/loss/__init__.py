@@ -19,6 +19,7 @@ from .frame import (
     teacher_loss,
 )
 from .group import LossGroup
+from .observation import emit_diagnostics, loss_with_diagnostics, recommend
 
 __all__ = [
     "FixedWeightLossBalancer",
@@ -39,4 +40,7 @@ __all__ = [
     "masked_cosine_alignment_loss",
     "masked_frame_mse_loss",
     "teacher_loss",
+    "emit_diagnostics",
+    "loss_with_diagnostics",
+    "recommend",
 ]

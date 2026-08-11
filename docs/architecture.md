@@ -33,6 +33,7 @@
 默认安装必须可用：
 
 - `anytrain.lightning`：LightningModule logging mixin、debug callback、后台物化与长驻服务生命周期、schedule runtime 和性能观测 callback。
+- `anytrain.checkpoint`：canonical contract、state-dict schema，以及普通单文件 Lightning checkpoint 的显式严格恢复 primitive。
 - `anytrain.observation`：普通 `nn.Module` 的 concrete-type observation registry，以及
   Curve/Distribution/Profile/Bins/Heatmap 值契约、State/Output/Event 来源声明和重复值 reduction；这是 module 中间量 logging 的
   唯一声明入口，不依赖 Lightning logger。
@@ -126,6 +127,12 @@ class MyPLModule(pl.LightningModule):
 ### `lightning`
 
 提供 LightningModule logging mixin 和 callback。logger backend 由下游或 Lightning 原生配置负责创建；第三方 logger backend 是 optional。
+
+### `checkpoint`
+
+提供 task-agnostic 的 checkpoint contract、state-dict schema 与单文件 Lightning payload
+加载。它只把显式路径严格恢复到调用方提供的 module，并把 payload 返回给下游解释；不发现路径、
+不接管 Trainer resume，也不解释项目 metadata。
 
 ### `lightning.perf`
 

@@ -9,14 +9,23 @@ import anytrain.audio.codec as codec_api
 from anytrain.audio.codec import (
     AudioCapability,
     AudioCodeSpec,
+    AudioCodeStreamSpec,
     audio_backend_identity,
     audio_capabilities,
     audio_spec,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
     clear_audio_backend_cache,
+    codebook_codec,
+    codec_frame_rate,
+    codec_sample_rate,
+    frame_codebook_sizes,
+    fsq_level_values,
+    fsq_levels,
+    fsq_radix_order,
     load_audio_detokenizer,
     load_audio_tokenizer,
+    semantic_feature_dim,
 )
 from anytrain.audio.codec._module import validate_frame_codes
 from anytrain.audio.codec.longcat import DEFAULT_LONGCAT_REVISION
@@ -37,40 +46,130 @@ def test_audio_capability_values_are_stable() -> None:
         "AudioBackendIdentity",
         "AudioCapability",
         "AudioCodeSpec",
+        "AudioCodeStreamSpec",
+        "CodecBackend",
+        "SemanticCodebookCodec",
         "audio_backend_identity",
         "audio_capabilities",
         "audio_spec",
         "can_load_audio_detokenizer",
         "can_load_audio_tokenizer",
         "clear_audio_backend_cache",
+        "codebook_codec",
+        "codec_frame_rate",
+        "codec_sample_rate",
+        "frame_codebook_sizes",
+        "fsq_level_values",
+        "fsq_levels",
+        "fsq_radix_order",
+        "load_audio_backend",
         "load_audio_detokenizer",
         "load_audio_tokenizer",
+        "semantic_feature_dim",
     ]
 
 
 def test_audio_specs_are_static_named_stream_inventories() -> None:
     assert audio_spec("bicodec") == AudioCodeSpec(
-        names=("semantic", "global"),
-        vocab_sizes=(8192, 4096),
         sample_rate=16_000,
-        frame_rates=(50.0, None),
+        streams=(
+            AudioCodeStreamSpec("semantic", 8192, frame_rate=50.0),
+            AudioCodeStreamSpec("global", 4096, fixed_units=32),
+        ),
     )
-    assert audio_spec("longcat").names == ("semantic", "rvq_0", "rvq_1", "rvq_2")
-    assert audio_spec("dac").names == tuple(f"rvq_{index}" for index in range(9))
+    assert tuple(stream.name for stream in audio_spec("longcat").streams) == (
+        "semantic",
+        "rvq_0",
+        "rvq_1",
+        "rvq_2",
+    )
+    assert tuple(stream.name for stream in audio_spec("dac").streams) == tuple(
+        f"rvq_{index}" for index in range(9)
+    )
 
 
 def test_audio_code_spec_selects_and_excludes_streams() -> None:
     spec = audio_spec("longcat")
-    assert spec.select(("rvq_2", "semantic")).names == ("rvq_2", "semantic")
-    assert spec.exclude(("semantic",)).names == ("rvq_0", "rvq_1", "rvq_2")
+    assert tuple(
+        stream.name for stream in spec.select(("rvq_2", "semantic")).streams
+    ) == ("rvq_2", "semantic")
+    assert tuple(stream.name for stream in spec.exclude(("semantic",)).streams) == (
+        "rvq_0",
+        "rvq_1",
+        "rvq_2",
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"name": "", "vocab_size": 4, "frame_rate": 50.0}, "name"),
+        ({"name": "semantic", "vocab_size": 0, "frame_rate": 50.0}, "vocab_size"),
+        ({"name": "semantic", "vocab_size": 4}, "frame_rate or fixed_units"),
+        (
+            {
+                "name": "semantic",
+                "vocab_size": 4,
+                "frame_rate": 50.0,
+                "fixed_units": 2,
+            },
+            "cannot set both",
+        ),
+    ],
+)
+def test_audio_code_stream_spec_rejects_invalid_metadata(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        AudioCodeStreamSpec(**kwargs)  # type: ignore[arg-type]
+
+
+class _CodebookCodec:
+    semantic_codebook = torch.ones((8, 3))
+
+
+class _FsqCodec:
+    semantic_feature_dim = 1
+    codebook_sizes = (6,)
+    fsq_levels = ((2, 3),)
+    fsq_level_values = (((-1.0, 1.0), (-1.0, 0.0, 1.0)),)
+    fsq_radix_order = "first_fastest"
+    sample_rate = 24_000
+    frame_rate = 75.0
+
+
+def test_codec_capability_accessors_validate_public_metadata() -> None:
+    codebook = _CodebookCodec()
+    codec = _FsqCodec()
+
+    assert codebook_codec(codebook) is codebook
+    assert semantic_feature_dim(codebook) == 3
+    assert frame_codebook_sizes(codec) == (6,)
+    assert fsq_levels(codec) == ((2, 3),)
+    assert fsq_level_values(codec) == (((-1.0, 1.0), (-1.0, 0.0, 1.0)),)
+    assert fsq_radix_order(codec) == "first_fastest"
+    assert codec_sample_rate(codec) == 24_000
+    assert codec_frame_rate(codec) == 75.0
+
+
+def test_codec_capability_accessors_reject_invalid_metadata() -> None:
+    codec = _FsqCodec()
+    codec.fsq_level_values = (((1.0, -1.0), (-1.0, 0.0, 1.0)),)
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        fsq_level_values(codec)
+    with pytest.raises(TypeError, match="sample rate"):
+        codec_sample_rate(object())
 
 
 class _ExampleDetokenizer(AudioDetokenizer):
     _code_spec = AudioCodeSpec(
-        names=("left", "right"),
-        vocab_sizes=(4, 8),
         sample_rate=16_000,
-        frame_rates=(50.0, 50.0),
+        streams=(
+            AudioCodeStreamSpec("left", 4, frame_rate=50.0),
+            AudioCodeStreamSpec("right", 8, frame_rate=50.0),
+        ),
     )
 
     @property

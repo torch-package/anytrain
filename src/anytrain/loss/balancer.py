@@ -13,13 +13,13 @@ from torch import Tensor, nn
 from anytrain._buffer import register_buffer
 from anytrain._compat import StrEnum
 
-from ._observation import (
+from ._validation import scalar
+from .observation import (
     dynamic_balancer,
     fixed_balancer,
     interpolated_balancer,
     recommend,
 )
-from ._validation import scalar
 
 LossMapping = Mapping[str, Tensor]
 _CHECKPOINT_SCHEMA_VERSION = 1

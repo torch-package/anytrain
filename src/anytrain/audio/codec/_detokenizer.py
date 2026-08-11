@@ -41,17 +41,19 @@ class BackendDetokenizer(AudioDetokenizer):
 
     def _stream_codes(self, stream: str, codes: Tensor) -> tuple[Tensor, int]:
         try:
-            index = self.code_spec.names.index(stream)
+            stream_spec = self.code_spec.stream(stream)
         except ValueError as exc:
             raise ValueError(
-                f"unknown code stream {stream!r}; available streams are {self.code_spec.names!r}."
+                f"unknown code stream {stream!r}; available streams are "
+                f"{tuple(value.name for value in self.code_spec.streams)!r}."
             ) from exc
+        index = self.code_spec.streams.index(stream_spec)
         values = integer_tensor(codes, f"{stream} codes")
         if values.dim() != 2:
             raise ValueError(f"{stream} codes must have shape [batch, unit].")
         if values.numel() == 0:
             raise ValueError(f"{stream} codes must not be empty.")
-        if bool((values < 0).any()) or bool((values >= self.code_spec.vocab_sizes[index]).any()):
+        if bool((values < 0).any()) or bool((values >= stream_spec.vocab_size).any()):
             raise ValueError(f"{stream} codes contain an ID outside the codebook.")
         return values, index
 
@@ -69,15 +71,19 @@ class FrameBackendDetokenizer(BackendDetokenizer):
 
     def decode_features(self, features: Mapping[str, Tensor | None]) -> Tensor:
         streams = self._ordered(features, value_name="features")
-        missing = tuple(name for name in self.code_spec.names if streams[name] is None)
+        missing = tuple(
+            stream.name
+            for stream in self.code_spec.streams
+            if streams[stream.name] is None
+        )
         if missing:
             raise ValueError(f"frame detokenizer cannot infer omitted feature streams {missing!r}.")
         values: list[Tensor] = []
-        for name in self.code_spec.names:
-            value = streams[name]
+        for stream in self.code_spec.streams:
+            value = streams[stream.name]
             if value is None:
                 raise AssertionError("omitted frame streams were checked above.")
-            values.append(_features(value, stream=name))
+            values.append(_features(value, stream=stream.name))
         decode = getattr(self.backend, "decode_codebook_features", None)
         if not callable(decode):
             raise TypeError(

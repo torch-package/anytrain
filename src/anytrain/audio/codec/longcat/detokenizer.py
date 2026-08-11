@@ -30,16 +30,18 @@ class LongCatDetokenizer(BackendDetokenizer):
     @torch.no_grad()
     def decode_features(self, features: Mapping[str, Tensor | None]) -> Tensor:
         streams = self._ordered(features, value_name="features")
-        semantic_name = self.code_spec.names[0]
+        semantic_name = self.code_spec.streams[0].name
         semantic_value = streams[semantic_name]
         if semantic_value is None:
             raise ValueError("LongCat cannot infer waveform duration without semantic features.")
         semantic = _features(semantic_value, stream=semantic_name)
         acoustic_streams: list[Tensor] = []
-        for name in self.code_spec.names[1:]:
-            value = streams[name]
+        for stream in self.code_spec.streams[1:]:
+            value = streams[stream.name]
             if value is not None:
-                acoustic_streams.append(_features(value, stream=name, shape=semantic.shape[:2]))
+                acoustic_streams.append(
+                    _features(value, stream=stream.name, shape=semantic.shape[:2])
+                )
         if not acoustic_streams:
             zero = semantic.new_zeros(
                 semantic.size(0),

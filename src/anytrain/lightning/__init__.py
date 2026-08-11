@@ -1,4 +1,5 @@
 from . import experiment, oom, schedule, validation
+from .cadence import StepInterval
 from .callback.checkpoint import ModelCheckpoint
 from .callback.debug import DebugCallback
 from .callback.ema import EMACallback, ParameterEMA, find_ema_callback
@@ -73,6 +74,7 @@ __all__ = [
     "PerformanceCallback",
     "PerformanceReport",
     "RankLogMode",
+    "StepInterval",
     "apply_parameter_trainability",
     "experiment",
     "gradient_loss_groups",

@@ -12,6 +12,7 @@ from anytrain.audio._tokenizer import (
 )
 from anytrain.audio.codec import (
     AudioCodeSpec,
+    AudioCodeStreamSpec,
     audio_spec,
     can_load_audio_tokenizer,
     load_audio_tokenizer,
@@ -20,6 +21,7 @@ from anytrain.audio.codec import (
 __all__ = [
     "AudioCodes",
     "AudioCodeSpec",
+    "AudioCodeStreamSpec",
     "AudioTokenizer",
     "PaddedAudioCodes",
     "PaddedAudioTokenizer",

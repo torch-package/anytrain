@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from .._observation import loss as register_loss
 from ..abc import LossABC
+from ..observation import loss as register_loss
 
 
 def _sum_channels_and_time(signal: Tensor) -> Tensor:

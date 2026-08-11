@@ -8,9 +8,9 @@ from torch import nn
 
 from ._group import balancer as loss_balancer
 from ._group import compute, module_dict
-from ._observation import loss as register_loss
 from .abc import LossABC
 from .balancer import LossBalancerABC
+from .observation import loss as register_loss
 
 
 @register_loss

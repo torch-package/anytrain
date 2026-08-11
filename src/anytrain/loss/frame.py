@@ -6,8 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from ._observation import emit_diagnostics, loss_with_diagnostics
 from .abc import LossABC
+from .observation import emit_diagnostics, loss_with_diagnostics
 
 
 def masked_frame_mse_loss(

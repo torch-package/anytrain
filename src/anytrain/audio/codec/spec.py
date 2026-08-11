@@ -19,58 +19,77 @@ class AudioBackendIdentity:
 
 
 @dataclass(frozen=True)
-class AudioCodeSpec:
-    """Static inventory of named code streams."""
+class AudioCodeStreamSpec:
+    """Static shape and vocabulary metadata for one named code stream."""
 
-    names: tuple[str, ...]
-    vocab_sizes: tuple[int, ...]
-    sample_rate: int
-    frame_rates: tuple[float | None, ...]
+    name: str
+    vocab_size: int
+    frame_rate: float | None = None
+    fixed_units: int | None = None
 
     def __post_init__(self) -> None:
-        _names(self.names)
-        _sizes(self.vocab_sizes)
+        _non_empty_string(self.name, name="name")
+        _positive_int(self.vocab_size, name="vocab_size")
+        if self.frame_rate is not None:
+            _positive_float(self.frame_rate, name="frame_rate")
+        if self.fixed_units is not None:
+            _positive_int(self.fixed_units, name="fixed_units")
+        if self.frame_rate is None and self.fixed_units is None:
+            raise ValueError("audio code streams require frame_rate or fixed_units.")
+        if self.frame_rate is not None and self.fixed_units is not None:
+            raise ValueError("audio code streams cannot set both frame_rate and fixed_units.")
+
+
+@dataclass(frozen=True)
+class AudioCodeSpec:
+    """Static inventory of structured named code streams."""
+
+    sample_rate: int
+    streams: tuple[AudioCodeStreamSpec, ...]
+
+    def __post_init__(self) -> None:
         _positive_int(self.sample_rate, name="sample_rate")
-        _frame_rates(self.frame_rates)
-        if len(self.names) != len(self.vocab_sizes):
-            raise ValueError("names and vocab_sizes must have the same length.")
-        if len(self.names) != len(self.frame_rates):
-            raise ValueError("names and frame_rates must have the same length.")
+        if not isinstance(self.streams, tuple):
+            raise TypeError("streams must be a tuple of AudioCodeStreamSpec values.")
+        if not self.streams:
+            raise ValueError("streams must not be empty.")
+        if any(not isinstance(stream, AudioCodeStreamSpec) for stream in self.streams):
+            raise TypeError("streams must contain AudioCodeStreamSpec values.")
+        names = tuple(stream.name for stream in self.streams)
+        if len(set(names)) != len(names):
+            raise ValueError("audio code stream names must be unique.")
+
+    def stream(self, name: str) -> AudioCodeStreamSpec:
+        _non_empty_string(name, name="stream name")
+        for stream in self.streams:
+            if stream.name == name:
+                return stream
+        raise ValueError(
+            f"unknown code stream {name!r}; available streams are "
+            f"{tuple(stream.name for stream in self.streams)!r}."
+        )
 
     def select(self, names: tuple[str, ...]) -> AudioCodeSpec:
         requested = _names(names, name="selected names")
-        indices = self._indices(requested)
         return AudioCodeSpec(
-            names=requested,
-            vocab_sizes=tuple(self.vocab_sizes[index] for index in indices),
             sample_rate=self.sample_rate,
-            frame_rates=tuple(self.frame_rates[index] for index in indices),
+            streams=tuple(self.stream(name) for name in requested),
         )
 
     def exclude(self, names: tuple[str, ...]) -> AudioCodeSpec:
         excluded_names = _names(names, name="excluded names")
-        self._indices(excluded_names)
+        for name in excluded_names:
+            self.stream(name)
         excluded = set(excluded_names)
-        return self.select(tuple(name for name in self.names if name not in excluded))
-
-    def _indices(self, names: tuple[str, ...]) -> tuple[int, ...]:
-        positions = {name: index for index, name in enumerate(self.names)}
-        missing = tuple(name for name in names if name not in positions)
-        if missing:
-            raise ValueError(f"unknown code names {missing!r}; available names are {self.names!r}.")
-        return tuple(positions[name] for name in names)
+        return AudioCodeSpec(
+            sample_rate=self.sample_rate,
+            streams=tuple(
+                stream for stream in self.streams if stream.name not in excluded
+            ),
+        )
 
 
-def _sizes(value: object, *, name: str = "vocab_sizes") -> None:
-    if not isinstance(value, tuple):
-        raise TypeError(f"{name} must be a tuple of integers.")
-    for index, size in enumerate(value):
-        _positive_int(size, name=f"{name}[{index}]")
-    if not value:
-        raise ValueError(f"{name} must not be empty.")
-
-
-def _names(value: object, *, name: str = "names") -> tuple[str, ...]:
+def _names(value: object, *, name: str) -> tuple[str, ...]:
     if not isinstance(value, tuple):
         raise TypeError(f"{name} must be a tuple of strings.")
     for index, item in enumerate(value):
@@ -78,14 +97,6 @@ def _names(value: object, *, name: str = "names") -> tuple[str, ...]:
     if len(set(value)) != len(value):
         raise ValueError(f"{name} must contain unique values.")
     return value
-
-
-def _frame_rates(value: object) -> None:
-    if not isinstance(value, tuple):
-        raise TypeError("frame_rates must be a tuple of positive numbers or None.")
-    for index, rate in enumerate(value):
-        if rate is not None:
-            _positive_float(rate, name=f"frame_rates[{index}]")
 
 
 def _non_empty_string(value: object, *, name: str) -> None:
@@ -109,4 +120,4 @@ def _positive_float(value: object, *, name: str) -> None:
         raise ValueError(f"{name} must be finite and positive.")
 
 
-__all__ = ["AudioBackendIdentity", "AudioCodeSpec"]
+__all__ = ["AudioBackendIdentity", "AudioCodeSpec", "AudioCodeStreamSpec"]

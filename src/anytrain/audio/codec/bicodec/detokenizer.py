@@ -33,7 +33,9 @@ class BiCodecDetokenizer(BackendDetokenizer):
     @torch.no_grad()
     def decode_features(self, features: Mapping[str, Tensor | None]) -> Tensor:
         streams = self._ordered(features, value_name="features")
-        semantic_name, global_name = self.code_spec.names
+        semantic_name, global_name = (
+            stream.name for stream in self.code_spec.streams
+        )
         semantic_value = streams[semantic_name]
         if semantic_value is None:
             raise ValueError("BiCodec cannot infer waveform duration without semantic features.")

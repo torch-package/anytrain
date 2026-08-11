@@ -51,11 +51,11 @@ class BackendTokenizer(AudioTokenizer):
             elif group.size(0) != batch_size:
                 raise ValueError("audio tokenizer code groups must align on batch.")
             streams += group.unbind(dim=-1)
-        if len(streams) != len(self.code_spec.names):
+        if len(streams) != len(self.code_spec.streams):
             raise ValueError("audio tokenizer output must contain every code_spec stream.")
         return {
-            name: streams[index]
-            for index, name in enumerate(self.code_spec.names)
+            stream.name: streams[index]
+            for index, stream in enumerate(self.code_spec.streams)
         }
 
 

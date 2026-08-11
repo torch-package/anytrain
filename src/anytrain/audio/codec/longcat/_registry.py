@@ -4,7 +4,11 @@ from torch import device as TorchDevice
 
 from anytrain.audio.codec._registry import CodecEntry
 from anytrain.audio.codec.protocol import AudioCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+from anytrain.audio.codec.spec import (
+    AudioBackendIdentity,
+    AudioCodeSpec,
+    AudioCodeStreamSpec,
+)
 
 from .assets import DEFAULT_HF_REPO_ID, DEFAULT_LONGCAT_REVISION
 
@@ -37,10 +41,18 @@ ENTRY = CodecEntry(
         }
     ),
     audio_spec=AudioCodeSpec(
-        names=("semantic", "rvq_0", "rvq_1", "rvq_2"),
-        vocab_sizes=(8192, 8100, 8100, 8100),
         sample_rate=16_000,
-        frame_rates=(16_000 / 960,) * 4,
+        streams=(
+            AudioCodeStreamSpec("semantic", 8192, frame_rate=16_000 / 960),
+            *(
+                AudioCodeStreamSpec(
+                    f"rvq_{index}",
+                    8100,
+                    frame_rate=16_000 / 960,
+                )
+                for index in range(3)
+            ),
+        ),
     ),
     identity=AudioBackendIdentity(
         preset="longcat",

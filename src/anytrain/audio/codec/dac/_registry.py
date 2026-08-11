@@ -6,7 +6,11 @@ from anytrain.audio.codec._detokenizer import represent_frame_detokenizer
 from anytrain.audio.codec._registry import CodecEntry
 from anytrain.audio.codec._tokenizer import represent_frame_tokenizer
 from anytrain.audio.codec.protocol import AudioCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+from anytrain.audio.codec.spec import (
+    AudioBackendIdentity,
+    AudioCodeSpec,
+    AudioCodeStreamSpec,
+)
 
 from .assets import (
     DEFAULT_MODEL_BITRATE,
@@ -34,10 +38,15 @@ ENTRY = CodecEntry(
         }
     ),
     audio_spec=AudioCodeSpec(
-        names=tuple(f"rvq_{index}" for index in range(9)),
-        vocab_sizes=(1024,) * 9,
         sample_rate=44_100,
-        frame_rates=(44_100 / 512,) * 9,
+        streams=tuple(
+            AudioCodeStreamSpec(
+                f"rvq_{index}",
+                1024,
+                frame_rate=44_100 / 512,
+            )
+            for index in range(9)
+        ),
     ),
     identity=AudioBackendIdentity(
         preset="dac",

@@ -4,7 +4,6 @@ import threading
 import types
 import unittest
 from contextlib import nullcontext
-from multiprocessing.process import BaseProcess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
@@ -53,73 +52,19 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
             ],
         )
 
-    def test_vllm_load_isolates_explicit_cuda_device_and_restores_visibility(self):
+    def test_vllm_load_uses_process_local_cuda_visibility(self):
         FakeCosyVoiceModel.loaded = None
-        engine_visibility: list[str | None] = []
-
-        def record_start(_process: BaseProcess) -> None:
-            engine_visibility.append(os.environ.get("CUDA_VISIBLE_DEVICES"))
-
-        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "6,7"}):
-            with (
-                patch.object(torch.cuda, "is_available", return_value=True),
-                patch.object(torch.cuda, "device", return_value=nullcontext()),
-                patch.object(BaseProcess, "start", record_start),
-                _fake_cosyvoice(start_engine=True),
-            ):
-                CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
-
-            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "6,7")
-            self.assertEqual(FakeModelRegistry.registration_visibility, ["6,7"])
-            self.assertEqual(engine_visibility, ["7"])
-            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "6,7")
-
-    def test_vllm_load_preserves_uuid_visibility_token(self):
-        FakeCosyVoiceModel.loaded = None
-        visible = "GPU-aaaaaaaa,MIG-bbbbbbbb"
-        engine_visibility: list[str | None] = []
-
-        def record_start(_process: BaseProcess) -> None:
-            engine_visibility.append(os.environ.get("CUDA_VISIBLE_DEVICES"))
-
-        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": visible}):
-            with (
-                patch.object(torch.cuda, "is_available", return_value=True),
-                patch.object(torch.cuda, "device", return_value=nullcontext()),
-                patch.object(BaseProcess, "start", record_start),
-                _fake_cosyvoice(start_engine=True),
-            ):
-                CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
-
-            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, visible)
-            self.assertEqual(engine_visibility, ["MIG-bbbbbbbb"])
-            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], visible)
-
-    def test_non_vllm_load_keeps_full_cuda_visibility(self):
-        FakeCosyVoiceModel.loaded = None
-        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "6,7"}):
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "7"}):
             with (
                 patch.object(torch.cuda, "is_available", return_value=True),
                 patch.object(torch.cuda, "device", return_value=nullcontext()),
                 _fake_cosyvoice(),
             ):
-                CosyVoiceTTS.from_pretrained(device="cuda:1")
+                CosyVoiceTTS.from_pretrained(device="cuda:0", load_vllm=True)
 
-            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "6,7")
-            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "6,7")
-
-    def test_vllm_load_rejects_device_outside_cuda_visibility(self):
-        with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "6"}),
-            patch.object(torch.cuda, "is_available", return_value=True),
-            patch.object(torch.cuda, "device", return_value=nullcontext()),
-            _fake_cosyvoice(),
-            self.assertRaises(RuntimeError) as captured,
-        ):
-            CosyVoiceTTS.from_pretrained(device="cuda:1", load_vllm=True)
-
-        self.assertIsInstance(captured.exception.__cause__, ValueError)
-        self.assertRegex(str(captured.exception.__cause__), "does not expose")
+            self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "7")
+            self.assertEqual(FakeModelRegistry.registration_visibility, ["7"])
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "7")
 
     def test_capabilities_expose_reference_and_available_speakers(self):
         backend = CosyVoiceTTS(FakeCosyVoiceModel())
@@ -436,9 +381,8 @@ class FakeModelRegistry:
 
 
 class _fake_cosyvoice:
-    def __init__(self, *, start_engine: bool = False) -> None:
+    def __init__(self) -> None:
         self.previous: dict[str, Any] = {}
-        self.start_engine = start_engine
 
     def __enter__(self):
         cosyvoice_module._register_vllm_model.cache_clear()
@@ -449,9 +393,8 @@ class _fake_cosyvoice:
         module = types.ModuleType("cosyvoice.cli.cosyvoice")
         vllm = types.ModuleType("vllm")
         vllm.__dict__["ModelRegistry"] = FakeModelRegistry
+
         def auto_model(**kwargs: object) -> FakeCosyVoiceModel:
-            if self.start_engine:
-                BaseProcess(name="EngineCore_DP0").start()
             return FakeCosyVoiceModel(kwargs)
 
         module.__dict__["AutoModel"] = auto_model

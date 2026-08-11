@@ -102,10 +102,14 @@ class AudioTokenizer(ABC):
         codes = self._tokenize(audio, sample_rate)
         if not isinstance(codes, Mapping):
             raise TypeError("tokenizer output must map stream names to tensors.")
-        expected = set(self.code_spec.names)
+        expected = {stream.name for stream in self.code_spec.streams}
         actual = set(codes)
         if actual != expected:
-            missing = tuple(name for name in self.code_spec.names if name not in actual)
+            missing = tuple(
+                stream.name
+                for stream in self.code_spec.streams
+                if stream.name not in actual
+            )
             unexpected = tuple(name for name in codes if name not in expected)
             raise ValueError(
                 "tokenizer output does not match code_spec: "
@@ -113,25 +117,31 @@ class AudioTokenizer(ABC):
             )
         ordered: dict[str, Tensor] = {}
         batch_size: int | None = None
-        for index, stream in enumerate(self.code_spec.names):
-            value = codes[stream]
+        for stream in self.code_spec.streams:
+            value = codes[stream.name]
             if not isinstance(value, Tensor) or value.dim() != 2:
-                raise ValueError(f"tokenizer output {stream!r} must have shape [batch, unit].")
+                raise ValueError(
+                    f"tokenizer output {stream.name!r} must have shape [batch, unit]."
+                )
             if value.dtype not in _SIGNED_INTEGER_DTYPES:
                 raise TypeError(
-                    f"tokenizer output {stream!r} must contain signed integer IDs."
+                    f"tokenizer output {stream.name!r} must contain signed integer IDs."
                 )
             if value.numel() == 0:
-                raise ValueError(f"tokenizer output {stream!r} must not be empty.")
+                raise ValueError(
+                    f"tokenizer output {stream.name!r} must not be empty."
+                )
             if batch_size is None:
                 batch_size = value.size(0)
             elif value.size(0) != batch_size:
                 raise ValueError("tokenizer output streams must align on batch.")
             if bool((value < 0).any()) or bool(
-                (value >= self.code_spec.vocab_sizes[index]).any()
+                (value >= stream.vocab_size).any()
             ):
-                raise ValueError(f"tokenizer output {stream!r} contains an invalid code ID.")
-            ordered[stream] = value
+                raise ValueError(
+                    f"tokenizer output {stream.name!r} contains an invalid code ID."
+                )
+            ordered[stream.name] = value
         return ordered
 
 

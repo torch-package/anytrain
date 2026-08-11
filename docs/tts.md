@@ -175,12 +175,10 @@ AnyTrain publishes the CosyVoice model registration through the
 `vllm.general_plugins` entry-point group so vLLM's spawned engine-core process
 loads the same bias-aware model class as the client. Install or refresh the
 AnyTrain package after changing this integration; adding `src` to `PYTHONPATH`
-alone does not update installed entry-point metadata. When `load_vllm=True` and
-`device` is an explicit CUDA device, the adapter also narrows the spawned
-engine-core process to that physical device while preserving and restoring the
-parent process's `CUDA_VISIBLE_DEVICES`. This makes separate provider processes
-on `cuda:0`, `cuda:1`, and later logical devices safe for data-parallel loading.
-`device="auto"` intentionally retains the caller's complete device visibility.
+alone does not update installed entry-point metadata. CUDA visibility and
+multi-process device assignment belong to the caller's orchestration layer. The
+adapter consumes its process-local device and does not rewrite
+`CUDA_VISIBLE_DEVICES` or patch child-process startup.
 
 Spark-TTS is exposed as a reference-audio backend. It does not create or persist
 speaker ids. The caller supplies one transcript aligned with each reference

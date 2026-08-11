@@ -22,8 +22,12 @@ from anytrain.loss import (
     UncertaintyLossBalancer,
     UncertaintyNormalization,
     WeightedLossBalancerABC,
+    emit_diagnostics,
+    loss_with_diagnostics,
+    recommend,
     teacher_loss,
 )
+from anytrain.loss import observation as loss_observation
 from anytrain.loss.codec import CodecLoss, CodecLossPreset
 from anytrain.loss.spectral import (
     CompressedSpectrogramLoss,
@@ -71,6 +75,11 @@ class CustomWeightedLossBalancer(WeightedLossBalancerABC):
 
 
 class LossTest(unittest.TestCase):
+    def test_loss_observation_helpers_are_public(self):
+        self.assertIs(loss_with_diagnostics, loss_observation.loss_with_diagnostics)
+        self.assertIs(emit_diagnostics, loss_observation.emit_diagnostics)
+        self.assertIs(recommend, loss_observation.recommend)
+
     def test_loss_group(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)
         target = torch.tensor([0.0, 1.0])

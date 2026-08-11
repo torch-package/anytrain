@@ -118,6 +118,15 @@ def _load_backend(entry: CodecEntry, *, device: str | torch.device | None) -> Co
         return backend
 
 
+def load_audio_backend(
+    name: str,
+    *,
+    device: str | torch.device | None = None,
+) -> CodecBackend:
+    """Load and cache the registered backend without selecting a waveform view."""
+    return _load_backend(_entry(name), device=device)
+
+
 def load_audio_tokenizer(
     name: str,
     *,
@@ -149,6 +158,7 @@ __all__ = [
     "can_load_audio_detokenizer",
     "can_load_audio_tokenizer",
     "clear_audio_backend_cache",
+    "load_audio_backend",
     "load_audio_detokenizer",
     "load_audio_tokenizer",
 ]

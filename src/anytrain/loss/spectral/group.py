@@ -9,10 +9,10 @@ from anytrain._compat import strict_zip
 
 from .._group import balancer as loss_balancer
 from .._group import compute, module_dict
-from .._observation import loss as register_loss
 from ..abc import LossABC
 from ..balancer import LossBalancerABC
 from ..group import LossGroup
+from ..observation import loss as register_loss
 from ._transform import STFT, MelSpectrogram
 from .single import LogMagnitudeLoss
 

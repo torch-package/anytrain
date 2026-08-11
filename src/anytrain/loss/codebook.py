@@ -9,9 +9,9 @@ from torch import Tensor
 
 from anytrain.utils import is_signed_integer_dtype
 
-from ._observation import emit_diagnostics, loss_with_diagnostics
 from ._validation import scalar
 from .abc import LossABC
+from .observation import emit_diagnostics, loss_with_diagnostics
 
 
 @dataclass(frozen=True)

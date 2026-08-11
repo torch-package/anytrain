@@ -5,9 +5,9 @@ from typing import Any
 
 from anytrain._compat import StrEnum
 
-from ._observation import loss as register_loss
 from .balancer import FixedWeightLossBalancer, LossBalancerABC
 from .group import LossGroup
+from .observation import loss as register_loss
 from .spectral import MultiScaleMelLoss, MultiScaleSTFTLoss
 from .temporal import SDRLoss
 

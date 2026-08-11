@@ -4,7 +4,11 @@ from torch import device as TorchDevice
 
 from anytrain.audio.codec._registry import CodecEntry
 from anytrain.audio.codec.protocol import AudioCapability
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+from anytrain.audio.codec.spec import (
+    AudioBackendIdentity,
+    AudioCodeSpec,
+    AudioCodeStreamSpec,
+)
 
 from .assets import DEFAULT_HF_REPO_ID
 
@@ -39,10 +43,11 @@ ENTRY = CodecEntry(
         }
     ),
     audio_spec=AudioCodeSpec(
-        names=("semantic", "global"),
-        vocab_sizes=(8192, 4096),
         sample_rate=16_000,
-        frame_rates=(50.0, None),
+        streams=(
+            AudioCodeStreamSpec("semantic", 8192, frame_rate=50.0),
+            AudioCodeStreamSpec("global", 4096, fixed_units=32),
+        ),
     ),
     identity=AudioBackendIdentity(
         preset="bicodec",

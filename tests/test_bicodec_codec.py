@@ -19,7 +19,11 @@ from anytrain.audio.codec.bicodec.codec import (
     BiCodec,
 )
 from anytrain.audio.codec.bicodec.tokenizer import BiCodecTokenizer
-from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec
+from anytrain.audio.codec.spec import (
+    AudioBackendIdentity,
+    AudioCodeSpec,
+    AudioCodeStreamSpec,
+)
 
 
 def SimpleNamespace(**kwargs: object) -> Any:
@@ -152,10 +156,11 @@ class BiCodecCodecTest(unittest.TestCase):
         tokenizer = BiCodecTokenizer(
             codec,
             AudioCodeSpec(
-                names=("semantic", "global"),
-                vocab_sizes=(8192, 4096),
                 sample_rate=16_000,
-                frame_rates=(50.0, None),
+                streams=(
+                    AudioCodeStreamSpec("semantic", 8192, frame_rate=50.0),
+                    AudioCodeStreamSpec("global", 4096, fixed_units=32),
+                ),
             ),
             AudioBackendIdentity("bicodec"),
         )
