@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import auto
+from functools import cache
 from io import BytesIO
 from os import PathLike
 from pathlib import Path
@@ -37,7 +38,7 @@ from anytrain.tts import (
 from anytrain.tts._common import config_hash, hashable_mapping, validate_mapping
 
 DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
-DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B"
+DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 PROMPT_SAMPLE_RATE = 16_000
 _RUNTIME_KEYS = frozenset(("speed", "text_frontend"))
 
@@ -136,6 +137,8 @@ class CosyVoiceTTS:
                 "and its Matcha-TTS submodule. Install the pinned CosyVoice checkout "
                 "before loading this backend."
             ) from exc
+        if load_kwargs.get("load_vllm") is True:
+            _register_vllm_model()
         try:
             with _device_context(device):
                 loaded = AutoModel(model_dir=resolved_model, **load_kwargs)
@@ -323,6 +326,16 @@ class CosyVoiceTTS:
 
 def _default_model(version: CosyVoiceVersion) -> str:
     return DEFAULT_MODEL_V2 if version is CosyVoiceVersion.V2 else DEFAULT_MODEL_V3
+
+
+@cache
+def _register_vllm_model() -> None:
+    from anytrain.tts.cosyvoice._vllm import register
+
+    try:
+        register()
+    except ImportError as exc:
+        raise ImportError("CosyVoice vLLM loading requires vLLM.") from exc
 
 
 def _device_context(device: str | torch.device | None):

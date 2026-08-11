@@ -156,7 +156,7 @@ batch_audio = tts.synthesize(
 ```
 
 The default model ids are `FunAudioLLM/CosyVoice2-0.5B` and
-`FunAudioLLM/Fun-CosyVoice3-0.5B`. Prompt audio is converted to mono 16 kHz,
+`FunAudioLLM/Fun-CosyVoice3-0.5B-2512`. Prompt audio is converted to mono 16 kHz,
 upstream `tts_speech` generator chunks are concatenated, and output remains one
 variable-length `TTSOutput` per input. Upstream exposes scalar `inference_*`
 methods rather than an end-to-end `list[str]` API. With `load_vllm=True` and
@@ -165,6 +165,11 @@ the upstream vLLM request queue can dynamically batch the LLM stage; results are
 returned in input order. Flow and HiFT decoding remain per-request, so this is
 not full-pipeline native batching. `max_concurrency` is an execution setting and
 does not change `config_hash`; values greater than one require `load_vllm=True`.
+AnyTrain publishes the CosyVoice model registration through the
+`vllm.general_plugins` entry-point group so vLLM's spawned engine-core process
+loads the same bias-aware model class as the client. Install or refresh the
+AnyTrain package after changing this integration; adding `src` to `PYTHONPATH`
+alone does not update installed entry-point metadata.
 
 Spark-TTS is exposed as a reference-audio backend. It does not create or persist
 speaker ids. The caller supplies one transcript aligned with each reference

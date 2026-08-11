@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 import torch
 
+import anytrain.tts.cosyvoice.tts as cosyvoice_module
 from anytrain.tts import TTSOptions, TTSVoiceMode, WaveformReference
 from anytrain.tts.cosyvoice import (
     DEFAULT_MODEL_V2,
@@ -36,6 +37,15 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
         )
         self.assertEqual(backend.config.runtime_kwargs, {"speed": 1.1})
         self.assertEqual(backend.config.max_concurrency, 2)
+        self.assertEqual(
+            FakeModelRegistry.registered,
+            [
+                (
+                    "CosyVoice2ForCausalLM",
+                    "cosyvoice.vllm.cosyvoice2:CosyVoice2ForCausalLM",
+                )
+            ],
+        )
 
     def test_capabilities_expose_reference_and_available_speakers(self):
         backend = CosyVoiceTTS(FakeCosyVoiceModel())
@@ -298,22 +308,40 @@ class ConcurrentCosyVoiceModel:
         yield {"tts_speech": torch.full((1, 2), marker)}
 
 
+class FakeModelRegistry:
+    registered: ClassVar[list[tuple[str, object]]] = []
+
+    @classmethod
+    def register_model(cls, name: str, model: object) -> None:
+        cls.registered.append((name, model))
+
+
 class _fake_cosyvoice:
     def __init__(self) -> None:
         self.previous: dict[str, Any] = {}
 
     def __enter__(self):
+        cosyvoice_module._register_vllm_model.cache_clear()
+        FakeModelRegistry.registered = []
         root = types.ModuleType("cosyvoice")
         cli = types.ModuleType("cosyvoice.cli")
         module = types.ModuleType("cosyvoice.cli.cosyvoice")
+        vllm = types.ModuleType("vllm")
+        vllm.__dict__["ModelRegistry"] = FakeModelRegistry
         module.__dict__["AutoModel"] = lambda **kwargs: FakeCosyVoiceModel(kwargs)
         self.previous = {
             name: sys.modules.get(name)
-            for name in ("cosyvoice", "cosyvoice.cli", "cosyvoice.cli.cosyvoice")
+            for name in (
+                "cosyvoice",
+                "cosyvoice.cli",
+                "cosyvoice.cli.cosyvoice",
+                "vllm",
+            )
         }
         sys.modules["cosyvoice"] = root
         sys.modules["cosyvoice.cli"] = cli
         sys.modules["cosyvoice.cli.cosyvoice"] = module
+        sys.modules["vllm"] = vllm
         return self
 
     def __exit__(self, exc_type, exc, tb):
