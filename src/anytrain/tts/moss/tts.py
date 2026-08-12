@@ -115,7 +115,6 @@ class MossTTS:
                         "MOSS-TTS revision conflicts with omni_kwargs['revision']."
                     )
                 engine_kwargs["revision"] = revision
-            engine_kwargs.setdefault("deploy_config", "moss_tts")
             config_load_kwargs = engine_kwargs
         elif omni_kwargs:
             raise ValueError("omni_kwargs require transformer_engine='vllm_omni'.")

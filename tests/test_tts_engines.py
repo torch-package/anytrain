@@ -452,7 +452,6 @@ def test_moss_from_pretrained_constructs_omni_and_processor_only() -> None:
         {
             "stage_init_timeout": 600,
             "revision": "revision",
-            "deploy_config": "moss_tts",
         },
     )
     load_processor.assert_called_once_with(
