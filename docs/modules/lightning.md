@@ -13,12 +13,16 @@ Lightning 是 core 依赖，不作为 optional integration。
 ```text
 src/anytrain/lightning/
   __init__.py
+  _capability.py
+  cadence.py
   experiment.py
   materialization.py
   service.py
   oom.py
   validation.py
   schedule/
+    __init__.py
+  perf/
     __init__.py
   callback/
     __init__.py
@@ -68,6 +72,11 @@ src/anytrain/lightning/
 - `oom`：OOM context 标注、输入摘要、错误识别和显式报告 helper
 - `RankLogMode`
 - `prefixed_log_dict`
+
+callback 的公开 re-export 由 `anytrain.lightning.callback` 唯一维护，root 只从该 package 转发
+同一对象。`ObservationCallback` 与其它 callback 一样同时可从 callback package 和 root 导入；
+旧的模块专用 observation callback 仍不提供。`tests/test_lightning_api.py` 检查两个入口的
+`__all__` 无重复、全部可解析，并防止 root 与 callback package 再次漂移。
 
 `anytrain.lightning` 不导出自定义 LightningModule 基类，也不通过继承改变训练行为。下游项目直接继承 `lightning.pytorch.LightningModule`。
 
@@ -262,6 +271,10 @@ state 或 EMA clock。
 需要观察 loss 对参数的梯度时使用 `GradientProbeLoggerCallback`；真正的 module backward observation
 需要先确定严格只读的契约后再实现。
 
+`callback/observation.py` 当前保持一个内聚的私有 state machine：value delta、step/EMA state、
+checkpoint schema、distributed preflight 和 callback lifecycle 共享同一组 private 类型与不变量。
+在没有形成独立公开契约前不按文件长度强拆，避免把这些 private state 变成跨模块接口。
+
 运行状态按值类型分开：
 
 - `OutputObservation` / `ForwardEvent` 注册时显式声明 reduction：`Last` 只支持 Curve/Heatmap，`Mean`
@@ -386,3 +399,17 @@ trainer = pl.Trainer(
 - callback 可直接传入 Lightning `Trainer`。
 
 后续新增 logger backend 或 callback 时，需要补充与 Lightning logger backend 的集成测试，并确保没有引入 optional 依赖到 core import。
+
+本体模块验收不含另行记录的 schedule/perf：
+
+```bash
+python -m ruff check src/anytrain/lightning tests/test_lightning_api.py
+basedpyright --pythonpath /path/to/python src/anytrain/lightning \
+  tests/test_lightning_api.py
+python -m pytest -q tests/test_lightning_api.py tests/test_lightning.py \
+  tests/test_lightning_capability.py tests/test_lightning_experiment.py \
+  tests/test_lightning_oom.py tests/test_lightning_materialization.py \
+  tests/test_lightning_service.py tests/test_lightning_ema.py \
+  tests/test_lightning_parameter_policy.py tests/test_lightning_validation.py \
+  tests/test_lightning_cadence.py tests/test_lightning_observation.py
+```

@@ -134,3 +134,35 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - `tests/test_checkpoint.py`：14 passed，8 subtests passed。
+
+## `anytrain.lightning`
+
+状态：完成，不含单独审阅的 `schedule` 与 `perf`。
+
+原问题：
+
+- root 逐个 callback 文件维护导入，`callback/__init__.py` 又维护另一套导出，两处已经发生
+  `ObservationCallback` 漂移。
+- 没有测试保证两个 `__all__` 唯一、可解析或指向同一 callback 对象。
+- `callback/observation.py` 很长，但其 state、checkpoint 和 distributed schema 共享 private
+  不变量，单纯按行数拆分会创造新的内部协议。
+
+完成的调整：
+
+- callback package 成为 callback re-export 的唯一 owner，root 从 package 转发。
+- `ObservationCallback` 新增 callback package 入口，原 root 入口保持不变。
+- 新增 `tests/test_lightning_api.py`，约束导出完整性与对象 identity。
+- 文档明确 capability、callback、materialization/service、schedule/perf 的 ownership。
+
+刻意保留：
+
+- 所有 callback 构造器、state key、checkpoint 和 Lightning hook 顺序。
+- observation state machine、distributed preflight、EMA 与 writer 行为。
+- async checkpoint、service、materialization、EMA、validation、OOM 和 logging 语义。
+- schedule/perf 由后续独立模块条目处理。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- Lightning 本体与 observation 集成：184 passed，27 subtests passed。

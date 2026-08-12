@@ -2230,7 +2230,8 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertFalse(hasattr(lightning, "CodebookUsageLoggerCallback"))
         self.assertFalse(hasattr(lightning, "QuantizationLoggerCallback"))
         self.assertFalse(hasattr(lightning, "MoELoggerCallback"))
-        self.assertFalse(hasattr(callback, "ObservationCallback"))
+        self.assertIs(callback.ObservationCallback, ObservationCallback)
+        self.assertIn("ObservationCallback", callback.__all__)
         self.assertFalse(hasattr(callback, "ModuleObservationCallback"))
 
 

@@ -16,6 +16,7 @@ from .loss import (
     LossSummaryCallback,
     window_summary,
 )
+from .observation import ObservationCallback
 from .parameter_policy import (
     ModuleSelector,
     ParameterPolicyCallback,
@@ -42,6 +43,7 @@ __all__ = [
     "OOMDiagnostics",
     "ModuleSelector",
     "ModelCheckpoint",
+    "ObservationCallback",
     "ParameterPolicyCallback",
     "ParameterTrainability",
     "ParameterTrainabilitySummary",
