@@ -62,6 +62,59 @@ class PerfTest(unittest.TestCase):
                 hardware_peak_flops=float("nan"),
             )
 
+    def test_perf_helpers_reject_non_host_reals(self):
+        import torch
+
+        from anytrain.lightning.perf import (
+            infer_peak_flops,
+            model_flops_utilization,
+            training_flops_from_forward,
+        )
+
+        for value in (True, "1", torch.tensor(1.0)):
+            with (
+                self.subTest(helper="model_flops_utilization", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                model_flops_utilization(
+                    model_flops_per_step=cast(Any, value),
+                    step_time=1.0,
+                    hardware_peak_flops=1.0,
+                )
+            with (
+                self.subTest(helper="training_flops_from_forward", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                training_flops_from_forward(
+                    1.0,
+                    backward_multiplier=cast(Any, value),
+                )
+            with (
+                self.subTest(helper="infer_peak_flops", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                infer_peak_flops(
+                    dtype="float32",
+                    device_name="Custom GPU",
+                    hardware_peak_flops=cast(Any, value),
+                )
+
+    def test_count_parameters_validates_trainable_only(self):
+        import torch
+
+        from anytrain.lightning.perf import count_parameters
+
+        with self.assertRaisesRegex(TypeError, "trainable_only must be a boolean"):
+            count_parameters(torch.nn.Linear(1, 1), trainable_only=cast(Any, 1))
+
+    def test_infer_peak_flops_validates_device_name(self):
+        from anytrain.lightning.perf import infer_peak_flops
+
+        with self.assertRaisesRegex(TypeError, "device_name must be a string"):
+            infer_peak_flops(dtype="float32", device_name=cast(Any, 1))
+        with self.assertRaisesRegex(ValueError, "device_name must not be empty"):
+            infer_peak_flops(dtype="float32", device_name="  ")
+
     def test_performance_callback_cleans_up_profiler_on_exception(self):
         import torch
 

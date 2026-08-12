@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Literal
 
 import torch
+
+from ._validation import positive_real
 
 ComputeDType = Literal["float32", "tf32", "float16", "bfloat16", "float8"]
 
@@ -121,7 +122,7 @@ def infer_peak_flops(
     key = dtype_key(dtype)
     name = _device_name(device=device, device_name=device_name)
     if hardware_peak_flops is not None:
-        hardware_peak_flops = _require_positive(hardware_peak_flops, "hardware_peak_flops")
+        hardware_peak_flops = positive_real(hardware_peak_flops, "hardware_peak_flops")
         return PeakFlops(
             flops=float(hardware_peak_flops),
             source="override",
@@ -146,6 +147,8 @@ def _device_name(
     device_name: str | None,
 ) -> str:
     if device_name is not None:
+        if not isinstance(device_name, str):
+            raise TypeError("device_name must be a string.")
         if not device_name.strip():
             raise ValueError("device_name must not be empty.")
         return device_name
@@ -170,13 +173,3 @@ def _device_name(
 
 def _normalize(value: str) -> str:
     return " ".join(value.lower().split())
-
-
-def _require_positive(value: float, name: str) -> float:
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{name} must be a real number.") from exc
-    if not math.isfinite(resolved) or resolved <= 0:
-        raise ValueError(f"{name} must be finite and positive.")
-    return resolved

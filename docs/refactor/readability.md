@@ -197,3 +197,33 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - `tests/test_lightning_schedule.py`：21 passed，30 subtests passed。
+
+## `anytrain.lightning.perf`
+
+状态：完成。
+
+原问题：
+
+- hardware、metrics 和 profile helper 各自复制正数校验，并通过 `float(...)` 接受字符串、bool
+  和标量 Tensor，与 `PerformanceCallback` 的严格 host-real 契约不一致。
+- 参数统计的过滤开关与设备名依赖隐式属性访问或真值转换，入口契约不明确。
+
+完成的调整：
+
+- 新增私有 `_validation.py`，统一 finite positive 与 non-negative host-real 校验。
+- helper 和 `PerformanceCallback` 复用同一数值契约，错误类型与信息保持一致。
+- 参数过滤开关与设备名在入口显式校验。
+- 补 bool、字符串、Tensor 和控制字段的拒绝测试。
+
+刻意保留：
+
+- MFU 公式、窗口 ratio-of-sums、动态/静态/profile FLOPs 三种来源。
+- 参数统计对 Lightning module 与轻量结构化适配对象的兼容性。
+- optimizer update、梯度累积、DDP 聚合、CUDA 同步与有界 probe 语义。
+- 硬件表、dtype alias、profiler 调用和全部 public 导入路径。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- `tests/test_perf.py`：27 passed，26 subtests passed。

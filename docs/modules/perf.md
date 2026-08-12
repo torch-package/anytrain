@@ -38,6 +38,11 @@ window_mfu = sum(model_flops) / sum(step_time) / hardware_peak_flops
 
 下游 job 可以显式覆盖 `hardware_peak_flops`。覆盖值会在日志元数据中标记为 `override`。
 
+所有 FLOPs、时间和 multiplier 参数只接受 finite host real，且明确拒绝 bool、字符串和 Tensor；
+需要正数的字段不接受零，`backward_multiplier` 接受零但不接受负数。参数统计的
+`trainable_only` 只接受 bool。统一数值校验由私有 `_validation.py` 持有，public API 仍只由
+package root 导出。
+
 ## 固定 FLOPs
 
 ```python
