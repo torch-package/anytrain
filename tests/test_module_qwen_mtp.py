@@ -2,7 +2,7 @@ import importlib.util
 import unittest
 from collections import OrderedDict
 from types import SimpleNamespace as _SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -40,6 +40,18 @@ class QwenMTPModuleTest(unittest.TestCase):
 
         self.assertTrue(torch.isfinite(filtered[:, 0]).all())
         self.assertFalse(torch.isfinite(filtered[:, 1:]).any())
+
+    def test_top_p_filter_validates_public_contract(self):
+        invalid_calls = (
+            lambda: top_p_filter(torch.tensor([1, 2]), 0.5),
+            lambda: top_p_filter(torch.empty(1, 0), 0.5),
+            lambda: top_p_filter(torch.ones(2), cast(Any, True)),
+            lambda: top_p_filter(torch.ones(2), float("nan")),
+            lambda: top_p_filter(torch.ones(2), 0.0),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
 
     @unittest.skipIf(TRANSFORMERS_AVAILABLE, "transformers is installed")
     def test_predictor_reports_missing_transformers(self):

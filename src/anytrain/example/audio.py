@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 import warnings
+from numbers import Real
 from pathlib import Path
 
 from torch import Tensor
 
-from anytrain._audio import channel_time_waveform
+from anytrain._audio import channel_time_waveform, validate_sample_rate
 
 from .resources import color_your_night_path, vctk_path
 
@@ -20,8 +22,15 @@ def load_example_audio(
     start_seconds: float = 0.0,
     duration: float | None = None,
 ) -> tuple[Tensor, int]:
+    if not isinstance(path, (str, Path)):
+        raise TypeError("path must be a string or Path.")
+    if isinstance(path, str) and not path.strip():
+        raise ValueError("path must not be empty.")
     path = Path(path)
-    _validate_time_range(start_seconds=start_seconds, duration=duration)
+    start_seconds, duration = _validate_time_range(
+        start_seconds=start_seconds,
+        duration=duration,
+    )
 
     torchcodec_error: Exception | None = None
     try:
@@ -87,9 +96,10 @@ def _load_audio_with_torchcodec(
 
     decoder = AudioDecoder(str(path))
     metadata = decoder.metadata
-    sample_rate = metadata.sample_rate
-    if sample_rate is None:
+    raw_sample_rate = metadata.sample_rate
+    if raw_sample_rate is None:
         raise RuntimeError("torchcodec audio metadata does not expose a sample rate.")
+    sample_rate = validate_sample_rate(raw_sample_rate)
     total_duration = metadata.duration_seconds
     if total_duration is None:
         raise RuntimeError("torchcodec audio metadata does not expose a duration.")
@@ -111,7 +121,7 @@ def _load_audio_with_torchaudio(
     import torchaudio
 
     waveform, loaded_sample_rate = torchaudio.load(str(path))
-    sample_rate = int(loaded_sample_rate)
+    sample_rate = validate_sample_rate(loaded_sample_rate)
     total_duration = waveform.shape[-1] / sample_rate
     _stop_seconds(
         start_seconds=start_seconds,
@@ -128,11 +138,19 @@ def _load_audio_with_torchaudio(
     return _normalize_waveform(sliced), sample_rate
 
 
-def _validate_time_range(*, start_seconds: float, duration: float | None) -> None:
+def _validate_time_range(
+    *,
+    start_seconds: float,
+    duration: float | None,
+) -> tuple[float, float | None]:
+    start_seconds = _finite_real(start_seconds, "start_seconds")
     if start_seconds < 0:
         raise ValueError("start_seconds must be non-negative.")
-    if duration is not None and duration <= 0:
-        raise ValueError("duration must be positive when provided.")
+    if duration is not None:
+        duration = _finite_real(duration, "duration")
+        if duration <= 0:
+            raise ValueError("duration must be positive when provided.")
+    return start_seconds, duration
 
 
 def _stop_seconds(
@@ -141,6 +159,9 @@ def _stop_seconds(
     duration: float | None,
     total_duration: float,
 ) -> float | None:
+    total_duration = _finite_real(total_duration, "audio duration")
+    if total_duration <= 0:
+        raise ValueError("audio duration must be positive.")
     if start_seconds >= total_duration:
         raise _AudioRangeError(
             f"start_seconds ({start_seconds}s) must be smaller than audio duration "
@@ -161,5 +182,16 @@ def _normalize_waveform(waveform: Tensor) -> Tensor:
     return channel_time_waveform(
         waveform,
         shape_error="example audio waveform must have shape (channels, time).",
+        empty_channel_error="example audio waveform must contain at least one channel.",
+        empty_time_error="example audio waveform must not be empty.",
         cpu=True,
     )
+
+
+def _finite_real(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    resolved = float(value)
+    if not math.isfinite(resolved):
+        raise ValueError(f"{name} must be finite.")
+    return resolved

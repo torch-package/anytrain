@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from numbers import Real
 
 import torch
 from torch import Tensor
@@ -29,7 +31,7 @@ def time_bucketed_mean(
     t_min: float = 0.0,
     t_max: float = 1.0,
 ) -> TimeBucketedMean:
-    _validate_bucket_args(bucket_count, t_min, t_max)
+    bucket_count, t_min, t_max = _validate_bucket_args(bucket_count, t_min, t_max)
     _validate_tensors(values, time)
 
     dtype = torch.float64 if values.dtype == torch.float64 else torch.float32
@@ -60,18 +62,29 @@ def time_bucketed_mean(
     return TimeBucketedMean(edges=edges, total=total, count=count)
 
 
-def _validate_bucket_args(bucket_count: int, t_min: float, t_max: float) -> None:
+def _validate_bucket_args(
+    bucket_count: int,
+    t_min: float,
+    t_max: float,
+) -> tuple[int, float, float]:
+    if isinstance(bucket_count, bool) or not isinstance(bucket_count, int):
+        raise TypeError("bucket_count must be an integer.")
     if bucket_count <= 0:
-        raise ValueError(f"bucket_count must be positive, got {bucket_count}.")
+        raise ValueError("bucket_count must be positive.")
+    t_min = _finite_real(t_min, "t_min")
+    t_max = _finite_real(t_max, "t_max")
     if t_min < 0:
-        raise ValueError(f"t_min must be non-negative, got {t_min}.")
+        raise ValueError("t_min must be non-negative.")
     if t_max <= t_min:
         raise ValueError(
             f"t_max must be greater than t_min, got t_min={t_min}, t_max={t_max}."
         )
+    return bucket_count, t_min, t_max
 
 
 def _validate_tensors(values: Tensor, time: Tensor) -> None:
+    if not isinstance(values, Tensor) or not isinstance(time, Tensor):
+        raise TypeError("values and time must be tensors.")
     if values.shape != time.shape:
         raise ValueError(
             f"values and time must have the same shape, got {values.shape} and {time.shape}."
@@ -84,6 +97,15 @@ def _validate_tensors(values: Tensor, time: Tensor) -> None:
         raise TypeError(f"values must be a floating tensor, got {values.dtype}.")
     if not time.is_floating_point():
         raise TypeError(f"time must be a floating tensor, got {time.dtype}.")
+
+
+def _finite_real(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    resolved = float(value)
+    if not math.isfinite(resolved):
+        raise ValueError(f"{name} must be finite.")
+    return resolved
 
 
 __all__ = ["TimeBucketedMean", "time_bucketed_mean"]

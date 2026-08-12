@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import anytrain
+import anytrain.env as env_api
 from anytrain.env import (
     ANYTRAIN_HOME_ENV,
     DEFAULT_ANYTRAIN_HOME,
@@ -21,6 +22,11 @@ from anytrain.env import (
 class EnvTest(unittest.TestCase):
     def test_package_root_does_not_export_env_helpers(self):
         self.assertEqual(anytrain.__all__, [])
+
+    def test_env_public_exports_are_unique_and_resolvable(self):
+        self.assertEqual(len(env_api.__all__), len(set(env_api.__all__)))
+        for name in env_api.__all__:
+            self.assertTrue(hasattr(env_api, name), name)
 
     def test_anytrain_home_defaults_to_user_directory(self):
         with patch.dict(os.environ, {}, clear=True):

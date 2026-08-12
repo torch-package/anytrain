@@ -2,7 +2,7 @@
 
 ## 设计原则
 
-`anytrain` 的组件是给用户写 PyTorch/Lightning 训练代码时使用的积木，尤其服务普通 `LightningModule` 的实现。下游项目负责训练入口和配置装配；用户仍然控制训练逻辑，但可以选择 `anytrain` 提供的 module、loss、evaluator、optim、chat 和 framework。
+`anytrain` 的组件是给用户写 PyTorch/Lightning 训练代码时使用的积木，尤其服务普通 `LightningModule` 的实现。下游项目负责训练入口和配置装配；用户仍然控制训练逻辑，但可以选择 `anytrain` 提供的 module、loss、evaluator、optim、chat、translation 和 framework。
 
 组件应该是显式可组合的对象，而不是隐藏在自定义 `LightningModule` 基类里的行为。一个组件如果会改变训练流程、文件系统状态或日志行为，应通过明确的 helper、callback 或 `pl_module.__init__` 参数暴露。
 
@@ -183,6 +183,13 @@ chat 是 optional general 组件，依赖 `chat` extra。
 - 下游项目负责 prompt 模板、任务 schema、provider cache 观测和结果记录。
 - 缺少环境变量或 provider 后端不可用时直接抛出明确错误。
 
+## Translation
+
+translation 是 optional general/domain bridge。core protocol 只接受 position-aligned string
+sequences；Qwen adapter 拥有 pinned model/prompt/decoder semantics、physical load policy、lazy
+factory 和 tokenizer-only planning。dataset row 选择、language-role mapping、durable provider
+identity 与质量过滤由下游拥有。
+
 ## Framework
 
 framework 是 optional/experimental 组件。这里的 framework 指研究训练范式组件，不是默认训练 app 层。
@@ -217,4 +224,6 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
   backend，加载模型时要求对应 extra。只有 metadata、没有通用 online adapter 的 preset 必须明确
   报告 loader 不可用。
 - `import anytrain.tts` 不加载具体 backend；加载模型时要求对应 extra。
+- `import anytrain.translation` 只加载轻量 protocol；Qwen tokenizer/model 在 factory、estimator 或
+  translator 构造时才要求 `translation` extra。
 - optional 缺依赖时抛出明确错误，包含实际缺失的包和可执行安装命令。

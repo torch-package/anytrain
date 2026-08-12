@@ -131,8 +131,10 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.audio.bpe` | 依赖 `bpe` extra 的 codec frame BPE。 |
 | `anytrain.audio.codec` | audio tokenizer / detokenizer capability view、静态 preset spec、frame / semantic-acoustic / semantic-global protocol、feature helper 和共享 backend 的 lazy registry；具体 backend 从 `anytrain.audio.codec.*` 子模块导入。 |
 | `anytrain.tts` | TTS 公共协议和可选 backend adapter。 |
+| `anytrain.translation` | dataset-independent 批量翻译协议、pinned Qwen semantic spec、lazy factory 和 tokenizer-only token estimator。 |
 | `anytrain.chat` | 可选 LLM provider 调用入口。 |
-| `anytrain.framework` | 可选研究训练范式组件。 |
+| `anytrain.framework` | flow matching、GAN 与 DPO/GRPO 等可选研究训练范式组件。 |
+| `anytrain.example` | 随包分发的短音频 smoke fixtures 与 lazy audio loader；训练示例仍在仓库 `examples/`。 |
 
 更细的模块边界见 `docs/modules/index.md`。
 
@@ -142,7 +144,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 - 下游项目负责具体任务语义、`training_step`、batch 解释和模型组合。
 - 配置组合和对象实例化由下游选择，可以用普通 Python、Hydra、argparse、pydantic 或其它项目内约定。
 - `anytrain.lightning` 是核心依赖层；Lightning 不是 optional integration。
-- `checkpoint`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
+- `checkpoint`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`translation`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
 
 明确不做：
 

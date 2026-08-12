@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -93,6 +94,24 @@ class ExampleAssetsTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "duration"):
             load_example_audio(Path("dummy.wav"), duration=0)
+
+        invalid_calls = (
+            lambda: load_example_audio(cast(Any, 1)),
+            lambda: load_example_audio("  "),
+            lambda: load_example_audio(Path("dummy.wav"), start_seconds=cast(Any, True)),
+            lambda: load_example_audio(Path("dummy.wav"), start_seconds=float("nan")),
+            lambda: load_example_audio(Path("dummy.wav"), duration=float("inf")),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
+
+    def test_normalize_rejects_empty_waveforms(self):
+        from anytrain.example.audio import _normalize_waveform
+
+        for waveform in (torch.empty(0, 4), torch.empty(1, 0)):
+            with self.subTest(shape=waveform.shape), self.assertRaisesRegex(ValueError, "must"):
+                _normalize_waveform(waveform)
 
     def test_audio_range_error_does_not_fallback(self):
         from anytrain.example.audio import (

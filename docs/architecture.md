@@ -46,6 +46,10 @@
 - `anytrain.module.moe.routing`：MoE routing 家族共享的专家路由表示、校验和 mask 语义。
 - `anytrain.module.moe`、`anytrain.module.moe.conv`、`anytrain.module.quantization`、`anytrain.module.qwen`：显式子模块组件入口。
 - `anytrain.module.idspace`：local/global token id 映射和 block embedding 路由。
+- `anytrain.module.stream`：named 1D stream layout、payload 绑定、embedding materialization 与
+  target routing。
+- `anytrain.stats` / `anytrain.env` / `anytrain.utils`：保持为小型显式顶层模块的 tensor statistics、
+  optional cache root 与 tensor utility。
 
 Lightning、Torch 和 einops 是 core 依赖。`module` 顶层只导出少量稳定组件；MoE、
 MoE conv、quantization、Qwen 和 idspace 从子模块显式导入。只有 Qwen3 builder 需要 `module`
@@ -58,6 +62,8 @@ extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，�
 - `anytrain.optim` 的原生 Muon 路径：`muon` extra 提供 `torch>=2.9`。
 - `anytrain.optim.peft`：从 Hugging Face PEFT 的 vanilla Linear adapter 构造 LoRA-Muon。
 - `chat`：环境变量驱动的大模型调用入口，用于训练工程里的实验总结、日志解释和 LLM 辅助评估原型。
+- `translation`：dataset-independent 翻译协议，以及通过 `translation` extra 提供的 pinned Qwen
+  backend、lazy factory 和 tokenizer-only estimator。
 - `anytrain.audio.bpe`：基于 Hugging Face `tokenizers` 的 codec frame BPE（`bpe` extra）。
 - third-party logger backend：wandb 等。
 
@@ -85,6 +91,7 @@ extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，�
 
 - flow matching。
 - GAN adversarial objective、feature matching、WGAN-GP 和 DAC discriminator preset。
+- DPO、token GRPO、continuous Flow-GRPO 与 neighbor GRPO tensor objective。
 
 只有跨项目复用需求明确后再考虑：
 
@@ -162,7 +169,7 @@ class MyPLModule(pl.LightningModule):
 
 `anytrain.module.idspace` 是 core 的 local/global token id 映射和 embedding 路由。
 
-### `audio` / `tts`
+### `audio` / `tts` / `translation`
 
 `anytrain.audio` 收拢 waveform I/O 与 frame-sequence BPE：
 
@@ -171,8 +178,9 @@ class MyPLModule(pl.LightningModule):
   相同 resolved identity 与 device 可以共享 backend 实例，但不对调用方暴露通用 `AudioCodec`。
 - `audio.bpe`：离散 codec frame 上的 int BPE，不加载神经网络 codec；需要 `bpe` extra。
 
-`tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。它们都不接管数据集、
-训练 step 或模型组合。
+`tts` 的协议和输出类型保持轻量，具体 backend adapter 按依赖 extra 隔离。`translation` 只拥有
+position-aligned string batch protocol、pinned backend semantics 与 lazy loading，不拥有 dataset row
+selection 或 language-role mapping。它们都不接管数据集、训练 step 或模型组合。
 
 ### `chat`
 
@@ -180,7 +188,7 @@ class MyPLModule(pl.LightningModule):
 
 ### `framework`
 
-提供跨项目复用的训练范式，作为 optional/experimental 层，不进入 core。这里的 `framework` 是研究范式组件层，例如 flow matching、MAE 或 GAN helper；不是训练工程入口。
+提供跨项目复用的训练范式，作为 optional/experimental 层，不进入 core。这里的 `framework` 是研究范式组件层，例如 flow matching、GAN 和 RL objective；不是训练工程入口。
 
 ## 包结构
 
@@ -200,6 +208,7 @@ src/anytrain/
       sparse.py
       conv/
     idspace/
+    stream/
     quantization/
   audio/
     tokenizer/
@@ -207,12 +216,13 @@ src/anytrain/
     codec/
     bpe/
   chat/
+  translation/
   tts/
   framework/
   example/
 ```
 
-`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module` 和 `module.idspace` 是核心体验；`audio`、`chat`、
+`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace` 和 `module.stream` 是核心体验；`audio`、`chat`、`translation`、
 `framework` 和领域组件按依赖拆分为 optional 子模块。
 
 ## 边界

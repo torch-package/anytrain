@@ -592,3 +592,39 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - translation tests：13 passed，13 subtests passed。
+
+## Package Root And Primitives
+
+状态：完成。
+
+审计结论：
+
+- `anytrain.__init__` 的空 `__all__` 是刻意的轻量入口，不应增加跨模块快捷导出。
+- `stats.py`、`env.py` 和 `utils.py` 各自是足够小且职责单一的公开 primitive；扩成 package 只会
+  增加导航层级。
+- 仓库 `examples/` 拥有 runnable training example，`anytrain.example` 只拥有打包资源与 lazy
+  audio decoding，边界无需合并。
+
+完成的调整：
+
+- `time_bucketed_mean()` 明确校验 strict positive integer bucket count、有限 host-real time range
+  和 tensor 类型；`top_p_filter()` 明确校验浮点 logits、非空 vocabulary 与有限 `(0, 1]` top-p。
+- example audio loader 在尝试 optional decoder 前校验 path、有限时间范围、sample rate 与非空 waveform。
+- tiny regression example 补齐 Tensor batch、return type、正整数参数、有限学习率与 datamodule setup
+  lifecycle，使示例同时是可读模板和受测 smoke entry。
+- `anytrain.env` 增加显式 public `__all__`；新增集中 package-root export test。
+- README、architecture、components、module index 和 package-root 文档补齐 translation、stream、RL
+  framework、顶层 primitives 与双 example ownership。
+
+刻意保留：
+
+- 根包 `__all__ = []`，不导入 Lightning、optional backend 或训练入口。
+- `_audio`、`_buffer`、`_compat`、`_semantic` 作为跨模块私有基础设施，不提升为 public package。
+- optional backend 只在实际 loader/call path 导入；example decoder 保留 torchcodec-to-torchaudio fallback。
+- tiny regression 仍使用原生 LightningModule/DataModule/Trainer，不引入 AnyTrain 专用基类或 CLI。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- package root/primitives/examples focused tests：51 passed，2 skipped，59 subtests passed。

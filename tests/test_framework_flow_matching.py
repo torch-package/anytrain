@@ -36,6 +36,19 @@ class TensorStatsTest(unittest.TestCase):
                 torch.tensor([1.1]),
                 bucket_count=2,
             )
+        invalid_calls = (
+            lambda: time_bucketed_mean(torch.ones(1), torch.zeros(1), bucket_count=True),
+            lambda: time_bucketed_mean(torch.ones(1), torch.zeros(1), bucket_count=1, t_min=True),
+            lambda: time_bucketed_mean(
+                torch.ones(1),
+                torch.zeros(1),
+                bucket_count=1,
+                t_max=float("inf"),
+            ),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
 
 
 class FlowMatchingImportTest(unittest.TestCase):
