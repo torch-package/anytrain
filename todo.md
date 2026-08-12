@@ -40,22 +40,22 @@
 - `framework.gan` 后续根据真实复用需求补 manual optimization helper。
 - framework 不替用户写完整 `pl_module`，只提供训练逻辑可复用组件。
 
-## TTS vLLM-Omni GPU smoke
+## MOSS vLLM-Omni codec loading
 
-- id: anytrain-tts-vllm-omni-smoke
+- id: anytrain-moss-vllm-omni-codec-loading
 - priority: P1
-- rationale: Qwen3-TTS 与 MOSS-TTS 的 vLLM-Omni 路径已完成 CPU 协议测试，但真实 GPU 加载、音频质量与吞吐仍决定是否能作为生产物化后端。
-- state: probe
-- entry: unknown
+- rationale: 40 GB A100 的 low-memory deploy 已跨过 MOSS vLLM-Omni 初始化 OOM 边界，但 Audio Tokenizer 权重映射仍缺 6 个参数，阻止音频生成。
+- state: blocked
+- entry: workspace/jobs/tts/moss.sh
 - num_gpus: 1
 - gpu: 1xA100-40GB
-- min_vram_gb_per_gpu: unknown
+- min_vram_gb_per_gpu: 34
 - preferred_hosts: 121
 - estimated_hours: 2
-- monitor: 命令日志 + nvidia-smi；记录加载显存、TTFA、RTF、batch 吞吐和生成音频定位
-- ready_gate: 增加 location-neutral smoke 入口；共享 py312 CUDA 环境安装匹配的 vllm-omni 0.26.x；模型与短参考音频可用
-- output_root: $DYNAMIC_HOME/debug/anytrain/tts-vllm-omni
-- task: 分别运行 Qwen3-TTS CustomVoice 和 MOSS-TTS v1.5 单条/批量 smoke；MOSS 重点确认上游 issue #4643 是否仍影响 v1.5；测出显存后更新任务卡并决定 production readiness。
+- monitor: result 015 与 `moss/omni-a100-shm-lowmem-offline-c1-t128-20260813-a.log`；修复后记录 c1 音频、显存和吞吐
+- ready_gate: upstream/adapter resolves the 1600/1606 codec weight load, then c1 audio smoke succeeds
+- output_root: $DYNAMIC_HOME/debug/anytrain/tts-performance/moss
+- task: 修复或等待 vLLM-Omni codec 权重映射后，使用 low-memory 0.60/0.12 配置重跑 c1，再扩展 c2/c4；本轮不修改 third_party 上游源码。
 
 ## Descript Audio Codec
 
