@@ -35,9 +35,10 @@ Install the optional vLLM-Omni runtime in a dedicated CUDA environment:
 python -m pip install 'anytrain[tts-vllm-omni]'
 ```
 
-The extra is pinned to one vLLM-Omni release line because its TTS request and
-pipeline contracts evolve with vLLM. Qwen3-TTS and MOSS-TTS keep their
-processor dependencies in their backend extras.
+The extra installs matching `vllm` and `vllm-omni` 0.26 release lines because
+vLLM-Omni does not declare the core vLLM wheel itself and their request and
+pipeline contracts evolve together. Qwen3-TTS and MOSS-TTS keep their processor
+dependencies in their backend extras.
 
 Install the MOSS backend dependencies from the anytrain repository root:
 
