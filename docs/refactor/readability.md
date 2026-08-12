@@ -400,3 +400,32 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - audio directional tests：40 passed。
+
+## `anytrain.audio.bpe`
+
+状态：完成。
+
+审计结论：
+
+- `_frame.py`、`_core.py`、`api.py`、`trainer.py` 与 `_eval.py` 分别拥有 frame alphabet、
+  BPE state/training bridge、artifact workflow、trainer identity 和 evaluation stats。
+- optional `tokenizers` import 只在构造/加载/训练时发生；package root 保持轻量。
+- progress/alphabet scan 与 max-frame 完整 sequence 边界已有 regression/golden 覆盖，不需要重写。
+
+完成的调整：
+
+- codebook size、frame/base id、BPE token id 与 eval `top_k` 对齐严格 integer 契约。
+- `train_from_spec()` 在读取 corpus 或加载 trainer runtime 前显式要求 fresh-iterable callable。
+- public `show_progress` 明确为 bool，不再接受隐式真值。
+
+刻意保留：
+
+- mixed-radix order、private-use alphabet、tokenizers BPE merges 和 compact token ids。
+- trainer semantic identity、single/multi-codebook scan count、progress 与 max_frames 行为。
+- `codec_bpe.json` schema、encode/decode 和完整 evaluation statistics。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- BPE unit/regression tests：49 passed，24 subtests passed。

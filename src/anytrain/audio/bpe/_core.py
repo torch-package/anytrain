@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import operator
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -93,6 +94,12 @@ class CoreBPE:
 
         base_ids: list[int] = []
         for token_id in token_ids:
+            if isinstance(token_id, bool):
+                raise TypeError("CodecBPE token ids must be integers")
+            try:
+                token_id = operator.index(token_id)
+            except TypeError as error:
+                raise TypeError("CodecBPE token ids must be integers") from error
             try:
                 base_ids.extend(self.tokens[token_id])
             except KeyError as exc:

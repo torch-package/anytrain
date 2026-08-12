@@ -52,6 +52,8 @@ def evaluate(
     show_progress: bool,
     top_k: int,
 ) -> EvalStats:
+    if isinstance(top_k, bool) or not isinstance(top_k, int):
+        raise TypeError("top_k must be an integer")
     if top_k < 0:
         raise ValueError("top_k must be non-negative")
 

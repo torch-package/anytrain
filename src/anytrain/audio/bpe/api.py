@@ -103,6 +103,9 @@ class CodecBPE:
         trainer: CodecBPETrainerSpec,
         show_progress: bool = True,
     ) -> Self:
+        if not callable(corpus):
+            raise TypeError("corpus must be callable and return a fresh iterable.")
+        _require_bool(show_progress, name="show_progress")
         if not isinstance(trainer, CodecBPETrainerSpec):
             raise TypeError("trainer must be a CodecBPETrainerSpec.")
         runtime_version = tokenizers_version()
@@ -167,6 +170,7 @@ class CodecBPE:
         show_progress: bool = True,
         top_k: int = 100,
     ) -> EvalStats:
+        _require_bool(show_progress, name="show_progress")
         return run_eval(
             corpus,
             self.encode,
@@ -199,6 +203,11 @@ class CodecBPE:
             encoding="utf-8",
         )
         return out
+
+
+def _require_bool(value: bool, *, name: str) -> None:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool.")
 
 
 def _encode_corpus(

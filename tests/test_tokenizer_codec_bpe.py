@@ -487,6 +487,32 @@ class BPETest(unittest.TestCase):
                     show_progress=False,
                 )
 
+    def test_train_requires_callable_corpus(self):
+        with self.assertRaisesRegex(TypeError, "corpus must be callable"):
+            CodecBPE.train(
+                cast(Any, [[[1], [2]]]),
+                codebook_sizes=(16,),
+                show_progress=False,
+            )
+        with self.assertRaisesRegex(TypeError, "show_progress must be a bool"):
+            CodecBPE.train(
+                replay([[[1], [2]]]),
+                codebook_sizes=(16,),
+                show_progress=cast(Any, 1),
+            )
+
+    def test_codebook_sizes_require_positive_integers(self):
+        for sizes in ((True,), (16.0,), ("16",)):
+            with (
+                self.subTest(sizes=sizes),
+                self.assertRaisesRegex(TypeError, "codebook sizes must be integers"),
+            ):
+                CodecBPE.train(
+                    replay([[[1], [2]]]),
+                    codebook_sizes=cast(Any, sizes),
+                    show_progress=False,
+                )
+
     def test_train_merges_multi_codebook_frames_and_round_trips(self):
         corpus = [
             [[1, 4], [2, 7], [1, 4], [2, 7], [3, 8]],
@@ -636,6 +662,12 @@ class BPETest(unittest.TestCase):
             bpe.decode([])
         with self.assertRaisesRegex(ValueError, "unknown CodecBPE token id"):
             bpe.decode([bpe.vocab_size])
+        for token_id in (True, 1.0, "1"):
+            with (
+                self.subTest(token_id=token_id),
+                self.assertRaisesRegex(TypeError, "token ids must be integers"),
+            ):
+                bpe.decode(cast(Any, [token_id]))
 
     def test_eval_reports_expected_compression(self):
         bpe = CodecBPE.train(
@@ -708,6 +740,21 @@ class BPETest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "top_k"):
             bpe.evaluate([[[1], [2], [3]]], show_progress=False, top_k=-1)
+        for top_k in (True, 1.0, "1"):
+            with (
+                self.subTest(top_k=top_k),
+                self.assertRaisesRegex(TypeError, "top_k must be an integer"),
+            ):
+                bpe.evaluate(
+                    [[[1], [2], [3]]],
+                    show_progress=False,
+                    top_k=cast(Any, top_k),
+                )
+        with self.assertRaisesRegex(TypeError, "show_progress must be a bool"):
+            bpe.evaluate(
+                [[[1], [2], [3]]],
+                show_progress=cast(Any, 1),
+            )
 
     def test_eval_progress_keeps_same_result(self):
         bpe = CodecBPE.train(

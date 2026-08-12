@@ -105,6 +105,9 @@ frames = bpe.decode(token_ids)
 ```
 
 Python sequence 入口会返回 Python list。空序列、未知 frame / token id 一律报错。
+`codebook_sizes`、frame ids、BPE token ids 和 eval `top_k` 使用严格整数语义，明确拒绝 bool、
+float 和字符串。训练 corpus 必须是 callable，入口在加载/扫描前显式校验，以保证需要两遍扫描的
+配置能获得 fresh iterable；public `show_progress` 只接受 bool。
 下游如果需要把 BPE token 级张量展开到原始 frame 粒度，应当用 `decode(token_ids)`
 返回的 frame 数量自行构造 repeat counts；`CodecBPE` 不再持有 tensor 展开入口。
 

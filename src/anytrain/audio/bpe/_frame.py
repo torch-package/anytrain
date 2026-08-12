@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Sequence
+from numbers import Integral
 
 from anytrain._compat import strict_zip
 
@@ -26,6 +27,7 @@ class FrameCodec:
         return sum(value * stride for value, stride in strict_zip(values, self.strides))
 
     def decode(self, base_id: int) -> Frame:
+        base_id = frame_id(base_id)
         if base_id < 0 or base_id >= self.vocab_size:
             raise ValueError("frame id is outside the configured codebook space")
 
@@ -38,12 +40,20 @@ class FrameCodec:
 
 
 def codebook_sizes_tuple(codebook_sizes: Sequence[int]) -> tuple[int, ...]:
+    if isinstance(codebook_sizes, (str, bytes)) or not isinstance(codebook_sizes, Sequence):
+        raise TypeError("codebook_sizes must be a sequence of positive integers")
     sizes = tuple(codebook_sizes)
     if not sizes:
         raise ValueError("codebook_sizes must not be empty")
-    if any(size <= 0 for size in sizes):
-        raise ValueError("codebook sizes must be positive")
-    return sizes
+    parsed: list[int] = []
+    for size in sizes:
+        if isinstance(size, bool) or not isinstance(size, Integral):
+            raise TypeError("codebook sizes must be integers")
+        resolved = int(size)
+        if resolved <= 0:
+            raise ValueError("codebook sizes must be positive")
+        parsed.append(resolved)
+    return tuple(parsed)
 
 
 def frame_tuple(frame: Sequence[int], codebook_sizes: Sequence[int]) -> Frame:
