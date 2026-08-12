@@ -10,7 +10,8 @@ import torch
 from torch import Tensor
 
 from ...env import torch_home
-from ..abc import EvaluatorABC, MetricDict
+from ..abc import EvaluatorABC
+from ..types import MetricDict
 from ._config import (
     DEFAULT_UTMOS_MODEL,
     DEFAULT_UTMOS_REPOSITORY,

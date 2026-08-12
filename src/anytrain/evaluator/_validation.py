@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import torch
 
-MetricValue = float | torch.Tensor
-MetricDict = dict[str, MetricValue]
+from .types import MetricDict, MetricValue
 
 
 def validate_metric_dict(metrics: object, *, separator: str) -> MetricDict:
@@ -33,10 +32,14 @@ def validate_metric_value(value: object, *, name: str) -> MetricValue:
 
 
 def validate_metric_name(name: object, *, separator: str) -> str:
+    return validate_name(name, label="metric key", separator=separator)
+
+
+def validate_name(name: object, *, label: str, separator: str) -> str:
     if not isinstance(name, str):
-        raise TypeError("metric key must be a string.")
+        raise TypeError(f"{label} must be a string.")
     if not name:
-        raise ValueError("metric key must not be empty.")
+        raise ValueError(f"{label} must not be empty.")
     if separator in name:
-        raise ValueError(f"metric key must not contain separator {separator!r}.")
+        raise ValueError(f"{label} must not contain separator {separator!r}.")
     return name

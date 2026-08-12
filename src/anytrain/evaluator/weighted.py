@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TypeVar
 
 import torch
 from torch import Tensor
-
-Name = TypeVar("Name")
 
 
 @dataclass(frozen=True)
@@ -59,16 +56,16 @@ def reduce[Name](metrics: Mapping[Name, Metric]) -> dict[Name, tuple[Tensor, int
     if not metrics:
         raise ValueError("weighted metrics must contain at least one value.")
 
-    counts: dict[int, tuple[Tensor, int]] = {}
+    count_by_weights_id: dict[int, tuple[Tensor, int]] = {}
     result: dict[Name, tuple[Tensor, int]] = {}
     for name, metric in metrics.items():
         if not isinstance(metric, Metric):
             raise TypeError("weighted metric values must be Metric instances.")
         key = id(metric.weights)
-        cached = counts.get(key)
+        cached = count_by_weights_id.get(key)
         if cached is None or cached[0] is not metric.weights:
             count = metric.count()
-            counts[key] = (metric.weights, count)
+            count_by_weights_id[key] = (metric.weights, count)
         else:
             metric._validate_structure()
             count = cached[1]

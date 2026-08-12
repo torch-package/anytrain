@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ..abc import EvaluatorABC, MetricDict
+from ..abc import EvaluatorABC
 from ..text import TextInput
+from ..types import MetricDict
 from ._config import SpeechEvaluatorConfig
 from .asr import WhisperASREvaluator
 from .utmos import UTMOSEvaluator

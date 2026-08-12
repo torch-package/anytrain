@@ -44,3 +44,34 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - `tests/test_loss.py`：86 passed，51 subtests passed。
+
+## `anytrain.evaluator`
+
+状态：完成。
+
+原问题：
+
+- public `MetricDict` / `MetricValue` 定义在私有 `_validation.py`，部分实现又经由
+  `abc.py` 间接导入，类型 ownership 不明确。
+- evaluator name 与 metric key 的字符串规则分别实现，错误语义容易漂移。
+- `weighted.py` 同时保留旧式 `TypeVar` 和 PEP 695 函数泛型，前者实际被遮蔽且无效。
+
+完成的调整：
+
+- 新增 public `types.py` 作为 metric 类型唯一 owner，package root 导入保持不变。
+- core、text 和 speech evaluator 直接依赖 `types.py`，消除 `abc.py` 的隐藏 re-export。
+- 名称校验统一归 `_validation.py`，`EvaluatorGroup` 只负责组合和 stateful lifecycle。
+- 清理 weighted reduce 的无效泛型声明，并让 count cache 命名表达实际 key 语义。
+
+刻意保留：
+
+- `EvaluatorABC` 与 `EvaluatorGroup` 的现有公开名称和调用协议。
+- mixed stateful/stateless group 在任何更新前失败的语义。
+- text corpus/distributed reduction、fallback score 和中文静态映射。
+- speech semantic config、模型加载、ASR 与 UTMOS backend 边界。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- evaluator core/text/speech：82 passed，9 subtests passed。

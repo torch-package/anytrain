@@ -1,7 +1,7 @@
 from . import weighted
-from ._validation import MetricDict, MetricValue
 from .abc import EvaluatorABC
 from .group import EvaluatorGroup
+from .types import MetricDict, MetricValue
 
 __all__ = [
     "EvaluatorABC",

@@ -5,8 +5,9 @@ from typing import Any, cast
 
 from torch import nn
 
-from ._validation import validate_metric_dict
-from .abc import EvaluatorABC, MetricDict
+from ._validation import validate_metric_dict, validate_name
+from .abc import EvaluatorABC
+from .types import MetricDict
 
 
 class EvaluatorGroup(nn.Module):
@@ -70,7 +71,11 @@ class EvaluatorGroup(nn.Module):
 
         validated: dict[str, nn.Module] = {}
         for raw_name, evaluator in evaluators.items():
-            name = self._validate_name(raw_name, "evaluator name")
+            name = validate_name(
+                raw_name,
+                label="evaluator name",
+                separator=self.metric_key_separator,
+            )
             if not isinstance(evaluator, nn.Module):
                 raise TypeError(f"Evaluator {name!r} must be a torch.nn.Module.")
             validated[name] = evaluator
@@ -91,16 +96,6 @@ class EvaluatorGroup(nn.Module):
 
     def _validate_metric_dict(self, metrics: object) -> MetricDict:
         return validate_metric_dict(metrics, separator=self.metric_key_separator)
-
-    def _validate_name(self, name: str, label: str) -> str:
-        if not isinstance(name, str):
-            raise TypeError(f"{label} must be a string.")
-        if not name:
-            raise ValueError(f"{label} must not be empty.")
-        if self.metric_key_separator in name:
-            raise ValueError(f"{label} must not contain separator {self.metric_key_separator!r}.")
-        return name
-
 
 def _method(module: nn.Module, name: str) -> Callable[..., object]:
     return cast(Callable[..., object], getattr(module, name))

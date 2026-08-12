@@ -4,7 +4,8 @@ from collections.abc import Sequence
 
 import torch.distributed as dist
 
-from ..abc import EvaluatorABC, MetricDict
+from ..abc import EvaluatorABC
+from ..types import MetricDict
 from .normalization import TextNormalizationConfig, normalize_text_batch
 from .scores import corpus_bleu_score, corpus_chrf_score, word_error_rate
 

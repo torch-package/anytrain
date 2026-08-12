@@ -4,9 +4,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..abc import EvaluatorABC, MetricDict
+from ..abc import EvaluatorABC
 from ..text import TextComparisonEvaluator, TextInput
 from ..text.normalization import coerce_text_batch
+from ..types import MetricDict
 from ._config import OPENAI_WHISPER_VERSION, WhisperSemanticConfig
 from ._whisper import DEFAULT_MODEL_NAME, SUPPORTED_MODEL_NAMES, _OpenAIWhisperTranscriber
 from .audio import validate_sample_rate

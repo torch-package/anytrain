@@ -14,10 +14,13 @@ src/anytrain/evaluator/
   _validation.py
   abc.py
   group.py
+  types.py
   weighted.py
   speech/
     __init__.py
+    _config.py
     _torch.py
+    _whisper.py
     asr.py
     audio.py
     evaluator.py
@@ -38,6 +41,10 @@ src/anytrain/evaluator/
 - `MetricDict`
 - `EvaluatorGroup`
 - `weighted`：逐行 values 与 observation counts 的通用加权指标契约。
+
+`MetricValue` 和 `MetricDict` 的定义归 `types.py` 所有，并从 package root 重导出。内部实现
+直接从 `types.py` 引用类型，不通过 `abc.py` 的偶然 import 形成隐藏入口。metric/evaluator
+名称的公共校验规则集中在 `_validation.py`。
 
 optional 子模块导出：
 
@@ -134,6 +141,10 @@ class BatchMAE(EvaluatorABC):
 再逐个代理；因此混入无状态 evaluator 时会在修改任何子状态前抛出 `NotImplementedError`，
 不会留下部分更新，也不会静默跳过或伪造 running metric。
 
+`EvaluatorABC`、`EvaluatorGroup` 和 optional evaluator 共用同一个 `MetricDict` schema。
+`EvaluatorGroup` 仍保持普通 `nn.Module`，不伪装成只实现 `evaluate()` 的
+`EvaluatorABC`；它负责组合和 stateful lifecycle 预检，ABC 负责单 evaluator 的调用边界。
+
 `TextComparisonEvaluator` 实现了正确的 corpus 状态生命周期：
 
 ```python
@@ -169,6 +180,10 @@ core evaluator 只依赖默认依赖，提供通用 ABC 和轻量组合器。
 - `anytrain.evaluator.audio`：codec、speech、audio quality evaluator。
 
 optional 子模块缺依赖时应抛出清晰错误，提示安装对应 extra。
+
+`text/_chinese.py` 是静态繁简字符映射数据，不承担 evaluator 控制逻辑；其文件长度不作为
+拆分依据。speech 的 semantic config、load options 和 backend adapter 使用现有分层，core
+metric schema 不反向依赖这些 optional 实现。
 
 ## Optional Text/Speech Evaluator
 
@@ -272,3 +287,14 @@ UTMOS backend 细节从 `anytrain.evaluator.speech.utmos` 显式导入。
 
 - text evaluator 的单条、batch、normalization、空 reference、长度不一致和 metric key。
 - speech evaluator 的默认 backend 延迟构造、ASR 配置项、ASR reference 校验、text metric 透传、UTMOS batch mean 和真实 backend 输出规范化。
+
+模块验收命令：
+
+```bash
+python -m ruff check src/anytrain/evaluator tests/test_evaluator.py \
+  tests/test_evaluator_text.py tests/test_evaluator_speech.py
+basedpyright --pythonpath /path/to/python src/anytrain/evaluator \
+  tests/test_evaluator.py tests/test_evaluator_text.py tests/test_evaluator_speech.py
+python -m pytest -q tests/test_evaluator.py tests/test_evaluator_text.py \
+  tests/test_evaluator_speech.py
+```

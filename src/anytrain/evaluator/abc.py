@@ -5,10 +5,8 @@ from typing import Any
 
 from torch import nn
 
-from ._validation import (
-    MetricDict,
-    validate_metric_dict,
-)
+from ._validation import validate_metric_dict
+from .types import MetricDict
 
 
 class EvaluatorABC(nn.Module, ABC):
