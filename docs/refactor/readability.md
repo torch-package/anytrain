@@ -21,7 +21,7 @@
 | 1 | `anytrain.loss` | `79a3388` |
 | 2 | `anytrain.evaluator` | `4221464` |
 | 3 | `anytrain.observation` | `36e69e3` |
-| 4 | `anytrain.checkpoint` | `a128103` |
+| 4 | `anytrain.lightning.checkpoint` | `a128103` |
 | 5 | `anytrain.lightning` | `3bbe78c` |
 | 6 | `anytrain.lightning.schedule` | `d641fae` |
 | 7 | `anytrain.lightning.perf` | `4e91fe1` |
@@ -135,20 +135,20 @@
 - `basedpyright`：0 errors。
 - observation/event/Lightning integration：102 passed。
 
-## `anytrain.checkpoint`
+## `anytrain.lightning.checkpoint`
 
 状态：完成。
 
 审计结论：
 
-- `contract.py` 与 `lightning.py` 已经分别拥有 canonical contract 和单文件恢复，继续拆分只会
+- `contract.py` 与 `loading.py` 已经分别拥有 canonical contract 和单文件恢复，继续拆分只会
   增加跳转。
-- public 类型与函数均从 package root 显式导出，没有 optional dependency 或反向依赖。
+- public 类型与函数均从 checkpoint package root 显式导出，没有 optional dependency 或反向依赖。
 - 唯一入口缺口是 loader 对 target module 与 hook 开关依赖隐式属性访问和真值转换。
 
 完成的调整：
 
-- `load_lightning_checkpoint()` 在读文件前严格校验 `nn.Module` target 和 bool hook 开关。
+- `load_checkpoint()` 在读文件前严格校验 `nn.Module` target 和 bool hook 开关。
 - 文档记录两个源码 owner、可信 checkpoint 前提和模块验收命令。
 
 刻意保留：
@@ -161,7 +161,7 @@
 
 - `ruff`：通过。
 - `basedpyright`：0 errors。
-- `tests/test_checkpoint.py`：14 passed，8 subtests passed。
+- `tests/test_lightning_checkpoint.py`：14 passed，8 subtests passed。
 
 ## `anytrain.lightning`
 

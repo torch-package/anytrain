@@ -1,4 +1,4 @@
-"""Checkpoint contracts and strict single-file Lightning restoration."""
+"""Lightning checkpoint contracts and strict single-file restoration."""
 
 from .contract import (
     STATE_DICT_SCHEMA_GRAMMAR,
@@ -10,7 +10,7 @@ from .contract import (
     stable_json,
     state_dict_schema,
 )
-from .lightning import LightningCheckpoint, load_lightning_checkpoint
+from .loading import LightningCheckpoint, load_checkpoint
 
 __all__ = [
     "STATE_DICT_SCHEMA_GRAMMAR",
@@ -20,7 +20,7 @@ __all__ = [
     "canonical_sha256",
     "canonical_value",
     "first_difference",
-    "load_lightning_checkpoint",
+    "load_checkpoint",
     "stable_json",
     "state_dict_schema",
 ]

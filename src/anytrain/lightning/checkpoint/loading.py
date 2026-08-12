@@ -12,7 +12,7 @@ type LightningCheckpoint = dict[str, Any]
 type _CheckpointHook = Callable[[LightningCheckpoint], None]
 
 
-def load_lightning_checkpoint(
+def load_checkpoint(
     module: nn.Module,
     path: str | PathLike[str],
     *,
@@ -69,4 +69,4 @@ def _call_module_hook(module: nn.Module, checkpoint: LightningCheckpoint) -> Non
     cast(_CheckpointHook, hook)(checkpoint)
 
 
-__all__ = ["LightningCheckpoint", "load_lightning_checkpoint"]
+__all__ = ["LightningCheckpoint", "load_checkpoint"]

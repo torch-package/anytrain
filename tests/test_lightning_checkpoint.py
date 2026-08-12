@@ -10,13 +10,13 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from anytrain.checkpoint import (
+from anytrain.lightning.checkpoint import (
     STATE_DICT_SCHEMA_GRAMMAR,
     Difference,
     canonical_sha256,
     canonical_value,
     first_difference,
-    load_lightning_checkpoint,
+    load_checkpoint,
     stable_json,
     state_dict_schema,
 )
@@ -151,9 +151,9 @@ class LightningCheckpointTest(unittest.TestCase):
         missing = Path("missing.ckpt")
 
         with self.assertRaisesRegex(TypeError, "torch.nn.Module"):
-            load_lightning_checkpoint(cast(Any, object()), missing)
+            load_checkpoint(cast(Any, object()), missing)
         with self.assertRaisesRegex(TypeError, "call_module_hook must be a bool"):
-            load_lightning_checkpoint(
+            load_checkpoint(
                 nn.Linear(1, 1),
                 missing,
                 call_module_hook=cast(Any, 1),
@@ -174,7 +174,7 @@ class LightningCheckpointTest(unittest.TestCase):
                     path = Path(directory) / f"malformed-{index}.ckpt"
                     torch.save(payload, path)
                     with self.assertRaisesRegex(TypeError, message):
-                        load_lightning_checkpoint(module, path)
+                        load_checkpoint(module, path)
 
     def test_loader_calls_optional_hook_and_restores_state(self) -> None:
         source = _HookModule()
@@ -190,7 +190,7 @@ class LightningCheckpointTest(unittest.TestCase):
                 path,
             )
 
-            checkpoint = load_lightning_checkpoint(target, path)
+            checkpoint = load_checkpoint(target, path)
 
         self.assertEqual(target.loaded_step, 7)
         self.assertEqual(target.weight.item(), 3)
@@ -203,7 +203,7 @@ class LightningCheckpointTest(unittest.TestCase):
             path = Path(directory) / "model.ckpt"
             torch.save({"global_step": 7, "state_dict": source.state_dict()}, path)
 
-            load_lightning_checkpoint(target, path, call_module_hook=False)
+            load_checkpoint(target, path, call_module_hook=False)
 
         self.assertIsNone(target.loaded_step)
 
@@ -214,7 +214,7 @@ class LightningCheckpointTest(unittest.TestCase):
             torch.save({"state_dict": {}}, path)
 
             with self.assertRaisesRegex(RuntimeError, "Missing key"):
-                load_lightning_checkpoint(module, path)
+                load_checkpoint(module, path)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@ import unittest
 import anytrain
 import anytrain.audio
 import anytrain.chat
-import anytrain.checkpoint
 import anytrain.evaluator
 import anytrain.example
 import anytrain.framework
@@ -26,7 +25,6 @@ class PackageRootTest(unittest.TestCase):
         packages = (
             anytrain.audio,
             anytrain.chat,
-            anytrain.checkpoint,
             anytrain.evaluator,
             anytrain.example,
             anytrain.framework,

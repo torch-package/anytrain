@@ -1,3 +1,5 @@
+"""Canonical values and state-dict schemas for Lightning checkpoints."""
+
 from __future__ import annotations
 
 import hashlib

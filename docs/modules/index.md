@@ -7,7 +7,7 @@
 - [`anytrain` package root](package-root.md)：轻量公开导出和 import 边界。
 - [`anytrain.stats` / `anytrain.env` / `anytrain.utils`](package-root.md)：顶层 tensor primitive、
   optional cache root 与小型 utility，以及 runnable/package example 边界。
-- [`anytrain.checkpoint`](checkpoint.md)：canonical contract、state-dict schema 与严格单文件 Lightning checkpoint 恢复。
+- [`anytrain.lightning.checkpoint`](lightning-checkpoint.md)：canonical contract、state-dict schema 与严格单文件 Lightning checkpoint 恢复。
 - [`anytrain.observation`](observation.md)：module concrete-type registry、observation 类型、显式 reduction 和 step/EMA 状态契约。
 - [`anytrain.lightning`](lightning.md)：LightningModule logging mixin、后台服务生命周期、调试 callback 和性能观测 callback。
 - `anytrain.lightning.schedule`：step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制；归入 [`anytrain.lightning`](lightning.md)。

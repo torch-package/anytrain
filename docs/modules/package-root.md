@@ -35,7 +35,7 @@ lazy decoder helper。二者不互相 re-export，也不把训练入口带进安
 - 训练入口由下游项目自己维护，根包不提供快捷启动函数。
 - 用户需要 module observation 契约时显式使用 `anytrain.observation`。
 - 用户需要 checkpoint contract 或严格单文件 Lightning 恢复时显式使用
-  `anytrain.checkpoint`。
+  `anytrain.lightning.checkpoint`。
 - 用户需要 Lightning helper 时显式使用 `anytrain.lightning`。
 - 用户需要 loss/evaluator/framework 或 optional backend 时显式使用对应子模块。
 - 顶层 package 的 `__all__` 必须无重复且每个名称可解析；根包保持空，不做跨模块聚合。

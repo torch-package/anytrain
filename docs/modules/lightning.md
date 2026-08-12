@@ -20,6 +20,10 @@ src/anytrain/lightning/
   service.py
   oom.py
   validation.py
+  checkpoint/
+    __init__.py
+    contract.py
+    loading.py
   schedule/
     __init__.py
   perf/
@@ -41,6 +45,7 @@ src/anytrain/lightning/
 
 当前公开导出：
 
+- `checkpoint`：canonical contract、state-dict schema 与严格单文件恢复。
 - `experiment`：从 Trainer 主 logger 获取 text/scalar/audio/image/histogram/raw-histogram 能力。
 - `validation`：加权 validation logging 与可恢复指标历史。
 - `schedule`：统一 step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制。

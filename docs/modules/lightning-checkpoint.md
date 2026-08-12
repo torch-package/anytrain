@@ -1,8 +1,8 @@
-# `anytrain.checkpoint` Design
+# `anytrain.lightning.checkpoint` Design
 
 ## 定位
 
-`anytrain.checkpoint` 提供普通 PyTorch module 和单文件 Lightning checkpoint 之间可复用的
+`anytrain.lightning.checkpoint` 提供普通 PyTorch module 和单文件 Lightning checkpoint 之间可复用的
 序列化、结构校验与严格恢复 primitive。下游项目继续拥有 checkpoint 路径选择、Trainer resume、
 模型版本迁移以及业务 metadata 的解释。
 
@@ -12,14 +12,14 @@
   计算摘要。
 - `first_difference()`：按稳定路径返回两个 contract 的首个差异。
 - `state_dict_schema()`：记录 parameter/buffer 名称、形状和 schema 摘要。
-- `load_lightning_checkpoint()`：从路径读取一个完整 Lightning payload，校验 root 和
+- `load_checkpoint()`：从路径读取一个完整 Lightning payload，校验 root 和
   `state_dict`，按需调用 module 的 `on_load_checkpoint()`，再以 `strict=True` 恢复 state。
 - `LightningCheckpoint`：loader 返回的字符串键 payload 类型。
 
 ```python
-from anytrain.checkpoint import load_lightning_checkpoint
+from anytrain.lightning.checkpoint import load_checkpoint
 
-checkpoint = load_lightning_checkpoint(module, "outputs/step=100.ckpt")
+checkpoint = load_checkpoint(module, "outputs/step=100.ckpt")
 global_step = checkpoint.get("global_step")
 ```
 
@@ -31,7 +31,7 @@ mapping；module hook 默认在严格 state 恢复前调用，没有该 hook 的
 在访问文件前校验，错误配置不会被路径错误或 Python 真值转换掩盖。
 
 源码保持两个 owner：`contract.py` 负责 canonical value、difference 和 state-dict schema，
-`lightning.py` 只负责可信单文件 Lightning payload 的严格加载。当前规模不需要进一步拆分。
+`loading.py` 只负责可信单文件 Lightning payload 的严格加载。当前规模不需要进一步拆分。
 
 ## 边界
 
@@ -44,7 +44,8 @@ mapping；module hook 默认在严格 state 恢复前调用，没有该 hook 的
 ## 验收
 
 ```bash
-python -m ruff check src/anytrain/checkpoint tests/test_checkpoint.py
-basedpyright --pythonpath /path/to/python src/anytrain/checkpoint tests/test_checkpoint.py
-python -m pytest -q tests/test_checkpoint.py
+python -m ruff check src/anytrain/lightning/checkpoint tests/test_lightning_checkpoint.py
+basedpyright --pythonpath /path/to/python src/anytrain/lightning/checkpoint \
+  tests/test_lightning_checkpoint.py
+python -m pytest -q tests/test_lightning_checkpoint.py
 ```

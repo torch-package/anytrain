@@ -112,7 +112,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | 模块 | 作用 |
 | --- | --- |
 | `anytrain.lightning` | Lightning logging mixin、task-agnostic background materialization、长驻服务生命周期、module/loss/gradient logging、debug 和性能观测 callback。 |
-| `anytrain.checkpoint` | canonical contract、state-dict schema 与普通单文件 Lightning checkpoint 的严格恢复。 |
+| `anytrain.lightning.checkpoint` | canonical contract、state-dict schema 与普通单文件 Lightning checkpoint 的严格恢复。 |
 | `anytrain.observation` | 普通 module 的 concrete-type registry、State/Output/Event 来源、Curve/Distribution/Profile/Bins/Heatmap 值契约，以及 step/EMA 状态。 |
 | `anytrain.lightning.schedule` | 统一 step/unit LR schedule spec、unit progress、unit LR runtime 和按 unit 停止训练。 |
 | `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
@@ -144,7 +144,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 - 下游项目负责具体任务语义、`training_step`、batch 解释和模型组合。
 - 配置组合和对象实例化由下游选择，可以用普通 Python、Hydra、argparse、pydantic 或其它项目内约定。
 - `anytrain.lightning` 是核心依赖层；Lightning 不是 optional integration。
-- `checkpoint`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`translation`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
+- `lightning.checkpoint`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`translation`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
 
 明确不做：
 
