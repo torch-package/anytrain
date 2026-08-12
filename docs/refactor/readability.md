@@ -227,3 +227,31 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - `tests/test_perf.py`：27 passed，26 subtests passed。
+
+## `anytrain.optim`
+
+状态：完成。
+
+审计结论：
+
+- `_params.py` 已经是参数规划的唯一 owner，单次 module traversal 同时产出 Muon、AdamW decay、
+  no-decay 和 LR scale 结果；继续拆分会把共享参数去重和最长规则匹配变成跨文件协议。
+- `CompositeOptimizer`、LoRA-Muon 算法和 PEFT adapter 收集分别拥有独立状态/optional 边界，
+  455 行的 LoRA-Muon 文件包含同一算法的数值核、状态和不变量，按长度拆分会降低可读性。
+
+完成的调整：
+
+- 参数规划显式校验 `requires_grad_only` 与 `decay_selected_params` 为 bool，避免隐式真值转换。
+- `optim` 文档补充严格控制项、参数归属校验和“不按长度拆 LoRA-Muon”的 ownership 说明。
+
+刻意保留：
+
+- AdamW/Muon 分组规则、最长 LR scale 匹配、shared parameter 处理和 optional Muon/PEFT 边界。
+- Composite optimizer 的名称化 checkpoint、scheduler param-group identity 与 closure 语义。
+- LoRA-Muon 的 paper-faithful full-rank、momentum、atomic update 和 checkpoint 语义。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- `tests/test_optim.py` / `tests/test_optim_peft.py`：79 passed，3 subtests passed。

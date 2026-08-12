@@ -253,6 +253,12 @@ class SplitMuonParamsTest(unittest.TestCase):
         self.assertEqual(_param_ids(muon_parameters), {id(model.weight)})
         self.assertEqual(non_muon_parameters, [])
 
+    def test_split_muon_params_requires_boolean_controls(self):
+        model = nn.Linear(4, 3, bias=False)
+
+        with self.assertRaisesRegex(TypeError, "requires_grad_only must be a bool"):
+            split_muon_params(model, requires_grad_only=cast(Any, 1))
+
     def test_split_muon_params_rejects_non_module(self):
         with self.assertRaisesRegex(TypeError, "torch.nn.Module"):
             split_muon_params(cast(Any, torch.tensor(1.0)))
@@ -403,6 +409,14 @@ class AdamWOptimizerTest(unittest.TestCase):
                 nn.Linear(4, 4),
                 selected_params=[nn.Parameter(torch.randn(4, 4))],
             )
+
+    def test_split_adamw_decay_params_requires_boolean_controls(self):
+        model = nn.Linear(4, 4)
+
+        with self.assertRaisesRegex(TypeError, "requires_grad_only must be a bool"):
+            split_adamw_decay_params(model, requires_grad_only=cast(Any, 1))
+        with self.assertRaisesRegex(TypeError, "decay_selected_params must be a bool"):
+            split_adamw_decay_params(model, decay_selected_params=cast(Any, 1))
 
 
 @unittest.skipUnless(MUON_AVAILABLE, "torch.optim.Muon is not available")

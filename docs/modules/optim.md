@@ -84,6 +84,10 @@ shared parameter 分配不同 `lr_scale` 时会抛错。
 `lr_scale_rules` 是通用参数分组逻辑，AdamW、Muon+AdamW 和 LLM preset helper 都使用同一套规则。
 LLM preset 会把规则透传给底层 optimizer。
 
+参数规划的 `requires_grad_only` 和 `decay_selected_params` 是严格的 bool 控制项；不会把整数或
+字符串按 Python 真值解释。`excluded_modules`、`selected_params` 和规则名称也在一次规划前完成
+归属校验，因此失败不会创建部分 optimizer。
+
 ## LoRA-Muon
 
 `LoRAMuon` 是 [LoRA-Muon: Spectral Steepest Descent on the Low-Rank Manifold](https://arxiv.org/abs/2606.12921)

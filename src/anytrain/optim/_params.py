@@ -54,8 +54,12 @@ def build_parameter_plan(
 ) -> ParameterPlan:
     """Resolve Muon, AdamW, and LR-scale groups in one module traversal."""
     validate_module(module)
-    if not isinstance(decay_selected_params, bool):
-        raise TypeError("decay_selected_params must be a bool.")
+    for name, value in (
+        ("requires_grad_only", requires_grad_only),
+        ("decay_selected_params", decay_selected_params),
+    ):
+        if not isinstance(value, bool):
+            raise TypeError(f"{name} must be a bool.")
 
     named_modules = tuple(module.named_modules())
     selected_param_ids = _selected_param_ids(module, selected_params)
