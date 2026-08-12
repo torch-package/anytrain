@@ -27,9 +27,13 @@ from anytrain.tts import (
     AudioReference,
     EncodedAudioReference,
     PathAudioReference,
+    TTSAcousticEngine,
     TTSCapabilities,
+    TTSEngineCapabilities,
+    TTSInferenceConfig,
     TTSOptions,
     TTSOutput,
+    TTSTransformerEngine,
     TTSVoiceMode,
     WaveformReference,
     validate_text,
@@ -41,6 +45,12 @@ DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
 DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 _V3_PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
 _RUNTIME_KEYS = frozenset(("speed", "text_frontend"))
+ENGINE_CAPABILITIES = TTSEngineCapabilities(
+    transformer_engines=frozenset(
+        (TTSTransformerEngine.TORCH, TTSTransformerEngine.VLLM)
+    ),
+    acoustic_engines=frozenset((TTSAcousticEngine.TORCH, TTSAcousticEngine.TENSORRT)),
+)
 
 
 class CosyVoiceVersion(StrEnum):
@@ -66,7 +76,8 @@ class CosyVoiceTTSConfig:
     model: str = DEFAULT_MODEL_V3
     load_kwargs: Mapping[str, object] = field(default_factory=dict)
     runtime_kwargs: Mapping[str, object] = field(default_factory=dict)
-    max_concurrency: int = 1
+    inference: TTSInferenceConfig | None = None
+    max_concurrency: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.version, CosyVoiceVersion):
@@ -76,27 +87,64 @@ class CosyVoiceTTSConfig:
         validate_mapping(self.load_kwargs, "load_kwargs")
         validate_mapping(self.runtime_kwargs, "runtime_kwargs")
         _runtime_kwargs(self.runtime_kwargs)
-        if (
+        if self.inference is not None and not isinstance(
+            self.inference, TTSInferenceConfig
+        ):
+            raise TypeError("inference must be a TTSInferenceConfig or None.")
+        if self.max_concurrency is not None and (
             isinstance(self.max_concurrency, bool)
             or not isinstance(self.max_concurrency, int)
             or self.max_concurrency <= 0
         ):
             raise ValueError("max_concurrency must be a positive integer.")
-        if self.max_concurrency > 1 and self.load_kwargs.get("load_vllm") is not True:
-            raise ValueError("max_concurrency greater than 1 requires load_vllm=True.")
         if self.version is CosyVoiceVersion.V3 and "load_jit" in self.load_kwargs:
             raise ValueError("CosyVoice 3 does not accept load_jit.")
+        resolved_inference = self.resolved_inference()
+        if (
+            self.inference is None
+            and resolved_inference.max_concurrency > 1
+            and resolved_inference.transformer_engine is TTSTransformerEngine.TORCH
+        ):
+            raise ValueError("max_concurrency greater than 1 requires load_vllm=True.")
+        ENGINE_CAPABILITIES.validate(resolved_inference, "CosyVoice")
 
     def options(self) -> TTSOptions:
         return TTSOptions(extra=self.runtime_kwargs)
 
     def hash_dict(self) -> dict[str, object]:
+        load_kwargs = {
+            key: value
+            for key, value in self.load_kwargs.items()
+            if key not in {"load_vllm", "load_trt", "trt_concurrent"}
+        }
         return {
             "version": self.version.value,
             "model": self.model,
-            "load_kwargs": hashable_mapping(self.load_kwargs),
+            "inference": self.resolved_inference().hash_dict(),
+            "load_kwargs": hashable_mapping(load_kwargs),
             "runtime_kwargs": hashable_mapping(self.runtime_kwargs),
         }
+
+    def resolved_inference(self) -> TTSInferenceConfig:
+        legacy = _legacy_inference(self.load_kwargs, self.max_concurrency)
+        if self.inference is None:
+            return legacy
+        if self.max_concurrency is not None and (
+            self.max_concurrency != self.inference.max_concurrency
+        ):
+            raise ValueError(
+                "CosyVoice max_concurrency conflicts with inference.max_concurrency."
+            )
+        _validate_legacy_engine_flags(self.load_kwargs, self.inference)
+        trt_concurrent = self.load_kwargs.get("trt_concurrent")
+        if (
+            trt_concurrent is not None
+            and trt_concurrent != self.inference.max_concurrency
+        ):
+            raise ValueError(
+                "CosyVoice trt_concurrent conflicts with inference.max_concurrency."
+            )
+        return self.inference
 
 
 @dataclass
@@ -116,8 +164,9 @@ class CosyVoiceTTS:
         *,
         version: CosyVoiceVersion | str = CosyVoiceVersion.V3,
         device: str | torch.device | None = "auto",
+        inference: TTSInferenceConfig | None = None,
         runtime_kwargs: Mapping[str, object] | None = None,
-        max_concurrency: int = 1,
+        max_concurrency: int | None = None,
         **load_kwargs: Unpack[CosyVoiceLoadKwargs],
     ) -> CosyVoiceTTS:
         resolved_version = CosyVoiceVersion(version)
@@ -127,8 +176,10 @@ class CosyVoiceTTS:
             model=resolved_model,
             load_kwargs=load_kwargs,
             runtime_kwargs=dict(runtime_kwargs or {}),
+            inference=inference,
             max_concurrency=max_concurrency,
         )
+        resolved_load_kwargs = _load_kwargs(config.resolved_inference(), load_kwargs)
         try:
             from cosyvoice.cli.cosyvoice import AutoModel  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
@@ -137,11 +188,11 @@ class CosyVoiceTTS:
                 "and its Matcha-TTS submodule. Install the pinned CosyVoice checkout "
                 "before loading this backend."
             ) from exc
-        if load_kwargs.get("load_vllm") is True:
+        if config.resolved_inference().transformer_engine is TTSTransformerEngine.VLLM:
             _register_vllm_model()
         try:
             with _device_context(device):
-                loaded = AutoModel(model_dir=resolved_model, **load_kwargs)
+                loaded = AutoModel(model_dir=resolved_model, **resolved_load_kwargs)
         except Exception as exc:
             raise RuntimeError(
                 f"failed to load CosyVoice {resolved_version.value} model {resolved_model!r}"
@@ -164,6 +215,7 @@ class CosyVoiceTTS:
         return TTSCapabilities(
             voice_modes=frozenset(modes),
             speaker_ids=speakers or None,
+            engines=ENGINE_CAPABILITIES,
         )
 
     def config_hash(self) -> str:
@@ -238,11 +290,12 @@ class CosyVoiceTTS:
             }
             for index, current_text in enumerate(texts)
         ]
-        if len(requests) == 1 or self.config.max_concurrency == 1:
+        max_concurrency = self.config.resolved_inference().max_concurrency
+        if len(requests) == 1 or max_concurrency == 1:
             outputs = [self._synthesize_one(**request, runtime=runtime) for request in requests]
         else:
             with ThreadPoolExecutor(
-                max_workers=min(len(requests), self.config.max_concurrency),
+                max_workers=min(len(requests), max_concurrency),
                 thread_name_prefix="cosyvoice",
             ) as executor:
                 futures = [
@@ -327,6 +380,53 @@ class CosyVoiceTTS:
 
 def _default_model(version: CosyVoiceVersion) -> str:
     return DEFAULT_MODEL_V2 if version is CosyVoiceVersion.V2 else DEFAULT_MODEL_V3
+
+
+def _legacy_inference(
+    load_kwargs: Mapping[str, object],
+    max_concurrency: int | None,
+) -> TTSInferenceConfig:
+    load_vllm = load_kwargs.get("load_vllm", False)
+    load_trt = load_kwargs.get("load_trt", False)
+    if not isinstance(load_vllm, bool):
+        raise TypeError("load_vllm must be a bool when set.")
+    if not isinstance(load_trt, bool):
+        raise TypeError("load_trt must be a bool when set.")
+    return TTSInferenceConfig(
+        transformer_engine=(
+            TTSTransformerEngine.VLLM if load_vllm else TTSTransformerEngine.TORCH
+        ),
+        acoustic_engine=(
+            TTSAcousticEngine.TENSORRT if load_trt else TTSAcousticEngine.TORCH
+        ),
+        max_concurrency=1 if max_concurrency is None else max_concurrency,
+    )
+
+
+def _validate_legacy_engine_flags(
+    load_kwargs: Mapping[str, object],
+    inference: TTSInferenceConfig,
+) -> None:
+    expected = {
+        "load_vllm": inference.transformer_engine is TTSTransformerEngine.VLLM,
+        "load_trt": inference.acoustic_engine is TTSAcousticEngine.TENSORRT,
+    }
+    for key, value in expected.items():
+        if key in load_kwargs and load_kwargs[key] is not value:
+            raise ValueError(f"CosyVoice {key} conflicts with inference engine selection.")
+
+
+def _load_kwargs(
+    inference: TTSInferenceConfig,
+    load_kwargs: Mapping[str, object],
+) -> dict[str, object]:
+    result = dict(load_kwargs)
+    if inference.transformer_engine is TTSTransformerEngine.VLLM:
+        result["load_vllm"] = True
+    if inference.acoustic_engine is TTSAcousticEngine.TENSORRT:
+        result["load_trt"] = True
+        result["trt_concurrent"] = inference.max_concurrency
+    return result
 
 
 @cache

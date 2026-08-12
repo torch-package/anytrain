@@ -40,6 +40,23 @@
 - `framework.gan` 后续根据真实复用需求补 manual optimization helper。
 - framework 不替用户写完整 `pl_module`，只提供训练逻辑可复用组件。
 
+## TTS vLLM-Omni GPU smoke
+
+- id: anytrain-tts-vllm-omni-smoke
+- priority: P1
+- rationale: Qwen3-TTS 与 MOSS-TTS 的 vLLM-Omni 路径已完成 CPU 协议测试，但真实 GPU 加载、音频质量与吞吐仍决定是否能作为生产物化后端。
+- state: probe
+- entry: unknown
+- num_gpus: 1
+- gpu: 1xA100-40GB
+- min_vram_gb_per_gpu: unknown
+- preferred_hosts: 121
+- estimated_hours: 2
+- monitor: 命令日志 + nvidia-smi；记录加载显存、TTFA、RTF、batch 吞吐和生成音频定位
+- ready_gate: 增加 location-neutral smoke 入口；共享 py312 CUDA 环境安装匹配的 vllm-omni 0.26.x；模型与短参考音频可用
+- output_root: $DYNAMIC_HOME/debug/anytrain/tts-vllm-omni
+- task: 分别运行 Qwen3-TTS CustomVoice 和 MOSS-TTS v1.5 单条/批量 smoke；MOSS 重点确认上游 issue #4643 是否仍影响 v1.5；测出显存后更新任务卡并决定 production readiness。
+
 ## Descript Audio Codec
 
 - 在预置官方 checkpoint 的环境里用真实短音频跑一次 encode/decode smoke，确认

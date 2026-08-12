@@ -38,7 +38,10 @@ class QwenTTSAdapterTest(unittest.TestCase):
 
         self.assertEqual(tts.config.model, "fake-qwen")
         self.assertEqual(tts.config.runtime_kwargs, {"top_k": 5})
-        self.assertEqual(FakeQwen3TTSModel.loaded.load_args, ("fake-qwen", {"device": "cpu"}))
+        self.assertEqual(
+            FakeQwen3TTSModel.loaded.load_args,
+            ("fake-qwen", {"device": "cpu", "torch_dtype": torch.bfloat16}),
+        )
 
     def test_synthesize_custom_voice_accepts_per_sample_speakers(self):
         with _fake_qwen_tts():

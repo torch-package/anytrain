@@ -76,18 +76,120 @@ class TTSVoiceMode(StrEnum):
     REFERENCE_AUDIO = auto()
 
 
+class TTSTransformerEngine(StrEnum):
+    """Transformer execution engines used by TTS backends."""
+
+    TORCH = auto()
+    VLLM = auto()
+    VLLM_OMNI = auto()
+
+
+class TTSAcousticEngine(StrEnum):
+    """Acoustic/decoder execution engines used after token generation."""
+
+    TORCH = auto()
+    TENSORRT = auto()
+
+
+@dataclass(frozen=True)
+class TTSInferenceConfig:
+    """Engine selection plus execution-only request concurrency."""
+
+    transformer_engine: TTSTransformerEngine = TTSTransformerEngine.TORCH
+    acoustic_engine: TTSAcousticEngine = TTSAcousticEngine.TORCH
+    max_concurrency: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.transformer_engine, TTSTransformerEngine):
+            raise TypeError("transformer_engine must be a TTSTransformerEngine.")
+        if not isinstance(self.acoustic_engine, TTSAcousticEngine):
+            raise TypeError("acoustic_engine must be a TTSAcousticEngine.")
+        positive_int(self.max_concurrency, "max_concurrency")
+
+    def hash_dict(self) -> dict[str, str]:
+        """Return semantic engine identity, excluding request concurrency."""
+
+        return {
+            "transformer_engine": self.transformer_engine.value,
+            "acoustic_engine": self.acoustic_engine.value,
+        }
+
+
+@dataclass(frozen=True)
+class TTSEngineCapabilities:
+    """Engine combinations implemented by one backend family."""
+
+    transformer_engines: frozenset[TTSTransformerEngine]
+    acoustic_engines: frozenset[TTSAcousticEngine]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.transformer_engines, frozenset) or any(
+            not isinstance(engine, TTSTransformerEngine)
+            for engine in self.transformer_engines
+        ):
+            raise TypeError(
+                "transformer_engines must be a frozenset of TTSTransformerEngine values."
+            )
+        if not self.transformer_engines:
+            raise ValueError("transformer_engines must not be empty.")
+        if not isinstance(self.acoustic_engines, frozenset) or any(
+            not isinstance(engine, TTSAcousticEngine) for engine in self.acoustic_engines
+        ):
+            raise TypeError(
+                "acoustic_engines must be a frozenset of TTSAcousticEngine values."
+            )
+        if not self.acoustic_engines:
+            raise ValueError("acoustic_engines must not be empty.")
+
+    def validate(self, config: TTSInferenceConfig, backend: str) -> None:
+        """Reject an engine combination the backend does not implement."""
+
+        if not isinstance(config, TTSInferenceConfig):
+            raise TypeError("inference must be a TTSInferenceConfig.")
+        if not isinstance(backend, str) or not backend:
+            raise ValueError("backend must be a non-empty string.")
+        if config.transformer_engine not in self.transformer_engines:
+            supported = ", ".join(sorted(engine.value for engine in self.transformer_engines))
+            raise ValueError(
+                f"{backend} does not support transformer engine "
+                f"{config.transformer_engine.value!r}; supported engines: {supported}."
+            )
+        if config.acoustic_engine not in self.acoustic_engines:
+            supported = ", ".join(sorted(engine.value for engine in self.acoustic_engines))
+            raise ValueError(
+                f"{backend} does not support acoustic engine "
+                f"{config.acoustic_engine.value!r}; supported engines: {supported}."
+            )
+        if (
+            config.max_concurrency > 1
+            and config.transformer_engine is TTSTransformerEngine.TORCH
+        ):
+            raise ValueError(
+                f"{backend} max_concurrency greater than 1 requires a vLLM engine."
+            )
+
+
+TORCH_TTS_ENGINES = TTSEngineCapabilities(
+    transformer_engines=frozenset((TTSTransformerEngine.TORCH,)),
+    acoustic_engines=frozenset((TTSAcousticEngine.TORCH,)),
+)
+
+
 @dataclass(frozen=True)
 class TTSCapabilities:
-    """Static voice-conditioning capabilities exposed by one loaded backend."""
+    """Static voice-conditioning and engine capabilities of one backend."""
 
     voice_modes: frozenset[TTSVoiceMode]
     speaker_ids: tuple[str, ...] | None = None
+    engines: TTSEngineCapabilities = TORCH_TTS_ENGINES
 
     def __post_init__(self) -> None:
         if not isinstance(self.voice_modes, frozenset) or any(
             not isinstance(mode, TTSVoiceMode) for mode in self.voice_modes
         ):
             raise TypeError("voice_modes must be a frozenset of TTSVoiceMode values.")
+        if not isinstance(self.engines, TTSEngineCapabilities):
+            raise TypeError("engines must be TTSEngineCapabilities.")
         if self.speaker_ids is None:
             return
         if TTSVoiceMode.SPEAKER_ID not in self.voice_modes:

@@ -20,22 +20,27 @@ from anytrain.tts import (
     AudioReference,
     PathAudioReference,
     TTSCapabilities,
+    TTSInferenceConfig,
     TTSOptions,
     TTSOutput,
+    TTSTransformerEngine,
     TTSVoiceMode,
     validate_text,
 )
 from anytrain.tts._common import config_hash
+from anytrain.tts._omni import OmniEngine, generate_audio, load_omni
 
 from ._config import (
     DEFAULT_CODEC_MODEL,
     DEFAULT_MODEL,
     DEFAULT_SAMPLE_RATE,
+    ENGINE_CAPABILITIES,
     MossLoadKwargs,
     MossRuntimeKwargs,
     MossTTSConfig,
 )
-from ._loading import load_pretrained_pair
+from ._loading import load_pretrained_pair, load_pretrained_processor
+from ._omni import build_prompts
 from ._output import processor_outputs
 from ._runtime import (
     audio_references,
@@ -60,6 +65,7 @@ class MossTTS:
     name: str = "moss-tts-v1.5"
 
     def __post_init__(self) -> None:
+        ENGINE_CAPABILITIES.validate(self.config.inference, "MOSS-TTS v1.5")
         self.device = torch.device(self.device)
         if isinstance(self.model, nn.Module) and "device_map" not in self.config.load_kwargs:
             self.model = self.model.to(self.device)
@@ -78,6 +84,8 @@ class MossTTS:
         language: str | None = None,
         revision: str | None = None,
         trust_remote_code: bool = False,
+        inference: TTSInferenceConfig | None = None,
+        omni_kwargs: Mapping[str, object] | None = None,
         runtime_kwargs: Mapping[str, object] | None = None,
         **load_kwargs: Unpack[MossLoadKwargs],
     ) -> MossTTS:
@@ -85,17 +93,65 @@ class MossTTS:
             raise TypeError("local_files_only must be a bool.")
         if not isinstance(trust_remote_code, bool):
             raise TypeError("trust_remote_code must be a bool.")
+        selected = inference or TTSInferenceConfig()
         runtime = dict(runtime_kwargs or {})
+        engine_kwargs: dict[str, object] | None = None
+        config_load_kwargs: Mapping[str, object] = load_kwargs
+        if selected.transformer_engine is TTSTransformerEngine.VLLM_OMNI:
+            if load_kwargs:
+                raise ValueError(
+                    "MOSS-TTS PyTorch load kwargs cannot be used with vLLM-Omni; "
+                    "pass engine options through omni_kwargs."
+                )
+            if device is not None:
+                raise ValueError(
+                    "MOSS-TTS vLLM-Omni placement belongs in omni_kwargs, not device."
+                )
+            engine_kwargs = dict(omni_kwargs or {})
+            if revision is not None:
+                configured_revision = engine_kwargs.get("revision")
+                if configured_revision is not None and configured_revision != revision:
+                    raise ValueError(
+                        "MOSS-TTS revision conflicts with omni_kwargs['revision']."
+                    )
+                engine_kwargs["revision"] = revision
+            engine_kwargs.setdefault("deploy_config", "moss_tts")
+            config_load_kwargs = engine_kwargs
+        elif omni_kwargs:
+            raise ValueError("omni_kwargs require transformer_engine='vllm_omni'.")
         config = MossTTSConfig(
             model=str(model),
             codec_model=str(codec_model),
             sample_rate=sample_rate,
             language=language,
             revision=revision,
-            trust_remote_code=trust_remote_code,
-            load_kwargs=load_kwargs,
+            trust_remote_code=(
+                True
+                if selected.transformer_engine is TTSTransformerEngine.VLLM_OMNI
+                else trust_remote_code
+            ),
+            inference=selected,
+            load_kwargs=config_load_kwargs,
             runtime_kwargs=runtime,
         )
+        if selected.transformer_engine is TTSTransformerEngine.VLLM_OMNI:
+            assert engine_kwargs is not None
+            loaded = load_omni(str(model), engine_kwargs)
+            processor = load_pretrained_processor(
+                model,
+                cache_dir=cache_dir,
+                codec_model=codec_model,
+                local_files_only=local_files_only,
+                revision=revision,
+                trust_remote_code=True,
+            )
+            return cls(
+                model=loaded,
+                processor=processor,
+                config=config,
+                device=torch.device("cpu"),
+                model_loaded_from="vllm_omni",
+            )
         loaded, processor = load_pretrained_pair(
             model,
             cache_dir=cache_dir,
@@ -124,6 +180,7 @@ class MossTTS:
     def capabilities(self) -> TTSCapabilities:
         return TTSCapabilities(
             voice_modes=frozenset((TTSVoiceMode.REFERENCE_AUDIO,)),
+            engines=ENGINE_CAPABILITIES,
         )
 
     @overload
@@ -248,6 +305,17 @@ class MossTTS:
         options: TTSOptions,
         references: Sequence[AudioReference | None],
     ) -> object:
+        if self.config.inference.transformer_engine is TTSTransformerEngine.VLLM_OMNI:
+            prompts = build_prompts(self.processor, texts, options, references)
+            return generate_audio(
+                cast(OmniEngine, self.model),
+                prompts,
+                options=options,
+                sample_rate=self.sample_rate,
+                backend=self.name,
+                max_concurrency=self.config.inference.max_concurrency,
+                prompt_extra_keys=frozenset(("tokens",)),
+            )
         return generate_for_texts(
             model=self.model,
             processor=self.processor,

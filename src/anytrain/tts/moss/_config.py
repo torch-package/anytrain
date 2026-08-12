@@ -4,7 +4,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-from anytrain.tts import TTSOptions
+from anytrain.tts import (
+    TTSAcousticEngine,
+    TTSEngineCapabilities,
+    TTSInferenceConfig,
+    TTSOptions,
+    TTSTransformerEngine,
+)
 from anytrain.tts._common import (
     hashable_mapping,
     optional_non_empty_string,
@@ -15,6 +21,27 @@ from anytrain.tts._common import (
 DEFAULT_MODEL = "OpenMOSS-Team/MOSS-TTS-v1.5"
 DEFAULT_CODEC_MODEL = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 DEFAULT_SAMPLE_RATE = 24000
+ENGINE_CAPABILITIES = TTSEngineCapabilities(
+    transformer_engines=frozenset(
+        (TTSTransformerEngine.TORCH, TTSTransformerEngine.VLLM_OMNI)
+    ),
+    acoustic_engines=frozenset((TTSAcousticEngine.TORCH,)),
+)
+_PLACEMENT_LOAD_KWARGS = frozenset(
+    (
+        "batch_timeout",
+        "cache_dir",
+        "device_map",
+        "devices",
+        "gpu_memory_utilization",
+        "init_timeout",
+        "log_stats",
+        "max_num_batched_tokens",
+        "max_num_seqs",
+        "stage_init_timeout",
+        "local_files_only",
+    )
+)
 
 
 class MossLoadKwargs(TypedDict, total=False):
@@ -42,6 +69,7 @@ class MossTTSConfig:
     language: str | None = None
     revision: str | None = None
     trust_remote_code: bool = False
+    inference: TTSInferenceConfig = field(default_factory=TTSInferenceConfig)
     load_kwargs: Mapping[str, object] = field(default_factory=dict)
     runtime_kwargs: Mapping[str, object] = field(default_factory=dict)
 
@@ -53,6 +81,9 @@ class MossTTSConfig:
         optional_non_empty_string(self.revision, "revision")
         if not isinstance(self.trust_remote_code, bool):
             raise TypeError("trust_remote_code must be a bool.")
+        if not isinstance(self.inference, TTSInferenceConfig):
+            raise TypeError("inference must be a TTSInferenceConfig.")
+        ENGINE_CAPABILITIES.validate(self.inference, "MOSS-TTS v1.5")
         validate_mapping(self.load_kwargs, "load_kwargs")
         validate_mapping(self.runtime_kwargs, "runtime_kwargs")
 
@@ -64,6 +95,11 @@ class MossTTSConfig:
         )
 
     def hash_dict(self) -> dict[str, object]:
+        semantic_load_kwargs = {
+            key: value
+            for key, value in self.load_kwargs.items()
+            if key not in _PLACEMENT_LOAD_KWARGS
+        }
         return {
             "model": self.model,
             "codec_model": self.codec_model,
@@ -71,6 +107,7 @@ class MossTTSConfig:
             "language": self.language,
             "revision": self.revision,
             "trust_remote_code": self.trust_remote_code,
-            "load_kwargs": hashable_mapping(self.load_kwargs),
+            "inference": self.inference.hash_dict(),
+            "load_kwargs": hashable_mapping(semantic_load_kwargs),
             "runtime_kwargs": hashable_mapping(self.runtime_kwargs),
         }

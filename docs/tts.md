@@ -4,6 +4,41 @@
 does not own datasets, waveform caches, manifest files, training steps, or a
 default CLI.
 
+## Inference engines
+
+Engine selection is an AnyTrain model-runtime concern. `TTSInferenceConfig`
+separates the autoregressive transformer engine from the downstream acoustic
+engine because TensorRT is not a universal TTS capability:
+
+| Backend | Transformer engines | Acoustic engines |
+| --- | --- | --- |
+| CosyVoice 2/3 | `torch`, embedded `vllm` | `torch`, `tensorrt` |
+| Qwen3-TTS CustomVoice | `torch`, `vllm_omni` | `torch` |
+| MOSS-TTS v1.5 | `torch`, `vllm_omni` | `torch` |
+
+Unsupported combinations fail while building the configuration. `vllm` and
+`vllm_omni` are distinct values: CosyVoice owns an embedded upstream vLLM
+integration, while Qwen3-TTS and MOSS-TTS use the multi-stage vLLM-Omni
+pipeline. AnyTrain never interprets either value as a boolean request to keep
+running the PyTorch backend.
+
+`max_concurrency` bounds requests submitted together and CosyVoice's upstream
+TRT pool. It is an execution setting and is excluded from `config_hash`;
+engine selection remains in the hash because different engines may change
+numerical output. Dataset batching, OOM splitting, materialized stores and
+worker scheduling remain in AnyDataset. Model ids, revisions, prompt choices
+and production profiles remain in workspace or the calling project.
+
+Install the optional vLLM-Omni runtime in a dedicated CUDA environment:
+
+```bash
+python -m pip install 'anytrain[tts-vllm-omni]'
+```
+
+The extra is pinned to one vLLM-Omni release line because its TTS request and
+pipeline contracts evolve with vLLM. Qwen3-TTS and MOSS-TTS keep their
+processor dependencies in their backend extras.
+
 Install the MOSS backend dependencies from the anytrain repository root:
 
 ```bash
@@ -39,11 +74,34 @@ from anytrain.tts.moss import MossTTS
 tts = MossTTS.from_pretrained(
     "OpenMOSS-Team/MOSS-TTS-v1.5",
     trust_remote_code=True,
-    torch_dtype="auto",
+    torch_dtype="bfloat16",
 )
 audio = tts.synthesize("hello")
 batch_audio = tts.synthesize(["hello", "你好"])
 ```
+
+MOSS vLLM-Omni uses the same public facade and the upstream processor to build
+the aligned text/reference-code prompt:
+
+```python
+from anytrain.tts import TTSInferenceConfig, TTSTransformerEngine
+
+tts = MossTTS.from_pretrained(
+    "OpenMOSS-Team/MOSS-TTS-v1.5",
+    trust_remote_code=True,
+    inference=TTSInferenceConfig(
+        transformer_engine=TTSTransformerEngine.VLLM_OMNI,
+        max_concurrency=4,
+    ),
+    omni_kwargs={"deploy_config": "moss_tts"},
+)
+```
+
+This path is implemented against vLLM-Omni's native MOSS pipeline, but MOSS
+v1.5 still requires a real GPU smoke before production use; the matching
+upstream end-to-end test is currently skipped for vLLM-Omni issue #4643.
+Realtime MOSS is a distinct checkpoint/pipeline capability and is not exposed
+as a TensorRT or generic `rt=True` switch on the v1.5 adapter.
 
 `synthesize()` is the high-level `text -> waveform` entry point.
 `TTSOutput.waveform` is a float tensor with shape `[channels, time]`.
@@ -122,7 +180,7 @@ of prompt audio:
 from anytrain.tts import TTSOptions
 from anytrain.tts.qwen import QwenCustomVoiceTTS
 
-tts = QwenCustomVoiceTTS.from_pretrained(device="cuda")
+tts = QwenCustomVoiceTTS.from_pretrained(device="cuda", torch_dtype="bfloat16")
 audio = tts.synthesize(
     "hello",
     TTSOptions(speaker="Vivian", language="English"),
@@ -133,6 +191,26 @@ batch_audio = tts.synthesize_custom_voice(
     languages=["English", "Chinese"],
 )
 ```
+
+The accelerated path constructs the exact vLLM-Omni CustomVoice placeholder
+length instead of forwarding a `load_vllm` flag to the Hugging Face wrapper:
+
+```python
+from anytrain.tts import TTSInferenceConfig, TTSTransformerEngine
+
+tts = QwenCustomVoiceTTS.from_pretrained(
+    speaker="Vivian",
+    inference=TTSInferenceConfig(
+        transformer_engine=TTSTransformerEngine.VLLM_OMNI,
+        max_concurrency=8,
+    ),
+    omni_kwargs={"stage_init_timeout": 600},
+)
+```
+
+Qwen inference remains `bfloat16` by project policy. PyTorch-only load knobs
+such as `torch_dtype` and `attn_implementation` are rejected on this path;
+vLLM-Omni engine/deploy knobs belong in `omni_kwargs`.
 
 Cost-aware planning can load only the matching Hugging Face processor and count
 the exact CustomVoice assistant-prompt tokens used by the upstream inference
@@ -165,14 +243,22 @@ prompt text selects cross-lingual synthesis; `instruction` selects instruct2.
 SFT checkpoints can instead use `speaker` without a reference:
 
 ```python
-from anytrain.tts import TTSOptions
+from anytrain.tts import (
+    TTSAcousticEngine,
+    TTSInferenceConfig,
+    TTSOptions,
+    TTSTransformerEngine,
+)
 from anytrain.tts.cosyvoice import CosyVoiceTTS
 
 tts = CosyVoiceTTS.from_pretrained(
     version="v3",
     device="cuda:0",
-    load_vllm=True,
-    max_concurrency=4,
+    inference=TTSInferenceConfig(
+        transformer_engine=TTSTransformerEngine.VLLM,
+        acoustic_engine=TTSAcousticEngine.TENSORRT,
+        max_concurrency=4,
+    ),
     runtime_kwargs={"speed": 1.0, "text_frontend": True},
 )
 audio = tts.synthesize(
@@ -202,7 +288,10 @@ than an end-to-end `list[str]` API. With `load_vllm=True` and
 the upstream vLLM request queue can dynamically batch the LLM stage; results are
 returned in input order. Flow and HiFT decoding remain per-request, so this is
 not full-pipeline native batching. `max_concurrency` is an execution setting and
-does not change `config_hash`; values greater than one require `load_vllm=True`.
+does not change `config_hash`; values greater than one require a vLLM engine.
+The legacy `load_vllm`, `load_trt`, `trt_concurrent` and `max_concurrency`
+arguments remain accepted for existing callers, but conflicting legacy and
+typed engine selections fail explicitly.
 AnyTrain publishes the CosyVoice model registration through the
 `vllm.general_plugins` entry-point group so vLLM's spawned engine-core process
 loads the same bias-aware model class as the client. Install or refresh the
@@ -253,6 +342,6 @@ batching, voice conditioning, and output protocols differ materially.
 
 ```bash
 python -m pytest \
-  tests/test_tts_moss.py tests/test_qwen_tts.py \
+  tests/test_tts_engines.py tests/test_tts_moss.py tests/test_qwen_tts.py \
   tests/test_cosyvoice_tts.py tests/test_spark_tts.py
 ```

@@ -3,6 +3,7 @@
 from .tts import (
     DEFAULT_MODEL_V2,
     DEFAULT_MODEL_V3,
+    ENGINE_CAPABILITIES,
     CosyVoiceLoadKwargs,
     CosyVoiceTTS,
     CosyVoiceTTSConfig,
@@ -12,6 +13,7 @@ from .tts import (
 __all__ = [
     "DEFAULT_MODEL_V2",
     "DEFAULT_MODEL_V3",
+    "ENGINE_CAPABILITIES",
     "CosyVoiceLoadKwargs",
     "CosyVoiceTTS",
     "CosyVoiceTTSConfig",

@@ -44,6 +44,40 @@ def load_pretrained_pair(
             f"failed to load Hugging Face MOSS-TTS v1.5 checkpoint {model!s}"
         ) from exc
 
+    processor = load_pretrained_processor(
+        model,
+        cache_dir=cache_dir,
+        codec_model=codec_model,
+        local_files_only=local_files_only,
+        revision=revision,
+        trust_remote_code=trust_remote_code,
+        auto_processor_cls=auto_processor_cls,
+    )
+
+    set_attention_implementation(loaded, load_kwargs.get("attn_implementation", "sdpa"))
+    return loaded, cast(Processor, processor)
+
+
+def load_pretrained_processor(
+    model: str | Path,
+    *,
+    cache_dir: str | Path | None,
+    codec_model: str | Path,
+    local_files_only: bool,
+    revision: str | None,
+    trust_remote_code: bool,
+    auto_processor_cls: Any | None = None,
+) -> Processor:
+    """Load only the processor needed to construct MOSS prompts."""
+
+    if auto_processor_cls is None:
+        try:
+            auto_processor_cls = load_transformers_auto_processor_class()
+        except ImportError as exc:
+            raise ImportError(
+                "`anytrain.tts.moss` requires `transformers` to load the "
+                "MOSS-TTS processor."
+            ) from exc
     try:
         processor = auto_processor_cls.from_pretrained(
             pretrained_source(
@@ -64,9 +98,7 @@ def load_pretrained_pair(
         raise RuntimeError(
             f"failed to load Hugging Face MOSS-TTS v1.5 processor {model!s}"
         ) from exc
-
-    set_attention_implementation(loaded, load_kwargs.get("attn_implementation", "sdpa"))
-    return loaded, cast(Processor, processor)
+    return cast(Processor, processor)
 
 
 def pretrained_kwargs(
