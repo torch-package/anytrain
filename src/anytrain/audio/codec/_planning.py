@@ -3,26 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Protocol
 
+from .planning import AudioPlanningEstimator
 from .spec import AudioBackendIdentity
 
 PLANNING_IDENTITY_VERSION = "audio-token-planning-v1"
-
-
-class AudioPlanningEstimator(Protocol):
-    """Model-free estimate of tokenizer units from source audio frames."""
-
-    @property
-    def backend_identity(self) -> AudioBackendIdentity: ...
-
-    @property
-    def version(self) -> str: ...
-
-    @property
-    def identity(self) -> str: ...
-
-    def estimate(self, source_frames: int, source_rate: int) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -226,4 +211,4 @@ def _non_empty_string(value: object, *, name: str) -> None:
         raise ValueError(f"{name} must not be empty.")
 
 
-__all__ = ["AudioPlanningEstimator"]
+__all__ = ["chunked_pooled_planning_estimator", "convolution_planning_estimator"]

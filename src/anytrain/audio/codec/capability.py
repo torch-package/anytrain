@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from math import prod
+from numbers import Real
 from typing import Protocol, cast, runtime_checkable
 
 from torch import Tensor
@@ -88,21 +89,34 @@ def fsq_levels(codec: object) -> tuple[tuple[int, ...], ...] | None:
         return None
     if semantic_feature_dim(codec) != 1 or not isinstance(codec, _FsqLevelsCapability):
         return None
-    levels = tuple(tuple(int(level) for level in stage) for stage in codec.fsq_levels)
-    if not levels or any(not stage for stage in levels):
-        raise ValueError("fsq_levels must contain non-empty stages.")
-    if any(level < 2 for stage in levels for level in stage):
-        raise ValueError("FSQ levels must be at least 2.")
+    raw = codec.fsq_levels
+    if not isinstance(raw, tuple) or not raw:
+        raise TypeError("fsq_levels must be a non-empty tuple of stages.")
+    levels: list[tuple[int, ...]] = []
+    for stage_index, stage in enumerate(raw):
+        if not isinstance(stage, tuple) or not stage:
+            raise TypeError(f"fsq_levels[{stage_index}] must be a non-empty tuple.")
+        resolved_stage: list[int] = []
+        for level_index, level in enumerate(stage):
+            if isinstance(level, bool) or not isinstance(level, int):
+                raise TypeError(
+                    f"fsq_levels[{stage_index}][{level_index}] must be an integer."
+                )
+            if level < 2:
+                raise ValueError("FSQ levels must be at least 2.")
+            resolved_stage.append(level)
+        levels.append(tuple(resolved_stage))
+    resolved_levels = tuple(levels)
     if isinstance(codec, _CodebookSizesCapability):
         sizes = frame_codebook_sizes(codec)
-        if len(sizes) != len(levels):
+        if len(sizes) != len(resolved_levels):
             raise ValueError("fsq_levels must align with codebook sizes.")
-        for size, stage in zip(sizes, levels, strict=True):
+        for size, stage in zip(sizes, resolved_levels, strict=True):
             if prod(stage) != size:
                 raise ValueError(
                     f"FSQ levels {stage} must multiply to codebook size {size}."
                 )
-    return levels
+    return resolved_levels
 
 
 def fsq_level_values(
@@ -114,14 +128,22 @@ def fsq_level_values(
     raw = codec.fsq_level_values
     if raw is None:
         return None
+    if not isinstance(raw, tuple):
+        raise TypeError("fsq_level_values must be a tuple of stages.")
     if len(raw) != len(levels):
         raise ValueError("fsq_level_values must align with FSQ stages.")
     result: list[tuple[tuple[float, ...], ...]] = []
     for stage_levels, stage_values in zip(levels, raw, strict=True):
+        if not isinstance(stage_values, tuple):
+            raise TypeError("each fsq_level_values stage must be a tuple.")
         if len(stage_values) != len(stage_levels):
             raise ValueError("fsq_level_values must align with FSQ digits.")
         digits: list[tuple[float, ...]] = []
         for level, values in zip(stage_levels, stage_values, strict=True):
+            if not isinstance(values, tuple):
+                raise TypeError("each FSQ digit value set must be a tuple.")
+            if any(isinstance(value, bool) or not isinstance(value, Real) for value in values):
+                raise TypeError("FSQ digit values must be real numbers.")
             digit = tuple(float(value) for value in values)
             if len(digit) != level:
                 raise ValueError("FSQ digit values must match their level count.")

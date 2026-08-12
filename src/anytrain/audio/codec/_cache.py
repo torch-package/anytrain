@@ -38,6 +38,9 @@ def hf_file(
     force_download: bool,
     allow_unpinned_revision: bool = False,
 ) -> Path:
+    _bool(local_files_only, name="local_files_only")
+    _bool(force_download, name="force_download")
+    _bool(allow_unpinned_revision, name="allow_unpinned_revision")
     if target.exists() and not force_download:
         return target
 
@@ -76,6 +79,9 @@ def hf_snapshot(
     force_download: bool,
     allow_unpinned_revision: bool = False,
 ) -> Path:
+    _bool(local_files_only, name="local_files_only")
+    _bool(force_download, name="force_download")
+    _bool(allow_unpinned_revision, name="allow_unpinned_revision")
     revision_kwargs = _revision_kwargs(
         component,
         revision=revision,
@@ -126,3 +132,8 @@ def _revision_kwargs(
         "Pass revision=<commit-sha> or set allow_unpinned_revision=True for an "
         "explicitly unsafe, non-reproducible download."
     )
+
+
+def _bool(value: object, *, name: str) -> None:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool.")

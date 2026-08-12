@@ -105,6 +105,11 @@ from anytrain.audio.codec import (
 representation adapter 返回方向对象；同一 preset、identity 和 device 可以共享内部 backend
 实例。共享是 registry 的实现细节，调用方只依赖方向 ABC。
 
+`spec.py` 拥有公开静态 identity/code inventory，`planning.py` 拥有公开 model-free estimator
+protocol，`registry.py` 只负责解析 preset、方向能力和按 identity/device 共享 backend。每个 concrete
+backend 的 `_registry.py` 只声明一个 `CodecEntry`；entry 在注册时校验 name、capability set、spec、
+identity 与 factory 的一致性，运行期查询则要求非空字符串 preset。
+
 GLM-4 只声明 tokenizer 方向；LongCat、BiCodec、DAC、Stable Codec 和 UniCodec 声明已实现的
 方向。具体 backend 的原生 `encode()`、`decode()` 或 feature helper 只服务 preset adapter，
 不构成公共 aggregate codec 协议。
@@ -126,3 +131,26 @@ convolution/pooling 和官方 context chunk 边界计算。该值只用于规划
 
 `anytrain.audio.bpe._frame.FrameCodec` 是 BPE 序列化使用的本地 frame 值对象，与神经网络
 audio codec API 无关。
+
+## Cache 与边界
+
+`_cache.py` 集中拥有 Hugging Face cache 路径、pinned revision 和 lazy optional import。远程下载
+默认必须带固定 revision；`local_files_only`、`force_download` 与显式允许 unpinned revision 的开关
+都严格要求 bool。backend capability adapter 同样严格读取 tuple/integer/finite-real 元数据，不把
+bool、float 或字符串静默转换为 FSQ level/codebook 契约。
+
+concrete backend 文件保留各自完整的 upstream adapter 与数值状态机。它们没有按长度机械拆分，
+因为模型加载、原生 tensor layout、codebook feature 转换和 decode 校验共同依赖同一个 upstream
+协议；registry、cache、directional adapter 才是跨 backend 共享的边界。
+
+## 验收
+
+```bash
+python -m pytest \
+  tests/test_codec_cache.py tests/test_codec_protocol.py \
+  tests/test_bicodec_assets.py tests/test_bicodec_codec.py \
+  tests/test_dac_assets.py tests/test_dac_codec.py \
+  tests/test_glm4_codec.py tests/test_longcat_assets.py \
+  tests/test_longcat_codec.py tests/test_stable_codec.py \
+  tests/test_unicodec_assets.py tests/test_unicodec_codec.py
+```

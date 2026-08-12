@@ -74,6 +74,31 @@ class CodecCacheTest(unittest.TestCase):
                     force_download=True,
                 )
 
+    def test_download_controls_require_bool_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "model.bin"
+
+            for name, value in (
+                ("local_files_only", 0),
+                ("force_download", 1),
+                ("allow_unpinned_revision", "yes"),
+            ):
+                kwargs = {
+                    "component": "test component",
+                    "repo_id": "org/repo",
+                    "filename": "model.bin",
+                    "cache_dir": root,
+                    "target": target,
+                    "revision": "abc123",
+                    "local_files_only": False,
+                    "force_download": False,
+                    "allow_unpinned_revision": False,
+                }
+                kwargs[name] = value
+                with self.subTest(name=name), self.assertRaisesRegex(TypeError, name):
+                    hf_file(**kwargs)
+
     def test_hf_file_passes_revision_to_download(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

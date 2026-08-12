@@ -8,12 +8,12 @@ import torch
 from anytrain.audio._detokenizer import AudioDetokenizer
 from anytrain.audio._tokenizer import AudioTokenizer
 
-from ._planning import AudioPlanningEstimator
 from ._registry import CodecEntry
 from .bicodec._registry import ENTRY as BICODEC_ENTRY
 from .dac._registry import ENTRY as DAC_ENTRY
 from .glm4._registry import ENTRY as GLM4_ENTRY
 from .longcat._registry import ENTRY as LONGCAT_ENTRY
+from .planning import AudioPlanningEstimator
 from .protocol import AudioCapability, CodecBackend
 from .spec import AudioBackendIdentity, AudioCodeSpec
 from .stable_codec._registry import ENTRY as STABLE_CODEC_ENTRY
@@ -57,6 +57,7 @@ def audio_planning_estimator(name: str) -> AudioPlanningEstimator:
 
 
 def can_load_audio_tokenizer(name: str) -> bool:
+    _validate_name(name)
     entry = _ENTRIES.get(name)
     return bool(
         entry is not None
@@ -67,6 +68,7 @@ def can_load_audio_tokenizer(name: str) -> bool:
 
 
 def can_load_audio_detokenizer(name: str) -> bool:
+    _validate_name(name)
     entry = _ENTRIES.get(name)
     return bool(
         entry is not None
@@ -82,11 +84,19 @@ def clear_audio_backend_cache() -> None:
 
 
 def _entry(name: str) -> CodecEntry:
+    _validate_name(name)
     try:
         return _ENTRIES[name]
     except KeyError as exc:
         available = ", ".join(sorted(_ENTRIES))
         raise ValueError(f"Unknown codec {name!r}. Available codecs: {available}.") from exc
+
+
+def _validate_name(name: object) -> None:
+    if not isinstance(name, str):
+        raise TypeError("codec name must be a string.")
+    if not name:
+        raise ValueError("codec name must not be empty.")
 
 
 def _require_audio_capability(name: str, capability: AudioCapability) -> CodecEntry:

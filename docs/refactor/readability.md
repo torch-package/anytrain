@@ -429,3 +429,36 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - BPE unit/regression tests：49 passed，24 subtests passed。
+
+## `anytrain.audio.codec`
+
+状态：完成。
+
+原问题：
+
+- public `AudioPlanningEstimator` 定义在私有 `_planning.py`，公开类型与算法实现 owner 混合。
+- `CodecEntry` 只校验 capability/factory 的 presence，对 name、spec、identity preset 与 callable
+  factory 依赖后续隐式失败。
+- cache 下载控制项依赖隐式真值，FSQ capability 通过 `int()` / `float()` 接受 bool、float 或字符串。
+
+完成的调整：
+
+- 新增 public `planning.py` 作为 estimator protocol owner，`_planning.py` 只保留静态算法与 identity。
+- registry descriptor 在构造时完整校验静态结构；public preset 查询统一要求非空字符串名称。
+- Hugging Face 下载控制项严格要求 bool；FSQ levels/value metadata 先校验 tuple、integer 与 host-real
+  结构，再做范围和对齐检查。
+- `docs/codec.md` 记录 spec/planning/registry/cache/concrete backend 的 ownership 与验收范围。
+
+刻意保留：
+
+- tokenizer/detokenizer directional ABC、named stream inventory 与 adapter 行为。
+- identity/device backend cache、pinned revision、planning hash 和长度估算公式。
+- BiCodec、DAC、GLM-4、LongCat、Stable Codec 与 UniCodec 的模型加载、optional import、原生 tensor
+  layout 和数值实现；这些 backend 内部各自是一套 upstream adapter，不按文件长度机械拆分。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- codec core/cache：39 passed。
+- concrete backend/assets：108 passed。

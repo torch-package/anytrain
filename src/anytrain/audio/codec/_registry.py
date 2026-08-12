@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ._planning import AudioPlanningEstimator
+from .planning import AudioPlanningEstimator
 from .protocol import AudioCapability
 from .spec import AudioBackendIdentity, AudioCodeSpec
 
@@ -39,14 +39,48 @@ class CodecEntry:
     detokenizer: DetokenizerFactory | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("codec registry entry name must be a string.")
         if not self.name:
             raise ValueError("codec registry entry name must not be empty.")
+        if self.loader is not None and not callable(self.loader):
+            raise TypeError(f"codec registry entry {self.name!r} loader must be callable.")
+        if not isinstance(self.audio_capabilities, frozenset) or any(
+            not isinstance(capability, AudioCapability)
+            for capability in self.audio_capabilities
+        ):
+            raise TypeError(
+                f"codec registry entry {self.name!r} capabilities must be a frozenset "
+                "of AudioCapability values."
+            )
         if not self.audio_capabilities:
             raise ValueError(f"codec registry entry {self.name!r} must declare capabilities.")
-        if self.audio_capabilities and self.audio_spec is None:
+        if self.audio_spec is None:
             raise ValueError(
                 f"codec registry entry {self.name!r} with audio capabilities must "
                 "provide static audio_spec metadata."
+            )
+        if not isinstance(self.audio_spec, AudioCodeSpec):
+            raise TypeError(
+                f"codec registry entry {self.name!r} audio_spec must be an AudioCodeSpec."
+            )
+        if self.identity is not None:
+            if not isinstance(self.identity, AudioBackendIdentity):
+                raise TypeError(
+                    f"codec registry entry {self.name!r} identity must be an "
+                    "AudioBackendIdentity."
+                )
+            if self.identity.preset != self.name:
+                raise ValueError(
+                    f"codec registry entry {self.name!r} identity preset must match its name."
+                )
+        if self.tokenizer is not None and not callable(self.tokenizer):
+            raise TypeError(
+                f"codec registry entry {self.name!r} tokenizer factory must be callable."
+            )
+        if self.detokenizer is not None and not callable(self.detokenizer):
+            raise TypeError(
+                f"codec registry entry {self.name!r} detokenizer factory must be callable."
             )
         declares_tokenizer = AudioCapability.TOKENIZER in self.audio_capabilities
         if declares_tokenizer != (self.tokenizer is not None):

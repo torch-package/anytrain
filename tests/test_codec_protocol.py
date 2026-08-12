@@ -7,6 +7,7 @@ import torch
 
 import anytrain.audio.codec as codec_api
 from anytrain.audio.codec import (
+    AudioBackendIdentity,
     AudioCapability,
     AudioCodeSpec,
     AudioCodeStreamSpec,
@@ -29,7 +30,9 @@ from anytrain.audio.codec import (
     semantic_feature_dim,
 )
 from anytrain.audio.codec._module import validate_frame_codes
+from anytrain.audio.codec._registry import CodecEntry
 from anytrain.audio.codec.longcat import DEFAULT_LONGCAT_REVISION
+from anytrain.audio.codec.planning import AudioPlanningEstimator
 from anytrain.audio.detokenizer import AudioDetokenizer
 
 
@@ -70,6 +73,10 @@ def test_audio_capability_values_are_stable() -> None:
         "load_audio_tokenizer",
         "semantic_feature_dim",
     ]
+
+
+def test_audio_planning_protocol_has_a_public_owner() -> None:
+    assert codec_api.AudioPlanningEstimator is AudioPlanningEstimator
 
 
 def test_audio_specs_are_static_named_stream_inventories() -> None:
@@ -166,6 +173,24 @@ def test_codec_capability_accessors_reject_invalid_metadata() -> None:
         codec_sample_rate(object())
 
 
+@pytest.mark.parametrize("levels", [((True, 3),), ((2.0, 3),), ([2, 3],)])
+def test_fsq_levels_reject_coercible_non_integer_metadata(levels: object) -> None:
+    codec = _FsqCodec()
+    codec.fsq_levels = cast(Any, levels)
+
+    with pytest.raises(TypeError, match="fsq_levels"):
+        fsq_levels(codec)
+
+
+@pytest.mark.parametrize("values", [(((False, 1.0), (-1.0, 0.0, 1.0)),), ([(-1.0, 1.0)],)])
+def test_fsq_values_reject_coercible_non_real_metadata(values: object) -> None:
+    codec = _FsqCodec()
+    codec.fsq_level_values = cast(Any, values)
+
+    with pytest.raises(TypeError, match="FSQ|fsq_level_values"):
+        fsq_level_values(codec)
+
+
 class _ExampleDetokenizer(AudioDetokenizer):
     _code_spec = AudioCodeSpec(
         sample_rate=16_000,
@@ -224,6 +249,45 @@ def test_directional_capabilities_and_identity() -> None:
     assert identity.preset == "bicodec"
     assert identity.revision == "642071559bfc6346c2359d19dcb6be3f9dd8a05d"
     assert DEFAULT_LONGCAT_REVISION == "5c2493c6c68959bd9ad4b06cc3df9292fc1d670f"
+
+
+@pytest.mark.parametrize("name", [None, 1, True])
+def test_registry_queries_require_string_names(name: object) -> None:
+    with pytest.raises(TypeError, match="codec name"):
+        can_load_audio_tokenizer(cast(Any, name))
+    with pytest.raises(TypeError, match="codec name"):
+        audio_spec(cast(Any, name))
+
+
+def test_registry_entry_validates_static_descriptor_ownership() -> None:
+    spec = AudioCodeSpec(
+        sample_rate=16_000,
+        streams=(AudioCodeStreamSpec("semantic", 4, frame_rate=50.0),),
+    )
+    factory = cast(Any, lambda backend, code_spec, identity: object())
+
+    with pytest.raises(TypeError, match="capabilities"):
+        CodecEntry(
+            name="example",
+            audio_capabilities=cast(Any, {AudioCapability.TOKENIZER}),
+            audio_spec=spec,
+            tokenizer=factory,
+        )
+    with pytest.raises(ValueError, match="identity preset"):
+        CodecEntry(
+            name="example",
+            audio_capabilities=frozenset({AudioCapability.TOKENIZER}),
+            audio_spec=spec,
+            identity=AudioBackendIdentity("different"),
+            tokenizer=factory,
+        )
+    with pytest.raises(TypeError, match="tokenizer factory"):
+        CodecEntry(
+            name="example",
+            audio_capabilities=frozenset({AudioCapability.TOKENIZER}),
+            audio_spec=spec,
+            tokenizer=cast(Any, object()),
+        )
 
 
 def test_audio_planning_estimators_are_static_versioned_backend_contracts() -> None:

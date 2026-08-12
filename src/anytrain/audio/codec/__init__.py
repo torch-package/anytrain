@@ -1,4 +1,3 @@
-from ._planning import AudioPlanningEstimator
 from .capability import (
     SemanticCodebookCodec,
     codebook_codec,
@@ -10,6 +9,7 @@ from .capability import (
     fsq_radix_order,
     semantic_feature_dim,
 )
+from .planning import AudioPlanningEstimator
 from .protocol import AudioCapability, CodecBackend
 from .registry import (
     audio_backend_identity,
