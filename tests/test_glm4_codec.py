@@ -16,6 +16,7 @@ from anytrain.audio.codec import (
     AudioCapability,
     audio_backend_identity,
     audio_capabilities,
+    audio_planning_estimator,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
     clear_audio_backend_cache,
@@ -228,6 +229,21 @@ def test_glm4_encode_padded_batches_once_and_reports_valid_token_lengths() -> No
     torch.testing.assert_close(codes[0, :2, 0], torch.tensor([0, 1]))
     torch.testing.assert_close(codes[1, :1, 0], torch.tensor([10]))
     torch.testing.assert_close(codes[2, :1, 0], torch.tensor([20]))
+
+
+def test_glm4_static_planning_estimator_matches_runtime_length_boundaries() -> None:
+    tokenizer = _tokenizer()
+    source_frames = (1, 1_279, 1_280, 1_281, 16_000)
+    _, runtime = tokenizer.encode_padded(
+        torch.zeros((len(source_frames), 1, max(source_frames))),
+        sample_rate=16_000,
+        lengths=torch.tensor(source_frames),
+    )
+    estimator = audio_planning_estimator("glm4")
+
+    assert tuple(runtime.tolist()) == tuple(
+        estimator.estimate(frames, 16_000) for frames in source_frames
+    )
 
 
 def test_glm4_encode_chunks_audio_beyond_official_whisper_context() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import fields
 from pathlib import Path
@@ -13,26 +14,17 @@ from anytrain._compat import strict_zip
 
 from ...env import whisper_root
 from ..text import TextInput
+from ._config import (
+    DEFAULT_WHISPER_MODEL,
+    OPENAI_WHISPER_VERSION,
+    SUPPORTED_WHISPER_MODELS,
+    WHISPER_MODEL_SHA256,
+)
 from ._torch import freeze_model
 from .audio import load_wave_batch, resample_wave
 
-DEFAULT_MODEL_NAME = "large-v3"
-SUPPORTED_MODEL_NAMES = (
-    "tiny.en",
-    "tiny",
-    "base.en",
-    "base",
-    "small.en",
-    "small",
-    "medium.en",
-    "medium",
-    "large-v1",
-    "large-v2",
-    "large-v3",
-    "large",
-    "large-v3-turbo",
-    "turbo",
-)
+DEFAULT_MODEL_NAME = DEFAULT_WHISPER_MODEL
+SUPPORTED_MODEL_NAMES = SUPPORTED_WHISPER_MODELS
 
 _SUPPORTED_MODEL_NAME_SET = frozenset(SUPPORTED_MODEL_NAMES)
 _WHISPER_CHUNK_SECONDS = 30
@@ -61,6 +53,9 @@ class _OpenAIWhisperTranscriber:
         device: Any | None = None,
         download_root: str | Path | None = None,
         load_options: Mapping[str, Any] | None = None,
+        local_files_only: bool = False,
+        backend_version: str = OPENAI_WHISPER_VERSION,
+        artifact_sha256: str | None = None,
     ) -> None:
         self.model_name = self._validate_model_name(model_name)
         self.device = device
@@ -68,6 +63,18 @@ class _OpenAIWhisperTranscriber:
         self.download_root = str(root)
         self.model: Any | None = None
         self.load_options = self._validate_load_options(load_options)
+        if not isinstance(local_files_only, bool):
+            raise TypeError("local_files_only must be a boolean.")
+        self.local_files_only = local_files_only
+        if backend_version != OPENAI_WHISPER_VERSION:
+            raise ValueError(f"unsupported openai-whisper version {backend_version!r}.")
+        self.backend_version = backend_version
+        expected = WHISPER_MODEL_SHA256[self.model_name]
+        if artifact_sha256 is not None and artifact_sha256 != expected:
+            raise ValueError(
+                f"artifact_sha256 does not match the pinned {self.model_name!r} artifact."
+            )
+        self.artifact_sha256 = expected
 
     def transcribe(
         self,
@@ -174,6 +181,14 @@ class _OpenAIWhisperTranscriber:
             return self.model
 
         whisper = self._load_whisper_module()
+        model_url = self._model_url(whisper)
+        if self.local_files_only:
+            checkpoint = Path(self.download_root) / os.path.basename(model_url)
+            if not checkpoint.is_file():
+                raise FileNotFoundError(
+                    "Local-only Whisper loading requires the pinned checkpoint at "
+                    f"{checkpoint}."
+                )
         load_options = dict(self.load_options)
         if self.device is not None:
             load_options["device"] = self.device
@@ -184,12 +199,36 @@ class _OpenAIWhisperTranscriber:
 
     def _load_whisper_module(self) -> Any:
         try:
-            return importlib.import_module("whisper")
+            whisper = importlib.import_module("whisper")
         except ImportError as exc:
             raise ImportError(
                 "WhisperASREvaluator requires the openai-whisper package. "
                 "Install it with python -m pip install openai-whisper."
             ) from exc
+        version = getattr(whisper, "__version__", None)
+        if version != self.backend_version:
+            raise RuntimeError(
+                "Whisper semantic config requires openai-whisper "
+                f"{self.backend_version}, got {version!r}."
+            )
+        self._model_url(whisper)
+        return whisper
+
+    def _model_url(self, whisper: Any) -> str:
+        models = getattr(whisper, "_MODELS", None)
+        if not isinstance(models, Mapping):
+            raise RuntimeError("openai-whisper does not expose its official model inventory.")
+        url = models.get(self.model_name)
+        if not isinstance(url, str) or not url:
+            raise RuntimeError(
+                f"openai-whisper does not provide model {self.model_name!r}."
+            )
+        parts = url.rstrip("/").split("/")
+        if len(parts) < 2 or parts[-2] != self.artifact_sha256:
+            raise RuntimeError(
+                f"openai-whisper model {self.model_name!r} does not match the pinned artifact."
+            )
+        return url
 
     def _prepare_model(self, model: Any) -> Any:
         model = freeze_model(model, device=self.device)

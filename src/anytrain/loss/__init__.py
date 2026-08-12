@@ -1,3 +1,4 @@
+from ._validation import scalar
 from .abc import LossABC
 from .balancer import (
     FixedWeightLossBalancer,
@@ -43,4 +44,5 @@ __all__ = [
     "emit_diagnostics",
     "loss_with_diagnostics",
     "recommend",
+    "scalar",
 ]

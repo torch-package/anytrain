@@ -1,13 +1,21 @@
+import pickle
 import sys
 import types
 import unittest
+from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import patch
 
 import torch
 
 from anytrain.translation import validate_translation_batch
-from anytrain.translation.qwen import QwenTranslator
+from anytrain.translation.qwen import (
+    QwenTranslationLoadOptions,
+    QwenTranslationSpec,
+    QwenTranslator,
+)
+
+_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
 
 
 class TranslationProtocolTest(unittest.TestCase):
@@ -20,18 +28,78 @@ class TranslationProtocolTest(unittest.TestCase):
             validate_translation_batch(["  "], ["English"], ["Chinese"])
 
 
-class QwenTranslatorTest(unittest.TestCase):
-    def test_from_pretrained_omits_unset_revision(self):
-        with _fake_transformers():
-            QwenTranslator.from_pretrained("fake-qwen", device="cpu")
+class QwenTranslationSpecTest(unittest.TestCase):
+    def test_semantic_identity_tracks_only_output_semantics(self):
+        first = _spec()
+        repeated = _spec()
+        changed_dtype = _spec(dtype="float32")
+        changed_generation = _spec(generation_options=(("repetition_penalty", 1.1),))
 
-        self.assertEqual(FakeTokenizer.loaded.load_args, ("fake-qwen", {}))
+        self.assertEqual(first.semantic_id(), repeated.semantic_id())
+        self.assertEqual(first.config_hash(), repeated.config_hash())
+        self.assertNotEqual(first.semantic_id(), changed_dtype.semantic_id())
+        self.assertNotEqual(first.semantic_id(), changed_generation.semantic_id())
         self.assertEqual(
-            FakeModel.loaded.load_args,
-            ("fake-qwen", {"device_map": "cpu"}),
+            first.factory(QwenTranslationLoadOptions(cache_dir="first")).spec.semantic_id(),
+            first.factory(
+                QwenTranslationLoadOptions(cache_dir="second", local_files_only=True)
+            ).spec.semantic_id(),
         )
 
-    def test_from_pretrained_forwards_tokenizer_hub_options(self):
+    def test_spec_rejects_physical_model_path_and_reserved_generation_options(self):
+        with self.assertRaisesRegex(ValueError, "40-character commit"):
+            QwenTranslationSpec(revision="main")
+        with self.assertRaisesRegex(ValueError, "absolute path"):
+            QwenTranslationSpec(revision=_REVISION, model="/models/qwen")
+        with self.assertRaisesRegex(ValueError, "reserved"):
+            _spec(generation_options=(("do_sample", True),))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            _spec(generation_options=(("temperature", 0.0), ("temperature", 0.1)))
+
+    def test_factory_is_pickleable_and_lazy(self):
+        factory = _spec().factory(QwenTranslationLoadOptions(cache_dir=Path("cache")))
+
+        restored = pickle.loads(pickle.dumps(factory))
+
+        self.assertEqual(restored, factory)
+        self.assertEqual(restored.spec.semantic_id(), factory.spec.semantic_id())
+
+
+class QwenTranslatorTest(unittest.TestCase):
+    def setUp(self):
+        FakeModel.loaded = None
+        FakeTokenizer.loaded = None
+
+    def test_from_pretrained_uses_spec_and_separate_load_options(self):
+        with _fake_transformers():
+            translator = QwenTranslator.from_pretrained(
+                _spec(dtype="bfloat16"),
+                device="cpu",
+                load_options=QwenTranslationLoadOptions(cache_dir="storage/hf"),
+            )
+
+        self.assertEqual(
+            FakeTokenizer.loaded.load_args,
+            (
+                "fake-qwen",
+                {"cache_dir": "storage/hf", "revision": _REVISION},
+            ),
+        )
+        self.assertEqual(
+            FakeModel.loaded.load_args,
+            (
+                "fake-qwen",
+                {
+                    "cache_dir": "storage/hf",
+                    "device_map": "cpu",
+                    "dtype": torch.bfloat16,
+                    "revision": _REVISION,
+                },
+            ),
+        )
+        self.assertEqual(translator.semantic_id(), translator.spec.semantic_id())
+
+    def test_from_pretrained_resolves_cached_repo_for_local_only_loads(self):
         with (
             _fake_transformers(),
             patch(
@@ -40,67 +108,38 @@ class QwenTranslatorTest(unittest.TestCase):
             ) as snapshot_download,
         ):
             QwenTranslator.from_pretrained(
-                "fake-qwen",
-                revision="main",
-                cache_dir="storage/hf",
-                local_files_only=True,
-                token="hf-token",
-                trust_remote_code=True,
+                _spec(),
                 device="cpu",
-                dtype=torch.bfloat16,
+                load_options=QwenTranslationLoadOptions(
+                    cache_dir="storage/hf",
+                    local_files_only=True,
+                ),
             )
 
         snapshot_download.assert_called_once_with(
             repo_id="fake-qwen",
             cache_dir="storage/hf",
             local_files_only=True,
-            revision="main",
+            revision=_REVISION,
         )
-        self.assertEqual(
-            FakeTokenizer.loaded.load_args,
-            (
-                "/cache/qwen-snapshot",
-                {
-                    "cache_dir": "storage/hf",
-                    "local_files_only": True,
-                    "revision": "main",
-                    "token": "hf-token",
-                    "trust_remote_code": True,
-                },
-            ),
-        )
+        self.assertEqual(FakeTokenizer.loaded.load_args[0], "/cache/qwen-snapshot")
+        self.assertEqual(FakeModel.loaded.load_args[0], "/cache/qwen-snapshot")
 
-    def test_from_pretrained_resolves_cached_repo_for_local_only_loads(self):
-        with (
-            _fake_transformers(),
-            patch(
-                "huggingface_hub.snapshot_download",
-                return_value="/cache/qwen-snapshot",
-            ),
-        ):
-            QwenTranslator.from_pretrained(
-                "fake-qwen",
-                local_files_only=True,
-                device="cpu",
-            )
+    def test_lazy_factory_loads_only_when_called(self):
+        factory = _spec().factory()
 
-        self.assertEqual(
-            FakeTokenizer.loaded.load_args[0],
-            "/cache/qwen-snapshot",
-        )
-        self.assertEqual(
-            FakeModel.loaded.load_args[0],
-            "/cache/qwen-snapshot",
-        )
+        self.assertIsNone(FakeModel.loaded)
+        with _fake_transformers():
+            translator = factory("cpu")
+
+        self.assertIsInstance(translator, QwenTranslator)
+        self.assertIsNotNone(FakeModel.loaded)
 
     def test_from_pretrained_translates_plain_strings(self):
         with _fake_transformers():
             translator = QwenTranslator.from_pretrained(
-                "fake-qwen",
-                revision="main",
+                _spec(max_new_tokens=32),
                 device="cpu",
-                max_new_tokens=32,
-                dtype=torch.bfloat16,
             )
 
         outputs = translator.translate(
@@ -110,28 +149,33 @@ class QwenTranslatorTest(unittest.TestCase):
         )
 
         self.assertEqual(outputs, ["translation-0", "translation-1"])
-        self.assertEqual(
-            FakeModel.loaded.load_args,
-            (
-                "fake-qwen",
-                {
-                    "dtype": torch.bfloat16,
-                    "revision": "main",
-                    "device_map": "cpu",
-                },
-            ),
-        )
-        self.assertEqual(FakeTokenizer.loaded.load_args, ("fake-qwen", {"revision": "main"}))
         self.assertEqual(FakeTokenizer.loaded.padding_side, "left")
         self.assertEqual(FakeModel.loaded.generate_calls[0]["max_new_tokens"], 32)
         self.assertFalse(FakeModel.loaded.generate_calls[0]["do_sample"])
         self.assertIn("Translate this English text into Chinese", FakeTokenizer.loaded.prompts[0])
 
-    def test_config_hash_tracks_generation_semantics(self):
-        first = QwenTranslator(FakeModel(), FakeTokenizer())
-        second = QwenTranslator(FakeModel(), FakeTokenizer())
+    def test_token_estimator_loads_no_model_and_uses_backend_prompt(self):
+        estimator = _spec(max_new_tokens=32).token_estimator()
 
-        self.assertEqual(first.config_hash(), second.config_hash())
+        self.assertFalse(estimator.tokenizer_loaded)
+        with _fake_transformers():
+            prompt_tokens = estimator.prompt_tokens(
+                "hello world",
+                source_language="English",
+                target_language="Chinese",
+            )
+            planned_tokens = estimator.planned_tokens(
+                "hello world",
+                source_language="English",
+                target_language="Chinese",
+            )
+            decoded_tokens = estimator.decoded_target_tokens("translated text")
+
+        self.assertTrue(estimator.tokenizer_loaded)
+        self.assertIsNone(FakeModel.loaded)
+        self.assertEqual(planned_tokens, prompt_tokens + 32)
+        self.assertEqual(decoded_tokens, 2)
+        self.assertIn("Translate this English text into Chinese", FakeTokenizer.loaded.texts[0])
 
 
 class FakeBatch(dict):
@@ -149,6 +193,7 @@ class FakeTokenizer:
         self.pad_token = None
         self.eos_token = "<eos>"
         self.prompts = []
+        self.texts = []
         type(self).loaded = self
 
     @classmethod
@@ -166,8 +211,11 @@ class FakeTokenizer:
         self.assert_template_options = (tokenize, add_generation_prompt, enable_thinking)
         return messages[-1]["content"]
 
-    def __call__(self, prompts, **_kwargs):
-        self.prompts = list(prompts)
+    def __call__(self, values, **_kwargs):
+        if isinstance(values, str):
+            self.texts.append(values)
+            return {"input_ids": list(range(max(1, len(values.split()))))}
+        self.prompts = list(values)
         return FakeBatch(input_ids=torch.tensor([[1, 2], [3, 4]]))
 
     def batch_decode(self, values, **_kwargs):
@@ -212,6 +260,14 @@ class _fake_transformers:
             sys.modules.pop("transformers", None)
         else:
             sys.modules["transformers"] = self.previous
+
+
+def _spec(**options) -> QwenTranslationSpec:
+    return QwenTranslationSpec(
+        revision=_REVISION,
+        model="fake-qwen",
+        **options,
+    )
 
 
 if __name__ == "__main__":

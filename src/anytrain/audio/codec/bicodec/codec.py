@@ -10,13 +10,11 @@ from torch import Tensor, nn
 
 from .._audio import resample
 from .._module import DeviceModule, integer_tensor, resolve_device
+from ._registry import SAMPLE_RATE, WAV2VEC2_CONV_KERNEL, WAV2VEC2_CONV_STRIDE
 from .assets import BiCodecAssets, ensure_bicodec_assets
 
-SAMPLE_RATE = 16_000
 NUM_CHANNELS = 1
 FEATURE_HIDDEN_STATE_INDEXES = (11, 14, 16)
-WAV2VEC2_CONV_KERNEL = (10, 3, 3, 3, 3, 2, 2)
-WAV2VEC2_CONV_STRIDE = (5, 2, 2, 2, 2, 2, 2)
 BICODEC_INSTALL_COMMAND = (
     'python -m pip install "spark-tts @ '
     "git+https://github.com/rookiejune/Spark-TTS.git@"

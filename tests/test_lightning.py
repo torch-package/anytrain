@@ -817,6 +817,62 @@ class LightningTest(unittest.TestCase):
                 torch.tensor(0.0),
             )
 
+    def test_gradient_probe_logger_owns_constructor_validation(self):
+        import torch
+
+        from anytrain.lightning import (
+            GradientComparison,
+            GradientProbeLoggerCallback,
+            GradientTarget,
+        )
+
+        comparison = GradientComparison(GradientTarget("token"), GradientTarget("flow"))
+        common = {
+            "comparisons": (comparison,),
+            "probes": {"parameter": ("weight",)},
+            "loss_groups": lambda pl_module: cast(Any, {}),
+        }
+        for value in (True, 1.0):
+            with (
+                self.subTest(field="every_n_steps", value=value),
+                self.assertRaisesRegex(TypeError, "every_n_steps must be an integer"),
+            ):
+                GradientProbeLoggerCallback(
+                    **common,
+                    every_n_steps=cast(Any, value),
+                )
+        for value in (True, "1e-12", torch.tensor(1e-12)):
+            with (
+                self.subTest(field="eps", value=value),
+                self.assertRaisesRegex(TypeError, "eps must be a host real number"),
+            ):
+                GradientProbeLoggerCallback(**common, eps=cast(Any, value))
+        for value in (0.0, float("nan"), float("inf")):
+            with (
+                self.subTest(field="eps", value=value),
+                self.assertRaisesRegex(ValueError, "eps must be finite and positive"),
+            ):
+                GradientProbeLoggerCallback(**common, eps=value)
+        with self.assertRaisesRegex(ValueError, "tag must contain"):
+            GradientProbeLoggerCallback(**common, tag="///")
+        with self.assertRaisesRegex(TypeError, "parameters must be a sequence"):
+            GradientProbeLoggerCallback(
+                comparisons=(comparison,),
+                probes=cast(Any, {"parameter": "weight"}),
+                loss_groups=lambda pl_module: cast(Any, {}),
+            )
+        with self.assertRaisesRegex(TypeError, "must be a GradientProbe"):
+            GradientProbeLoggerCallback(
+                comparisons=(comparison,),
+                probes=cast(Any, (object(),)),
+                loss_groups=lambda pl_module: cast(Any, {}),
+            )
+
+        from anytrain.lightning import GradientProbe
+
+        with self.assertRaisesRegex(ValueError, "invalid regex"):
+            GradientProbe("parameter", ("[",), match="regex")
+
     def test_lightning_log_mixin_logs_prefixed_dict(self):
         from anytrain.lightning import LightningLogMixin
 

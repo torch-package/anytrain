@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 from anytrain._buffer import register_buffer
+from anytrain.audio.codec import audio_planning_estimator
 from anytrain.audio.codec.bicodec.assets import BiCodecAssets
 from anytrain.audio.codec.bicodec.codec import (
     BICODEC_INSTALL_COMMAND,
@@ -140,6 +141,17 @@ class BiCodecCodecTest(unittest.TestCase):
         )
 
         self.assertTrue(torch.equal(lengths, torch.tensor([1, 1, 2, 49])))
+
+    def test_static_planning_estimator_matches_runtime_length_boundaries(self):
+        codec = _codec(FakeBiCodecModel())
+        source_frames = (400, 719, 720, 16_000, 81_408)
+        runtime = codec.semantic_code_lengths(torch.tensor(source_frames), 16_000)
+        estimator = audio_planning_estimator("bicodec")
+
+        self.assertEqual(
+            tuple(runtime.tolist()),
+            tuple(estimator.estimate(frames, 16_000) for frames in source_frames),
+        )
 
     def test_semantic_code_lengths_reject_short_waveforms(self):
         codec = _codec(FakeBiCodecModel())

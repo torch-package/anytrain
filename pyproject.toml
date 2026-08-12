@@ -38,7 +38,7 @@ text = ["jiwer>=4.0", "sacrebleu>=2.0"]
 translation = ["transformers>=4.51.0"]
 speech = [
     "jiwer>=4.0",
-    "openai-whisper",
+    "openai-whisper==20250625",
     "sacrebleu>=2.0",
     "soundfile>=0.12",
     "torchaudio>=2.0",

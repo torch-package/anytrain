@@ -80,6 +80,10 @@ src/anytrain/lightning/
 `LRSchedule.milestones()` 的单位都由 clock 决定：step clock 下是 optimizer steps，unit clock
 下是 global valid units。
 
+schedule spec 构造器拥有字段不变量：duration、unit interval、stop position 和 curve ratio 只接受
+有限 host real number，不接受 bool、Tensor 或字符串转换；整数窗口严格要求 `int`，phase name 必须
+唯一。下游配置层只负责把配置形状转换成这些对象，不重复维护同一组数值校验。
+
 下游仍显式创建 optimizer，并在 `configure_optimizers()` 中调用
 `runtime.configure_optimizers(optimizer)`。step clock 返回 optimizer + Lightning scheduler；unit
 clock 只返回 optimizer。Trainer callback 列表加入 `*runtime.callbacks()`。unit runtime 在 train
@@ -207,6 +211,10 @@ callback state，因此 `load_state_dict` 会暂存 EMA payload，并在 `on_fit
 loss 的 0-D Tensor 契约后，再按 `GradientTarget.group` 选择仍连接 autograd 的 loss graph。observation
 会 detach 值，因此不能作为 gradient provider。
 
+`GradientProbe`、`GradientTarget`、`GradientComparison` 和 callback 构造器共同维护名称、集合非空、
+唯一 probe name、cadence、finite positive `eps` 及 provider callable 等字段不变量；下游配置转换后
+无需再次检查这些事实。
+
 `ModelCheckpoint` 继承 Lightning 原生 `ModelCheckpoint`。默认 `async_save=True`，rank 0 先保存到本机临时目录，再把复制和删除操作排进单线程后台队列。队列通过
 `max_pending_async_saves` 显式限制持有完整本地 source 的复制任务数，默认值为 1；达到上限时会先
 等待最老复制任务、完成对应 callback 或传播错误，再创建下一份完整本地 checkpoint，因此慢 NFS
@@ -226,6 +234,9 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
 [`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
 关闭该行为。
+
+callback 构造器严格校验 cadence/window 的整数边界、FLOPs 的有限正 host-real 契约、互斥 FLOPs
+来源及所有 boolean flags；项目配置层应把构造器作为这些字段的唯一运行时 owner。
 
 `ManagedServiceCallback` 通过下游 `ManagedServiceProvider` 获取可选的 task-agnostic 长驻服务。
 provider 的 service presence 和 discovery error 在所有 rank 同步；global rank 执行 start、按

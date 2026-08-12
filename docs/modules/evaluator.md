@@ -45,8 +45,14 @@ optional 子模块导出：
 - `anytrain.evaluator.text.TextInput`
 - `anytrain.evaluator.text.TextNormalizationConfig`
 - `anytrain.evaluator.speech.SpeechEvaluator`
+- `anytrain.evaluator.speech.SpeechEvaluatorConfig`
+- `anytrain.evaluator.speech.SpeechEvaluatorLoadOptions`
 - `anytrain.evaluator.speech.WhisperASREvaluator`
+- `anytrain.evaluator.speech.WhisperSemanticConfig`
+- `anytrain.evaluator.speech.WhisperLoadOptions`
 - `anytrain.evaluator.speech.UTMOSEvaluator`
+- `anytrain.evaluator.speech.UTMOSSemanticConfig`
+- `anytrain.evaluator.speech.UTMOSLoadOptions`
 
 ## 接口
 
@@ -185,11 +191,53 @@ optional 子模块缺依赖时应抛出清晰错误，提示安装对应 extra�
   短音频 batch 会在兼容选项下使用 Whisper 的 batched 30 秒 mel decode；长音频或需要完整 transcribe 调度的选项会回退到逐条 `model.transcribe()`。
 - `UTMOSEvaluator`：可用 `torch.hub` 加载 `tarepan/SpeechMOS` 的 `utmos22_strong`，也可显式注入 UTMOS backend；输出 `utmos`。远端 TorchHub 代码加载需要显式传入 `allow_remote_code=True`。
 
-`anytrain.evaluator.speech` 顶层只导出 evaluator。ASR 的 Whisper loader 是私有实现；
+用于持久化 filter/评测 lineage 时，不应从运行对象的 cache/device 参数手写 identity。共享层提供三组
+frozen semantic config：
+
+```python
+from anytrain.evaluator.speech import (
+    SpeechEvaluatorConfig,
+    SpeechEvaluatorLoadOptions,
+    UTMOSLoadOptions,
+    WhisperLoadOptions,
+)
+
+config = SpeechEvaluatorConfig()
+evaluator = config.evaluator(
+    SpeechEvaluatorLoadOptions(
+        whisper=WhisperLoadOptions(device="cuda:0", local_files_only=True),
+        utmos=UTMOSLoadOptions(
+            device="cuda:0",
+            allow_remote_code=True,
+            local_files_only=True,
+        ),
+    )
+)
+content_id = config.semantic_id()
+```
+
+`WhisperSemanticConfig` 固定官方 checkpoint SHA-256、`openai-whisper==20250625`、默认 decode
+options、文本 normalization、BLEU smoothing 和 AnyTrain decoder/metric protocol。运行时会核对已安装
+Whisper 版本及其官方 model URL 中的 artifact digest；不匹配时明确失败。`UTMOSSemanticConfig` 默认固定
+`tarepan/SpeechMOS` commit `ed25eacbfa42b99156c36ebec67a733b5dbb9b79`、TorchHub entrypoint 和
+`utmos22_strong_step7459_v1.pt` weights SHA-256
+`38aa51ab79e2a4e09a1449758a4b37e9cbb2e8235a49662a732d33a9ba1e9bff`。backend 在加载后验证
+TorchHub cache 中的 checkpoint digest；组合 `SpeechEvaluatorConfig` 的 identity 递归包含两者。
+
+device、download/cache root、remote-code opt-in、offline policy 和 TorchHub cache controls 只存在于
+对应 `LoadOptions`，不进入 semantic identity。config 构造 evaluator 仍是 lazy 的：只有第一次转写或评分
+才加载模型。`local_files_only=True` 会在调用第三方 loader 前检查 pinned Whisper checkpoint，或
+TorchHub repository/weights cache；缺失时抛出 `FileNotFoundError`，不发起隐式下载。
+
+直接注入自定义 UTMOS backend 仍可用于测试和研究，但共享层不会为未知 backend 猜测 identity；调用
+`semantic_id()` 会明确报错。需要 durable identity 时使用 pinned `UTMOSSemanticConfig` 构造内置 backend。
+
+`anytrain.evaluator.speech` 顶层只导出 evaluator 及其 semantic/load config。ASR 的 Whisper loader 是私有实现；
 UTMOS backend 细节从 `anytrain.evaluator.speech.utmos` 显式导入。
 
 默认 backend 都是延迟加载：构造 evaluator 不会下载或加载模型，第一次 `evaluate()` /
-`transcribe()` 才会访问模型依赖。需要真实 speech evaluator 时安装 `jiwer`、`openai-whisper`、`sacrebleu`、`soundfile` 和 `torchaudio`（`python -m pip install jiwer openai-whisper sacrebleu soundfile torchaudio`）。
+`transcribe()` 才会访问模型依赖。需要真实 speech evaluator 时安装 `anytrain[speech]`；该 extra 固定
+`openai-whisper==20250625`，其余音频和文本指标依赖由项目版本约束管理。
 需要控制 checkpoint、cache 或 device 时，优先通过系统环境变量或 evaluator 的显式配置项传入。
 如果未设置，anytrain 会把 `HF_HOME`、`TORCH_HOME`、`ANYTRAIN_WHISPER_ROOT`
 默认到 `${ANYTRAIN_HOME:-~/.anytrain}` 下。

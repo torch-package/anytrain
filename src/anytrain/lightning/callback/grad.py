@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from numbers import Real
 from typing import Protocol, cast
 
 import torch
@@ -35,6 +37,8 @@ class GradientProbe:
 
     def __post_init__(self) -> None:
         _non_empty_string(self.name, "probe name")
+        if isinstance(self.parameters, (str, bytes)):
+            raise TypeError("gradient probe parameters must be a sequence of names, not a string.")
         parameters = tuple(self.parameters)
         if not parameters:
             raise ValueError("gradient probe parameters must not be empty.")
@@ -42,6 +46,14 @@ class GradientProbe:
             _non_empty_string(parameter, f"probe {self.name!r} parameter {index}")
         if self.match not in {"exact", "regex"}:
             raise ValueError("gradient probe match must be 'exact' or 'regex'.")
+        if self.match == "regex":
+            for parameter in parameters:
+                try:
+                    re.compile(parameter)
+                except re.error as exc:
+                    raise ValueError(
+                        f"gradient probe {self.name!r} has invalid regex {parameter!r}."
+                    ) from exc
         if not isinstance(self.trainable_only, bool):
             raise TypeError("gradient probe trainable_only must be a boolean.")
         self.parameters = parameters
@@ -91,17 +103,19 @@ class GradientProbeLoggerCallback(pl.Callback):
         super().__init__()
         if every_n_steps is not None:
             _positive_int(every_n_steps, "every_n_steps")
-        if eps <= 0:
-            raise ValueError("eps must be positive.")
+        resolved_eps = _positive_real(eps, "eps")
         _non_empty_string(tag, "tag")
+        resolved_tag = tag.strip("/")
+        if not resolved_tag:
+            raise ValueError("tag must contain a non-'/' character.")
         self.comparisons = _comparisons(comparisons)
         self.probes = _probes(probes)
         if not callable(loss_groups):
             raise TypeError("loss_groups must be callable.")
         self.loss_groups = loss_groups
         self.every_n_steps = every_n_steps
-        self.eps = eps
-        self.tag = tag.strip("/")
+        self.eps = resolved_eps
+        self.tag = resolved_tag
         self._last_logged_step: int | None = None
 
     def on_before_backward(
@@ -394,14 +408,22 @@ def _probes(
     probes: Sequence[GradientProbe] | Mapping[str, Sequence[str]],
 ) -> tuple[GradientProbe, ...]:
     if isinstance(probes, Mapping):
-        result = tuple(
-            GradientProbe(name=name, parameters=tuple(parameters))
-            for name, parameters in probes.items()
-        )
+        values: list[GradientProbe] = []
+        for name, parameters in probes.items():
+            if isinstance(parameters, (str, bytes)):
+                raise TypeError(
+                    f"gradient probe {name!r} parameters must be a sequence of names, "
+                    "not a string."
+                )
+            values.append(GradientProbe(name=name, parameters=tuple(parameters)))
+        result = tuple(values)
     else:
         result = tuple(probes)
     if not result:
         raise ValueError("gradient logger requires at least one probe.")
+    for index, probe in enumerate(result):
+        if not isinstance(probe, GradientProbe):
+            raise TypeError(f"gradient probe {index} must be a GradientProbe.")
     names = [probe.name for probe in result]
     if len(set(names)) != len(names):
         raise ValueError("gradient probe names must be unique.")
@@ -420,6 +442,15 @@ def _positive_int(value: int, name: str) -> None:
         raise TypeError(f"{name} must be an integer.")
     if value <= 0:
         raise ValueError(f"{name} must be positive.")
+
+
+def _positive_real(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    resolved = float(value)
+    if not math.isfinite(resolved) or resolved <= 0:
+        raise ValueError(f"{name} must be finite and positive.")
+    return resolved
 
 
 __all__ = [

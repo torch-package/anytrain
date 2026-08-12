@@ -5,11 +5,12 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, call, patch
 
-from anytrain.audio.bpe import CodecBPE
+from anytrain.audio.bpe import CodecBPE, CodecBPETrainerSpec
 
 try:
     import tokenizers
@@ -47,6 +48,68 @@ def replay(corpus):
 
 @unittest.skipIf(tokenizers is None, "tokenizers is not installed")
 class BPETest(unittest.TestCase):
+    def test_trainer_spec_freezes_output_affecting_contract(self):
+        trainer = CodecBPETrainerSpec(tokenizers_version="0.22.2")
+
+        self.assertEqual(trainer.vocab_size, 30_000)
+        self.assertEqual(trainer.min_frequency, 0)
+        self.assertIsNone(trainer.max_token_length)
+        self.assertEqual(trainer.max_frames, 1_000_000_000)
+        self.assertEqual(
+            trainer.identity,
+            "codec-bpe-trainer-v1:"
+            "6da79642fd164dc58c82ef0bd096f4a00cc1679f84f742c8e3a788756dc59901",
+        )
+        for changed in (
+            replace(trainer, vocab_size=30_001),
+            replace(trainer, min_frequency=1),
+            replace(trainer, max_token_length=8),
+            replace(trainer, max_frames=None),
+            replace(trainer, tokenizers_version="0.22.3"),
+        ):
+            with self.subTest(changed=changed):
+                self.assertNotEqual(changed.identity, trainer.identity)
+
+    def test_train_from_spec_uses_the_frozen_contract(self):
+        trainer = CodecBPETrainerSpec(
+            vocab_size=18,
+            min_frequency=0,
+            max_token_length=2,
+            max_frames=3,
+        )
+        bpe = CodecBPE.train_from_spec(
+            replay([[[1], [2], [1]], [[2], [3], [4]]]),
+            codebook_sizes=(16,),
+            trainer=trainer,
+            show_progress=False,
+        )
+
+        token_lengths = (len(bpe.decode([token])) for token in range(bpe.vocab_size))
+        self.assertLessEqual(max(token_lengths), 2)
+
+    def test_train_from_spec_rejects_tokenizers_contract_drift(self):
+        trainer = CodecBPETrainerSpec(tokenizers_version="0.0.0")
+
+        with self.assertRaisesRegex(RuntimeError, "tokenizers==0.0.0"):
+            CodecBPE.train_from_spec(
+                replay([[[1], [2]]]),
+                codebook_sizes=(16,),
+                trainer=trainer,
+                show_progress=False,
+            )
+
+    def test_trainer_spec_rejects_invalid_semantic_parameters(self):
+        for kwargs in (
+            {"vocab_size": 0},
+            {"min_frequency": -1},
+            {"max_token_length": 0},
+            {"max_frames": 0},
+            {"max_frames": True},
+            {"tokenizers_version": ""},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises((TypeError, ValueError)):
+                CodecBPETrainerSpec(**cast(Any, kwargs))
+
     def test_train_defaults_to_one_billion_frames(self):
         parameter = inspect.signature(CodecBPE.train).parameters["max_frames"]
 

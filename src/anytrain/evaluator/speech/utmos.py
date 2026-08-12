@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 import torch
@@ -9,6 +11,14 @@ from torch import Tensor
 
 from ...env import torch_home
 from ..abc import EvaluatorABC, MetricDict
+from ._config import (
+    DEFAULT_UTMOS_MODEL,
+    DEFAULT_UTMOS_REPOSITORY,
+    DEFAULT_UTMOS_REVISION,
+    DEFAULT_UTMOS_WEIGHTS,
+    DEFAULT_UTMOS_WEIGHTS_SHA256,
+    UTMOSSemanticConfig,
+)
 from ._torch import freeze_model
 from .audio import load_wave_batch, validate_sample_rate
 
@@ -17,19 +27,27 @@ class TorchHubUTMOSBackend:
     def __init__(
         self,
         *,
-        repo: str = "tarepan/SpeechMOS:v1.2.0",
-        model_name: str = "utmos22_strong",
+        repo: str = f"{DEFAULT_UTMOS_REPOSITORY}:{DEFAULT_UTMOS_REVISION}",
+        model_name: str = DEFAULT_UTMOS_MODEL,
+        weights: str = DEFAULT_UTMOS_WEIGHTS,
+        weights_sha256: str = DEFAULT_UTMOS_WEIGHTS_SHA256,
         device: Any | None = None,
         model: Any | None = None,
         load_options: Mapping[str, Any] | None = None,
         allow_remote_code: bool = False,
+        local_files_only: bool = False,
     ) -> None:
         self.repo = self._validate_name(repo, name="repo")
         self.model_name = self._validate_name(model_name, name="model_name")
+        self.weights = self._validate_name(weights, name="weights")
+        if Path(self.weights).name != self.weights:
+            raise ValueError("weights must be a checkpoint filename, not a path.")
+        self.weights_sha256 = self._validate_sha256(weights_sha256)
         self.device = device
         self.model = model
         self.load_options = self._validate_load_options(load_options)
         self.allow_remote_code = self._validate_allow_remote_code(allow_remote_code)
+        self.local_files_only = self._validate_local_files_only(local_files_only)
 
     def score(self, audio: Any, sample_rate: int) -> Tensor:
         wave, sample_rate = load_wave_batch(audio, sample_rate)
@@ -51,8 +69,56 @@ class TorchHubUTMOSBackend:
         torch_home()
         load_options = dict(self.load_options)
         load_options.setdefault("trust_repo", True)
-        self.model = torch.hub.load(self.repo, self.model_name, **load_options)
+        source = self.repo
+        if self.local_files_only:
+            source = str(self._local_repository())
+            load_options["source"] = "local"
+        self.model = torch.hub.load(source, self.model_name, **load_options)
+        if not self.local_files_only:
+            self._validate_cached_weights()
         return self.model
+
+    def _local_repository(self) -> Path:
+        try:
+            repository, revision = self.repo.rsplit(":", 1)
+            owner, name = repository.split("/", 1)
+        except ValueError as exc:
+            raise ValueError(
+                "Local-only UTMOS loading requires repo='owner/name:revision'."
+            ) from exc
+        root = Path(torch.hub.get_dir())
+        repository_dir = root / f"{owner}_{name}_{revision.replace('/', '_')}"
+        if not repository_dir.is_dir():
+            raise FileNotFoundError(
+                f"Local-only UTMOS loading requires cached repository {repository_dir}."
+            )
+        checkpoint = self._checkpoint()
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Local-only UTMOS loading requires cached weights {checkpoint}."
+            )
+        self._validate_cached_weights()
+        return repository_dir
+
+    def _validate_cached_weights(self) -> None:
+        checkpoint = self._checkpoint()
+        if not checkpoint.is_file():
+            raise RuntimeError(
+                f"UTMOS backend did not materialize the pinned weights at {checkpoint}."
+            )
+        digest = hashlib.sha256()
+        with checkpoint.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        actual = digest.hexdigest()
+        if actual != self.weights_sha256:
+            raise RuntimeError(
+                "UTMOS cached weights do not match the pinned SHA-256: "
+                f"{actual} != {self.weights_sha256}."
+            )
+
+    def _checkpoint(self) -> Path:
+        return Path(torch.hub.get_dir()) / "checkpoints" / self.weights
 
     def _prepare_model(self, model: Any, *, device: torch.device) -> Any:
         model = freeze_model(model, device=device)
@@ -86,6 +152,18 @@ class TorchHubUTMOSBackend:
             raise TypeError("allow_remote_code must be a boolean.")
         return value
 
+    def _validate_local_files_only(self, value: bool) -> bool:
+        if not isinstance(value, bool):
+            raise TypeError("local_files_only must be a boolean.")
+        return value
+
+    def _validate_sha256(self, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("weights_sha256 must be a string.")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError("weights_sha256 must be a lowercase SHA-256 digest.")
+        return value
+
 
 @runtime_checkable
 class UTMOSBackendProtocol(Protocol):
@@ -94,8 +172,10 @@ class UTMOSBackendProtocol(Protocol):
 
 
 class UTMOSEvaluator(EvaluatorABC):
-    default_repo = "tarepan/SpeechMOS:v1.2.0"
-    default_model_name = "utmos22_strong"
+    default_repo = f"{DEFAULT_UTMOS_REPOSITORY}:{DEFAULT_UTMOS_REVISION}"
+    default_model_name = DEFAULT_UTMOS_MODEL
+    default_weights = DEFAULT_UTMOS_WEIGHTS
+    default_weights_sha256 = DEFAULT_UTMOS_WEIGHTS_SHA256
 
     def __init__(
         self,
@@ -103,19 +183,43 @@ class UTMOSEvaluator(EvaluatorABC):
         backend: UTMOSBackendProtocol | None = None,
         repo: str = default_repo,
         model_name: str = default_model_name,
+        weights: str = default_weights,
+        weights_sha256: str = default_weights_sha256,
         device: Any | None = None,
         backend_load_options: Mapping[str, Any] | None = None,
         allow_remote_code: bool = False,
+        local_files_only: bool = False,
     ) -> None:
         super().__init__()
+        self._semantic_config = self._config(
+            backend,
+            repo=repo,
+            model_name=model_name,
+            weights=weights,
+            weights_sha256=weights_sha256,
+        )
         self.backend = self._backend(
             backend,
             repo=repo,
             model_name=model_name,
+            weights=weights,
+            weights_sha256=weights_sha256,
             device=device,
             backend_load_options=backend_load_options,
             allow_remote_code=allow_remote_code,
+            local_files_only=local_files_only,
         )
+
+    @property
+    def semantic_config(self) -> UTMOSSemanticConfig:
+        if self._semantic_config is None:
+            raise RuntimeError(
+                "UTMOS semantic identity requires a pinned built-in backend config."
+            )
+        return self._semantic_config
+
+    def semantic_id(self) -> str:
+        return self.semantic_config.semantic_id()
 
     def evaluate(self, audio: Any, sample_rate: int) -> MetricDict:
         sample_rate = validate_sample_rate(sample_rate)
@@ -176,32 +280,65 @@ class UTMOSEvaluator(EvaluatorABC):
         *,
         repo: str,
         model_name: str,
+        weights: str,
+        weights_sha256: str,
         device: Any | None,
         backend_load_options: Mapping[str, Any] | None,
         allow_remote_code: bool,
+        local_files_only: bool,
     ) -> UTMOSBackendProtocol:
         if backend is None:
             return TorchHubUTMOSBackend(
                 repo=repo,
                 model_name=model_name,
+                weights=weights,
+                weights_sha256=weights_sha256,
                 device=device,
                 load_options=backend_load_options,
                 allow_remote_code=allow_remote_code,
+                local_files_only=local_files_only,
             )
         if (
             repo != self.default_repo
             or model_name != self.default_model_name
+            or weights != self.default_weights
+            or weights_sha256 != self.default_weights_sha256
             or device is not None
             or backend_load_options is not None
             or allow_remote_code
+            or local_files_only
         ):
             raise ValueError(
-                "repo, model_name, device, backend_load_options, and allow_remote_code are "
-                "only used when backend is not provided."
+                "repo, model_name, weights, weights_sha256, device, backend_load_options, "
+                "allow_remote_code, and local_files_only are only used when backend "
+                "is not provided."
             )
         if not isinstance(backend, UTMOSBackendProtocol):
             raise TypeError("UTMOSEvaluator backend must implement score(audio, sample_rate).")
         return backend
+
+    def _config(
+        self,
+        backend: UTMOSBackendProtocol | None,
+        *,
+        repo: str,
+        model_name: str,
+        weights: str,
+        weights_sha256: str,
+    ) -> UTMOSSemanticConfig | None:
+        if backend is not None:
+            return None
+        try:
+            repository, revision = repo.rsplit(":", 1)
+            return UTMOSSemanticConfig(
+                repository=repository,
+                revision=revision,
+                model_name=model_name,
+                weights=weights,
+                weights_sha256=weights_sha256,
+            )
+        except (TypeError, ValueError):
+            return None
 
     def _normalize_scores(
         self,

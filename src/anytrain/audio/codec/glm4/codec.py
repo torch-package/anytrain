@@ -14,17 +14,21 @@ from anytrain.audio.codec._audio import resample
 from anytrain.audio.codec._module import DeviceModule, resolve_device, validate_frame_codes
 
 from ._registry import (
+    CODEBOOK_SIZE,
+    CONVOLUTION_STRIDE,
     DEFAULT_GLM4_ARTIFACT,
     DEFAULT_GLM4_REVISION,
+    FEATURE_DIM,
+    FEATURE_HOP_LENGTH,
+    FRAME_RATE,
     GLM4_RUNTIME_GUIDANCE,
+    MAX_SOURCE_POSITIONS,
+    POOLING_KERNEL_SIZE,
+    SAMPLE_RATE,
+    STFT_WINDOW_LENGTH,
 )
 
 GLM4_TRANSFORMERS_VERSION = "4.44.1"
-SAMPLE_RATE = 16_000
-FRAME_RATE = 12.5
-CODEBOOK_SIZE = 16_384
-FEATURE_DIM = 1_280
-MAX_SOURCE_POSITIONS = 1_500
 
 
 class GLM4Tokenizer(DeviceModule):
@@ -434,10 +438,10 @@ def _require_contract(
     }
     expected = {
         "sampling_rate": SAMPLE_RATE,
-        "hop_length": 160,
-        "n_fft": 400,
-        "convolution_stride": 2,
-        "pooling_kernel_size": 4,
+        "hop_length": FEATURE_HOP_LENGTH,
+        "n_fft": STFT_WINDOW_LENGTH,
+        "convolution_stride": CONVOLUTION_STRIDE,
+        "pooling_kernel_size": POOLING_KERNEL_SIZE,
         "max_source_positions": MAX_SOURCE_POSITIONS,
         "codebook_size": CODEBOOK_SIZE,
         "feature_dim": FEATURE_DIM,

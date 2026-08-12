@@ -25,6 +25,7 @@ from anytrain.loss import (
     emit_diagnostics,
     loss_with_diagnostics,
     recommend,
+    scalar,
     teacher_loss,
 )
 from anytrain.loss import observation as loss_observation
@@ -75,6 +76,19 @@ class CustomWeightedLossBalancer(WeightedLossBalancerABC):
 
 
 class LossTest(unittest.TestCase):
+    def test_scalar_is_the_public_scalar_loss_contract(self):
+        import anytrain.loss as loss_api
+
+        value = torch.tensor(2.0, requires_grad=True)
+
+        self.assertIn("scalar", loss_api.__all__)
+        self.assertIs(scalar, loss_api.scalar)
+        self.assertIs(scalar(value), value)
+        with self.assertRaisesRegex(TypeError, "named loss must be a torch.Tensor"):
+            scalar(2.0, name="named loss")
+        with self.assertRaisesRegex(ValueError, "named loss must be a scalar tensor"):
+            scalar(torch.ones(2), name="named loss")
+
     def test_loss_observation_helpers_are_public(self):
         self.assertIs(loss_with_diagnostics, loss_observation.loss_with_diagnostics)
         self.assertIs(emit_diagnostics, loss_observation.emit_diagnostics)

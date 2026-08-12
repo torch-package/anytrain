@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from numbers import Real
 from typing import Protocol
 
 
@@ -53,28 +54,27 @@ class Cosine:
 def curve_ratio(curve: LRCurve, progress: float) -> float:
     if not hasattr(curve, "ratio") or not callable(curve.ratio):
         raise TypeError("lr curve must implement ratio(progress).")
-    value = float(curve.ratio(progress))
-    _require_ratio(value, "lr ratio")
-    return value
+    return _require_ratio(curve.ratio(progress), "lr ratio")
 
 
 def _progress(value: float) -> float:
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("curve progress must be a real number.") from exc
+    resolved = _number(value, "curve progress")
     if not math.isfinite(resolved):
         raise ValueError("curve progress must be finite.")
     return min(max(resolved, 0.0), 1.0)
 
 
-def _require_ratio(value: float, name: str) -> None:
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{name} must be a real number.") from exc
+def _require_ratio(value: float, name: str) -> float:
+    resolved = _number(value, name)
     if not math.isfinite(resolved) or resolved < 0:
         raise ValueError(f"{name} must be finite and non-negative.")
+    return resolved
+
+
+def _number(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    return float(value)
 
 
 __all__ = ["Constant", "Cosine", "LRCurve", "Linear", "curve_ratio"]

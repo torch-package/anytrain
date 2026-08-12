@@ -127,6 +127,31 @@ batch_audio = tts.synthesize_custom_voice(
 )
 ```
 
+Cost-aware planning can load only the matching Hugging Face processor and count
+the exact CustomVoice assistant-prompt tokens used by the upstream inference
+path:
+
+```python
+from anytrain.tts.qwen import QwenCustomVoicePromptEstimator
+
+prompt_cost = QwenCustomVoicePromptEstimator(
+    revision="0c0e3051f131929182e2c023b9537f8b1c68adfe",
+    cache_dir="storage/huggingface",
+    local_files_only=True,
+)
+tokens = prompt_cost.estimate("hello")
+```
+
+The estimator is lazy and pickle-safe. It calls
+`AutoProcessor.from_pretrained(..., fix_mistral_regex=True)` without loading the
+TTS model, then applies the same
+`<|im_start|>assistant\n...<|im_end|>\n<|im_start|>assistant\n` protocol as
+Qwen3-TTS CustomVoice. Its `identity` includes only the logical model id, pinned
+model revision, and prompt protocol. Cache paths and `local_files_only` are
+physical loading policy and do not change semantic identity. The orchestration
+layer must bind the estimator and synthesis backend to the same logical model
+and revision; a resolved local cache path never becomes semantic identity.
+
 CosyVoice 2 and 3 share one adapter and the same `TTSOptions` contract. A
 reference plus `prompt_text` selects zero-shot synthesis; a reference without
 prompt text selects cross-lingual synthesis; `instruction` selects instruct2.

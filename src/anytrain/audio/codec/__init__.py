@@ -1,3 +1,4 @@
+from ._planning import AudioPlanningEstimator
 from .capability import (
     SemanticCodebookCodec,
     codebook_codec,
@@ -13,6 +14,7 @@ from .protocol import AudioCapability, CodecBackend
 from .registry import (
     audio_backend_identity,
     audio_capabilities,
+    audio_planning_estimator,
     audio_spec,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
@@ -28,10 +30,12 @@ __all__ = [
     "AudioCapability",
     "AudioCodeSpec",
     "AudioCodeStreamSpec",
+    "AudioPlanningEstimator",
     "CodecBackend",
     "SemanticCodebookCodec",
     "audio_backend_identity",
     "audio_capabilities",
+    "audio_planning_estimator",
     "audio_spec",
     "can_load_audio_detokenizer",
     "can_load_audio_tokenizer",

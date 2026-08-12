@@ -1,10 +1,10 @@
 # Translation
 
-`anytrain.translation` defines a dataset-independent universal translation
-capability. It uses only strings and position-aligned sequences; it does not
-import language enums, canonical samples, workspace paths, or synthesis plans.
+`anytrain.translation` defines a dataset-independent translation capability. It
+uses strings and position-aligned sequences; it does not import dataset roles,
+workspace paths, or materialization contracts.
 
-The stable protocol is:
+The stable runtime protocol remains:
 
 ```python
 from anytrain.translation import UniversalTranslator
@@ -17,21 +17,68 @@ translated = translator.translate(
 ```
 
 All three sequences must be non-empty and have the same length. Results are a
-plain `list[str]` in the same order. `config_hash()` identifies the model and
-generation semantics used to produce durable data.
+plain `list[str]` in the same order.
 
-The optional Qwen backend is loaded separately:
+## Pinned Qwen semantics
+
+Qwen configuration is split into output semantics and physical loading policy:
 
 ```python
-from anytrain.translation.qwen import QwenTranslator
-
-translator = QwenTranslator.from_pretrained(
-    "Qwen/Qwen3-0.6B",
-    device="cuda:0",
+from anytrain.translation.qwen import (
+    QwenTranslationLoadOptions,
+    QwenTranslationSpec,
 )
+
+spec = QwenTranslationSpec(
+    model="Qwen/Qwen3-0.6B",
+    revision="c1899de289a04d12100db370d81485cdf75e47ca",
+    dtype="bfloat16",
+    max_new_tokens=256,
+)
+load = QwenTranslationLoadOptions(
+    cache_dir="storage/huggingface",
+    local_files_only=True,
+)
+factory = spec.factory(load)
+translator = factory("cuda:0")
 ```
 
-Install it with `anytrain[translation]`. The adapter performs deterministic
-batched generation and returns only translated text. Dataset-specific prompt
-selection, source scheduling, snapshot publication, and quality filtering stay
-outside anytrain.
+`QwenTranslationSpec` is frozen and requires an explicit 40-character model commit. Its
+semantic identity includes model, revision, dtype, deterministic generation
+options, and versioned prompt/decoder protocols. `cache_dir`, offline policy,
+device, batch size, and worker count are not semantic inputs.
+
+`QwenTranslatorFactory` is a frozen, pickle-safe lazy factory. Constructing or
+serializing it imports no Transformers backend and loads no tokenizer or model;
+the selected worker loads one backend when it calls the factory. The resulting
+`QwenTranslator.config_hash()` and `semantic_id()` are derived only from the
+spec.
+
+Generation is deterministic: `do_sample=False`, `use_cache=True`, and the
+explicit `max_new_tokens` contract cannot be overridden through
+`generation_options`. Unsupported prompt or decoder protocol versions fail at
+spec construction instead of silently reusing current code under a new identity.
+
+## Token planning
+
+The same spec creates a tokenizer-only estimator:
+
+```python
+estimator = spec.token_estimator(load)
+
+budget = estimator.planned_tokens(
+    "需要翻译的文本",
+    source_language="Chinese",
+    target_language="English",
+)
+decoded = estimator.decoded_target_tokens("translated text")
+```
+
+`planned_tokens()` is the exact v1 prompt token count plus
+`spec.max_new_tokens`. `decoded_target_tokens()` retokenizes decoded text as a
+post-output work proxy; it is not the number of token ids emitted by
+`generate()`. The estimator lazily loads only `AutoTokenizer`, never the model.
+
+Install the optional backend with `anytrain[translation]`. Dataset-specific row
+selection, language/role mapping, durable provider-id compatibility, source
+scheduling, and quality filtering stay outside AnyTrain.

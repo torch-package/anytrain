@@ -8,6 +8,7 @@ import torch
 from anytrain.audio._detokenizer import AudioDetokenizer
 from anytrain.audio._tokenizer import AudioTokenizer
 
+from ._planning import AudioPlanningEstimator
 from ._registry import CodecEntry
 from .bicodec._registry import ENTRY as BICODEC_ENTRY
 from .dac._registry import ENTRY as DAC_ENTRY
@@ -43,6 +44,16 @@ def audio_spec(name: str) -> AudioCodeSpec:
 
 def audio_backend_identity(name: str) -> AudioBackendIdentity:
     return _entry(name).resolved_identity
+
+
+def audio_planning_estimator(name: str) -> AudioPlanningEstimator:
+    entry = _entry(name)
+    estimator = entry.planning_estimator
+    if estimator is None:
+        raise ValueError(
+            f"Audio backend {name!r} does not provide a static planning estimator."
+        )
+    return estimator
 
 
 def can_load_audio_tokenizer(name: str) -> bool:
@@ -154,6 +165,7 @@ def load_audio_detokenizer(
 __all__ = [
     "audio_backend_identity",
     "audio_capabilities",
+    "audio_planning_estimator",
     "audio_spec",
     "can_load_audio_detokenizer",
     "can_load_audio_tokenizer",

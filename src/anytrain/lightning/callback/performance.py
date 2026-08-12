@@ -6,6 +6,7 @@ import warnings
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
+from numbers import Real
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 import torch
@@ -17,6 +18,7 @@ from anytrain.lightning.perf import (
     infer_peak_flops,
     model_flops_utilization,
 )
+from anytrain.lightning.perf.hardware import dtype_key
 
 from .. import _capability
 
@@ -78,11 +80,13 @@ class PerformanceCallback(pl.Callback):
         _require_non_negative_int(warmup_steps, "warmup_steps")
         _require_positive_int(measure_window_steps, "measure_window_steps")
         if model_flops_per_step is not None:
-            _require_positive(model_flops_per_step, "model_flops_per_step")
+            model_flops_per_step = _flops(model_flops_per_step, "model_flops_per_step")
         if model_flops_per_batch is not None and not callable(model_flops_per_batch):
             raise TypeError("model_flops_per_batch must be callable.")
         if not isinstance(profile_flops, bool):
             raise TypeError("profile_flops must be a boolean.")
+        if compute_dtype is not None:
+            dtype_key(compute_dtype)
         flops_sources = sum(
             (
                 model_flops_per_step is not None,
@@ -96,7 +100,7 @@ class PerformanceCallback(pl.Callback):
                 "are mutually exclusive."
             )
         if hardware_peak_flops is not None:
-            _require_positive(hardware_peak_flops, "hardware_peak_flops")
+            hardware_peak_flops = _flops(hardware_peak_flops, "hardware_peak_flops")
         for name, value in (
             ("sync_cuda", sync_cuda),
             ("sync_distributed", sync_distributed),
@@ -658,12 +662,9 @@ def _log_metadata(trainer: pl.Trainer, metadata: dict[str, str | float]) -> None
 
 
 def _flops(value: float, name: str) -> float:
-    if isinstance(value, bool):
-        raise TypeError(f"{name} must be a real number, not bool.")
-    try:
-        converted = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{name} must be a real number.") from exc
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    converted = float(value)
     _require_positive(converted, name)
     return converted
 
@@ -674,11 +675,15 @@ def _require_positive(value: float, name: str) -> None:
 
 
 def _require_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
     if value <= 0:
         raise ValueError(f"{name} must be positive.")
 
 
 def _require_non_negative_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
     if value < 0:
         raise ValueError(f"{name} must be non-negative.")
 

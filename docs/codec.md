@@ -13,13 +13,20 @@ tensor 布局。
 from anytrain.audio.codec import audio_spec
 
 spec = audio_spec("longcat")
-assert spec.names == ("semantic", "rvq_0", "rvq_1", "rvq_2")
-assert spec.vocab_sizes == (8192, 8100, 8100, 8100)
+assert tuple(stream.name for stream in spec.streams) == (
+    "semantic",
+    "rvq_0",
+    "rvq_1",
+    "rvq_2",
+)
+assert spec.stream("semantic").vocab_size == 8192
+assert spec.stream("semantic").frame_rate == 50.0
 ```
 
-一个 name 只表示一个码本。RVQ 逐级写成 `rvq_0`、`rvq_1` 等；固定长度码流的
-`frame_rates` 项为 `None`。`select()` 和 `exclude()` 可以构造子清单，但 tokenizer 必须返回其
-自身 `code_spec` 中的全部码流。
+一个 `AudioCodeStreamSpec` 只表示一个命名码本。RVQ 逐级写成 `rvq_0`、`rvq_1` 等；
+随时间变化的 stream 声明 `frame_rate`，固定长度 stream 声明 `fixed_units`，二者互斥。
+例如 BiCodec `global` 是固定 32 units，不是 32 Hz。`select()` 和 `exclude()` 可以构造
+子清单，但 tokenizer 必须返回其自身 `code_spec.streams` 中的全部码流。
 
 
 ## Tokenizer
@@ -33,7 +40,7 @@ semantic = codes["semantic"]  # [batch, time]
 rvq_0 = codes["rvq_0"]        # [batch, time]
 ```
 
-`tokenize()` 返回 `Mapping[str, Tensor]`，key 必须与 `code_spec.names` 完全一致。每个 value
+`tokenize()` 返回 `Mapping[str, Tensor]`，key 必须与 `code_spec.streams` 的 name 完全一致。每个 value
 都是 `[batch, unit]` 的 signed integer ID；ABC 统一校验 stream inventory、batch、dtype 和
 vocabulary range。
 
@@ -73,7 +80,7 @@ class AudioDetokenizer(ABC):
     def decode_features(self, features: Mapping[str, Tensor | None]) -> Tensor: ...
 ```
 
-`detokenize(codes)` 是 ABC 提供的便捷入口：按 `code_spec.names` 对每个非空码流调用
+`detokenize(codes)` 是 ABC 提供的便捷入口：按 `code_spec.streams` 对每个非空码流调用
 `codes_to_features()`，再调用一次 `decode_features()`。训练代码可以直接生成 features 并跳过
 离散码；是否允许某个 feature stream 为 `None` 由具体 detokenizer 决定。
 
@@ -87,6 +94,7 @@ BiCodec 的 `semantic` 是时间轴，`global` 是固定 32 个 speaker units。
 from anytrain.audio.codec import (
     audio_backend_identity,
     audio_capabilities,
+    audio_planning_estimator,
     audio_spec,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
@@ -100,6 +108,21 @@ representation adapter 返回方向对象；同一 preset、identity 和 device 
 GLM-4 只声明 tokenizer 方向；LongCat、BiCodec、DAC、Stable Codec 和 UniCodec 声明已实现的
 方向。具体 backend 的原生 `encode()`、`decode()` 或 feature helper 只服务 preset adapter，
 不构成公共 aggregate codec 协议。
+
+BiCodec 与 GLM-4 还为离线 batching cost 暴露静态 estimator：
+
+```python
+estimator = audio_planning_estimator("bicodec")
+units = estimator.estimate(source_frames=48_000, source_rate=48_000)
+sidecar_identity = estimator.identity
+```
+
+查询和估算只使用 pinned backend 的整数长度契约，不加载模型或 optional backend。`identity`
+同时绑定 backend artifact/revision、估算算法版本和数值参数；`version` 可用于诊断公式版本。
+BiCodec 按未 padding 的 Wav2Vec2 convolution 逐层计算，过短输入明确失败；GLM-4 按 feature hop、
+convolution/pooling 和官方 context chunk 边界计算。该值只用于规划 tokenizer unit cost，不代表
+真实音频时长，也不能作为 tokenization 输出正确性的验收证据。没有已验证静态契约的 preset 会在
+`audio_planning_estimator(name)` 明确失败。
 
 `anytrain.audio.bpe._frame.FrameCodec` 是 BPE 序列化使用的本地 frame 值对象，与神经网络
 audio codec API 无关。

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from numbers import Real
 
 from ._curve import LRCurve, curve_ratio
 from ._data import UnitProvider, require_unit_name
@@ -50,8 +51,10 @@ class Phase:
     lr: LRCurve
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("phase name must be a non-empty string.")
+        if not isinstance(self.name, str):
+            raise TypeError("phase name must be a string.")
+        if not self.name:
+            raise ValueError("phase name must not be empty.")
         if "/" in self.name:
             raise ValueError("phase name must not contain '/'.")
         _require_positive(self.duration, "phase duration")
@@ -75,6 +78,9 @@ class LRSchedule:
         for phase in self.phases:
             if not isinstance(phase, Phase):
                 raise TypeError("schedule phases must contain Phase values.")
+        names = [phase.name for phase in self.phases]
+        if len(set(names)) != len(names):
+            raise ValueError("schedule phase names must be unique.")
         if self.stop_at is not None:
             _require_positive(self.stop_at, "stop_at")
         if not isinstance(self.stop_at_end, bool):
@@ -123,8 +129,10 @@ class LRSchedule:
 
 
 def _require_positive_int(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{name} must be a positive integer.")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive.")
 
 
 def _require_positive(value: float, name: str) -> float:
@@ -142,10 +150,9 @@ def _require_non_negative(value: float, name: str) -> float:
 
 
 def _number(value: float, name: str) -> float:
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{name} must be a real number.") from exc
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a host real number, not bool or Tensor.")
+    resolved = float(value)
     if not math.isfinite(resolved):
         raise ValueError(f"{name} must be finite.")
     return resolved

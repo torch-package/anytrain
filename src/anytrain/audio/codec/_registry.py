@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ._planning import AudioPlanningEstimator
 from .protocol import AudioCapability
 from .spec import AudioBackendIdentity, AudioCodeSpec
 
@@ -33,6 +34,7 @@ class CodecEntry:
     audio_capabilities: frozenset[AudioCapability] = frozenset()
     audio_spec: AudioCodeSpec | None = None
     identity: AudioBackendIdentity | None = None
+    planning_estimator: AudioPlanningEstimator | None = None
     tokenizer: TokenizerFactory | None = None
     detokenizer: DetokenizerFactory | None = None
 
@@ -52,6 +54,17 @@ class CodecEntry:
                 f"codec registry entry {self.name!r} must provide a tokenizer factory "
                 "exactly when it declares the tokenizer capability."
             )
+        if self.planning_estimator is not None:
+            if not declares_tokenizer:
+                raise ValueError(
+                    f"codec registry entry {self.name!r} cannot provide a planning "
+                    "estimator without the tokenizer capability."
+                )
+            if self.planning_estimator.backend_identity != self.resolved_identity:
+                raise ValueError(
+                    f"codec registry entry {self.name!r} planning estimator must use "
+                    "the registered backend identity."
+                )
         declares_detokenizer = AudioCapability.DETOKENIZER in self.audio_capabilities
         if declares_detokenizer != (self.detokenizer is not None):
             raise ValueError(

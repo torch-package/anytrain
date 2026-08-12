@@ -817,6 +817,53 @@ class PerformanceCallbackTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "stop_after_measurement must be a boolean"):
             PerformanceCallback(stop_after_measurement=cast(Any, 1))
 
+    def test_callback_owns_constructor_field_validation(self):
+        import torch
+
+        from anytrain.lightning import PerformanceCallback
+
+        for name, value in (
+            ("log_every_n_steps", True),
+            ("log_every_n_steps", 1.0),
+            ("warmup_steps", True),
+            ("warmup_steps", 1.0),
+            ("measure_window_steps", True),
+            ("measure_window_steps", 1.0),
+        ):
+            with (
+                self.subTest(field=name, value=value),
+                self.assertRaisesRegex(TypeError, f"{name} must be an integer"),
+            ):
+                PerformanceCallback(**cast(Any, {name: value}))
+
+        for name, value in (
+            ("model_flops_per_step", True),
+            ("model_flops_per_step", "100"),
+            ("model_flops_per_step", torch.tensor(100.0)),
+            ("hardware_peak_flops", True),
+            ("hardware_peak_flops", "100"),
+            ("hardware_peak_flops", torch.tensor(100.0)),
+        ):
+            with (
+                self.subTest(field=name, value=value),
+                self.assertRaisesRegex(TypeError, f"{name} must be a host real number"),
+            ):
+                PerformanceCallback(**cast(Any, {name: value}))
+
+        for name in ("sync_cuda", "sync_distributed", "stop_after_measurement"):
+            with (
+                self.subTest(field=name),
+                self.assertRaisesRegex(TypeError, f"{name} must be a boolean"),
+            ):
+                PerformanceCallback(**cast(Any, {name: 1}))
+
+        for value in ("int8", cast(Any, object())):
+            with (
+                self.subTest(field="compute_dtype", value=value),
+                self.assertRaisesRegex(ValueError, "dtype must be one of"),
+            ):
+                PerformanceCallback(compute_dtype=cast(Any, value))
+
     def test_callback_rejects_invalid_dynamic_flops(self):
         from anytrain.lightning import PerformanceCallback
 

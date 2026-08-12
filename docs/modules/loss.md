@@ -46,6 +46,7 @@ src/anytrain/loss/
 - `TeacherLoss` / `teacher_loss`
 - `MaskedCodebookCrossEntropyLoss`
 - `PackedCodebookLogits`
+- `scalar`
 
 `LossItem`、`LossOutputs`、`LossDetails`、`LossResult` 以及
 `combine_loss_outputs()`、`iter_loss_items()`、`loss_item_mean()` 等旧的行级组合 API
@@ -64,6 +65,18 @@ def compute_loss(self, *args, **kwargs) -> torch.Tensor:
 `forward()` 会校验并固定返回 0-D Tensor。向量 Tensor、tuple、mapping 或其它带诊断的
 返回值都会立即抛错。`LossBalancerABC` 使用同样的 scalar 契约：它接受名称到 0-D
 Tensor 的 mapping，并返回一个 0-D Tensor。
+
+普通 `LightningModule` 或下游组合逻辑可以复用同一个公开边界：
+
+```python
+from anytrain.loss import scalar
+
+loss = scalar(output, name="training loss")
+```
+
+`scalar()` 原样返回输入 Tensor，不 detach、不复制，也不改变 autograd graph。输入不是 Tensor
+时抛出 `TypeError`，Tensor 不是 0-D 时抛出 `ValueError`；finite、dtype 和具体 loss 数值范围
+仍由 owning loss 负责。
 
 `LossGroup` 对每个 child 调用同一组输入，再把 child scalar 交给 balancer。默认的
 `MeanLossBalancer` 求算术平均；`FixedWeightLossBalancer` 使用显式权重；

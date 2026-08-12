@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import operator
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import TypedDict
@@ -17,10 +16,17 @@ from ._core import (
     private_use_tokens,
     write_progress,
 )
-from ._deps import bpe_class
+from ._deps import bpe_class, tokenizers_version
 from ._eval import EvalStats
 from ._eval import evaluate as run_eval
 from ._frame import Frame, FrameCodec
+from .trainer import (
+    DEFAULT_MAX_FRAMES,
+    DEFAULT_MAX_TOKEN_LENGTH,
+    DEFAULT_MIN_FREQUENCY,
+    DEFAULT_VOCAB_SIZE,
+    CodecBPETrainerSpec,
+)
 
 
 class CodecBPEState(TypedDict):
@@ -69,21 +75,42 @@ class CodecBPE:
         corpus: Callable[[], Iterable[Sequence[Sequence[int]]]],
         *,
         codebook_sizes: Sequence[int],
-        vocab_size: int = 30_000,
-        min_frequency: int = 0,
+        vocab_size: int = DEFAULT_VOCAB_SIZE,
+        min_frequency: int = DEFAULT_MIN_FREQUENCY,
         show_progress: bool = True,
-        max_token_length: int | None = None,
-        max_frames: int | None = 1_000_000_000,
+        max_token_length: int | None = DEFAULT_MAX_TOKEN_LENGTH,
+        max_frames: int | None = DEFAULT_MAX_FRAMES,
     ) -> Self:
-        if max_frames is not None:
-            if isinstance(max_frames, bool):
-                raise TypeError("max_frames must be an integer or None")
-            try:
-                max_frames = operator.index(max_frames)
-            except TypeError as error:
-                raise TypeError("max_frames must be an integer or None") from error
-            if max_frames <= 0:
-                raise ValueError("max_frames must be positive or None")
+        trainer = CodecBPETrainerSpec(
+            vocab_size=vocab_size,
+            min_frequency=min_frequency,
+            max_token_length=max_token_length,
+            max_frames=max_frames,
+        )
+        return cls.train_from_spec(
+            corpus,
+            codebook_sizes=codebook_sizes,
+            trainer=trainer,
+            show_progress=show_progress,
+        )
+
+    @classmethod
+    def train_from_spec(
+        cls,
+        corpus: Callable[[], Iterable[Sequence[Sequence[int]]]],
+        *,
+        codebook_sizes: Sequence[int],
+        trainer: CodecBPETrainerSpec,
+        show_progress: bool = True,
+    ) -> Self:
+        if not isinstance(trainer, CodecBPETrainerSpec):
+            raise TypeError("trainer must be a CodecBPETrainerSpec.")
+        runtime_version = tokenizers_version()
+        if runtime_version != trainer.tokenizers_version:
+            raise RuntimeError(
+                "CodecBPE trainer requires tokenizers=="
+                f"{trainer.tokenizers_version}, observed {runtime_version}."
+            )
 
         codec = FrameCodec(codebook_sizes)
         base = (
@@ -99,17 +126,17 @@ class CodecBPE:
             return _encode_corpus(
                 corpus(),
                 codec=codec,
-                max_frames=max_frames,
+                max_frames=trainer.max_frames,
                 show_progress=show_progress and (base is not None or corpus_pass > 1),
             )
 
         core = CoreBPE.train(
             encoded_corpus,
             base=base,
-            vocab_size=vocab_size,
-            min_frequency=min_frequency,
+            vocab_size=trainer.vocab_size,
+            min_frequency=trainer.min_frequency,
             show_progress=show_progress,
-            max_token_length=max_token_length,
+            max_token_length=trainer.max_token_length,
         )
         return cls(core, codec)
 

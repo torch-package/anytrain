@@ -5,6 +5,7 @@ from typing import Any
 
 from ..abc import EvaluatorABC, MetricDict
 from ..text import TextInput
+from ._config import SpeechEvaluatorConfig
 from .asr import WhisperASREvaluator
 from .utmos import UTMOSEvaluator
 
@@ -19,6 +20,16 @@ class SpeechEvaluator(EvaluatorABC):
         super().__init__()
         self.asr = self._asr(asr)
         self.utmos = self._utmos(utmos)
+
+    @property
+    def semantic_config(self) -> SpeechEvaluatorConfig:
+        return SpeechEvaluatorConfig(
+            whisper=self.asr.semantic_config,
+            utmos=self.utmos.semantic_config,
+        )
+
+    def semantic_id(self) -> str:
+        return self.semantic_config.semantic_id()
 
     def evaluate(
         self,

@@ -5,6 +5,7 @@ import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import Any, cast
 from unittest.mock import patch
@@ -19,8 +20,21 @@ from anytrain.env import (
 )
 from anytrain.evaluator.speech import (
     SpeechEvaluator,
+    SpeechEvaluatorConfig,
+    SpeechEvaluatorLoadOptions,
     UTMOSEvaluator,
+    UTMOSLoadOptions,
+    UTMOSSemanticConfig,
     WhisperASREvaluator,
+    WhisperLoadOptions,
+    WhisperSemanticConfig,
+)
+from anytrain.evaluator.speech._config import (
+    DEFAULT_UTMOS_REPOSITORY,
+    DEFAULT_UTMOS_REVISION,
+    DEFAULT_UTMOS_WEIGHTS_SHA256,
+    OPENAI_WHISPER_VERSION,
+    WHISPER_MODEL_SHA256,
 )
 from anytrain.evaluator.speech.audio import load_wave_batch
 from anytrain.evaluator.speech.utmos import TorchHubUTMOSBackend
@@ -51,6 +65,11 @@ class FakeCallableUTMOSBackend:
 class FakeWhisperModule(ModuleType):
     def __init__(self, model):
         super().__init__("whisper")
+        self.__version__ = OPENAI_WHISPER_VERSION
+        self._MODELS = {
+            name: f"https://models.example/{digest}/{name}.pt"
+            for name, digest in WHISPER_MODEL_SHA256.items()
+        }
         self.model = model
         self.calls = []
         self.pad_calls = []
@@ -200,10 +219,85 @@ class SpeechEvaluatorTest(unittest.TestCase):
     def test_speech_top_level_exports_only_evaluators(self):
         self.assertEqual(
             set(speech.__all__),
-            {"SpeechEvaluator", "UTMOSEvaluator", "WhisperASREvaluator"},
+            {
+                "SpeechEvaluator",
+                "SpeechEvaluatorConfig",
+                "SpeechEvaluatorLoadOptions",
+                "UTMOSEvaluator",
+                "UTMOSLoadOptions",
+                "UTMOSSemanticConfig",
+                "WhisperASREvaluator",
+                "WhisperLoadOptions",
+                "WhisperSemanticConfig",
+            },
         )
         self.assertFalse(hasattr(speech, "OpenAIWhisperBackend"))
         self.assertFalse(hasattr(speech, "TorchHubUTMOSBackend"))
+
+    def test_semantic_configs_are_stable_and_exclude_load_options(self):
+        whisper = WhisperSemanticConfig(decode_options=(("language", "en"),))
+        utmos = UTMOSSemanticConfig()
+        config = SpeechEvaluatorConfig(whisper=whisper, utmos=utmos)
+
+        first = config.evaluator(
+            SpeechEvaluatorLoadOptions(
+                whisper=WhisperLoadOptions(
+                    device="cpu",
+                    download_root="first-cache",
+                    local_files_only=True,
+                ),
+                utmos=UTMOSLoadOptions(
+                    device="cpu",
+                    allow_remote_code=True,
+                    local_files_only=True,
+                ),
+            )
+        )
+        second = config.evaluator(
+            SpeechEvaluatorLoadOptions(
+                whisper=WhisperLoadOptions(device="cuda:0", download_root="second-cache"),
+                utmos=UTMOSLoadOptions(device="cuda:0", allow_remote_code=True),
+            )
+        )
+
+        self.assertEqual(first.semantic_id(), config.semantic_id())
+        self.assertEqual(first.semantic_id(), second.semantic_id())
+        self.assertIsNone(first.asr._backend.model)
+        self.assertIsNone(cast(Any, first.utmos.backend).model)
+        self.assertNotEqual(
+            config.semantic_id(),
+            SpeechEvaluatorConfig(
+                whisper=WhisperSemanticConfig(
+                    decode_options=(("language", "zh"),)
+                ),
+                utmos=utmos,
+            ).semantic_id(),
+        )
+
+    def test_default_semantics_pin_whisper_artifact_and_utmos_commit(self):
+        whisper = WhisperSemanticConfig()
+        utmos = UTMOSSemanticConfig()
+
+        self.assertEqual(
+            whisper.artifact_sha256,
+            "e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb",
+        )
+        self.assertEqual(utmos.revision, DEFAULT_UTMOS_REVISION)
+        self.assertEqual(len(utmos.revision), 40)
+        self.assertEqual(
+            utmos.weights_sha256,
+            DEFAULT_UTMOS_WEIGHTS_SHA256,
+        )
+        self.assertEqual(
+            whisper.semantic_payload()["artifact_sha256"],
+            whisper.artifact_sha256,
+        )
+
+    def test_custom_utmos_backend_has_no_implicit_semantic_identity(self):
+        evaluator = UTMOSEvaluator(backend=FakeUTMOSBackend(4.0))
+
+        with self.assertRaisesRegex(RuntimeError, "pinned built-in backend"):
+            evaluator.semantic_id()
 
     def test_speech_evaluator_returns_asr_text_and_utmos_metrics(self):
         audio = torch.zeros(2, 16000)
@@ -339,6 +433,45 @@ class SpeechEvaluatorTest(unittest.TestCase):
         self.assertEqual(evaluator.model_name, "large-v3")
         self.assertIsNone(evaluator._backend.model)
         self.assertIn("large-v3", evaluator.supported_model_names)
+
+    def test_whisper_asr_rejects_backend_or_artifact_drift(self):
+        model = FakeWhisperModel({"text": "hello world"})
+        wrong_version = FakeWhisperModule(model)
+        wrong_version.__version__ = "future"
+        evaluator = WhisperASREvaluator(model_name="tiny", device="cpu")
+
+        with (
+            patch.dict("sys.modules", {"whisper": wrong_version}),
+            self.assertRaisesRegex(RuntimeError, "requires openai-whisper"),
+        ):
+            evaluator.transcribe(torch.zeros(16000), 16000)
+
+        wrong_artifact = FakeWhisperModule(model)
+        wrong_artifact._MODELS["tiny"] = "https://models.example/wrong/tiny.pt"
+        evaluator = WhisperASREvaluator(model_name="tiny", device="cpu")
+        with (
+            patch.dict("sys.modules", {"whisper": wrong_artifact}),
+            self.assertRaisesRegex(RuntimeError, "pinned artifact"),
+        ):
+            evaluator.transcribe(torch.zeros(16000), 16000)
+
+    def test_whisper_local_only_fails_before_model_loader(self):
+        model = FakeWhisperModel({"text": "hello world"})
+        whisper = FakeWhisperModule(model)
+        with TemporaryDirectory() as root:
+            evaluator = WhisperASREvaluator(
+                model_name="tiny",
+                device="cpu",
+                download_root=root,
+                local_files_only=True,
+            )
+            with (
+                patch.dict("sys.modules", {"whisper": whisper}),
+                self.assertRaisesRegex(FileNotFoundError, "Local-only Whisper"),
+            ):
+                evaluator.transcribe(torch.zeros(16000), 16000)
+
+        self.assertEqual(whisper.calls, [])
 
     def test_whisper_asr_rejects_unknown_model_name(self):
         with self.assertRaisesRegex(ValueError, "model_name must be one of"):
@@ -599,12 +732,13 @@ class SpeechEvaluatorTest(unittest.TestCase):
         with (
             patch.dict(os.environ, {ANYTRAIN_HOME_ENV: "/tmp/anytrain"}, clear=True),
             patch("torch.hub.load", return_value=model) as load,
+            patch.object(backend, "_validate_cached_weights") as validate_weights,
         ):
             score = backend.score(torch.zeros(2, 16000), 16000)
             self.assertEqual(os.environ[TORCH_HOME_ENV], "/tmp/anytrain/torch")
 
         load.assert_called_once_with(
-            "tarepan/SpeechMOS:v1.2.0",
+            f"{DEFAULT_UTMOS_REPOSITORY}:{DEFAULT_UTMOS_REVISION}",
             "utmos22_strong",
             trust_repo=True,
         )
@@ -617,6 +751,7 @@ class SpeechEvaluatorTest(unittest.TestCase):
         self.assertFalse(model.calls[0][4])
         self.assertTrue(model.calls[0][5])
         self.assertEqual(model.eval_calls, 1)
+        validate_weights.assert_called_once_with()
 
     def test_torch_hub_utmos_backend_preserves_explicit_trust_repo_option(self):
         model = FakeUTMOSModel(torch.tensor([4.0]))
@@ -626,14 +761,64 @@ class SpeechEvaluatorTest(unittest.TestCase):
             load_options={"trust_repo": False},
         )
 
-        with patch("torch.hub.load", return_value=model) as load:
+        with (
+            patch("torch.hub.load", return_value=model) as load,
+            patch.object(backend, "_validate_cached_weights") as validate_weights,
+        ):
             backend.score(torch.zeros(16000), 16000)
 
         load.assert_called_once_with(
-            "tarepan/SpeechMOS:v1.2.0",
+            f"{DEFAULT_UTMOS_REPOSITORY}:{DEFAULT_UTMOS_REVISION}",
             "utmos22_strong",
             trust_repo=False,
         )
+        validate_weights.assert_called_once_with()
+
+    def test_torch_hub_utmos_local_only_uses_pinned_cache(self):
+        model = FakeUTMOSModel(torch.tensor([4.0]))
+        backend = TorchHubUTMOSBackend(
+            device="cpu",
+            allow_remote_code=True,
+            local_files_only=True,
+            weights_sha256=(
+                "e3b0c44298fc1c149afbf4c8996fb924"
+                "27ae41e4649b934ca495991b7852b855"
+            ),
+        )
+        with TemporaryDirectory() as root:
+            hub = Path(root)
+            repository = (
+                hub
+                / f"tarepan_SpeechMOS_{DEFAULT_UTMOS_REVISION}"
+            )
+            repository.mkdir()
+            checkpoints = hub / "checkpoints"
+            checkpoints.mkdir()
+            (checkpoints / "utmos22_strong_step7459_v1.pt").touch()
+            with (
+                patch("torch.hub.get_dir", return_value=str(hub)),
+                patch("torch.hub.load", return_value=model) as load,
+            ):
+                backend.score(torch.zeros(16000), 16000)
+
+        load.assert_called_once_with(
+            str(repository),
+            "utmos22_strong",
+            source="local",
+            trust_repo=True,
+        )
+
+    def test_torch_hub_utmos_rejects_cached_weight_drift(self):
+        backend = TorchHubUTMOSBackend()
+        with TemporaryDirectory() as root:
+            checkpoints = Path(root) / "checkpoints"
+            checkpoints.mkdir()
+            (checkpoints / "utmos22_strong_step7459_v1.pt").write_bytes(b"drift")
+            with (
+                patch("torch.hub.get_dir", return_value=root),
+                self.assertRaisesRegex(RuntimeError, "pinned SHA-256"),
+            ):
+                backend._validate_cached_weights()
 
 
 if __name__ == "__main__":

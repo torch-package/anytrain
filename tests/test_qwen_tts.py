@@ -1,12 +1,21 @@
+import pickle
 import sys
 import types
 import unittest
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 import torch
 
 from anytrain.tts import TTSOptions, TTSVoiceMode
-from anytrain.tts.qwen import QwenCustomVoiceTTS, QwenCustomVoiceTTSConfig
+from anytrain.tts.qwen import (
+    CUSTOM_VOICE_PROMPT_PROTOCOL,
+    QwenCustomVoicePromptEstimator,
+    QwenCustomVoiceTTS,
+    QwenCustomVoiceTTSConfig,
+)
+
+_REVISION = "0c0e3051f131929182e2c023b9537f8b1c68adfe"
 
 
 class QwenTTSAdapterTest(unittest.TestCase):
@@ -193,6 +202,165 @@ class QwenTTSConfigTest(unittest.TestCase):
         self.assertNotEqual(first.config_hash(), changed_attention.config_hash())
 
 
+class QwenCustomVoicePromptEstimatorTest(unittest.TestCase):
+    def setUp(self):
+        FakeAutoProcessor.loaded = None
+        FakeAutoProcessor.output = None
+
+    def test_loads_only_the_processor_and_uses_the_exact_upstream_prompt(self):
+        estimator = QwenCustomVoicePromptEstimator(
+            model="fake-qwen",
+            revision=_REVISION,
+            cache_dir=Path("storage/hf"),
+            local_files_only=True,
+        )
+
+        self.assertFalse(estimator.processor_loaded)
+        with _fake_transformers():
+            count = estimator.estimate("hello")
+
+        self.assertTrue(estimator.processor_loaded)
+        self.assertEqual(count, 6)
+        assert FakeAutoProcessor.loaded is not None
+        self.assertEqual(
+            FakeAutoProcessor.loaded.load_args,
+            (
+                "fake-qwen",
+                {
+                    "cache_dir": "storage/hf",
+                    "fix_mistral_regex": True,
+                    "local_files_only": True,
+                    "revision": _REVISION,
+                },
+            ),
+        )
+        self.assertEqual(
+            FakeAutoProcessor.loaded.calls,
+            [
+                {
+                    "text": ("<|im_start|>assistant\nhello<|im_end|>\n<|im_start|>assistant\n"),
+                    "return_tensors": "pt",
+                    "padding": True,
+                }
+            ],
+        )
+
+    def test_identity_excludes_physical_loading_policy(self):
+        first = QwenCustomVoicePromptEstimator(
+            model="fake-qwen",
+            revision=_REVISION,
+            cache_dir="first",
+            local_files_only=False,
+        )
+        replica = QwenCustomVoicePromptEstimator(
+            model="fake-qwen",
+            revision=_REVISION,
+            cache_dir="second",
+            local_files_only=True,
+        )
+        changed_model = QwenCustomVoicePromptEstimator(
+            model="other-qwen",
+            revision=_REVISION,
+        )
+        changed_revision = QwenCustomVoicePromptEstimator(
+            model="fake-qwen",
+            revision="1" * 40,
+        )
+
+        self.assertEqual(first.prompt_protocol, CUSTOM_VOICE_PROMPT_PROTOCOL)
+        self.assertEqual(first.identity, replica.identity)
+        self.assertNotEqual(first.identity, changed_model.identity)
+        self.assertNotEqual(first.identity, changed_revision.identity)
+
+    def test_pickle_discards_a_loaded_processor_and_remains_lazy(self):
+        estimator = QwenCustomVoicePromptEstimator(
+            model="fake-qwen",
+            revision=_REVISION,
+        )
+        restored_before_load = pickle.loads(pickle.dumps(estimator))
+        self.assertFalse(restored_before_load.processor_loaded)
+        self.assertEqual(restored_before_load.identity, estimator.identity)
+
+        with _fake_transformers():
+            estimator.estimate("hello")
+        self.assertTrue(estimator.processor_loaded)
+
+        restored_after_load = pickle.loads(pickle.dumps(estimator))
+        self.assertFalse(restored_after_load.processor_loaded)
+        self.assertEqual(restored_after_load.identity, estimator.identity)
+        with _fake_transformers():
+            self.assertEqual(restored_after_load.estimate("hello"), 6)
+
+    def test_rejects_unpinned_or_physical_semantics_and_bad_input(self):
+        with self.assertRaisesRegex(ValueError, "40-character commit"):
+            QwenCustomVoicePromptEstimator(revision="main")
+        with self.assertRaisesRegex(ValueError, "logical artifact id"):
+            QwenCustomVoicePromptEstimator(
+                model="/models/qwen",
+                revision=_REVISION,
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported.*prompt protocol"):
+            QwenCustomVoicePromptEstimator(
+                revision=_REVISION,
+                prompt_protocol="custom",
+            )
+        with self.assertRaisesRegex(TypeError, "local_files_only"):
+            QwenCustomVoicePromptEstimator(
+                revision=_REVISION,
+                local_files_only=cast(Any, 1),
+            )
+
+        estimator = QwenCustomVoicePromptEstimator(
+            model="fake-qwen",
+            revision=_REVISION,
+        )
+        with _fake_transformers(), self.assertRaisesRegex(ValueError, "must not be empty"):
+            estimator.estimate("  ")
+
+    def test_rejects_bad_processor_outputs(self):
+        cases = (
+            (object(), TypeError, "mapping"),
+            ({"input_ids": [1, 2]}, TypeError, "Tensor"),
+            ({"input_ids": torch.ones(1, 2, 3)}, ValueError, "rank 1 or rank 2"),
+            ({"input_ids": torch.ones(2, 3)}, ValueError, "exactly one text"),
+            (
+                {"input_ids": torch.empty((1, 0), dtype=torch.long)},
+                ValueError,
+                "must not be empty",
+            ),
+        )
+        for output, error, message in cases:
+            with self.subTest(message=message):
+                FakeAutoProcessor.output = output
+                estimator = QwenCustomVoicePromptEstimator(
+                    model="fake-qwen",
+                    revision=_REVISION,
+                )
+                with _fake_transformers(), self.assertRaisesRegex(error, message):
+                    estimator.estimate("hello")
+
+
+class FakeAutoProcessor:
+    loaded: ClassVar[Any] = None
+    output: ClassVar[object | None] = None
+
+    def __init__(self, load_args):
+        self.load_args = load_args
+        self.calls = []
+        self.unpickleable = lambda: None
+        type(self).loaded = self
+
+    @classmethod
+    def from_pretrained(cls, model, **kwargs):
+        return cls((model, kwargs))
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.output is not None:
+            return self.output
+        return {"input_ids": torch.tensor([[1, 2, 3, 4, 5, 6]])}
+
+
 class FakeQwen3TTSModel:
     loaded: ClassVar[Any] = None
 
@@ -239,6 +407,25 @@ class _fake_qwen_tts:
             sys.modules.pop("qwen_tts", None)
         else:
             sys.modules["qwen_tts"] = previous
+
+
+class _fake_transformers:
+    def __init__(self) -> None:
+        self.previous = {}
+
+    def __enter__(self):
+        module: Any = types.ModuleType("transformers")
+        module.AutoProcessor = FakeAutoProcessor
+        self.previous = {"transformers": sys.modules.get("transformers")}
+        sys.modules["transformers"] = module
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        previous = self.previous["transformers"]
+        if previous is None:
+            sys.modules.pop("transformers", None)
+        else:
+            sys.modules["transformers"] = previous
 
 
 if __name__ == "__main__":

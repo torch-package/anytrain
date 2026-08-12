@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from ..abc import EvaluatorABC, MetricDict
 from ..text import TextComparisonEvaluator, TextInput
 from ..text.normalization import coerce_text_batch
+from ._config import OPENAI_WHISPER_VERSION, WhisperSemanticConfig
 from ._whisper import DEFAULT_MODEL_NAME, SUPPORTED_MODEL_NAMES, _OpenAIWhisperTranscriber
 from .audio import validate_sample_rate
 
@@ -40,19 +41,38 @@ class WhisperASREvaluator(EvaluatorABC):
         device: Any | None = None,
         download_root: str | Path | None = None,
         load_options: Mapping[str, Any] | None = None,
+        local_files_only: bool = False,
+        backend_version: str = OPENAI_WHISPER_VERSION,
     ) -> None:
         super().__init__()
-        self.model_name = model_name
+        self.text_evaluator = self._text_evaluator(text_evaluator)
+        self.decode_options = self._validate_decode_options(decode_options)
+        self._semantic_config = WhisperSemanticConfig(
+            model_name=model_name,
+            decode_options=tuple(sorted(self.decode_options.items())),
+            normalization=self.text_evaluator.normalization,
+            bleu_smoothing=self.text_evaluator.bleu_smoothing,
+            backend_version=backend_version,
+        )
+        self.model_name = self._semantic_config.model_name
         self.device = device
         self._backend: _ASRTranscriber = _OpenAIWhisperTranscriber(
-            model_name=model_name,
+            model_name=self.model_name,
             device=device,
             download_root=download_root,
             load_options=load_options,
+            local_files_only=local_files_only,
+            backend_version=backend_version,
+            artifact_sha256=self._semantic_config.artifact_sha256,
         )
         self.download_root = self._backend.download_root
-        self.text_evaluator = self._text_evaluator(text_evaluator)
-        self.decode_options = self._validate_decode_options(decode_options)
+
+    @property
+    def semantic_config(self) -> WhisperSemanticConfig:
+        return self._semantic_config
+
+    def semantic_id(self) -> str:
+        return self.semantic_config.semantic_id()
 
     def evaluate(
         self,

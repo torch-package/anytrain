@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 INSTALL_HINT = (
@@ -25,3 +26,10 @@ def training_classes() -> tuple[type[Any], type[Any], type[Any]]:
     except ImportError as exc:
         raise ImportError(f"`CodecBPE` requires `tokenizers`. {INSTALL_HINT}") from exc
     return Tokenizer, BPE, BpeTrainer
+
+
+def tokenizers_version() -> str:
+    try:
+        return version("tokenizers")
+    except PackageNotFoundError as exc:
+        raise ImportError(f"`CodecBPE` requires `tokenizers`. {INSTALL_HINT}") from exc

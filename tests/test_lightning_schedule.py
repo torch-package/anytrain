@@ -91,6 +91,58 @@ class ScheduleTest(unittest.TestCase):
                 with self.assertRaisesRegex(TypeError, "host real number"):
                     UnitBatch(valid=0.0, padded=cast(Any, value), unit="tokens")
 
+    def test_schedule_specs_own_strict_numeric_validation(self):
+        provider = _Provider()
+        for value in (True, "1", torch.tensor(1.0)):
+            with (
+                self.subTest(field="curve", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                Constant(cast(Any, value))
+            with (
+                self.subTest(field="duration", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                Phase("main", duration=cast(Any, value), lr=Constant())
+            with (
+                self.subTest(field="log_every_n_units", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                UnitClock(
+                    unit="tokens",
+                    provider=provider,
+                    log_every_n_units=cast(Any, value),
+                )
+            with (
+                self.subTest(field="stop_at", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                LRSchedule(
+                    clock=UnitClock(unit="tokens", provider=provider),
+                    phases=(Phase("main", duration=1.0, lr=Constant()),),
+                    stop_at=cast(Any, value),
+                )
+
+        for value in (True, 1.0):
+            with (
+                self.subTest(field="measure_window_batches", value=value),
+                self.assertRaisesRegex(TypeError, "must be an integer"),
+            ):
+                UnitClock(
+                    unit="tokens",
+                    provider=provider,
+                    measure_window_batches=cast(Any, value),
+                )
+
+    def test_schedule_requires_unique_phase_names(self):
+        phases = (
+            Phase("main", duration=1.0, lr=Constant()),
+            Phase("main", duration=2.0, lr=Constant()),
+        )
+
+        with self.assertRaisesRegex(ValueError, "phase names must be unique"):
+            LRSchedule(clock=StepClock(), phases=phases)
+
     def test_step_clock_runtime_returns_lightning_scheduler(self):
         optimizer = _optimizer()
         schedule = LRSchedule(

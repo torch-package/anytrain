@@ -12,6 +12,7 @@ from anytrain.audio.codec import (
     AudioCodeStreamSpec,
     audio_backend_identity,
     audio_capabilities,
+    audio_planning_estimator,
     audio_spec,
     can_load_audio_detokenizer,
     can_load_audio_tokenizer,
@@ -47,10 +48,12 @@ def test_audio_capability_values_are_stable() -> None:
         "AudioCapability",
         "AudioCodeSpec",
         "AudioCodeStreamSpec",
+        "AudioPlanningEstimator",
         "CodecBackend",
         "SemanticCodebookCodec",
         "audio_backend_identity",
         "audio_capabilities",
+        "audio_planning_estimator",
         "audio_spec",
         "can_load_audio_detokenizer",
         "can_load_audio_tokenizer",
@@ -221,6 +224,62 @@ def test_directional_capabilities_and_identity() -> None:
     assert identity.preset == "bicodec"
     assert identity.revision == "642071559bfc6346c2359d19dcb6be3f9dd8a05d"
     assert DEFAULT_LONGCAT_REVISION == "5c2493c6c68959bd9ad4b06cc3df9292fc1d670f"
+
+
+def test_audio_planning_estimators_are_static_versioned_backend_contracts() -> None:
+    with patch("anytrain.audio.codec.registry._load_backend") as load_backend:
+        bicodec = audio_planning_estimator("bicodec")
+        glm4 = audio_planning_estimator("glm4")
+
+    load_backend.assert_not_called()
+    assert bicodec.backend_identity == audio_backend_identity("bicodec")
+    assert bicodec.version == "bicodec-wav2vec2-convolution-v1"
+    assert bicodec.identity == (
+        "audio-token-planning-v1:"
+        "89ea0721c3d9d0e9034d5f675b29076fb99d92bd63d6a45d95957e8cfd90d796"
+    )
+    assert glm4.backend_identity == audio_backend_identity("glm4")
+    assert glm4.version == "glm4-whisper-vq-pooling-v1"
+    assert glm4.identity == (
+        "audio-token-planning-v1:"
+        "dd934a65ae8ee669d7f74b0a63c9e41c13ed7e7b2d1f59604b1d8107fd505455"
+    )
+
+
+def test_audio_planning_estimators_follow_pinned_length_boundaries() -> None:
+    bicodec = audio_planning_estimator("bicodec")
+    assert bicodec.estimate(400, 16_000) == 1
+    assert bicodec.estimate(719, 16_000) == 1
+    assert bicodec.estimate(720, 16_000) == 2
+    assert bicodec.estimate(16_000, 16_000) == 49
+    assert bicodec.estimate(8_000, 8_000) == 49
+    with pytest.raises(ValueError, match="receptive field"):
+        bicodec.estimate(399, 16_000)
+
+    glm4 = audio_planning_estimator("glm4")
+    assert glm4.estimate(1, 16_000) == 1
+    assert glm4.estimate(1_280, 16_000) == 1
+    assert glm4.estimate(1_281, 16_000) == 2
+    assert glm4.estimate(16_000, 16_000) == 13
+    assert glm4.estimate(478_720, 16_000) == 374
+    assert glm4.estimate(478_721, 16_000) == 375
+
+
+@pytest.mark.parametrize(
+    ("source_frames", "source_rate"),
+    [(0, 16_000), (1, 0), (True, 1)],
+)
+def test_audio_planning_estimators_reject_invalid_source_metadata(
+    source_frames: int,
+    source_rate: int,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="source_frames|source_rate"):
+        audio_planning_estimator("glm4").estimate(source_frames, source_rate)
+
+
+def test_audio_planning_estimator_requires_a_registered_static_contract() -> None:
+    with pytest.raises(ValueError, match="does not provide"):
+        audio_planning_estimator("longcat")
 
 
 class _FrameBackend:

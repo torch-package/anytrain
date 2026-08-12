@@ -1,64 +1,219 @@
-"""Qwen causal-language-model adapter for deterministic universal translation."""
+"""Pinned Qwen translation semantics, lazy loading, and token planning."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from inspect import Parameter, signature
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import torch
 from torch import Tensor
 
+from anytrain._semantic import semantic_hash, semantic_id, semantic_options
+
 from .protocol import validate_translation_batch, validate_translation_outputs
 
 DEFAULT_MODEL = "Qwen/Qwen3-0.6B"
+PROMPT_PROTOCOL = "qwen-translation-prompt-v1"
+DECODER_PROTOCOL = "qwen-translation-decoder-v1"
+
+_SEMANTIC_ID_PREFIX = "qwen-translation-v1"
+_DTYPES = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+    "float32": torch.float32,
+    "float64": torch.float64,
+}
+_RESERVED_GENERATION_OPTIONS = frozenset(
+    {"do_sample", "max_new_tokens", "pad_token_id", "use_cache"}
+)
 
 
 @dataclass(frozen=True)
-class QwenTranslatorConfig:
+class QwenTranslationSpec:
+    """Output-affecting Qwen translation semantics.
+
+    ``revision`` identifies the model artifact. Physical cache paths, device
+    placement, and offline policy belong to :class:`QwenTranslationLoadOptions`.
+    """
+
+    revision: str
     model: str = DEFAULT_MODEL
-    revision: str | None = None
+    dtype: str | None = None
     max_new_tokens: int = 256
-    load_kwargs: Mapping[str, object] = field(default_factory=dict)
-    generate_kwargs: Mapping[str, object] = field(default_factory=dict)
+    generation_options: tuple[tuple[str, object], ...] = ()
+    prompt_protocol: str = PROMPT_PROTOCOL
+    decoder_protocol: str = DECODER_PROTOCOL
 
     def __post_init__(self) -> None:
         _non_empty("model", self.model)
-        if self.revision is not None:
-            _non_empty("revision", self.revision)
+        if Path(self.model).is_absolute():
+            raise ValueError("model must be a logical artifact id, not an absolute path.")
+        _commit("revision", self.revision)
+        if self.dtype is not None and self.dtype not in _DTYPES:
+            raise ValueError(f"dtype must be one of {tuple(_DTYPES)!r} or None.")
         _positive_int("max_new_tokens", self.max_new_tokens)
-        _mapping("load_kwargs", self.load_kwargs)
-        _mapping("generate_kwargs", self.generate_kwargs)
-        if "max_new_tokens" in self.generate_kwargs:
+        options = semantic_options(self.generation_options, name="generation_options")
+        reserved = sorted(set(options) & _RESERVED_GENERATION_OPTIONS)
+        if reserved:
             raise ValueError(
-                "generate_kwargs must not contain max_new_tokens; use the explicit option."
+                "generation_options contains reserved options: " + ", ".join(reserved)
             )
+        if self.prompt_protocol != PROMPT_PROTOCOL:
+            raise ValueError(f"unsupported Qwen prompt protocol {self.prompt_protocol!r}.")
+        if self.decoder_protocol != DECODER_PROTOCOL:
+            raise ValueError(f"unsupported Qwen decoder protocol {self.decoder_protocol!r}.")
 
-    def hash_dict(self) -> dict[str, object]:
+    def semantic_payload(self) -> dict[str, object]:
         return {
-            "model": self.model,
-            "revision": self.revision,
+            "decoder_protocol": self.decoder_protocol,
+            "dtype": self.dtype,
+            "generation_options": semantic_options(
+                self.generation_options,
+                name="generation_options",
+            ),
             "max_new_tokens": self.max_new_tokens,
-            "load_kwargs": _hashable(self.load_kwargs),
-            "generate_kwargs": _hashable(self.generate_kwargs),
+            "model": self.model,
+            "prompt_protocol": self.prompt_protocol,
+            "revision": self.revision,
         }
+
+    def config_hash(self) -> str:
+        return semantic_hash(self.semantic_payload())
+
+    def semantic_id(self) -> str:
+        return semantic_id(_SEMANTIC_ID_PREFIX, self.semantic_payload())
+
+    def factory(
+        self,
+        load_options: QwenTranslationLoadOptions | None = None,
+    ) -> QwenTranslatorFactory:
+        return QwenTranslatorFactory(
+            self,
+            QwenTranslationLoadOptions() if load_options is None else load_options,
+        )
+
+    def token_estimator(
+        self,
+        load_options: QwenTranslationLoadOptions | None = None,
+    ) -> QwenTranslationTokenEstimator:
+        return QwenTranslationTokenEstimator(
+            self,
+            QwenTranslationLoadOptions() if load_options is None else load_options,
+        )
+
+
+@dataclass(frozen=True)
+class QwenTranslationLoadOptions:
+    """Physical loading policy excluded from translation semantic identity."""
+
+    cache_dir: str | Path | None = None
+    local_files_only: bool = False
+
+    def __post_init__(self) -> None:
+        if self.cache_dir is not None and not isinstance(self.cache_dir, (str, Path)):
+            raise TypeError("cache_dir must be a string, Path, or None.")
+        if not isinstance(self.local_files_only, bool):
+            raise TypeError("local_files_only must be a boolean.")
+
+
+@dataclass(frozen=True)
+class QwenTranslatorFactory:
+    """Pickle-safe factory that loads one backend only when a worker calls it."""
+
+    spec: QwenTranslationSpec
+    load_options: QwenTranslationLoadOptions = field(
+        default_factory=QwenTranslationLoadOptions
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.spec, QwenTranslationSpec):
+            raise TypeError("spec must be a QwenTranslationSpec.")
+        if not isinstance(self.load_options, QwenTranslationLoadOptions):
+            raise TypeError("load_options must be QwenTranslationLoadOptions.")
+
+    def __call__(self, device: str) -> QwenTranslator:
+        _non_empty("device", device)
+        return QwenTranslator.from_pretrained(
+            self.spec,
+            device=device,
+            load_options=self.load_options,
+        )
+
+
+@dataclass
+class QwenTranslationTokenEstimator:
+    """Count exact prompt tokens and decoded-text token proxies without a model."""
+
+    spec: QwenTranslationSpec
+    load_options: QwenTranslationLoadOptions = field(
+        default_factory=QwenTranslationLoadOptions
+    )
+    _tokenizer: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.spec, QwenTranslationSpec):
+            raise TypeError("spec must be a QwenTranslationSpec.")
+        if not isinstance(self.load_options, QwenTranslationLoadOptions):
+            raise TypeError("load_options must be QwenTranslationLoadOptions.")
+
+    @property
+    def tokenizer_loaded(self) -> bool:
+        return self._tokenizer is not None
+
+    def prompt_tokens(
+        self,
+        text: str,
+        *,
+        source_language: str,
+        target_language: str,
+    ) -> int:
+        tokenizer = self._load_tokenizer()
+        prompt = translation_prompt(
+            text,
+            source_language=source_language,
+            target_language=target_language,
+            tokenizer=tokenizer,
+        )
+        return _token_count(tokenizer, prompt)
+
+    def planned_tokens(
+        self,
+        text: str,
+        *,
+        source_language: str,
+        target_language: str,
+    ) -> int:
+        return self.prompt_tokens(
+            text,
+            source_language=source_language,
+            target_language=target_language,
+        ) + self.spec.max_new_tokens
+
+    def decoded_target_tokens(self, text: str) -> int:
+        return _token_count(self._load_tokenizer(), _non_empty("text", text))
+
+    def _load_tokenizer(self) -> Any:
+        if self._tokenizer is None:
+            self._tokenizer = _load_tokenizer(self.spec, self.load_options)
+        return self._tokenizer
 
 
 @dataclass
 class QwenTranslator:
     model: Any
     tokenizer: Any
-    config: QwenTranslatorConfig = field(default_factory=QwenTranslatorConfig)
+    spec: QwenTranslationSpec
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     model_loaded_from: str = "custom"
 
-    name: str = "qwen-translator"
+    name: ClassVar[str] = "qwen-translator"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.spec, QwenTranslationSpec):
+            raise TypeError("spec must be a QwenTranslationSpec.")
         self.device = torch.device(self.device)
         if getattr(self.tokenizer, "padding_side", None) != "left":
             self.tokenizer.padding_side = "left"
@@ -73,74 +228,47 @@ class QwenTranslator:
     @classmethod
     def from_pretrained(
         cls,
-        model: str | Path = DEFAULT_MODEL,
+        spec: QwenTranslationSpec,
         *,
-        revision: str | None = None,
         device: str | torch.device | None = None,
-        max_new_tokens: int = 256,
-        generate_kwargs: Mapping[str, object] | None = None,
-        **load_kwargs: object,
+        load_options: QwenTranslationLoadOptions | None = None,
     ) -> QwenTranslator:
+        if not isinstance(spec, QwenTranslationSpec):
+            raise TypeError("spec must be a QwenTranslationSpec.")
+        resolved_load = (
+            QwenTranslationLoadOptions() if load_options is None else load_options
+        )
+        if not isinstance(resolved_load, QwenTranslationLoadOptions):
+            raise TypeError("load_options must be QwenTranslationLoadOptions.")
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoModelForCausalLM
         except ImportError as exc:
             raise ImportError(
                 "anytrain.translation.qwen requires transformers; install "
                 "`anytrain[translation]`."
             ) from exc
 
-        source = str(model)
-        config = QwenTranslatorConfig(
-            model=source,
-            revision=revision,
-            max_new_tokens=max_new_tokens,
-            load_kwargs=load_kwargs,
-            generate_kwargs=dict(generate_kwargs or {}),
-        )
-        resolved_source = _resolve_pretrained_source(
-            source,
-            cache_dir=load_kwargs.get("cache_dir"),
-            local_files_only=load_kwargs.get("local_files_only", False),
-            revision=revision,
-        )
-        tokenizer_options: dict[str, object] = {
-            name: value
-            for name, value in load_kwargs.items()
-            if name
-            in {
-                "cache_dir",
-                "force_download",
-                "local_files_only",
-                "proxies",
-                "subfolder",
-                "token",
-                "trust_remote_code",
-            }
-        }
-        if revision is not None:
-            tokenizer_options["revision"] = revision
-        tokenizer = AutoTokenizer.from_pretrained(resolved_source, **tokenizer_options)
-        options = dict(load_kwargs)
-        if revision is not None:
-            options["revision"] = revision
-        if device is not None and "device_map" not in options:
+        source = _pretrained_source(spec, resolved_load)
+        tokenizer = _load_tokenizer(spec, resolved_load, source=source)
+        options = _hub_options(spec, resolved_load)
+        if spec.dtype is not None:
+            options["dtype"] = _DTYPES[spec.dtype]
+        if device is not None:
             options["device_map"] = str(device)
-        loaded = AutoModelForCausalLM.from_pretrained(resolved_source, **options).eval()
+        loaded = AutoModelForCausalLM.from_pretrained(source, **options).eval()
         return cls(
             model=loaded,
             tokenizer=tokenizer,
-            config=config,
+            spec=spec,
             device=_device(loaded, device),
             model_loaded_from="transformers",
         )
 
     def config_hash(self) -> str:
-        encoded = json.dumps(
-            self.config.hash_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return self.spec.config_hash()
+
+    def semantic_id(self) -> str:
+        return self.spec.semantic_id()
 
     @torch.inference_mode()
     def translate(
@@ -155,8 +283,13 @@ class QwenTranslator:
             target_languages,
         )
         prompts = [
-            translation_prompt(text, source_language=source, target_language=target, tokenizer=self.tokenizer)
-            for text, source, target in zip(values, sources, targets, strict=False)
+            translation_prompt(
+                text,
+                source_language=source,
+                target_language=target,
+                tokenizer=self.tokenizer,
+            )
+            for text, source, target in zip(values, sources, targets, strict=True)
         ]
         inputs = self.tokenizer(
             prompts,
@@ -174,11 +307,14 @@ class QwenTranslator:
             raise TypeError("Qwen translator tokenizer must return rank-2 input_ids.")
         generated = self.model.generate(
             **inputs,
-            max_new_tokens=self.config.max_new_tokens,
+            max_new_tokens=self.spec.max_new_tokens,
             do_sample=False,
             use_cache=True,
             pad_token_id=self.tokenizer.pad_token_id,
-            **dict(self.config.generate_kwargs),
+            **semantic_options(
+                self.spec.generation_options,
+                name="generation_options",
+            ),
         )
         if not isinstance(generated, Tensor) or generated.ndim != 2:
             raise TypeError("Qwen translator generate() must return a rank-2 Tensor.")
@@ -199,7 +335,7 @@ def translation_prompt(
     target_language: str,
     tokenizer: Any,
 ) -> str:
-    """Build a prompt whose response contains translated text only."""
+    """Build the v1 prompt whose response contains translated text only."""
 
     source = _non_empty("source_language", source_language)
     target = _non_empty("target_language", target_language)
@@ -230,6 +366,85 @@ def translation_prompt(
     return prompt
 
 
+def _load_tokenizer(
+    spec: QwenTranslationSpec,
+    load_options: QwenTranslationLoadOptions,
+    *,
+    source: str | None = None,
+) -> Any:
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as exc:
+        raise ImportError(
+            "Qwen token estimation requires transformers; install "
+            "`anytrain[translation]`."
+        ) from exc
+    resolved_source = _pretrained_source(spec, load_options) if source is None else source
+    tokenizer = AutoTokenizer.from_pretrained(
+        resolved_source,
+        **_hub_options(spec, load_options),
+    )
+    if getattr(tokenizer, "padding_side", None) != "left":
+        tokenizer.padding_side = "left"
+    return tokenizer
+
+
+def _pretrained_source(
+    spec: QwenTranslationSpec,
+    load_options: QwenTranslationLoadOptions,
+) -> str:
+    source = spec.model
+    if Path(source).expanduser().exists() or not load_options.local_files_only:
+        return source
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise ImportError(
+            "Local-only Qwen translation loading requires huggingface-hub; install "
+            "`anytrain[translation]`."
+        ) from exc
+    return snapshot_download(
+        repo_id=source,
+        cache_dir=(
+            None if load_options.cache_dir is None else str(load_options.cache_dir)
+        ),
+        local_files_only=True,
+        revision=spec.revision,
+    )
+
+
+def _hub_options(
+    spec: QwenTranslationSpec,
+    load_options: QwenTranslationLoadOptions,
+) -> dict[str, object]:
+    options: dict[str, object] = {"revision": spec.revision}
+    if load_options.cache_dir is not None:
+        options["cache_dir"] = str(load_options.cache_dir)
+    if load_options.local_files_only:
+        options["local_files_only"] = True
+    return options
+
+
+def _token_count(tokenizer: Any, text: str) -> int:
+    encoded = tokenizer(text, add_special_tokens=True)
+    if not isinstance(encoded, Mapping):
+        raise TypeError("Qwen tokenizer output must be a mapping.")
+    input_ids = encoded.get("input_ids")
+    if isinstance(input_ids, Tensor):
+        if input_ids.ndim != 1:
+            raise TypeError("Qwen tokenizer input_ids must be rank 1 for one text.")
+        count = input_ids.numel()
+    elif isinstance(input_ids, Sequence) and not isinstance(
+        input_ids, (str, bytes, bytearray)
+    ):
+        count = len(input_ids)
+    else:
+        raise TypeError("Qwen tokenizer input_ids must be a sequence.")
+    if count <= 0:
+        raise ValueError("Qwen tokenizer input_ids must not be empty.")
+    return count
+
+
 def _translation_text(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError("Qwen translator decoder outputs must be strings.")
@@ -254,59 +469,12 @@ def _device(model: object, value: str | torch.device | None) -> torch.device:
     return torch.device("cpu")
 
 
-def _resolve_pretrained_source(
-    source: str,
-    *,
-    cache_dir: object,
-    local_files_only: object,
-    revision: str | None,
-) -> str:
-    if Path(source).expanduser().exists() or local_files_only is not True:
-        return source
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:
-        raise ImportError(
-            "Local-only Qwen translation loading requires huggingface-hub; install "
-            '`anytrain[translation]`.'
-        ) from exc
-    return snapshot_download(
-        repo_id=source,
-        cache_dir=None if cache_dir is None else str(cache_dir),
-        local_files_only=True,
-        revision=revision,
-    )
-
-
 def _accepts_keyword(method: Any, name: str) -> bool:
     parameters = signature(method).parameters.values()
     return any(
         parameter.name == name or parameter.kind is Parameter.VAR_KEYWORD
         for parameter in parameters
     )
-
-
-def _hashable(value: object) -> object:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {
-            str(key): _hashable(item)
-            for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-        }
-    if isinstance(value, (tuple, list)):
-        return [_hashable(item) for item in value]
-    return str(value)
-
-
-def _mapping(name: str, value: object) -> None:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping.")
-    for key in value:
-        if not isinstance(key, str) or not key:
-            raise ValueError(f"{name} keys must be non-empty strings.")
 
 
 def _non_empty(name: str, value: object) -> str:
@@ -325,9 +493,23 @@ def _positive_int(name: str, value: object) -> int:
     return value
 
 
+def _commit(name: str, value: object) -> str:
+    revision = _non_empty(name, value)
+    if len(revision) != 40 or any(
+        char not in "0123456789abcdef" for char in revision
+    ):
+        raise ValueError(f"{name} must be a lowercase 40-character commit hash.")
+    return revision
+
+
 __all__ = [
+    "DECODER_PROTOCOL",
     "DEFAULT_MODEL",
+    "PROMPT_PROTOCOL",
+    "QwenTranslationLoadOptions",
+    "QwenTranslationSpec",
+    "QwenTranslationTokenEstimator",
     "QwenTranslator",
-    "QwenTranslatorConfig",
+    "QwenTranslatorFactory",
     "translation_prompt",
 ]

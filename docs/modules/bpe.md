@@ -10,6 +10,7 @@ codec，也不管理 global id space；统一 token id 与 embedding 路由见
 当前公开对象：
 
 - `CodecBPE`
+- `CodecBPETrainerSpec`
 - `EvalStats`
 
 安装依赖：
@@ -60,6 +61,33 @@ stats = bpe.evaluate([[[1], [2], [1], [2], [3]]], show_progress=False)
 compression_ratio = stats["compression_ratio"]
 vocab_size = bpe.vocab_size
 ```
+
+需要发布可复现 artifact 时，先冻结 trainer 语义并把 identity 写入调用方 manifest：
+
+```python
+from anytrain.audio.bpe import CodecBPE, CodecBPETrainerSpec
+
+trainer = CodecBPETrainerSpec(
+    vocab_size=100_000,
+    min_frequency=0,
+    max_token_length=None,
+    max_frames=1_000_000_000,
+)
+bpe = CodecBPE.train_from_spec(
+    corpus,
+    codebook_sizes=(8192,),
+    trainer=trainer,
+)
+trainer_identity = trainer.identity
+```
+
+`CodecBPETrainerSpec` 是 frozen contract，覆盖 `vocab_size`、`min_frequency`、
+`max_token_length`、`max_frames`、AnyTrain trainer 算法版本以及实际 `tokenizers` package
+版本。任一字段变化都会改变 `identity`；`train_from_spec()` 会在读取 corpus 前拒绝 runtime
+`tokenizers` version drift。`show_progress` 只影响执行日志，不进入 semantic identity。
+`codebook_sizes` 属于 frame/alphabet 输入契约，也不混入 trainer identity；发布方应与 source
+tokenizer identity 一起单独记录。`codec_bpe.json` 仍只保存可加载的 BPE state，不伪装成 trainer
+provenance，调用方 manifest 继续负责 source lineage、trainer identity 和 artifact 参数。
 
 多 codebook codec frame 用同一个入口：
 

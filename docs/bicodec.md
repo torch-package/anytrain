@@ -56,6 +56,11 @@ released Spark-TTS-0.5B 的 semantic quantizer 使用 8192 个 token，因此 se
 的 FSQ，因此 `global_codebook_sizes == (4096,)`，global ID 范围是 `[0, 4096)`。
 两个字段属于独立 ID space，不能用 global 的 4096 上界校验 semantic token。
 
+离线 batching 只需要 source audio header 时，使用
+`audio_planning_estimator("bicodec")` 从 source frame count/rate 估算 semantic units。该静态
+estimator 复用 pinned Wav2Vec2 unpadded convolution contract，不加载 BiCodec；其 identity 绑定
+backend revision、公式版本和 convolution 参数。不要用 nominal 50 Hz 四舍五入替代它。
+
 上游原生 global tensor 是 `[batch, quantizer, slot]`。backend adapter 在 tokenizer 边界转换为
 单码本 `[batch, slot]`。released config 使用一个 FSQ
 quantizer，因此 `global_codebook_sizes` 只有一项。reference 配置当前裁成 6 秒，再压缩成 32 个

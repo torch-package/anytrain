@@ -27,7 +27,7 @@ codes
   `load_audio_detokenizer`。
 - [`anytrain.audio.codec`](../codec.md)：静态 code spec、directional registry、preset 与 concrete backend；
   新调用方不依赖通用 `AudioCodec`。
-- [`anytrain.audio.bpe`](bpe.md)：`CodecBPE` / `EvalStats`。
+- [`anytrain.audio.bpe`](bpe.md)：`CodecBPE` / `CodecBPETrainerSpec` / `EvalStats`。
 
 根包 `import anytrain.audio` 保持轻量，不导出跨子模块快捷别名。
 
