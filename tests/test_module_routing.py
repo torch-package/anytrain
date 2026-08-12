@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any, cast
 
 import torch
 
@@ -9,7 +10,9 @@ from anytrain.module.moe.routing import (
     ExpertRouting,
     flat_active_mask,
     validate_dense_expert_weights,
+    validate_num_experts,
     validate_sparse_expert_routing,
+    validate_top_k,
 )
 
 
@@ -82,6 +85,19 @@ class ExpertRoutingTest(unittest.TestCase):
                 num_experts=2,
                 device=routing.probabilities.device,
             )
+
+    def test_expert_counts_require_integers(self):
+        for value in (True, 2.0, "2"):
+            with (
+                self.subTest(field="num_experts", value=value),
+                self.assertRaisesRegex(TypeError, "num_experts must be an integer"),
+            ):
+                validate_num_experts(cast(Any, value))
+            with (
+                self.subTest(field="top_k", value=value),
+                self.assertRaisesRegex(TypeError, "top_k must be an integer"),
+            ):
+                validate_top_k(cast(Any, value), num_experts=3)
 
 
 if __name__ == "__main__":

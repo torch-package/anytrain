@@ -79,14 +79,24 @@ def validate_moe_top_k(top_k: int | None, *, num_experts: int) -> None:
 
 def declared_num_experts(module: object) -> int | None:
     value = getattr(module, "num_experts", None)
-    if isinstance(value, int):
-        return value
+    if value is not None:
+        return _declared_count(value, name="declared num_experts")
     config = getattr(module, "config", None)
     if config is not None:
         config_value = getattr(config, "num_experts", None)
-        if isinstance(config_value, int):
-            return config_value
+        if config_value is not None:
+            return _declared_count(
+                config_value,
+                name="declared config.num_experts",
+            )
     return None
+
+
+def _declared_count(value: object, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
+    validate_num_experts(value, name=name)
+    return value
 
 
 __all__ = [

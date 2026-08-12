@@ -106,12 +106,18 @@ class ExpertRouting:
             raise ValueError("sparse expert path requires materialized top-k routing.")
         return self.indices, self.weights, self.top_k
 
+
 def validate_num_experts(num_experts: int, *, name: str = "num_experts") -> None:
+    if isinstance(num_experts, bool) or not isinstance(num_experts, int):
+        raise TypeError(f"{name} must be an integer.")
     if num_experts <= 0:
         raise ValueError(f"{name} must be positive, got {num_experts}.")
 
 
 def validate_top_k(top_k: int, *, num_experts: int, name: str = "top_k") -> None:
+    validate_num_experts(num_experts)
+    if isinstance(top_k, bool) or not isinstance(top_k, int):
+        raise TypeError(f"{name} must be an integer.")
     if top_k <= 0:
         raise ValueError(f"{name} must be positive, got {top_k}.")
     if top_k > num_experts:

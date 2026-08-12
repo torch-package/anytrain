@@ -67,8 +67,31 @@ class LinearRouterTest(unittest.TestCase):
         logits = router(hidden)
         self.assertEqual(logits.shape, (1, 2, 3))
 
+    def test_shape_controls_require_integers(self):
+        with self.assertRaisesRegex(TypeError, "input_dim must be an integer"):
+            LinearRouter(cast(Any, 2.0), 3)
+        with self.assertRaisesRegex(TypeError, "num_experts must be an integer"):
+            LinearRouter(2, cast(Any, True))
+        with self.assertRaisesRegex(TypeError, "segment_size must be an integer"):
+            Grid1d(cast(Any, 2.0))
+
 
 class MoETest(unittest.TestCase):
+    def test_rejects_non_integer_declared_expert_count(self):
+        class InvalidRouter(nn.Module):
+            num_experts = True
+
+            def forward(self, hidden: Tensor) -> Tensor:
+                return hidden
+
+        with self.assertRaisesRegex(TypeError, "declared num_experts must be an integer"):
+            MoE(
+                num_experts=2,
+                router=InvalidRouter(),
+                expert=scale_expert,
+                weight=nn.Parameter(torch.ones(2)),
+            )
+
     def test_topk_generic_bank_matches_reference(self):
         hidden = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
         routing = ExpertRouting(

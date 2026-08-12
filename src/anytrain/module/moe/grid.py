@@ -28,6 +28,8 @@ class Grid1d:
     fill: PaddingMode | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.segment_size, bool) or not isinstance(self.segment_size, int):
+            raise TypeError("Grid1d.segment_size must be an integer.")
         if self.segment_size <= 0:
             raise ValueError(
                 f"Grid1d.segment_size must be positive, got {self.segment_size}."

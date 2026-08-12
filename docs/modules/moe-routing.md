@@ -54,3 +54,7 @@ created inside `MoE.forward` come directly from `torch.topk`; execution skips th
 redundant value scan so a normal CUDA forward does not synchronize merely to
 revalidate those trusted ids. `forward_manually` keeps the strict external-input
 check.
+
+`num_experts`, `top_k`, router input dimensions, and `Grid1d.segment_size` are
+strict Python integers: bool, float, and string values are rejected explicitly.
+The routing validators own the positive range checks and `top_k <= num_experts`.

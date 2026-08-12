@@ -285,3 +285,33 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - ADT / DiT tests：45 passed。
+
+## `anytrain.module.moe`
+
+状态：完成。
+
+审计结论：
+
+- `routing.py` 是 density-neutral record、mask 和 validation 的唯一 owner；`layer.py` 只编排
+  partition/router/gate/bank/restore，公开入口没有重复状态。
+- `bank.py` 的 dense、sparse、linear 与 conv 路径共享 additive bias、mask 和 restore 不变量；
+  `expert.py` 的 stock Expert 共享 bind contract，按文件长度拆分会制造执行族之间的新协议。
+- dynamic conv 的 shape、segment、partitioner、grouped kernels 和 router 已分别拥有清晰职责。
+
+完成的调整：
+
+- routing 的 `num_experts` / `top_k` validator 改为严格 Python integer，并统一拒绝 bool。
+- router/gate 声明的 expert count 通过同一 validator；错误声明不再被当作有效整数。
+- `LinearRouter.input_dim` 与 `Grid1d.segment_size` 对齐同一严格整数契约。
+
+刻意保留：
+
+- dense/top-k 统一 record、trusted internal ids 与 strict manual routing 的同步边界。
+- masked execution、empty probe、additive bias、overlap-add coverage 和 mixed-dtype autograd 语义。
+- Expert/Grid/partitioner ownership、stock expansion convenience 和 public import paths。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- MoE/routing/dynamic-conv tests：83 passed，1 skipped，29 subtests passed。

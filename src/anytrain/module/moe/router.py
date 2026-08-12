@@ -18,6 +18,8 @@ class LinearRouter(nn.Module):
         bias: bool = True,
     ) -> None:
         super().__init__()
+        if isinstance(input_dim, bool) or not isinstance(input_dim, int):
+            raise TypeError("input_dim must be an integer.")
         if input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {input_dim}.")
         validate_num_experts(num_experts)
