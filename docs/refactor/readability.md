@@ -527,3 +527,35 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - Chat API/config/image/OpenRouter/provider tests：51 passed。
+
+## `anytrain.framework`
+
+状态：完成。
+
+审计结论：
+
+- flow matching、GAN 和 RL 已按各自的 source/runtime/objective、output/loss/preset、rollout/loss
+  ownership 组织，不需要按文件长度继续拆分。
+- 三套算法的生命周期、张量布局和 reduction contract 不同，抽取共同基类会把分支条件移入抽象层，
+  降低局部可读性。
+
+完成的调整：
+
+- 新增私有 `_validation.py` 作为 framework host scalar contract 的唯一 owner。
+- flow source/time/sampler、GAN 权重、RL loss 超参数统一拒绝 bool、Tensor、字符串和非有限实数，
+  各算法文件只表达自身范围约束。
+- RL `validate`、DPO `reference_free` 与 sampler bool 控制项改为严格 bool，不再依赖隐式真值。
+- 模块文档补充共享校验 ownership、三套算法的保留边界与 trusted-path 语义。
+
+刻意保留：
+
+- flow matching 的 optional dependency、source/path/runtime/objective/sampler 组合与数值行为。
+- GAN output normalization、feature matching、gradient penalty、observation event 和 DAC preset 架构。
+- DPO、token/continuous/neighbor GRPO 的公式、mask/reduction、policy-only 梯度与
+  `validate=False` 无 tensor host synchronization 快速路径。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- framework flow matching、GAN、RL tests：88 passed，1 skipped，38 subtests passed。

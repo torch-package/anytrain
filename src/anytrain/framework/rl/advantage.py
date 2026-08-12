@@ -3,6 +3,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from .._validation import strict_bool
+
 
 def group_relative_advantages(
     rewards: Tensor,
@@ -17,6 +19,7 @@ def group_relative_advantages(
     contracts for a trusted training batch.
     """
 
+    validate = strict_bool(validate, "validate")
     if validate:
         if not isinstance(rewards, Tensor):
             raise TypeError("rewards must be a tensor.")

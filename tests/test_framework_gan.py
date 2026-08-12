@@ -342,6 +342,17 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "valid Reduction"):
             Loss(TensorDiscriminator(), reduction="none")
 
+    def test_loss_weights_are_finite_host_reals(self):
+        invalid_weights = (
+            {"feature_weight": True},
+            {"feature_weight": float("nan")},
+            {"gp_weight": "1"},
+            {"gp_weight": float("inf")},
+        )
+        for weights in invalid_weights:
+            with self.subTest(weights=weights), self.assertRaises((TypeError, ValueError)):
+                Loss(TensorDiscriminator(), **cast(Any, weights))
+
     def test_from_preset_dac_returns_loss_with_feature_discriminator(self):
         dac_kwargs = {
             "in_channels": 1,

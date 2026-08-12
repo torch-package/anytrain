@@ -5,6 +5,7 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
+from .._validation import non_negative_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
 from .advantage import group_relative_advantages
 from .types import TokenReduction
@@ -22,17 +23,11 @@ class GRPOLoss(nn.Module):
         token_reduction: TokenReduction = "sequence_mean",
     ) -> None:
         super().__init__()
-        if clip_range < 0:
-            raise ValueError("clip_range must be non-negative.")
-        if kl_beta < 0:
-            raise ValueError("kl_beta must be non-negative.")
-        if eps <= 0:
-            raise ValueError("eps must be positive.")
+        self.clip_range = non_negative_real(clip_range, "clip_range")
+        self.kl_beta = non_negative_real(kl_beta, "kl_beta")
+        self.eps = positive_real(eps, "eps")
         if token_reduction not in {"token_mean", "sequence_mean"}:
             raise ValueError("token_reduction must be 'token_mean' or 'sequence_mean'.")
-        self.clip_range = float(clip_range)
-        self.kl_beta = float(kl_beta)
-        self.eps = float(eps)
         self.token_reduction: TokenReduction = token_reduction
         recommend(self)
 
@@ -54,6 +49,7 @@ class GRPOLoss(nn.Module):
         from per-step finite and mask validation.
         """
 
+        validate = strict_bool(validate, "validate")
         if validate:
             _validate_rollout_tensors(policy_token_logps, old_token_logps, response_mask)
             if rewards.shape != policy_token_logps.shape[:2]:

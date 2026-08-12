@@ -4,6 +4,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .._validation import finite_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
 
 
@@ -18,13 +19,11 @@ class DPOLoss(nn.Module):
         label_smoothing: float = 0.0,
     ) -> None:
         super().__init__()
-        if beta <= 0:
-            raise ValueError("beta must be positive.")
-        if label_smoothing < 0 or label_smoothing >= 0.5:
+        self.beta = positive_real(beta, "beta")
+        self.reference_free = strict_bool(reference_free, "reference_free")
+        self.label_smoothing = finite_real(label_smoothing, "label_smoothing")
+        if self.label_smoothing < 0 or self.label_smoothing >= 0.5:
             raise ValueError("label_smoothing must be in [0, 0.5).")
-        self.beta = float(beta)
-        self.reference_free = bool(reference_free)
-        self.label_smoothing = float(label_smoothing)
         recommend(self)
 
     def forward(
@@ -42,6 +41,7 @@ class DPOLoss(nn.Module):
         tensor shape, device, dtype, and finiteness contracts for this batch.
         """
 
+        validate = strict_bool(validate, "validate")
         if validate:
             _validate_pair(policy_chosen_logps, policy_rejected_logps, name="policy")
         policy_margin = policy_chosen_logps - policy_rejected_logps

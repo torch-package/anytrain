@@ -5,6 +5,12 @@ from collections.abc import Callable
 import torch
 from torch import Tensor, nn
 
+from .._validation import (
+    finite_real,
+    integer_at_least,
+    positive_int,
+    strict_bool,
+)
 from ._deps import (
     MixtureDiscreteEulerSolver,
     MixtureDiscreteProbPath,
@@ -66,16 +72,11 @@ class ODESampler:
         num_steps: int = 10,
         return_intermediates: bool = False,
     ):
-        if nfe <= 0:
-            raise ValueError(f"nfe must be positive, got {nfe}.")
-        if num_steps < 2:
-            raise ValueError(f"num_steps must be at least 2, got {num_steps}.")
-
         self.solver_factory = solver_factory
         self.method = method
-        self.nfe = nfe
-        self.num_steps = num_steps
-        self.return_intermediates = return_intermediates
+        self.nfe = positive_int(nfe, "nfe")
+        self.num_steps = integer_at_least(num_steps, "num_steps", 2)
+        self.return_intermediates = strict_bool(return_intermediates, "return_intermediates")
 
     @torch.no_grad()
     def sample(
@@ -129,19 +130,14 @@ class DiscreteEulerSampler:
         return_intermediates: bool = False,
         verbose: bool = False,
     ):
-        if nfe <= 0:
-            raise ValueError(f"nfe must be positive, got {nfe}.")
-        if num_steps < 2:
-            raise ValueError(f"num_steps must be at least 2, got {num_steps}.")
-        if not 0 <= eps < 1:
-            raise ValueError(f"eps must be in [0, 1), got {eps}.")
-
         self.solver_factory = solver_factory
-        self.nfe = nfe
-        self.num_steps = num_steps
-        self.eps = eps
-        self.return_intermediates = return_intermediates
-        self.verbose = verbose
+        self.nfe = positive_int(nfe, "nfe")
+        self.num_steps = integer_at_least(num_steps, "num_steps", 2)
+        self.eps = finite_real(eps, "eps")
+        if not 0 <= self.eps < 1:
+            raise ValueError(f"eps must be in [0, 1), got {self.eps}.")
+        self.return_intermediates = strict_bool(return_intermediates, "return_intermediates")
+        self.verbose = strict_bool(verbose, "verbose")
 
     @torch.no_grad()
     def sample(
@@ -156,6 +152,7 @@ class DiscreteEulerSampler:
     ) -> FlowSampleOutput:
         if x_0.dtype != torch.long:
             raise TypeError(f"x_0 must have dtype torch.long, got {x_0.dtype}.")
+        vocab_size = positive_int(vocab_size, "vocab_size")
 
         extras = dict(model_extras)
 

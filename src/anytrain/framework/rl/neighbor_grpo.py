@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import math
 from typing import cast
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .._validation import non_negative_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
 from .advantage import group_relative_advantages
 from .types import NeighborReduction
@@ -32,24 +32,16 @@ class NeighborGRPOLoss(nn.Module):
         neighbor_reduction: NeighborReduction = "anchor_step_mean",
     ) -> None:
         super().__init__()
-        if clip_range < 0:
-            raise ValueError("clip_range must be non-negative.")
-        if kl_beta < 0:
-            raise ValueError("kl_beta must be non-negative.")
-        if eps <= 0:
-            raise ValueError("eps must be positive.")
-        if adv_clip_max is not None and adv_clip_max <= 0:
-            raise ValueError("adv_clip_max must be positive when provided.")
-        if not math.isfinite(advantage_norm_p) or advantage_norm_p <= 0:
-            raise ValueError("advantage_norm_p must be positive and finite.")
+        self.clip_range = non_negative_real(clip_range, "clip_range")
+        self.kl_beta = non_negative_real(kl_beta, "kl_beta")
+        self.eps = positive_real(eps, "eps")
+        self.adv_clip_max = (
+            None if adv_clip_max is None else positive_real(adv_clip_max, "adv_clip_max")
+        )
+        self.advantage_norm_p = positive_real(advantage_norm_p, "advantage_norm_p")
         if neighbor_reduction not in {"neighbor_mean", "anchor_step_mean"}:
             raise ValueError("neighbor_reduction must be 'neighbor_mean' or 'anchor_step_mean'.")
 
-        self.clip_range = float(clip_range)
-        self.kl_beta = float(kl_beta)
-        self.eps = float(eps)
-        self.adv_clip_max = None if adv_clip_max is None else float(adv_clip_max)
-        self.advantage_norm_p = float(advantage_norm_p)
         self.neighbor_reduction: NeighborReduction = neighbor_reduction
         recommend(self)
 
@@ -71,6 +63,7 @@ class NeighborGRPOLoss(nn.Module):
         already been checked by their owner.
         """
 
+        validate = strict_bool(validate, "validate")
         if validate:
             _validate_neighbor_tensors(policy_neighbor_logps, old_neighbor_logps, neighbor_mask)
             if rewards.shape != _candidate_shape(policy_neighbor_logps):
@@ -188,8 +181,7 @@ def neighbor_logps_from_distances(
         raise ValueError("distances must include a candidate dimension.")
     if distances.is_complex() or not distances.dtype.is_floating_point:
         raise TypeError("distances must be floating-point real values.")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("temperature must be positive and finite.")
+    temperature = positive_real(temperature, "temperature")
 
     if mask is None:
         selected = torch.ones_like(distances, dtype=torch.bool)
@@ -211,7 +203,7 @@ def neighbor_logps_from_distances(
     if bool((selected_distances < 0).any()):
         raise ValueError("selected distances must be non-negative.")
 
-    logits = -distances / distances.new_tensor(float(temperature))
+    logits = -distances / distances.new_tensor(temperature)
     logits = logits.masked_fill(~selected, float("-inf"))
     return F.log_softmax(logits, dim=-1)
 

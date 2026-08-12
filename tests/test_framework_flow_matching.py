@@ -86,9 +86,11 @@ class FlowMatchingComponentTest(unittest.TestCase):
 
     def test_sources_and_time_sampler(self):
         from anytrain.framework.flow_matching import (
+            DiscreteEulerSampler,
             GaussianSource,
             LogitNormalTimeSampler,
             MaskTokenSource,
+            ODESampler,
             UniformSource,
             UniformTimeSampler,
             UniformTokenSource,
@@ -113,6 +115,25 @@ class FlowMatchingComponentTest(unittest.TestCase):
         self.assertEqual(t.shape, (4,))
         self.assertTrue((t >= 0.2).all())
         self.assertTrue((t <= 0.3).all())
+
+        invalid_calls = (
+            lambda: UniformSource(low=float("nan")),
+            lambda: UniformTokenSource(True),
+            lambda: MaskTokenSource(False),
+            lambda: LogitNormalTimeSampler(std=float("inf")),
+            lambda: UniformTimeSampler(t_min=cast(Any, "0")),
+            lambda: ODESampler(nfe=True),
+            lambda: ODESampler(num_steps=cast(Any, 2.5)),
+            lambda: ODESampler(return_intermediates=cast(Any, 1)),
+            lambda: DiscreteEulerSampler(eps=float("nan")),
+            lambda: DiscreteEulerSampler(verbose=cast(Any, 0)),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
+
+        with self.assertRaises(TypeError):
+            UniformTimeSampler().sample(True, x.device)
 
     def test_discrete_runtime_rejects_mask_id_outside_vocab(self):
         from anytrain.framework.flow_matching import DiscreteFlowRuntime, MaskTokenSource

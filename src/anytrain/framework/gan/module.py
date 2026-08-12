@@ -8,6 +8,7 @@ from torch import Tensor, nn
 
 from anytrain import observation
 
+from .._validation import non_negative_real
 from ._output import Features, split
 from .criterion import _LogitCriterion
 from .feature import _FeatureMatching
@@ -28,22 +29,17 @@ class Loss(nn.Module):
         super().__init__()
         if not isinstance(discriminator, nn.Module):
             raise TypeError("discriminator must be a torch.nn.Module.")
-        if feature_weight < 0:
-            raise ValueError("feature_weight must be non-negative.")
-        if gp_weight is not None and gp_weight < 0:
-            raise ValueError("gp_weight must be non-negative.")
-
         self.gan = _gan(gan)
         self.reduction = Reduction(reduction)
         self.discriminator = discriminator
         self._criterion = _LogitCriterion(self.gan, reduction=self.reduction)
-        self.feature_weight = float(feature_weight)
+        self.feature_weight = non_negative_real(feature_weight, "feature_weight")
         self._feature = (
             _FeatureMatching(reduction=self.reduction) if self.feature_weight > 0 else None
         )
-        self.gp_weight = (
-            10.0 if gp_weight is None and self.gan == GAN.WGAN else float(gp_weight or 0.0)
-        )
+        self.gp_weight = 10.0 if gp_weight is None and self.gan == GAN.WGAN else 0.0
+        if gp_weight is not None:
+            self.gp_weight = non_negative_real(gp_weight, "gp_weight")
         self._gp = _GradientPenalty(reduction=self.reduction) if self.gp_weight > 0 else None
         observation.registry.recommend(self)
 

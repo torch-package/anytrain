@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+from .._validation import positive_int
 from ._deps import DiscretePathSample, MixtureDiscreteProbPath, PolynomialConvexScheduler
 from ._runtime import require_batch, require_pair
 from .sampler import DiscreteEulerSampler
@@ -22,18 +23,15 @@ class DiscreteFlowRuntime:
         sampler: DiscreteEulerSampler | None = None,
         call_model: ModelCaller = default_call_model,
     ):
-        if vocab_size <= 0:
-            raise ValueError(f"vocab_size must be positive, got {vocab_size}.")
-
-        self.vocab_size = vocab_size
+        self.vocab_size = positive_int(vocab_size, "vocab_size")
         self.path = (
             MixtureDiscreteProbPath(PolynomialConvexScheduler(n=2.0)) if path is None else path
         )
-        self.source = UniformTokenSource(vocab_size) if source is None else source
-        if isinstance(self.source, MaskTokenSource) and self.source.mask_id >= vocab_size:
+        self.source = UniformTokenSource(self.vocab_size) if source is None else source
+        if isinstance(self.source, MaskTokenSource) and self.source.mask_id >= self.vocab_size:
             raise ValueError(
                 "MaskTokenSource.mask_id must be in [0, vocab_size) because the wrapped "
-                f"Facebook discrete backends gather/one-hot over vocab_size={vocab_size}; "
+                f"Facebook discrete backends gather/one-hot over vocab_size={self.vocab_size}; "
                 f"got mask_id={self.source.mask_id}. Include the mask token in vocab_size "
                 "(for example vocab_size=1025 with mask_id=1024)."
             )

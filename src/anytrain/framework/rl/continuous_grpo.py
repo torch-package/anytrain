@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+from .._validation import non_negative_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
 from .advantage import group_relative_advantages
 from .types import StepReduction
@@ -29,21 +30,15 @@ class ContinuousGRPOLoss(nn.Module):
         step_reduction: StepReduction = "trajectory_mean",
     ) -> None:
         super().__init__()
-        if clip_range < 0:
-            raise ValueError("clip_range must be non-negative.")
-        if kl_beta < 0:
-            raise ValueError("kl_beta must be non-negative.")
-        if eps <= 0:
-            raise ValueError("eps must be positive.")
-        if adv_clip_max is not None and adv_clip_max <= 0:
-            raise ValueError("adv_clip_max must be positive when provided.")
+        self.clip_range = non_negative_real(clip_range, "clip_range")
+        self.kl_beta = non_negative_real(kl_beta, "kl_beta")
+        self.eps = positive_real(eps, "eps")
+        self.adv_clip_max = (
+            None if adv_clip_max is None else positive_real(adv_clip_max, "adv_clip_max")
+        )
         if step_reduction not in {"step_mean", "trajectory_mean"}:
             raise ValueError("step_reduction must be 'step_mean' or 'trajectory_mean'.")
 
-        self.clip_range = float(clip_range)
-        self.kl_beta = float(kl_beta)
-        self.eps = float(eps)
-        self.adv_clip_max = None if adv_clip_max is None else float(adv_clip_max)
         self.step_reduction: StepReduction = step_reduction
         recommend(self)
 
@@ -64,6 +59,7 @@ class ContinuousGRPOLoss(nn.Module):
         already been checked by their owner.
         """
 
+        validate = strict_bool(validate, "validate")
         if validate:
             _validate_step_tensors(policy_step_logps, old_step_logps, step_mask)
             if rewards.shape != policy_step_logps.shape[:2]:

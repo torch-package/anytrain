@@ -32,6 +32,7 @@ concrete type 注册推荐的 `OutputObservation("loss", reduction=observation.R
 ```text
 src/anytrain/framework/
   __init__.py
+  _validation.py
   flow_matching/
   gan/
     __init__.py
@@ -72,6 +73,15 @@ from anytrain.framework.rl import (
     NeighborGRPOLoss,
 )
 ```
+
+`_validation.py` 是 framework 内部 host scalar contract 的唯一 owner。flow source/time/sampler、
+GAN loss 权重和 RL loss 超参数都在公开入口拒绝 bool、Tensor、字符串与非有限实数；算法文件只保留
+各自的范围约束。`validate`、`reference_free`、sampler logging/trajectory 开关严格要求 bool，避免
+配置中的 `0`、`1` 或字符串被静默解释。
+
+flow matching、GAN 和 RL 的训练生命周期、张量布局及数值目标不同，因此保持三个独立子模块；
+不抽取跨算法基类，也不按文件长度拆散 tensor math。RL 的 `validate=False` 仍是显式 trusted path，
+只跳过 batch tensor 的有限性与 mask 检查，不放宽公开控制项的类型。
 
 ## GAN
 
@@ -172,3 +182,4 @@ framework 子模块默认不进入 core import。每个子模块需要声明自�
 - `framework.gan` 的常见公式、判别器输出契约、feature matching detach、D/G 梯度边界、WGAN-GP 和 DAC preset smoke test。
 - `framework.rl` 的 DPO、GRPO、continuous / neighbor GRPO 数学、mask reduction、KL、
   group selection、非有限值边界和 policy-only 梯度路径。
+- framework 共享 host scalar contract 的 bool/type/finiteness/range 边界，以及 RL trusted path。

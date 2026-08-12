@@ -1,6 +1,7 @@
 import math
 import unittest
 from importlib import import_module
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -94,6 +95,21 @@ class RLImportTest(unittest.TestCase):
             {"kl_values", "group_mask", "anchor_mask"},
         )
 
+    def test_loss_controls_use_strict_host_scalar_contracts(self):
+        invalid_calls = (
+            lambda: DPOLoss(beta=True),
+            lambda: DPOLoss(reference_free=cast(Any, 1)),
+            lambda: DPOLoss(label_smoothing=float("nan")),
+            lambda: GRPOLoss(clip_range=float("inf")),
+            lambda: GRPOLoss(kl_beta=False),
+            lambda: GRPOLoss(eps=cast(Any, "1e-8")),
+            lambda: ContinuousGRPOLoss(adv_clip_max=float("nan")),
+            lambda: NeighborGRPOLoss(advantage_norm_p=float("inf")),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
+
 
 class LogProbTest(unittest.TestCase):
     def test_gather_token_logps_and_sequence_sum(self):
@@ -137,6 +153,14 @@ class LogProbTest(unittest.TestCase):
                 torch.zeros(1, 1, 1, 2),
                 torch.zeros(1, 1, 1, 2, dtype=torch.bool),
             )
+
+    def test_neighbor_temperature_is_a_finite_positive_host_real(self):
+        for temperature in (True, "1", 0.0, float("nan"), float("inf")):
+            with self.subTest(temperature=temperature), self.assertRaises((TypeError, ValueError)):
+                neighbor_logps_from_distances(
+                    torch.zeros(1, 2),
+                    temperature=cast(Any, temperature),
+                )
 
 
 class DPOLossTest(unittest.TestCase):
@@ -190,6 +214,15 @@ class DPOLossTest(unittest.TestCase):
                 DPOLoss(reference_free=True),
                 policy_chosen_logps=torch.tensor([float("nan")]),
                 policy_rejected_logps=torch.zeros(1),
+            )
+
+    def test_validate_control_requires_bool(self):
+        with self.assertRaisesRegex(TypeError, "validate"):
+            _run_with_observations(
+                DPOLoss(reference_free=True),
+                policy_chosen_logps=torch.ones(1),
+                policy_rejected_logps=torch.zeros(1),
+                validate=1,
             )
 
     def test_trusted_path_avoids_tensor_scalar_checks(self):

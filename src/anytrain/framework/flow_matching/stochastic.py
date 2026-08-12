@@ -7,6 +7,8 @@ from typing import Literal
 import torch
 from torch import Tensor
 
+from .._validation import positive_real
+
 LogProbReduction = Literal["mean", "sum"]
 
 
@@ -38,14 +40,12 @@ class RectifiedFlowSDE:
         eps: float = 1e-5,
         log_prob_reduction: LogProbReduction = "mean",
     ) -> None:
-        if not math.isfinite(noise_level) or noise_level <= 0:
-            raise ValueError("noise_level must be finite and positive.")
-        if not math.isfinite(eps) or eps <= 0 or eps >= 0.5:
+        self.noise_level = positive_real(noise_level, "noise_level")
+        self.eps = positive_real(eps, "eps")
+        if self.eps >= 0.5:
             raise ValueError("eps must be in (0, 0.5).")
         if log_prob_reduction not in {"mean", "sum"}:
             raise ValueError("log_prob_reduction must be 'mean' or 'sum'.")
-        self.noise_level = float(noise_level)
-        self.eps = float(eps)
         self.log_prob_reduction: LogProbReduction = log_prob_reduction
 
     def step_with_log_prob(
