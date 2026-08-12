@@ -372,3 +372,31 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - `tests/test_module_stream.py`：13 passed。
+
+## `anytrain.audio`
+
+状态：完成，不含后续单独审阅的 `bpe` 与 `codec`。
+
+审计结论：
+
+- 根包为空导出并保持轻量；tokenizer/detokenizer 子包分别转发 directional ABC 与 lazy codec
+  loader，不会因 `import anytrain.audio` 加载 backend。
+- tokenizer 要求完整 Tensor inventory，detokenizer 允许 per-stream `None`，两套校验语义不同，
+  不应为了去重抽成一个带分支的共享 helper。
+
+完成的调整：
+
+- `PaddedAudioCodes` 显式要求每条 stream 的 codes/lengths 同 device，并要求所有 stream 同 device。
+- 文档补充 directional validation ownership 与 padded batch/device contract。
+
+刻意保留：
+
+- tokenizer 的完整 stream inventory、signed IDs、vocab range 与 batch 对齐语义。
+- detokenizer 的 optional stream features 和 code-to-feature-to-waveform convenience path。
+- backend registry/cache、sample-rate adaptation 与 waveform validation 继续由 `audio.codec` 拥有。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- audio directional tests：40 passed。

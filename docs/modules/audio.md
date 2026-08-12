@@ -31,6 +31,11 @@ codes
 
 根包 `import anytrain.audio` 保持轻量，不导出跨子模块快捷别名。
 
+directional ABC 各自拥有 inventory 校验：tokenizer 输出必须是完整的 `[batch, unit]` signed
+integer Tensor 映射，detokenizer 输入则允许 code stream 为 `None`，因此不抽一个会掩盖方向差异的
+共享 validator。`PaddedAudioCodes` 额外保证所有 stream 对齐 batch/device，且每条 stream 的 codes
+与 lengths 在同一 device；它仍允许不同 stream 有不同 padded unit extent。
+
 ## 依赖
 
 - waveform 工具：`audio` extra（torchcodec / torchaudio），不安装 codec 模型。

@@ -122,6 +122,28 @@ def test_padded_audio_codes_requires_codes_and_lengths_to_align_on_batch() -> No
         )
 
 
+def test_padded_audio_codes_requires_codes_and_lengths_to_share_device() -> None:
+    with pytest.raises(ValueError, match="must share a device"):
+        PaddedAudioCodes(
+            codes={"rvq_0": torch.ones((1, 1), dtype=torch.long, device="meta")},
+            lengths={"rvq_0": torch.tensor([1])},
+        )
+
+
+def test_padded_audio_code_streams_share_device() -> None:
+    with pytest.raises(ValueError, match="streams must share a device"):
+        PaddedAudioCodes(
+            codes={
+                "rvq_0": torch.ones((1, 1), dtype=torch.long),
+                "rvq_1": torch.ones((1, 1), dtype=torch.long, device="meta"),
+            },
+            lengths={
+                "rvq_0": torch.tensor([1]),
+                "rvq_1": torch.ones((1,), dtype=torch.long, device="meta"),
+            },
+        )
+
+
 def test_padded_audio_code_streams_align_on_batch() -> None:
     with pytest.raises(ValueError, match="streams must align on batch"):
         PaddedAudioCodes(

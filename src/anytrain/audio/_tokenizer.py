@@ -37,6 +37,7 @@ class PaddedAudioCodes:
         if not self.codes:
             raise ValueError("padded audio codes must contain at least one stream.")
         batch_size: int | None = None
+        device: torch.device | None = None
         for name, lengths in self.lengths.items():
             if not isinstance(name, str) or not name:
                 raise ValueError("padded audio stream names must be non-empty strings.")
@@ -57,14 +58,21 @@ class PaddedAudioCodes:
                 raise TypeError(
                     f"padded audio lengths for {name!r} must contain signed integers."
                 )
+            if codes.device != lengths.device:
+                raise ValueError(
+                    f"padded audio codes and lengths for {name!r} must share a device."
+                )
             if codes.size(0) != lengths.size(0):
                 raise ValueError(
                     f"padded audio codes and lengths for {name!r} must align on batch."
                 )
             if batch_size is None:
                 batch_size = lengths.size(0)
+                device = lengths.device
             elif lengths.size(0) != batch_size:
                 raise ValueError("padded audio streams must align on batch.")
+            elif lengths.device != device:
+                raise ValueError("padded audio streams must share a device.")
             if bool(((lengths <= 0) | (lengths > codes.size(1))).any()):
                 raise ValueError(
                     f"padded audio lengths for {name!r} must be positive and not exceed "
