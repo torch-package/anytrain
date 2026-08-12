@@ -248,6 +248,36 @@ class ScheduleTest(unittest.TestCase):
         restored.load_state_dict(state)
         self.assertEqual(restored.total_valid, 6.0)
 
+    def test_unit_clock_state_rejects_coerced_or_malformed_lrs(self):
+        schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=5.0, lr=Constant(1.0))],
+        )
+        callback = UnitScheduleCallback(schedule)
+        valid_state = {
+            "unit": "tokens",
+            "total_valid": 0.0,
+            "total_padded": 0.0,
+            "base_lrs": [[0.1]],
+            "last_global_step": 0,
+            "last_lrs": [[0.1]],
+            "schedule": schedule.fingerprint(),
+        }
+
+        for field in ("base_lrs", "last_lrs"):
+            for value in ([], [0.1], [[]], [["0.1"]], [[True]], [[float("nan")]]):
+                with self.subTest(field=field, value=value):
+                    state = dict(valid_state)
+                    state[field] = value
+                    with self.assertRaises((TypeError, ValueError)):
+                        callback.load_state_dict(state)
+
+        for field in ("total_valid", "total_padded"):
+            state = dict(valid_state)
+            state[field] = "0.0"
+            with self.subTest(field=field), self.assertRaises(TypeError):
+                callback.load_state_dict(state)
+
     def test_unit_clock_rejects_lightning_scheduler_conflict(self):
         optimizer = _optimizer()
         callback = UnitScheduleCallback(

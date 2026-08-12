@@ -115,6 +115,21 @@ microbatch 数限制窗口，但为保持 optimizer step 原子性只移除完�
 `progress/lr_ratio`。runtime 会拒绝和 Lightning `lr_scheduler` 同时启用，并默认检查 optimizer LR
 没有被其它 callback 改写；它不重建 optimizer、不改变 param group 结构，也不解释 batch schema。
 
+schedule 源码 ownership 保持五层：`_curve.py` 定义纯 LR ratio，`_data.py` 定义 unit 输入，
+`_spec.py` 定义 immutable schedule，`_runtime.py` 负责 step/unit 编译，`_callback.py` 只负责
+unit-clock Lightning lifecycle。callback checkpoint 恢复会先完整校验 totals、optimizer LR group
+结构与每个有限非负 host-real LR，再一次性写入实例；不接受字符串/bool 转换，也不会在后续字段
+失败时留下部分恢复状态。恢复后的 optimizer 数量必须与保存的 base LR group 数一致。
+
+schedule 验收：
+
+```bash
+python -m ruff check src/anytrain/lightning/schedule tests/test_lightning_schedule.py
+basedpyright --pythonpath /path/to/python src/anytrain/lightning/schedule \
+  tests/test_lightning_schedule.py
+python -m pytest -q tests/test_lightning_schedule.py
+```
+
 ## Validation
 
 validation 能力从显式子模块使用，不把短名字重新导出到 `anytrain.lightning`：

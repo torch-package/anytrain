@@ -166,3 +166,34 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - Lightning 本体与 observation 集成：184 passed，27 subtests passed。
+
+## `anytrain.lightning.schedule`
+
+状态：完成。
+
+审计结论：
+
+- curve、unit data、schedule spec、runtime compiler 和 unit callback 已有清晰 owner，不需要改动
+  public API 或继续拆文件。
+- unit callback 的 checkpoint loader 直接对 nested LR state 执行 `float(...)`，会接受字符串、
+  bool、NaN 和畸形 group，并在完成验证前逐字段修改实例。
+- 恢复的 base LR optimizer 数与 Trainer optimizer 数之间缺少显式检查。
+
+完成的调整：
+
+- 新增严格 nested LR group validator，只接受非空 sequence 与有限非负 host real。
+- checkpoint state 完整验证后再统一赋值，失败不留下部分恢复结果。
+- unit runtime 应用 LR 前检查 optimizer 数与 base LR group 数一致。
+- 补 malformed LR/totals checkpoint 测试。
+
+刻意保留：
+
+- step-clock LambdaLR 编译、unit-clock provider 和 callback public API。
+- accumulation、DDP all-gather、CUDA timing、throughput window、stop 与 log key 语义。
+- schedule fingerprint 和现有 checkpoint 字段。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- `tests/test_lightning_schedule.py`：21 passed，30 subtests passed。

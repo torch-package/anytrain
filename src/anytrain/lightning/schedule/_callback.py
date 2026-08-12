@@ -5,6 +5,7 @@ import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Protocol, cast
 
 import lightning.pytorch as pl
@@ -213,18 +214,21 @@ class UnitScheduleCallback(pl.Callback):
             raise ValueError("UnitScheduleCallback state unit does not match callback unit.")
         if state_dict.get("schedule") != self.schedule.fingerprint():
             raise ValueError("UnitScheduleCallback state schedule does not match callback.")
-        self.total_valid = _non_negative_float(state_dict.get("total_valid"), "total_valid")
-        self.total_padded = _non_negative_float(state_dict.get("total_padded"), "total_padded")
-        base_lrs = state_dict.get("base_lrs")
-        if base_lrs is not None:
-            self._base_lrs = [[float(value) for value in group] for group in base_lrs]
+        total_valid = _non_negative_float(state_dict.get("total_valid"), "total_valid")
+        total_padded = _non_negative_float(state_dict.get("total_padded"), "total_padded")
+        raw_base_lrs = state_dict.get("base_lrs")
+        base_lrs = None if raw_base_lrs is None else _lr_groups(raw_base_lrs, "base_lrs")
         last_step = state_dict.get("last_global_step")
         if last_step is not None and (isinstance(last_step, bool) or not isinstance(last_step, int)):
             raise TypeError("UnitScheduleCallback last_global_step must be an integer or None.")
+        raw_last_lrs = state_dict.get("last_lrs")
+        last_lrs = None if raw_last_lrs is None else _lr_groups(raw_last_lrs, "last_lrs")
+
+        self.total_valid = total_valid
+        self.total_padded = total_padded
+        self._base_lrs = base_lrs
         self._last_global_step = last_step
-        last_lrs = state_dict.get("last_lrs")
-        if last_lrs is not None:
-            self._last_lrs = [[float(value) for value in group] for group in last_lrs]
+        self._last_lrs = last_lrs
 
     def _local_units(self, units: object) -> _ResolvedUnits:
         if not isinstance(units, UnitBatch):
@@ -301,6 +305,8 @@ class UnitScheduleCallback(pl.Callback):
         optimizers = _optimizers(trainer)
         if self._base_lrs is None:
             self._base_lrs = _current_lrs(optimizers)
+        if len(optimizers) != len(self._base_lrs):
+            raise RuntimeError("optimizer count changed during unit scheduling.")
         self._validate_lr_owner(optimizers)
         for optimizer, base_lrs in zip(optimizers, self._base_lrs, strict=False):
             if len(optimizer.param_groups) != len(base_lrs):
@@ -518,15 +524,30 @@ def _next_log_at(total_valid: float, every: float | None) -> float | None:
 
 
 def _non_negative_float(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError(f"{name} must be a real number.")
-    try:
-        resolved = float(value)
-    except ValueError as exc:
-        raise TypeError(f"{name} must be a real number.") from exc
+    resolved = float(value)
     if not math.isfinite(resolved) or resolved < 0:
         raise ValueError(f"{name} must be finite and non-negative.")
     return resolved
+
+
+def _lr_groups(value: object, name: str) -> list[list[float]]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"UnitScheduleCallback {name} must be a sequence of groups.")
+    if not value:
+        raise ValueError(f"UnitScheduleCallback {name} must contain an optimizer.")
+
+    result: list[list[float]] = []
+    for group in value:
+        if not isinstance(group, (list, tuple)):
+            raise TypeError(f"UnitScheduleCallback {name} groups must be sequences.")
+        if not group:
+            raise ValueError(f"UnitScheduleCallback {name} groups must not be empty.")
+        result.append(
+            [_non_negative_float(item, f"{name} learning rate") for item in group]
+        )
+    return result
 
 
 __all__ = ["UnitScheduleCallback"]
