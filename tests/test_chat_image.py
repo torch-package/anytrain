@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 from anytrain.chat import Chat
@@ -164,6 +165,12 @@ class ChatImageGenerationTest(unittest.TestCase):
                 client.image("draw a cat", size="")
             with self.assertRaisesRegex(ValueError, "model"):
                 client.image("draw a cat", model="")
+            for timeout in (True, "3", 0, float("nan"), float("inf")):
+                with self.subTest(timeout=timeout), self.assertRaisesRegex(
+                    (TypeError, ValueError),
+                    "timeout",
+                ):
+                    client.image("draw a cat", timeout=cast(Any, timeout))
 
     def test_glm_image_generation_rejects_malformed_response(self):
         class FakeResponse:

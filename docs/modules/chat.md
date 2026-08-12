@@ -23,6 +23,11 @@ response = chat.Chat("deepseek")("summarize this training curve")
 - `ModelType`
 - `config_from_env`
 
+`types.py` 是公开 provider/value/response 类型 owner；`config.py` 只负责凭据、endpoint 与模型候选
+配置和环境解析。`ChatConfig` 在 client/catalog 请求前校验非空 endpoint/API key、primary-first unique
+model tuple、allowlist 和正整数 candidate limit。`chat.py` 拥有实例消息历史与 sync/async 串行化，
+四个文本入口共享同一 prompt/refresh 校验；图片 timeout 要求 `None` 或有限正 host real。
+
 同一个 `Chat` 实例会保留已成功请求的 user/assistant 消息，后续请求会把历史消息作为上下文继续发送。需要开启新上下文时，可以调用 `client.refresh()`，或在单次请求中传入 `refresh=True`：
 
 ```python
@@ -158,3 +163,16 @@ DeepSeek 与 OpenRouter 当前不支持图片生成，调用 `Chat("deepseek").i
 - 不为图片生成维护额外对话上下文；图片生成是独立请求。
 
 后续扩展 provider 参数时，应保持 `Chat(model_type)(prompt, refresh=False) -> str` 的顶层契约，provider-specific 参数再通过明确配置扩展。
+
+`_request.py` 保留 provider payload、同步/异步调用和生命周期日志的完整状态机，`_response.py` 只做
+SDK/dict 响应归一化，`_image.py` 只做 GLM image HTTP 协议，`_openrouter.py` 只做 live catalog 过滤与
+排序。OpenRouter pricing 接受 JSON 数字字符串，但拒绝 NaN/Infinity；这是外部 wire-format 解析，
+不同于 public Python API 的严格 host-value 契约。
+
+## 验收
+
+```bash
+python -m pytest \
+  tests/test_chat_api.py tests/test_chat_config.py tests/test_chat_image.py \
+  tests/test_chat_openrouter.py tests/test_chat_providers.py
+```

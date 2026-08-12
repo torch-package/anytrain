@@ -495,3 +495,35 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - TTS public contract 与四个 backend tests：69 passed。
+
+## `anytrain.chat`
+
+状态：完成。
+
+审计结论：
+
+- public types、config/env、client construction、request lifecycle、response normalization、image HTTP
+  与 OpenRouter catalog 已有明确 owner，不需要继续拆分。
+- `_request.py` 的同步/异步 provider payload 与日志共享 completion spec 和完整生命周期，按 provider
+  拆开反而会复制 logging/response contract。
+
+完成的调整：
+
+- `ChatConfig` 在创建 SDK client 或发送 catalog 凭据前校验 endpoint/key、primary-first unique model
+  inventory、allowlist 与 candidate limit。
+- 四个文本入口统一严格校验非空字符串 prompt 和 bool `refresh`；image iterable 元素与有限正 timeout
+  在文件读取/HTTP 前校验。
+- OpenRouter catalog 明确拒绝 NaN/Infinity pricing，同时保留 JSON numeric string 解析。
+- 模块文档补充 public/client/request/response/image/catalog ownership 与验收范围。
+
+刻意保留：
+
+- 实例内成功消息历史、refresh、sync/async serialization 与跨 event-loop 拒绝语义。
+- DeepSeek/GLM/OpenRouter payload、optional SDK import、请求日志和 response metadata。
+- OpenRouter live catalog 排序/fallback 与 GLM image 独立无上下文请求。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- Chat API/config/image/OpenRouter/provider tests：51 passed。

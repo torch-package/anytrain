@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 import anytrain.chat as chat_api
@@ -117,5 +118,13 @@ class ChatApiTest(unittest.TestCase):
             client = Chat("glm")
             with self.assertRaisesRegex(ValueError, "prompt"):
                 client("")
+            with self.assertRaisesRegex(ValueError, "prompt"):
+                client("   ")
+            with self.assertRaisesRegex(TypeError, "prompt"):
+                client(cast(Any, 1))
+            with self.assertRaisesRegex(TypeError, "refresh"):
+                client("hello", refresh=cast(Any, 1))
             with self.assertRaisesRegex(ValueError, "images"):
                 client("hello", images=[])
+            with self.assertRaisesRegex(TypeError, r"images\[0\]"):
+                client("hello", images=cast(Any, [1]))

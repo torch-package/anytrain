@@ -34,11 +34,27 @@ class ChatConfig:
         allowlist: tuple[str, ...] | None = None,
         candidate_limit: int = OPENROUTER_DEFAULT_CANDIDATE_LIMIT,
     ) -> None:
-        self.base_url = base_url
-        self.model = model
-        self.api_key = api_key
-        self.models = (model,) if models is None else models
-        self.allowlist = allowlist
+        self.base_url = _non_empty_string(base_url, "base_url")
+        self.model = _string(model, "model")
+        self.api_key = _non_empty_string(api_key, "api_key")
+        resolved_models = (model,) if models is None else models
+        self.models = _string_tuple(resolved_models, "models", allow_empty=True)
+        if self.model:
+            if not self.models:
+                raise ValueError("models must contain model when model is set.")
+            if self.models[0] != self.model:
+                raise ValueError("model must be the first entry in models.")
+        elif self.models:
+            raise ValueError("model must be set when models is non-empty.")
+        self.allowlist = (
+            None
+            if allowlist is None
+            else _string_tuple(allowlist, "allowlist", allow_empty=False)
+        )
+        if isinstance(candidate_limit, bool) or not isinstance(candidate_limit, int):
+            raise TypeError("candidate_limit must be an integer.")
+        if candidate_limit < 1:
+            raise ValueError("candidate_limit must be >= 1.")
         self.candidate_limit = candidate_limit
 
     def __repr__(self) -> str:
@@ -178,3 +194,35 @@ def _required_env(name: str) -> str:
     if value == "":
         raise ValueError(f"{name} must not be empty.")
     return value
+
+
+def _string(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string.")
+    return value
+
+
+def _non_empty_string(value: object, name: str) -> str:
+    resolved = _string(value, name)
+    if not resolved:
+        raise ValueError(f"{name} must not be empty.")
+    return resolved
+
+
+def _string_tuple(
+    value: object,
+    name: str,
+    *,
+    allow_empty: bool,
+) -> tuple[str, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple of strings.")
+    if not value and not allow_empty:
+        raise ValueError(f"{name} must not be empty.")
+    resolved = tuple(
+        _non_empty_string(item, f"{name}[{index}]")
+        for index, item in enumerate(value)
+    )
+    if len(set(resolved)) != len(resolved):
+        raise ValueError(f"{name} must contain unique values.")
+    return resolved

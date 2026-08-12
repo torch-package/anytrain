@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 from _chat_fakes import chat_model as _chat_model
@@ -25,6 +26,33 @@ from anytrain.chat.config import (
 
 
 class ChatConfigTest(unittest.TestCase):
+    def test_config_validates_credentials_and_model_inventory(self):
+        base = {
+            "base_url": "https://example.test/v1",
+            "model": "primary",
+            "api_key": "secret",
+            "models": ("primary", "fallback"),
+        }
+        for field, value in (
+            ("base_url", ""),
+            ("base_url", 1),
+            ("api_key", ""),
+            ("model", 1),
+            ("models", ["primary"]),
+            ("candidate_limit", True),
+        ):
+            kwargs = {**base, field: value}
+            with self.subTest(field=field), self.assertRaisesRegex(
+                (TypeError, ValueError),
+                field,
+            ):
+                chat_api.ChatConfig(**cast(Any, kwargs))
+
+        with self.assertRaisesRegex(ValueError, "first entry"):
+            chat_api.ChatConfig(**{**base, "models": ("fallback", "primary")})
+        with self.assertRaisesRegex(ValueError, "unique"):
+            chat_api.ChatConfig(**{**base, "models": ("primary", "primary")})
+
     def test_config_from_env_uses_deepseek_envs(self):
         env = {
             DEEPSEEK_BASE_URL_ENV: "https://example.test/deepseek",
@@ -217,6 +245,22 @@ class ChatConfigTest(unittest.TestCase):
 
         self.assertEqual(resolved.models, ("openai/vision",))
         self.assertEqual(resolved.model, "openai/vision")
+
+    def test_openrouter_ignores_non_finite_pricing(self):
+        catalog = [
+            _chat_model("invalid/infinite", prompt="inf", completion=0),
+            _chat_model("valid/free", prompt=0, completion=0),
+        ]
+        config = chat_api.ChatConfig(
+            base_url="https://openrouter.ai/api/v1",
+            model="",
+            api_key="secret",
+            models=(),
+        )
+        with patch.dict(sys.modules, {"requests": _models_requests(catalog)}):
+            resolved = resolve_models(config)
+
+        self.assertEqual(resolved.models, ("valid/free",))
 
     def test_missing_env_fails_explicitly(self):
         with (

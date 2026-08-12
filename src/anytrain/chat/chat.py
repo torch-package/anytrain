@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import math
 import mimetypes
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from numbers import Real
 from os import PathLike
 from pathlib import Path
 from threading import Lock
@@ -80,8 +82,8 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None = None,
         refresh: bool = False,
     ) -> str:
-        if prompt == "":
-            raise ValueError("prompt must not be empty.")
+        prompt = _validate_prompt(prompt)
+        _validate_refresh(refresh)
         with self._lock:
             return self._request_detail(prompt, images=images, refresh=refresh).text
 
@@ -92,8 +94,8 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None = None,
         refresh: bool = False,
     ) -> str:
-        if prompt == "":
-            raise ValueError("prompt must not be empty.")
+        prompt = _validate_prompt(prompt)
+        _validate_refresh(refresh)
         async with self._async_text_lock():
             self._ensure_async_text_loop()
             return (
@@ -116,8 +118,8 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None = None,
         refresh: bool = False,
     ) -> ChatResponse:
-        if prompt == "":
-            raise ValueError("prompt must not be empty.")
+        prompt = _validate_prompt(prompt)
+        _validate_refresh(refresh)
         with self._lock:
             return self._request_detail(prompt, images=images, refresh=refresh)
 
@@ -128,8 +130,8 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None = None,
         refresh: bool = False,
     ) -> ChatResponse:
-        if prompt == "":
-            raise ValueError("prompt must not be empty.")
+        prompt = _validate_prompt(prompt)
+        _validate_refresh(refresh)
         async with self._async_text_lock():
             self._ensure_async_text_loop()
             return await self._request_detail_async(prompt, images=images, refresh=refresh)
@@ -158,12 +160,10 @@ class Chat:
         model: str = GLM_IMAGE_MODEL,
         timeout: float | None = GLM_IMAGE_TIMEOUT,
     ) -> ImageGeneration:
-        if prompt == "":
-            raise ValueError("prompt must not be empty.")
-        if size == "":
-            raise ValueError("size must not be empty.")
-        if model == "":
-            raise ValueError("model must not be empty.")
+        prompt = _validate_prompt(prompt)
+        size = _non_empty_string(size, "size")
+        model = _non_empty_string(model, "model")
+        timeout = _validate_timeout(timeout)
         return generate_image(
             self.model_type,
             self._config,
@@ -322,7 +322,14 @@ def _content_for_prompt(
 def _normalize_images(images: ImageInput | Iterable[ImageInput]) -> list[ImageInput]:
     if isinstance(images, (str, PathLike)):
         return [images]
-    return list(images)
+    try:
+        values = list(images)
+    except TypeError as exc:
+        raise TypeError("images must be an image path/URL or an iterable of them.") from exc
+    for index, value in enumerate(values):
+        if not isinstance(value, (str, PathLike)):
+            raise TypeError(f"images[{index}] must be a string or path-like object.")
+    return values
 
 
 def _image_url(image: ImageInput) -> str:
@@ -340,3 +347,35 @@ def _image_url(image: ImageInput) -> str:
         mime_type = "image/png"
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def _validate_prompt(prompt: object) -> str:
+    if not isinstance(prompt, str):
+        raise TypeError("prompt must be a string.")
+    if not prompt.strip():
+        raise ValueError("prompt must not be empty.")
+    return prompt
+
+
+def _non_empty_string(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string.")
+    if not value:
+        raise ValueError(f"{name} must not be empty.")
+    return value
+
+
+def _validate_refresh(refresh: object) -> None:
+    if not isinstance(refresh, bool):
+        raise TypeError("refresh must be a bool.")
+
+
+def _validate_timeout(timeout: object | None) -> float | None:
+    if timeout is None:
+        return None
+    if isinstance(timeout, bool) or not isinstance(timeout, Real):
+        raise TypeError("timeout must be a real number or None.")
+    resolved = float(timeout)
+    if not math.isfinite(resolved) or resolved <= 0:
+        raise ValueError("timeout must be finite and positive when set.")
+    return resolved

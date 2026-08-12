@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -157,14 +158,14 @@ def _pricing(item: Mapping[str, Any]) -> tuple[float, float, float] | None:
         completion = float(pricing.get("completion", "nan"))
     except (TypeError, ValueError):
         return None
-    if prompt != prompt or completion != completion:  # NaN
+    if not math.isfinite(prompt) or not math.isfinite(completion):
         return None
     discount_raw = pricing.get("discount", 0.0)
     try:
         discount = float(discount_raw)
     except (TypeError, ValueError):
         return None
-    if discount != discount:
+    if not math.isfinite(discount):
         return None
     return prompt, completion, discount
 
