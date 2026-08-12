@@ -35,6 +35,8 @@ class Bound:
         return not self.missing
 
     def bind(self, values: Mapping[str, Payload]) -> Bound:
+        if not isinstance(values, Mapping):
+            raise TypeError("bound values must be a mapping.")
         overlap = set(values) & set(self.values)
         if overlap:
             raise ValueError(f"stream payloads are already bound: {sorted(overlap)!r}.")

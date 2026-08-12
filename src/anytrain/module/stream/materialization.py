@@ -99,7 +99,7 @@ class Materializer(nn.Module):
     ) -> None:
         super().__init__()
         self._embedder_names, self.embedders = _module_list(embedders, "embedders")
-        operator_values: dict[str, AlignOperator] = dict(operators or {})
+        operator_values = _operators(operators)
         operator_values.setdefault("default", StandardAlign())
         self._operator_names, modules = _module_list(operator_values, "operators")
         self.operators = modules
@@ -323,6 +323,8 @@ def _module_list(
 ) -> tuple[tuple[str, ...], nn.ModuleList]:
     if values is None:
         return (), nn.ModuleList()
+    if not isinstance(values, Mapping):
+        raise TypeError(f"{field} must be a mapping of names to modules.")
     names: list[str] = []
     modules: list[nn.Module] = []
     for name, module in values.items():
@@ -335,14 +337,33 @@ def _module_list(
     return tuple(names), nn.ModuleList(modules)
 
 
+def _operators(
+    values: Mapping[str, AlignOperator] | None,
+) -> dict[str, AlignOperator]:
+    if values is None:
+        return {}
+    if not isinstance(values, Mapping):
+        raise TypeError("operators must be a mapping of names to AlignOperator.")
+    parsed: dict[str, AlignOperator] = {}
+    for name, operator in values.items():
+        if not isinstance(operator, AlignOperator):
+            raise TypeError(f"operators[{name!r}] must be an AlignOperator.")
+        parsed[name] = operator
+    return parsed
+
+
 def _control_ids(values: Mapping[str, int] | None) -> dict[str, int]:
     if values is None:
         return {}
+    if not isinstance(values, Mapping):
+        raise TypeError("control_ids must be a mapping of names to integers.")
     parsed: dict[str, int] = {}
     for name, index in values.items():
         if not isinstance(name, str) or not name:
             raise ValueError("control_ids names must be non-empty strings.")
-        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError(f"control_ids[{name!r}] must be an integer.")
+        if index < 0:
             raise ValueError(f"control_ids[{name!r}] must be a non-negative integer.")
         parsed[name] = index
     return parsed

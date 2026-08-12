@@ -84,6 +84,10 @@ class StreamMajor:
     controls: ControlTokens = ControlTokens()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.items, tuple):
+            raise TypeError("stream-major items must be a tuple.")
+        if not isinstance(self.controls, ControlTokens):
+            raise TypeError("stream-major controls must be ControlTokens.")
         if not self.items:
             raise ValueError("stream-major segment must contain at least one item.")
         for item in self.items:
@@ -98,6 +102,10 @@ class FrameMajor:
     controls: ControlTokens = ControlTokens()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.items, tuple):
+            raise TypeError("frame-major items must be a tuple.")
+        if not isinstance(self.controls, ControlTokens):
+            raise TypeError("frame-major controls must be ControlTokens.")
         if not self.items:
             raise ValueError("frame-major segment must contain at least one item.")
         for item in self.items:
@@ -114,6 +122,8 @@ class Flatten:
 
     def __post_init__(self) -> None:
         _name(self.name, "flatten name")
+        if not isinstance(self.segments, tuple):
+            raise TypeError("flatten segments must be a tuple.")
         if not self.segments:
             raise ValueError("flatten expression must contain at least one segment.")
         if any(not isinstance(segment, (StreamMajor, FrameMajor)) for segment in self.segments):

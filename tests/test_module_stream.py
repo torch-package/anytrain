@@ -50,6 +50,35 @@ class CountingEmbedder(ValueEmbedder):
 
 
 class StreamLayoutTest(unittest.TestCase):
+    def test_stage_inputs_fail_at_their_public_owner(self):
+        timeline = _timeline([1])
+
+        with self.assertRaisesRegex(TypeError, "timelines must be a mapping"):
+            compile_layout(Stream("a"), cast(Any, [("a", timeline)]))
+        with self.assertRaisesRegex(TypeError, "stream-major items must be a tuple"):
+            StreamMajor(cast(Any, ["a"]))
+        with self.assertRaisesRegex(TypeError, "frame-major controls must be ControlTokens"):
+            FrameMajor(("a",), controls=cast(Any, object()))
+        with self.assertRaisesRegex(TypeError, "flatten segments must be a tuple"):
+            Flatten("flat", cast(Any, [StreamMajor(("a",))]))
+
+        layout = compile_layout(Stream("a"), {"a": timeline})
+        partial = bind(layout)
+        with self.assertRaisesRegex(TypeError, "bound values must be a mapping"):
+            partial.bind(cast(Any, []))
+        with self.assertRaisesRegex(TypeError, "embedders must be a mapping"):
+            Materializer(embedders=cast(Any, []))
+        with self.assertRaisesRegex(TypeError, "must be an AlignOperator"):
+            Materializer(operators=cast(Any, {"bad": nn.Identity()}))
+        with self.assertRaisesRegex(TypeError, "control_ids must be a mapping"):
+            Materializer(control_ids=cast(Any, []))
+
+        codes = Codes("a", torch.tensor([[1]]), torch.tensor([1]))
+        with self.assertRaisesRegex(TypeError, "target codes must be a mapping"):
+            bind_targets(layout, cast(Any, [codes]))
+        with self.assertRaisesRegex(TypeError, "collection of control names"):
+            bind_targets(layout, {"a": codes}, predicted_controls=cast(Any, "start"))
+
     def test_layout_compiles_before_binding_and_binding_can_be_partial(self):
         expression = Flatten(
             "flat",

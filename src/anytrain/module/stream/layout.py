@@ -119,6 +119,8 @@ def compile_layout(
     root_expression = expression if not isinstance(expression, str) else Stream(expression)
     if not isinstance(root_expression, (Stream, Align, Flatten)):
         raise TypeError("expression must be Stream, Align, Flatten, or a stream name.")
+    if not isinstance(timelines, Mapping):
+        raise TypeError("timelines must be a mapping of stream names to Timeline.")
     if not timelines:
         raise ValueError("timelines must contain at least one stream.")
     _validate_timelines(timelines)

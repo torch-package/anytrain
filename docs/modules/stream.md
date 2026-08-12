@@ -28,6 +28,11 @@ Layout + carrier Codes --bind_targets--> TargetBatch
 - `bind_targets` 是输出侧的局部离散标签视图。它只接受 root layout 的 carrier
   streams；Align 的 source stream 如果没有出现在 carrier lineage 中，不会成为标签。
 
+每一阶段在自己的入口校验 owner：expression 的 items/segments 使用 tuple，layout timelines、
+binding payloads、Materializer registries 和 target codes 使用 Mapping；custom operator 必须是
+`AlignOperator`，target control selection 必须是 control-name collection。错误不会延迟到 DAG
+执行或 `ModuleList` 注册之后。
+
 ## 基础类型
 
 ```python

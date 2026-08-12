@@ -343,3 +343,32 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - idspace layout/embedding tests：25 passed，4 subtests passed。
+
+## `anytrain.module.stream`
+
+状态：完成。
+
+审计结论：
+
+- expression、layout、binding、materialization 和 output 已按声明、离散几何、payload、连续执行、
+  target labels 分成五个明确 owner；不存在需要合并的重复抽象。
+- `layout.py` 的 DAG compilation 与 `materialization.py` 的 node evaluation 各自维护完整遍历状态，
+  再按长度拆分会把 cycle/cache/lineage 或 embed/align/flatten cache 变成跨文件协议。
+
+完成的调整：
+
+- expression tuple 容器、timeline/payload/module/target Mapping 在对应 public stage 入口校验。
+- custom operator 在 Materializer 构造时校验为 `AlignOperator`，不再延迟到实际 Align 节点执行。
+- control id 和 predicted-control collection 区分类型错误与范围/未知名称错误。
+
+刻意保留：
+
+- carrier/source lineage、align geometry、nested flatten、control namespace 与 local target 语义。
+- DAG 节点只 materialize 一次、分批 bind 和 layout-before-payload 的工作流。
+- codec inventory、global token ID、生成 grammar 和 output dependency 继续由下游拥有。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- `tests/test_module_stream.py`：13 passed。

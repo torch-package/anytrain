@@ -74,6 +74,20 @@ def bind_targets(
     or explicitly materialize a global id space.
     """
 
+    if not isinstance(layout, Layout):
+        raise TypeError("target layout must be a Layout.")
+    if not isinstance(codes, Mapping):
+        raise TypeError("target codes must be a mapping.")
+    if isinstance(predicted_controls, (str, bytes)) or not isinstance(
+        predicted_controls,
+        Collection,
+    ):
+        raise TypeError("predicted_controls must be a collection of control names.")
+    if any(not isinstance(name, str) for name in predicted_controls):
+        raise TypeError("predicted_controls must contain only strings.")
+    if isinstance(ignore_index, bool) or not isinstance(ignore_index, int):
+        raise TypeError("ignore_index must be an integer.")
+
     required = set(layout.carrier_names)
     missing = required - set(codes)
     if missing:
@@ -86,9 +100,6 @@ def bind_targets(
     unknown_controls = selected_controls - set(layout.control_names)
     if unknown_controls:
         raise ValueError(f"unknown predicted controls: {sorted(unknown_controls)!r}.")
-    if isinstance(ignore_index, bool) or not isinstance(ignore_index, int):
-        raise TypeError("ignore_index must be an integer.")
-
     values = torch.full(
         (layout.batch_size, layout.size),
         ignore_index,
