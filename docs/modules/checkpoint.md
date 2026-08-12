@@ -27,6 +27,11 @@ loader 固定把 checkpoint 映射到 CPU，并显式使用 `weights_only=False`
 所需的完整 payload。因此调用方只应加载可信 checkpoint。root 与 `state_dict` 必须是字符串键
 mapping；module hook 默认在严格 state 恢复前调用，没有该 hook 的普通 `nn.Module` 也可直接使用。
 不需要 lifecycle hook 时可显式传入 `call_module_hook=False`。
+`module` 必须是 `torch.nn.Module`，`call_module_hook` 必须是严格的 `bool`；这两个控制参数
+在访问文件前校验，错误配置不会被路径错误或 Python 真值转换掩盖。
+
+源码保持两个 owner：`contract.py` 负责 canonical value、difference 和 state-dict schema，
+`lightning.py` 只负责可信单文件 Lightning payload 的严格加载。当前规模不需要进一步拆分。
 
 ## 边界
 
@@ -35,3 +40,11 @@ mapping；module hook 默认在严格 state 恢复前调用，没有该 hook 的
 - 不降级为非严格 state 恢复，不提供旧格式 alias 或隐式迁移。
 - 当前 loader 面向普通单文件 full checkpoint；FSDP、DeepSpeed 等分片或目录格式由对应
   Lightning strategy 恢复。
+
+## 验收
+
+```bash
+python -m ruff check src/anytrain/checkpoint tests/test_checkpoint.py
+basedpyright --pythonpath /path/to/python src/anytrain/checkpoint tests/test_checkpoint.py
+python -m pytest -q tests/test_checkpoint.py
+```

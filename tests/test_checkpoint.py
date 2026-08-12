@@ -147,6 +147,18 @@ class CheckpointContractTest(unittest.TestCase):
 
 
 class LightningCheckpointTest(unittest.TestCase):
+    def test_loader_validates_control_arguments_before_reading(self) -> None:
+        missing = Path("missing.ckpt")
+
+        with self.assertRaisesRegex(TypeError, "torch.nn.Module"):
+            load_lightning_checkpoint(cast(Any, object()), missing)
+        with self.assertRaisesRegex(TypeError, "call_module_hook must be a bool"):
+            load_lightning_checkpoint(
+                nn.Linear(1, 1),
+                missing,
+                call_module_hook=cast(Any, 1),
+            )
+
     def test_loader_rejects_malformed_root_and_state_dict(self) -> None:
         module = nn.Linear(1, 1)
         malformed = (

@@ -24,6 +24,11 @@ def load_lightning_checkpoint(
     called if the module provides one. The validated payload is returned so the
     caller can interpret project-owned metadata.
     """
+    if not isinstance(module, nn.Module):
+        raise TypeError("Lightning checkpoint target must be a torch.nn.Module.")
+    if not isinstance(call_module_hook, bool):
+        raise TypeError("call_module_hook must be a bool.")
+
     checkpoint_path = Path(path).expanduser()
     if not checkpoint_path.is_file():
         raise FileNotFoundError(
