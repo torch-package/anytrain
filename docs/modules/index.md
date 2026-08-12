@@ -24,6 +24,7 @@
 - [`anytrain.audio.codec`](../codec.md)：optional audio codec wrapper，以及 frame、semantic-acoustic 与 semantic-global capability 契约。
 - [`anytrain.tts`](../tts.md)：TTS 公共协议和 optional backend adapter。
 - [`anytrain.chat`](chat.md)：环境变量驱动的可选大模型调用入口。
+- [`anytrain.translation`](../translation.md)：dataset-independent 翻译协议与 pinned Qwen backend。
 - [`anytrain.framework`](framework.md)：可选研究框架层。
 
 ## 关联文档

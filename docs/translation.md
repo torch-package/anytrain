@@ -19,6 +19,19 @@ translated = translator.translate(
 All three sequences must be non-empty and have the same length. Results are a
 plain `list[str]` in the same order.
 
+## Ownership
+
+- `protocol.py` owns the dataset-independent `UniversalTranslator` protocol and aligned
+  input/output batch contract.
+- `_validation.py` is the private owner for non-empty strings, string sequences, and positive
+  integer controls shared by the protocol and concrete backends.
+- `qwen.py` owns one complete pinned backend lifecycle: semantic spec, physical load policy,
+  pickle-safe factory, tokenizer-only estimator, prompt/decoder protocol, and runtime adapter.
+
+The Qwen lifecycle remains together because its semantic identity, prompt, generation options,
+token planning, and decoder must change coherently. Splitting it only by file length would add
+cross-file navigation without creating an independent contract owner.
+
 ## Pinned Qwen semantics
 
 Qwen configuration is split into output semantics and physical loading policy:
@@ -53,6 +66,11 @@ serializing it imports no Transformers backend and loads no tokenizer or model;
 the selected worker loads one backend when it calls the factory. The resulting
 `QwenTranslator.config_hash()` and `semantic_id()` are derived only from the
 spec.
+
+The public boundaries reject implicit coercion: model/device/cache strings must be non-empty,
+token counts are strict positive integers, and boolean loading controls do not accept `0` or `1`.
+At runtime the adapter validates callable tokenizer/model methods, rank-2 integer token ids,
+batch alignment, prompt-prefix length, and non-empty decoded strings before returning results.
 
 Generation is deterministic: `do_sample=False`, `use_cache=True`, and the
 explicit `max_new_tokens` contract cannot be overridden through

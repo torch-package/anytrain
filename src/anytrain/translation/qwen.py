@@ -13,6 +13,7 @@ from torch import Tensor
 
 from anytrain._semantic import semantic_hash, semantic_id, semantic_options
 
+from ._validation import non_empty_string, positive_int
 from .protocol import validate_translation_batch, validate_translation_outputs
 
 DEFAULT_MODEL = "Qwen/Qwen3-0.6B"
@@ -48,21 +49,26 @@ class QwenTranslationSpec:
     decoder_protocol: str = DECODER_PROTOCOL
 
     def __post_init__(self) -> None:
-        _non_empty("model", self.model)
+        non_empty_string(self.model, "model")
         if Path(self.model).is_absolute():
             raise ValueError("model must be a logical artifact id, not an absolute path.")
         _commit("revision", self.revision)
-        if self.dtype is not None and self.dtype not in _DTYPES:
-            raise ValueError(f"dtype must be one of {tuple(_DTYPES)!r} or None.")
-        _positive_int("max_new_tokens", self.max_new_tokens)
+        if self.dtype is not None:
+            if not isinstance(self.dtype, str):
+                raise TypeError("dtype must be a string or None.")
+            if self.dtype not in _DTYPES:
+                raise ValueError(f"dtype must be one of {tuple(_DTYPES)!r} or None.")
+        positive_int(self.max_new_tokens, "max_new_tokens")
         options = semantic_options(self.generation_options, name="generation_options")
         reserved = sorted(set(options) & _RESERVED_GENERATION_OPTIONS)
         if reserved:
             raise ValueError(
                 "generation_options contains reserved options: " + ", ".join(reserved)
             )
+        non_empty_string(self.prompt_protocol, "prompt_protocol")
         if self.prompt_protocol != PROMPT_PROTOCOL:
             raise ValueError(f"unsupported Qwen prompt protocol {self.prompt_protocol!r}.")
+        non_empty_string(self.decoder_protocol, "decoder_protocol")
         if self.decoder_protocol != DECODER_PROTOCOL:
             raise ValueError(f"unsupported Qwen decoder protocol {self.decoder_protocol!r}.")
 
@@ -115,6 +121,8 @@ class QwenTranslationLoadOptions:
     def __post_init__(self) -> None:
         if self.cache_dir is not None and not isinstance(self.cache_dir, (str, Path)):
             raise TypeError("cache_dir must be a string, Path, or None.")
+        if isinstance(self.cache_dir, str):
+            non_empty_string(self.cache_dir, "cache_dir")
         if not isinstance(self.local_files_only, bool):
             raise TypeError("local_files_only must be a boolean.")
 
@@ -135,7 +143,7 @@ class QwenTranslatorFactory:
             raise TypeError("load_options must be QwenTranslationLoadOptions.")
 
     def __call__(self, device: str) -> QwenTranslator:
-        _non_empty("device", device)
+        non_empty_string(device, "device")
         return QwenTranslator.from_pretrained(
             self.spec,
             device=device,
@@ -193,7 +201,7 @@ class QwenTranslationTokenEstimator:
         ) + self.spec.max_new_tokens
 
     def decoded_target_tokens(self, text: str) -> int:
-        return _token_count(self._load_tokenizer(), _non_empty("text", text))
+        return _token_count(self._load_tokenizer(), non_empty_string(text, "text"))
 
     def _load_tokenizer(self) -> Any:
         if self._tokenizer is None:
@@ -214,6 +222,7 @@ class QwenTranslator:
     def __post_init__(self) -> None:
         if not isinstance(self.spec, QwenTranslationSpec):
             raise TypeError("spec must be a QwenTranslationSpec.")
+        non_empty_string(self.model_loaded_from, "model_loaded_from")
         self.device = torch.device(self.device)
         if getattr(self.tokenizer, "padding_side", None) != "left":
             self.tokenizer.padding_side = "left"
@@ -240,6 +249,10 @@ class QwenTranslator:
         )
         if not isinstance(resolved_load, QwenTranslationLoadOptions):
             raise TypeError("load_options must be QwenTranslationLoadOptions.")
+        if device is not None and not isinstance(device, (str, torch.device)):
+            raise TypeError("device must be a string, torch.device, or None.")
+        if isinstance(device, str):
+            non_empty_string(device, "device")
         try:
             from transformers import AutoModelForCausalLM
         except ImportError as exc:
@@ -291,7 +304,10 @@ class QwenTranslator:
             )
             for text, source, target in zip(values, sources, targets, strict=True)
         ]
-        inputs = self.tokenizer(
+        encode = self.tokenizer
+        if not callable(encode):
+            raise TypeError("Qwen translator tokenizer must be callable.")
+        inputs = encode(
             prompts,
             return_tensors="pt",
             padding=True,
@@ -302,10 +318,17 @@ class QwenTranslator:
         if not isinstance(inputs, Mapping):
             raise TypeError("Qwen translator tokenizer output must be a mapping.")
         inputs = cast(Mapping[str, Any], inputs)
-        input_ids = inputs["input_ids"]
+        input_ids = inputs.get("input_ids")
         if not isinstance(input_ids, Tensor) or input_ids.ndim != 2:
             raise TypeError("Qwen translator tokenizer must return rank-2 input_ids.")
-        generated = self.model.generate(
+        if input_ids.dtype == torch.bool or input_ids.is_floating_point() or input_ids.is_complex():
+            raise TypeError("Qwen translator input_ids must use an integer dtype.")
+        if input_ids.shape[0] != len(values):
+            raise ValueError("Qwen translator input_ids batch dimension must match the input batch.")
+        generate = getattr(self.model, "generate", None)
+        if not callable(generate):
+            raise TypeError("Qwen translator model must provide generate().")
+        generated = generate(
             **inputs,
             max_new_tokens=self.spec.max_new_tokens,
             do_sample=False,
@@ -318,11 +341,24 @@ class QwenTranslator:
         )
         if not isinstance(generated, Tensor) or generated.ndim != 2:
             raise TypeError("Qwen translator generate() must return a rank-2 Tensor.")
+        if generated.dtype == torch.bool or generated.is_floating_point() or generated.is_complex():
+            raise TypeError("Qwen translator generated token ids must use an integer dtype.")
         if generated.shape[0] != len(values):
             raise ValueError("Qwen translator output count must match the input batch.")
-        decoded = self.tokenizer.batch_decode(
-            generated[:, input_ids.shape[1] :],
-            skip_special_tokens=True,
+        if generated.shape[1] < input_ids.shape[1]:
+            raise ValueError("Qwen translator generated ids must include the prompt prefix.")
+        batch_decode = getattr(self.tokenizer, "batch_decode", None)
+        if not callable(batch_decode):
+            raise TypeError("Qwen translator tokenizer must provide batch_decode().")
+        decoded = validate_translation_outputs(
+            cast(
+                Sequence[str],
+                batch_decode(
+                    generated[:, input_ids.shape[1] :],
+                    skip_special_tokens=True,
+                ),
+            ),
+            expected=len(values),
         )
         outputs = [_translation_text(value) for value in decoded]
         return validate_translation_outputs(outputs, expected=len(values))
@@ -337,9 +373,9 @@ def translation_prompt(
 ) -> str:
     """Build the v1 prompt whose response contains translated text only."""
 
-    source = _non_empty("source_language", source_language)
-    target = _non_empty("target_language", target_language)
-    value = _non_empty("text", text)
+    source = non_empty_string(source_language, "source_language")
+    target = non_empty_string(target_language, "target_language")
+    value = non_empty_string(text, "text")
     messages = [
         {
             "role": "system",
@@ -353,7 +389,9 @@ def translation_prompt(
             "content": f"Translate this {source} text into {target}:\n{value}",
         },
     ]
-    template = tokenizer.apply_chat_template
+    template = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(template):
+        raise TypeError("Qwen translator tokenizer must provide apply_chat_template().")
     options: dict[str, object] = {
         "tokenize": False,
         "add_generation_prompt": True,
@@ -361,9 +399,7 @@ def translation_prompt(
     if _accepts_keyword(template, "enable_thinking"):
         options["enable_thinking"] = False
     prompt = template(messages, **options)
-    if not isinstance(prompt, str) or not prompt:
-        raise TypeError("Qwen translator chat template must return a non-empty string.")
-    return prompt
+    return non_empty_string(prompt, "Qwen translator chat template output")
 
 
 def _load_tokenizer(
@@ -403,7 +439,7 @@ def _pretrained_source(
             "Local-only Qwen translation loading requires huggingface-hub; install "
             "`anytrain[translation]`."
         ) from exc
-    return snapshot_download(
+    snapshot = snapshot_download(
         repo_id=source,
         cache_dir=(
             None if load_options.cache_dir is None else str(load_options.cache_dir)
@@ -411,6 +447,7 @@ def _pretrained_source(
         local_files_only=True,
         revision=spec.revision,
     )
+    return non_empty_string(snapshot, "Qwen translation snapshot path")
 
 
 def _hub_options(
@@ -470,31 +507,18 @@ def _device(model: object, value: str | torch.device | None) -> torch.device:
 
 
 def _accepts_keyword(method: Any, name: str) -> bool:
-    parameters = signature(method).parameters.values()
+    try:
+        parameters = signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
     return any(
         parameter.name == name or parameter.kind is Parameter.VAR_KEYWORD
         for parameter in parameters
     )
 
 
-def _non_empty(name: str, value: object) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be a string.")
-    if not value.strip():
-        raise ValueError(f"{name} must not be empty.")
-    return value
-
-
-def _positive_int(name: str, value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value <= 0:
-        raise ValueError(f"{name} must be positive.")
-    return value
-
-
 def _commit(name: str, value: object) -> str:
-    revision = _non_empty(name, value)
+    revision = non_empty_string(value, name)
     if len(revision) != 40 or any(
         char not in "0123456789abcdef" for char in revision
     ):

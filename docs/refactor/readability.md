@@ -559,3 +559,36 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - framework flow matching、GAN、RL tests：88 passed，1 skipped，38 subtests passed。
+
+## `anytrain.translation`
+
+状态：完成。
+
+审计结论：
+
+- `protocol.py` 的 dataset-independent batch contract 与 Qwen backend lifecycle 已有明确边界。
+- Qwen spec、load policy、factory、token estimator、prompt/decoder 和 runtime 共同定义一套 pinned
+  semantic identity，按文件长度拆开会增加跳转且没有产生新的独立 owner。
+
+完成的调整：
+
+- 新增私有 `_validation.py`，统一拥有非空字符串、字符串序列与正整数契约；protocol 和 Qwen 不再
+  分别维护同类 helper。
+- spec/load/factory 明确拒绝 bool integer、非字符串 dtype/protocol、空 cache/device 字符串。
+- Qwen runtime 在第三方调用边界校验 callable、mapping、rank-2 integer token ids、batch alignment、
+  prompt-prefix length 与 decoded output，不再泄漏 `KeyError`、`AttributeError` 或字符序列隐式行为。
+- 翻译文档和模块索引补充 ownership、保留边界和验收范围。
+
+刻意保留：
+
+- `UniversalTranslator` 的 position-aligned `Sequence[str] -> list[str]` 协议。
+- model revision、generation options、prompt/decoder protocol 构成的 semantic id 与 config hash。
+- physical load options 不进入 identity、pickle-safe lazy factory、tokenizer-only estimator 与
+  local-only snapshot resolution。
+- deterministic generation、left padding、thinking marker 清理和 optional Transformers import。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- translation tests：13 passed，13 subtests passed。

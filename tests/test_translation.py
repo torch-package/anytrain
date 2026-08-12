@@ -3,16 +3,17 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest.mock import patch
 
 import torch
 
-from anytrain.translation import validate_translation_batch
+from anytrain.translation import validate_translation_batch, validate_translation_outputs
 from anytrain.translation.qwen import (
     QwenTranslationLoadOptions,
     QwenTranslationSpec,
     QwenTranslator,
+    translation_prompt,
 )
 
 _REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
@@ -26,6 +27,18 @@ class TranslationProtocolTest(unittest.TestCase):
             validate_translation_batch([], [], [])
         with self.assertRaisesRegex(ValueError, r"texts\[0\]"):
             validate_translation_batch(["  "], ["English"], ["Chinese"])
+
+    def test_outputs_require_nonempty_aligned_strings_and_positive_count(self):
+        self.assertEqual(validate_translation_outputs(["ok"], expected=1), ["ok"])
+        invalid_calls = (
+            lambda: validate_translation_outputs("ok", expected=1),
+            lambda: validate_translation_outputs(["ok"], expected=True),
+            lambda: validate_translation_outputs(["  "], expected=1),
+            lambda: validate_translation_outputs(["ok"], expected=2),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
 
 
 class QwenTranslationSpecTest(unittest.TestCase):
@@ -55,6 +68,18 @@ class QwenTranslationSpecTest(unittest.TestCase):
             _spec(generation_options=(("do_sample", True),))
         with self.assertRaisesRegex(ValueError, "duplicate"):
             _spec(generation_options=(("temperature", 0.0), ("temperature", 0.1)))
+
+    def test_spec_and_load_controls_have_strict_types(self):
+        invalid_calls = (
+            lambda: _spec(dtype=cast(Any, True)),
+            lambda: _spec(max_new_tokens=cast(Any, True)),
+            lambda: _spec(prompt_protocol=cast(Any, 1)),
+            lambda: QwenTranslationLoadOptions(cache_dir="  "),
+            lambda: QwenTranslationLoadOptions(local_files_only=cast(Any, 1)),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call), self.assertRaises((TypeError, ValueError)):
+                invalid_call()
 
     def test_factory_is_pickleable_and_lazy(self):
         factory = _spec().factory(QwenTranslationLoadOptions(cache_dir=Path("cache")))
@@ -135,6 +160,9 @@ class QwenTranslatorTest(unittest.TestCase):
         self.assertIsInstance(translator, QwenTranslator)
         self.assertIsNotNone(FakeModel.loaded)
 
+        with self.assertRaisesRegex(ValueError, "device"):
+            _spec().factory()("  ")
+
     def test_from_pretrained_translates_plain_strings(self):
         with _fake_transformers():
             translator = QwenTranslator.from_pretrained(
@@ -176,6 +204,47 @@ class QwenTranslatorTest(unittest.TestCase):
         self.assertEqual(planned_tokens, prompt_tokens + 32)
         self.assertEqual(decoded_tokens, 2)
         self.assertIn("Translate this English text into Chinese", FakeTokenizer.loaded.texts[0])
+
+    def test_prompt_requires_chat_template_contract(self):
+        with self.assertRaisesRegex(TypeError, "apply_chat_template"):
+            translation_prompt(
+                "hello",
+                source_language="English",
+                target_language="Chinese",
+                tokenizer=object(),
+            )
+
+        tokenizer = FakeTokenizer()
+        tokenizer.apply_chat_template = lambda *_args, **_kwargs: "  "
+        with self.assertRaisesRegex(ValueError, "chat template output"):
+            translation_prompt(
+                "hello",
+                source_language="English",
+                target_language="Chinese",
+                tokenizer=tokenizer,
+            )
+
+    def test_translate_validates_tokenizer_and_model_boundaries(self):
+        translator = QwenTranslator(FakeModel(), FakeTokenizer(), _spec())
+        cases = (
+            ({}, FakeModel(), "input_ids"),
+            ({"input_ids": torch.zeros(1, 2, dtype=torch.long)}, FakeModel(), "batch dimension"),
+            ({"input_ids": torch.zeros(2, 2)}, FakeModel(), "integer dtype"),
+            (
+                {"input_ids": torch.zeros(2, 2, dtype=torch.long)},
+                GeneratedValueModel(torch.zeros(2, 3)),
+                "integer dtype",
+            ),
+        )
+        for encoded, model, message in cases:
+            translator.tokenizer = BoundaryTokenizer(encoded)
+            translator.model = model
+            with self.subTest(message=message), self.assertRaisesRegex((TypeError, ValueError), message):
+                translator.translate(
+                    ["hello", "world"],
+                    ["English", "English"],
+                    ["Chinese", "French"],
+                )
 
 
 class FakeBatch(dict):
@@ -244,6 +313,26 @@ class FakeModel:
         prefix = kwargs["input_ids"]
         suffix = torch.arange(batch, dtype=torch.int64).reshape(batch, 1)
         return torch.cat((prefix, suffix), dim=1)
+
+
+class BoundaryTokenizer(FakeTokenizer):
+    def __init__(self, encoded):
+        super().__init__()
+        self.encoded = encoded
+
+    def __call__(self, values, **_kwargs):
+        del values
+        return self.encoded
+
+
+class GeneratedValueModel(FakeModel):
+    def __init__(self, generated):
+        super().__init__()
+        self.generated = generated
+
+    def generate(self, **kwargs):
+        del kwargs
+        return self.generated
 
 
 class _fake_transformers:
