@@ -16,8 +16,8 @@
 ```text
 src/anytrain/loss/
   __init__.py
-  _group.py
-  _observation.py
+  _balancer_checkpoint.py
+  _balancer_contract.py
   _validation.py
   abc.py
   balancer.py
@@ -25,6 +25,7 @@ src/anytrain/loss/
   codec.py
   frame.py
   group.py
+  observation.py
   temporal/
   spectral/
 ```
@@ -47,6 +48,10 @@ src/anytrain/loss/
 - `MaskedCodebookCrossEntropyLoss`
 - `PackedCodebookLogits`
 - `scalar`
+
+`anytrain.loss.observation` 是自定义 loss 的扩展 SPI，提供 loss output、diagnostics 和
+balancer state 的 observation 注册工具。它不从 `anytrain.loss` 根入口重导出；普通调用方
+只需要根入口中的 loss 与 balancer，扩展实现才显式导入 observation 子模块。
 
 `LossItem`、`LossOutputs`、`LossDetails`、`LossResult` 以及
 `combine_loss_outputs()`、`iter_loss_items()`、`loss_item_mean()` 等旧的行级组合 API
@@ -82,6 +87,10 @@ loss = scalar(output, name="training loss")
 `MeanLossBalancer` 求算术平均；`FixedWeightLossBalancer` 使用显式权重；
 `UncertaintyLossBalancer` 维护可训练的 `log_var` 并按 uncertainty 权重组合。所有
 balancer 的权重和参数都属于 module state，不会通过 loss 返回值暴露。
+
+组合 ownership 统一放在 `group.py`：同一组私有 helper 负责 child module 校验、默认
+balancer 解析和 scalar 组合，`LossGroup` 与 spectral transformed loss 共享这一实现。
+不再保留名称近似但职责重叠的 `_group.py`。
 
 `WeightedLossBalancerABC` 是带稳定名称顺序和公开 `weights` 的 balancer 契约。
 `weights` 始终表示当前实际施加给各 child loss、从而传给模型参数梯度的系数；
@@ -180,6 +189,11 @@ balancer 还保存 `normalization` 模式；interpolated balancer 保存 `blend`
 配置确认名称顺序并显式迁移。这是一次 checkpoint format breaking change。名称元数据使用
 标准 PyTorch module extra state，适用于 `torch.save` 和 Lightning checkpoint；只接受纯
 Tensor mapping 的 safetensors-only 保存链需要由调用方单独保存并恢复这部分元数据。
+
+`balancer.py` 只拥有公开 balancer 类及其数值行为；名称集合校验位于
+`_balancer_contract.py`，checkpoint schema、metadata 和 Tensor shape 预检位于
+`_balancer_checkpoint.py`。这些私有模块不是替代导入路径，公开入口仍是
+`anytrain.loss` 和 `anytrain.loss.balancer`。
 
 ## Reduction semantics
 
@@ -296,3 +310,11 @@ uncertainty 的 `none` / `detached_sum` 数值和 surrogate gradient 符合公�
 端点 observation、单次 dynamic 权重计算和 checkpoint config 校验。
 Observation callback 的归约、EMA、distributed schema 和 checkpoint 行为由
 observation/lightning 测试覆盖。
+
+模块验收命令：
+
+```bash
+python -m ruff check src/anytrain/loss tests/test_loss.py
+basedpyright --pythonpath /path/to/python src/anytrain/loss tests/test_loss.py
+python -m pytest -q tests/test_loss.py
+```

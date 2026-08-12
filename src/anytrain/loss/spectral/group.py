@@ -7,11 +7,14 @@ from torch import Tensor, nn
 
 from anytrain._compat import strict_zip
 
-from .._group import balancer as loss_balancer
-from .._group import compute, module_dict
 from ..abc import LossABC
 from ..balancer import LossBalancerABC
-from ..group import LossGroup
+from ..group import (
+    LossGroup,
+    _compute_group_loss,
+    _resolve_balancer,
+    _validate_loss_modules,
+)
 from ..observation import loss as register_loss
 from ._transform import STFT, MelSpectrogram
 from .single import LogMagnitudeLoss
@@ -33,11 +36,11 @@ class _TransformedLoss(LossABC):
     ) -> None:
         super().__init__()
         self.transform = transform
-        self.losses = module_dict(losses)
-        self.balancer = loss_balancer(balancer)
+        self.losses = nn.ModuleDict(_validate_loss_modules(losses))
+        self.balancer = _resolve_balancer(balancer)
 
     def compute_loss(self, input: Tensor, target: Tensor) -> Tensor:
-        return compute(
+        return _compute_group_loss(
             self.losses,
             self.balancer,
             self.transform(input),

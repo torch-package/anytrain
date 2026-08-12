@@ -22,9 +22,6 @@ from anytrain.loss import (
     UncertaintyLossBalancer,
     UncertaintyNormalization,
     WeightedLossBalancerABC,
-    emit_diagnostics,
-    loss_with_diagnostics,
-    recommend,
     scalar,
     teacher_loss,
 )
@@ -89,10 +86,15 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "named loss must be a scalar tensor"):
             scalar(torch.ones(2), name="named loss")
 
-    def test_loss_observation_helpers_are_public(self):
-        self.assertIs(loss_with_diagnostics, loss_observation.loss_with_diagnostics)
-        self.assertIs(emit_diagnostics, loss_observation.emit_diagnostics)
-        self.assertIs(recommend, loss_observation.recommend)
+    def test_loss_observation_helpers_live_in_the_extension_module(self):
+        import anytrain.loss as loss_api
+
+        self.assertNotIn("emit_diagnostics", loss_api.__all__)
+        self.assertNotIn("loss_with_diagnostics", loss_api.__all__)
+        self.assertNotIn("recommend", loss_api.__all__)
+        self.assertTrue(callable(loss_observation.emit_diagnostics))
+        self.assertTrue(callable(loss_observation.loss_with_diagnostics))
+        self.assertTrue(callable(loss_observation.recommend))
 
     def test_loss_group(self):
         pred = torch.tensor([1.0, 3.0], requires_grad=True)

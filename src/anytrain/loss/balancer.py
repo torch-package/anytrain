@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Set
+from collections.abc import Mapping
 from enum import auto
 from numbers import Real
 from typing import Any
@@ -13,6 +13,8 @@ from torch import Tensor, nn
 from anytrain._buffer import register_buffer
 from anytrain._compat import StrEnum
 
+from . import _balancer_checkpoint as checkpoint
+from ._balancer_contract import stack_named_losses, validate_loss_names
 from ._validation import scalar
 from .observation import (
     dynamic_balancer,
@@ -22,65 +24,11 @@ from .observation import (
 )
 
 LossMapping = Mapping[str, Tensor]
-_CHECKPOINT_SCHEMA_VERSION = 1
-_BLOCKED_LOAD_KEY = "__anytrain_blocked_load__"
-_BLOCKED_LOAD = object()
 
 
 class UncertaintyNormalization(StrEnum):
     NONE = auto()
     DETACHED_SUM = auto()
-
-
-def _validate_ordered_loss_names(loss_names: list[str], *, label: str) -> tuple[str, ...]:
-    if not isinstance(loss_names, list):
-        raise TypeError(f"{label} must be a list of strings.")
-    if not loss_names:
-        raise ValueError(f"{label} must contain at least one name.")
-
-    ordered_names: list[str] = []
-    unique_names: set[str] = set()
-    loss_by_observation_tag: dict[str, str] = {}
-    for name in loss_names:
-        if not isinstance(name, str):
-            raise TypeError("loss name must be a string.")
-        if not name:
-            raise ValueError("loss name must not be empty.")
-        if name in unique_names:
-            raise ValueError(f"Duplicate loss name {name!r}.")
-        observation_tag = name.strip("/")
-        if not observation_tag:
-            raise ValueError(
-                f"Loss name {name!r} must produce a non-empty observation tag."
-            )
-        previous_name = loss_by_observation_tag.get(observation_tag)
-        if previous_name is not None:
-            raise ValueError(
-                f"Loss names {previous_name!r} and {name!r} normalize to the same "
-                f"observation tag {observation_tag!r}."
-            )
-        loss_by_observation_tag[observation_tag] = name
-        ordered_names.append(name)
-        unique_names.add(name)
-    return tuple(ordered_names)
-
-
-def _stack_named_losses(
-    losses: LossMapping,
-    loss_names: tuple[str, ...],
-    loss_name_set: Set[str],
-) -> Tensor:
-    if not isinstance(losses, Mapping):
-        raise TypeError("losses must be a mapping of names to scalar tensors.")
-    missing_names = [name for name in loss_names if name not in losses]
-    if missing_names:
-        raise ValueError(f"losses missing configured loss names: {missing_names}.")
-    unknown_names = [name for name in losses if name not in loss_name_set]
-    if unknown_names:
-        raise ValueError(f"losses contains unknown loss names: {unknown_names}.")
-    return torch.stack(
-        [scalar(losses[name], name=f"loss {name!r}") for name in loss_names]
-    )
 
 
 class LossBalancerABC(nn.Module, ABC):
@@ -104,7 +52,7 @@ class WeightedLossBalancerABC(LossBalancerABC):
 
     def __init__(self, loss_names: list[str]) -> None:
         super().__init__()
-        self.loss_names = _validate_ordered_loss_names(loss_names, label="loss_names")
+        self.loss_names = validate_loss_names(loss_names, label="loss_names")
         self._loss_name_set = frozenset(self.loss_names)
 
     @property
@@ -113,20 +61,20 @@ class WeightedLossBalancerABC(LossBalancerABC):
         raise NotImplementedError
 
     def _stack_losses(self, losses: LossMapping) -> Tensor:
-        return _stack_named_losses(losses, self.loss_names, self._loss_name_set)
+        return stack_named_losses(losses, self.loss_names, self._loss_name_set)
 
     def _checkpoint_config(self) -> dict[str, Any]:
         return {}
 
     def get_extra_state(self) -> dict[str, Any]:
-        return {
-            "version": _CHECKPOINT_SCHEMA_VERSION,
-            "loss_names": self.loss_names,
-            **self._checkpoint_config(),
-        }
+        return checkpoint.extra_state(self.loss_names, self._checkpoint_config())
 
     def set_extra_state(self, state: object) -> None:
-        self._validate_extra_state(state)
+        checkpoint.validate_extra_state(
+            state,
+            loss_names=self.loss_names,
+            config=self._checkpoint_config(),
+        )
 
     def _load_from_state_dict(
         self,
@@ -138,8 +86,8 @@ class WeightedLossBalancerABC(LossBalancerABC):
         unexpected_keys: list[str],
         error_msgs: list[str],
     ) -> None:
-        blocked_key = f"{prefix}{_BLOCKED_LOAD_KEY}"
-        if state_dict.get(blocked_key) is _BLOCKED_LOAD:
+        blocked_key = f"{prefix}{checkpoint.BLOCKED_LOAD_KEY}"
+        if state_dict.get(blocked_key) is checkpoint.BLOCKED_LOAD:
             state_dict.pop(blocked_key)
             self._block_checkpoint_descendants(state_dict, prefix)
             return
@@ -164,36 +112,13 @@ class WeightedLossBalancerABC(LossBalancerABC):
         state_dict: Mapping[str, Any],
         prefix: str,
     ) -> None:
-        extra_state_key = f"{prefix}_extra_state"
-        if extra_state_key not in state_dict:
-            raise RuntimeError(
-                f"{type(self).__qualname__} checkpoint is missing loss-name metadata; "
-                "it cannot be safely aligned with configured losses."
-            )
-        self._validate_extra_state(state_dict[extra_state_key])
-        expected_state = self.state_dict()
-        expected_keys = {f"{prefix}{key}" for key in expected_state}
-        actual_keys = {key for key in state_dict if key.startswith(prefix)}
-        missing_keys = sorted(expected_keys - actual_keys)
-        unexpected_keys = sorted(actual_keys - expected_keys)
-        if missing_keys or unexpected_keys:
-            raise RuntimeError(
-                "loss balancer checkpoint keys do not match: "
-                f"missing={missing_keys}, unexpected={unexpected_keys}."
-            )
-        for key, expected_value in expected_state.items():
-            if not isinstance(expected_value, Tensor):
-                continue
-            checkpoint_value = state_dict[f"{prefix}{key}"]
-            if not isinstance(checkpoint_value, Tensor):
-                raise RuntimeError(
-                    f"loss balancer checkpoint value {prefix}{key!r} must be a tensor."
-                )
-            if checkpoint_value.shape != expected_value.shape:
-                raise RuntimeError(
-                    f"loss balancer checkpoint tensor {prefix}{key!r} has shape "
-                    f"{tuple(checkpoint_value.shape)}, expected {tuple(expected_value.shape)}."
-                )
+        checkpoint.validate_checkpoint_state(
+            self,
+            state_dict,
+            prefix,
+            loss_names=self.loss_names,
+            config=self._checkpoint_config(),
+        )
 
     def _block_checkpoint_descendants(
         self,
@@ -201,49 +126,6 @@ class WeightedLossBalancerABC(LossBalancerABC):
         prefix: str,
     ) -> None:
         del state_dict, prefix
-
-    def _validate_extra_state(self, state: object) -> None:
-        if not isinstance(state, Mapping):
-            raise RuntimeError("loss balancer extra state must be a mapping.")
-        checkpoint_config = self._checkpoint_config()
-        expected_keys = ("version", "loss_names", *checkpoint_config)
-        missing_keys = [key for key in expected_keys if key not in state]
-        unknown_keys = [key for key in state if key not in expected_keys]
-        if missing_keys or unknown_keys:
-            raise RuntimeError(
-                "loss balancer checkpoint extra-state keys do not match: "
-                f"missing={missing_keys}, unknown={unknown_keys}."
-            )
-
-        version = state["version"]
-        if type(version) is not int or version != _CHECKPOINT_SCHEMA_VERSION:
-            raise RuntimeError(
-                "loss balancer checkpoint has an unsupported extra-state version."
-            )
-
-        checkpoint_names = state["loss_names"]
-        if not isinstance(checkpoint_names, (list, tuple)) or not all(
-            isinstance(name, str) for name in checkpoint_names
-        ):
-            raise RuntimeError("loss balancer checkpoint loss_names must be strings.")
-        checkpoint_names = tuple(checkpoint_names)
-        if checkpoint_names != self.loss_names:
-            raise RuntimeError(
-                "loss balancer checkpoint loss_names do not match the configured order: "
-                f"checkpoint={checkpoint_names!r}, configured={self.loss_names!r}."
-            )
-
-        for field, expected_value in checkpoint_config.items():
-            checkpoint_value = state[field]
-            if (
-                type(checkpoint_value) is not type(expected_value)
-                or checkpoint_value != expected_value
-            ):
-                raise RuntimeError(
-                    f"loss balancer checkpoint {field}={checkpoint_value!r} does not "
-                    f"match configured {field}={expected_value!r}."
-                )
-
 
 class MeanLossBalancer(LossBalancerABC):
     def compute_loss(self, losses: LossMapping) -> Tensor:
@@ -420,13 +302,17 @@ class InterpolatedLossBalancer(WeightedLossBalancerABC):
                 f"{type(self).__qualname__} checkpoint is missing loss-name metadata; "
                 "it cannot be safely aligned with configured losses."
             )
-        self._validate_extra_state(state_dict[extra_state_key])
+        checkpoint.validate_extra_state(
+            state_dict[extra_state_key],
+            loss_names=self.loss_names,
+            config=self._checkpoint_config(),
+        )
         blend_key = f"{prefix}blend"
         if blend_key not in state_dict:
             raise RuntimeError(
                 f"{type(self).__qualname__} checkpoint is missing blend state."
             )
-        _validate_checkpoint_blend(state_dict[blend_key])
+        checkpoint.validate_blend(state_dict[blend_key], parse=_blend)
         self.fixed._validate_checkpoint_state(state_dict, f"{prefix}fixed.")
         self.dynamic._validate_checkpoint_state(
             state_dict,
@@ -444,7 +330,9 @@ class InterpolatedLossBalancer(WeightedLossBalancerABC):
             for key in tuple(state_dict):
                 if key.startswith(child_prefix):
                     state_dict.pop(key)
-            state_dict[f"{child_prefix}{_BLOCKED_LOAD_KEY}"] = _BLOCKED_LOAD
+            state_dict[f"{child_prefix}{checkpoint.BLOCKED_LOAD_KEY}"] = (
+                checkpoint.BLOCKED_LOAD
+            )
 
     @property
     def weights(self) -> Tensor:
@@ -484,23 +372,6 @@ def _blend(value: float) -> float:
     if not math.isfinite(blend) or not 0.0 <= blend <= 1.0:
         raise ValueError("blend must be finite and between 0 and 1.")
     return blend
-
-
-def _validate_checkpoint_blend(value: object) -> None:
-    if (
-        not isinstance(value, Tensor)
-        or value.ndim != 0
-        or not value.dtype.is_floating_point
-    ):
-        raise RuntimeError(
-            "interpolated loss balancer checkpoint blend must be a scalar floating tensor."
-        )
-    try:
-        _blend(float(value.detach().cpu().item()))
-    except (TypeError, ValueError, RuntimeError) as error:
-        raise RuntimeError(
-            "interpolated loss balancer checkpoint blend must be finite and between 0 and 1."
-        ) from error
 
 
 def _interpolate(start: Tensor, end: Tensor, blend: Tensor, *, name: str) -> Tensor:
