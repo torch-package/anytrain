@@ -1,5 +1,5 @@
 from ._binding import RecommendationWarning, context, context_prefix, emit, registry
-from ._types import (
+from .types import (
     BackwardObservation,
     BackwardObservationWarning,
     Bins,
@@ -17,6 +17,7 @@ from ._types import (
     StateObservation,
 )
 
+# Compatibility-only attributes. Canonical names are the exported names above.
 ForwardObservation = OutputObservation
 PollObservation = StateObservation
 

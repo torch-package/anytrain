@@ -271,12 +271,6 @@ class ForwardEvent:
         _reduction(self.reduction, self.history)
 
 
-# Compatibility aliases. The canonical names describe where the value lives:
-# module state or the observable forward input/output boundary.
-ForwardObservation = OutputObservation
-PollObservation = StateObservation
-
-
 ObservationSpec = (
     OutputObservation
     | BackwardObservation

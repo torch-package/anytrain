@@ -75,3 +75,34 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - evaluator core/text/speech：82 passed，9 subtests passed。
+
+## `anytrain.observation`
+
+状态：完成。
+
+原问题：
+
+- 全部 public value/spec 类型位于 `_types.py`，文件可见性与稳定公开职责不一致。
+- `ForwardObservation` / `PollObservation` compatibility alias 在 package root 和类型实现文件
+  重复定义，形成两个 owner。
+- `_binding.py` 同时被 module author 和 Lightning adapter 使用，但 transport 方法的私有边界
+  只存在于 `__all__`，模块文档没有说明。
+
+完成的调整：
+
+- 将 public value/spec owner 改为 `types.py`，package root 入口保持不变。
+- compatibility alias 只在 package root 保留，且继续不进入 `__all__`。
+- 文档明确 `types.py`、`_binding.py` 和 package root 的职责，以及 callback transport 的私有性。
+
+刻意保留：
+
+- exact concrete-type registry、一次性 recommendation hint 和 process-wide declaration。
+- context propagation、event subscription、claim/release 与 compile no-op 语义。
+- 所有 value/spec 校验、reduction、EMA 和 compatibility alias。
+- Lightning `ObservationCallback` 的 distributed/checkpoint 行为。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- observation/event/Lightning integration：102 passed。

@@ -6,6 +6,19 @@
 不持有 logger、Trainer 或 LightningModule；Lightning 生命周期由
 `ObservationCallback` 适配。
 
+源码 ownership：
+
+```text
+src/anytrain/observation/
+  __init__.py   # 稳定公开入口与 compatibility-only attributes
+  types.py      # public observation value/spec/reduction 类型
+  _binding.py   # process registry、dynamic context 与 callback transport runtime
+```
+
+`types.py` 中的类型从 package root 重导出；普通调用方使用 `anytrain.observation` 即可。
+`_binding.claim/release/subscribe_event` 是 Lightning callback 的私有 transport SPI，不是 module
+author API，也不从 package root 导出。
+
 唯一声明来源是进程级 `observation.registry`。module 实现文件在 class 定义完成后，用
 `registry.register(ModuleType, specs)` 注册该 concrete type 的完整 immutable contract；构造器末尾调用
 `registry.recommend(self)` 安装一次性的使用提示。contract 含 `recommended=True` spec 时必须调用；否则无需
@@ -237,3 +250,15 @@ graph。observation 不提供 `enabled()` 分支；如果 flash/SDPA 路径不�
 当前 optimizer-step 提交使用 train batch end 的 `global_step` delta，支持自动优化与梯度累积；一个
 train batch 内多个 manual optimizer step 无法无歧义拆分 pending state，会明确报错。非法
 Distribution/Profile/Bins 数值在完成同一步的 distributed reduce 后立即报错，不受 render cadence 影响。
+
+## 验收
+
+```bash
+python -m ruff check src/anytrain/observation tests/test_observation.py \
+  tests/test_observation_event.py tests/test_lightning_observation.py
+basedpyright --pythonpath /path/to/python src/anytrain/observation \
+  tests/test_observation.py tests/test_observation_event.py \
+  tests/test_lightning_observation.py
+python -m pytest -q tests/test_observation.py tests/test_observation_event.py \
+  tests/test_lightning_observation.py
+```
