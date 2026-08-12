@@ -11,6 +11,34 @@
 - 每个模块独立验证并独立提交，便于集中阅读时按模块回退或比较。
 - 新能力仍受根 `todo.md` 和仓库 `AGENTS.md` 的复用需求约束。
 
+## 集中审阅路线
+
+重构开始前的已有改动已先提交为 `789b3dd`（`refactor: tighten optional component contracts`）。
+之后按下表顺序逐模块完成代码、测试、文档和独立提交；正文同序记录每个模块的审计结论。
+
+| 顺序 | 模块 | 提交 |
+| --- | --- | --- |
+| 1 | `anytrain.loss` | `79a3388` |
+| 2 | `anytrain.evaluator` | `4221464` |
+| 3 | `anytrain.observation` | `36e69e3` |
+| 4 | `anytrain.checkpoint` | `a128103` |
+| 5 | `anytrain.lightning` | `3bbe78c` |
+| 6 | `anytrain.lightning.schedule` | `d641fae` |
+| 7 | `anytrain.lightning.perf` | `4e91fe1` |
+| 8 | `anytrain.optim` | `2e19c32` |
+| 9 | `anytrain.module` | `0ed0573` |
+| 10 | `anytrain.module.moe` | `24783d5` |
+| 11 | `anytrain.module.idspace` | `aea7372` |
+| 12 | `anytrain.module.stream` | `6078823` |
+| 13 | `anytrain.audio` | `38b03fe` |
+| 14 | `anytrain.audio.bpe` | `42f43b1` |
+| 15 | `anytrain.audio.codec` | `d4cefda` |
+| 16 | `anytrain.tts` | `5f856ad` |
+| 17 | `anytrain.chat` | `0f685d6` |
+| 18 | `anytrain.framework` | `a7c73fd` |
+| 19 | `anytrain.translation` | `b446635` |
+| 20 | package root / primitives / examples | `cefbb5c` |
+
 ## `anytrain.loss`
 
 状态：完成。
@@ -628,3 +656,14 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - package root/primitives/examples focused tests：51 passed，2 skipped，59 subtests passed。
+
+## 全仓验收
+
+状态：通过。
+
+- `python -m ruff check .`：通过。
+- `basedpyright --pythonpath /Users/zhuyin/miniconda3/envs/py312/bin/python`：0 errors，
+  0 warnings，0 notes。
+- `python -m pytest -q`：1293 passed，4 skipped，344 subtests passed，101 warnings。
+- 4 个 skip 来自环境条件控制的 optional dependency 路径；warnings 为 observation 推荐提示、
+  Lightning 测试环境提示和第三方 deprecation/profiler warning，没有测试失败。
