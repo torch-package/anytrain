@@ -56,6 +56,9 @@ labels = layout.to_local(text_global_ids, ignore=-100)
 `block_name_for_id(token_id)` 可用于查询单个 global id 所属 block。未知 id、跨 block 的
 `to_local()` 输入和非法 block 定义都会显式报错。
 
+block 的 `start` / `end`、单个 `token_id` 与 `ignore` 都是严格 Python integer，明确拒绝
+bool 和 float；批量转换入口严格接受 Tensor。
+
 ## Embedding
 
 `Embedding` 消费 `Layout`，并要求调用方为每个 block 显式传入一个
@@ -101,6 +104,9 @@ token，也不会为未选中的 embedding 或 adapter 建立 autograd 边；调
 输入 id，且自行负责此前的 id/shape 校验。默认 `validate=True` 仍会严格验证输入，适合生成和
 外部调用。`selected_blocks(input_ids)` 是一个方便的严格 CPU 预扫描入口，可用于在异步搬运前
 生成该提示。
+
+`validate` 是严格 bool；`selected_blocks` 必须是非空 block-name collection，不能把单个字符串
+当作 collection。构造器也会在注册 `ModuleDict` 前验证 `Layout`、`nn.Embedding` 和 adapter owner。
 
 `Embedding` 不提供输出 head。下游如果要做 tied head，直接读取对应 block
 embedding 的 `weight`，并显式使用 `layout` 做 label 的 global/local 转换：

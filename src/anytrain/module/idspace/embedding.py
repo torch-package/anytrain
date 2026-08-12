@@ -18,6 +18,8 @@ class Embedding(nn.Module):
         **embeddings: nn.Embedding,
     ) -> None:
         super().__init__()
+        if not isinstance(layout, Layout):
+            raise TypeError("layout must be a Layout.")
         self.layout = layout
         self.embeddings = _init_embeddings(layout, embeddings)
         self.adapters = _init_adapters(layout, adapters)
@@ -38,6 +40,9 @@ class Embedding(nn.Module):
         selected_blocks: Collection[str] | None = None,
         validate: bool = True,
     ) -> torch.Tensor:
+        _input_ids(input_ids)
+        if not isinstance(validate, bool):
+            raise TypeError("validate must be a bool.")
         if input_ids.numel() == 0:
             raise ValueError("input_ids must not be empty.")
         selected = _checked_selected_blocks(selected_blocks, self.layout)
@@ -61,6 +66,7 @@ class Embedding(nn.Module):
         Call this while ``input_ids`` are still on CPU when a trusted caller needs
         to carry routing metadata across an asynchronous device transfer.
         """
+        _input_ids(input_ids)
         if input_ids.numel() == 0:
             raise ValueError("input_ids must not be empty.")
         return frozenset(_selected_blocks(input_ids, self.layout))
@@ -132,6 +138,8 @@ def _init_embeddings(
     modules = nn.ModuleDict()
     for name in layout.block_names:
         embed = embeddings[name]
+        if not isinstance(embed, nn.Embedding):
+            raise TypeError(f"embeddings[{name!r}] must be an nn.Embedding.")
         _validate_weight_size(name, embed, layout.blocks[name])
         modules[name] = embed
     return modules
@@ -216,6 +224,13 @@ def _checked_selected_blocks(
 ) -> frozenset[str] | None:
     if selected_blocks is None:
         return None
+    if isinstance(selected_blocks, (str, bytes)) or not isinstance(
+        selected_blocks,
+        Collection,
+    ):
+        raise TypeError("selected_blocks must be a collection of block names.")
+    if any(not isinstance(name, str) for name in selected_blocks):
+        raise TypeError("selected_blocks must contain only strings.")
     selected = frozenset(selected_blocks)
     unknown = selected - set(layout.block_names)
     if unknown:
@@ -231,6 +246,11 @@ def _can_use_homogeneous_path(embeddings: nn.ModuleDict) -> bool:
     if any(weight.device != first.device or weight.dtype != first.dtype for weight in weights[1:]):
         return False
     return not torch.is_grad_enabled() or not any(weight.requires_grad for weight in weights)
+
+
+def _input_ids(value: torch.Tensor) -> None:
+    if not isinstance(value, torch.Tensor):
+        raise TypeError("input_ids must be a torch.Tensor.")
 
 
 __all__ = [

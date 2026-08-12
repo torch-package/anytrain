@@ -315,3 +315,31 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - MoE/routing/dynamic-conv tests：83 passed，1 skipped，29 subtests passed。
+
+## `anytrain.module.idspace`
+
+状态：完成。
+
+审计结论：
+
+- `layout.py` 唯一拥有命名半开区间和 local/global ID 转换；`embedding.py` 唯一拥有按 block
+  路由、adapter 与 trusted selected-block fast path，两个文件无需新增中间层。
+- homogeneous inference 与通用训练路径的分离是为避免未命中参数进入 autograd，不是重复实现。
+
+完成的调整：
+
+- Layout block 端点、单 ID 与 ignore 改为严格 integer；转换入口落实 Tensor-only 契约。
+- Embedding 显式校验 Layout、block embedding、input tensor、strict bool validate 和 block-name
+  collection，错误由实际 owner 在注册/执行前暴露。
+
+刻意保留：
+
+- 不连续 global space、同 block local conversion 与 ignore passthrough 语义。
+- homogeneous no-sync fast path、未命中参数 `grad is None` 和 trusted preselected path。
+- dtype 错误继续由 PyTorch embedding 暴露，adapter/output-head 仍由下游拥有。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- idspace layout/embedding tests：25 passed，4 subtests passed。

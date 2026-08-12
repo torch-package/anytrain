@@ -90,6 +90,24 @@ class LayoutTest(unittest.TestCase):
             Layout(**{"": (0, 1)})
         with self.assertRaisesRegex(ValueError, "must not contain"):
             Layout(**{"text.main": (0, 1)})
+        for block in ((False, 1), (0.0, 1), (0, True), (0, 1.0)):
+            with (
+                self.subTest(block=block),
+                self.assertRaisesRegex(TypeError, "must be an integer"),
+            ):
+                Layout(text=cast(Any, block))
+
+    def test_conversion_controls_validate_types(self):
+        layout = Layout(text=(0, 2))
+
+        with self.assertRaisesRegex(TypeError, "ids must be a torch.Tensor"):
+            layout.to_global("text", cast(Any, [0, 1]))
+        with self.assertRaisesRegex(TypeError, "ids must be a torch.Tensor"):
+            layout.to_local(cast(Any, [0, 1]))
+        with self.assertRaisesRegex(TypeError, "token_id must be an integer"):
+            layout.block_name_for_id(cast(Any, True))
+        with self.assertRaisesRegex(TypeError, "ignore must be an integer"):
+            layout.to_local(torch.tensor([0]), ignore=cast(Any, -100.0))
 
 
 if __name__ == "__main__":

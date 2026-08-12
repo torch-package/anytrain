@@ -33,6 +33,7 @@ class Layout:
             raise KeyError(f"unknown id block {name!r}.") from error
 
     def block_name_for_id(self, token_id: int) -> str:
+        _integer(token_id, name="token_id")
         for name, (start, end) in self.blocks.items():
             if start <= token_id < end:
                 return name
@@ -43,6 +44,7 @@ class Layout:
         name: str,
         ids: torch.Tensor,
     ) -> torch.Tensor:
+        _tensor(ids, name="ids")
         start, end = self.block(name)
         size = end - start
         out_of_range = (ids < 0) | (ids >= size)
@@ -51,6 +53,9 @@ class Layout:
         return ids + start
 
     def to_local(self, ids: torch.Tensor, *, ignore: int | None = None) -> torch.Tensor:
+        _tensor(ids, name="ids")
+        if ignore is not None:
+            _integer(ignore, name="ignore")
         if ids.numel() == 0:
             raise ValueError("ids must not be empty.")
         active = ids != ignore if ignore is not None else torch.ones_like(ids, dtype=torch.bool)
@@ -75,6 +80,8 @@ def _blocks(blocks: Mapping[str, Block]) -> dict[str, Block]:
         if not isinstance(block, tuple) or len(block) != 2:
             raise TypeError(f"blocks[{name!r}] must be a (start, end) tuple.")
         start, end = block
+        _integer(start, name=f"blocks[{name!r}] start")
+        _integer(end, name=f"blocks[{name!r}] end")
         if start < 0:
             raise ValueError(f"blocks[{name!r}] start must be non-negative.")
         if end <= start:
@@ -94,6 +101,16 @@ def _name(value: str, *, name: str) -> None:
         raise ValueError(f"{name} must be a non-empty string.")
     if "." in value:
         raise ValueError(f"{name} must not contain '.'.")
+
+
+def _integer(value: int, *, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
+
+
+def _tensor(value: torch.Tensor, *, name: str) -> None:
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(f"{name} must be a torch.Tensor.")
 
 
 __all__ = [

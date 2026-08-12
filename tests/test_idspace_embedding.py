@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -144,6 +145,12 @@ class EmbeddingTest(unittest.TestCase):
             embed(torch.tensor([0]), selected_blocks={"image"}, validate=False)
         with self.assertRaisesRegex(ValueError, "must not be empty"):
             embed(torch.tensor([0]), selected_blocks=set(), validate=False)
+        with self.assertRaisesRegex(TypeError, "collection of block names"):
+            embed(torch.tensor([0]), selected_blocks=cast(Any, "text"), validate=False)
+        with self.assertRaisesRegex(TypeError, "contain only strings"):
+            embed(torch.tensor([0]), selected_blocks=cast(Any, {1}), validate=False)
+        with self.assertRaisesRegex(TypeError, "validate must be a bool"):
+            embed(torch.tensor([0]), validate=cast(Any, 1))
 
     def test_homogeneous_inference_falls_back_for_mixed_dtypes(self):
         layout = Layout(text=(0, 2), audio=(10, 12))
@@ -237,6 +244,20 @@ class EmbeddingTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "block size"):
             Embedding(layout, text=nn.Embedding(3, 2))
+
+    def test_public_inputs_validate_owner_types(self):
+        layout = Layout(text=(0, 2))
+
+        with self.assertRaisesRegex(TypeError, "layout must be a Layout"):
+            Embedding(cast(Any, object()), text=nn.Embedding(2, 2))
+        with self.assertRaisesRegex(TypeError, "must be an nn.Embedding"):
+            Embedding(layout, text=cast(Any, nn.Identity()))
+
+        embed = Embedding(layout, text=nn.Embedding(2, 2))
+        with self.assertRaisesRegex(TypeError, "input_ids must be a torch.Tensor"):
+            embed(cast(Any, [0, 1]))
+        with self.assertRaisesRegex(TypeError, "input_ids must be a torch.Tensor"):
+            embed.selected_blocks(cast(Any, [0, 1]))
 
 
 if __name__ == "__main__":
