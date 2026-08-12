@@ -144,6 +144,16 @@ class AdaptiveDirichletTemperingTest(unittest.TestCase):
 
         self.assertEqual(adt.num_updates, 1)
 
+    def test_stats_controls_require_booleans(self):
+        with self.assertRaisesRegex(TypeError, "use_gumbel_softmax must be a bool"):
+            ADTConfig(num_experts=3, use_gumbel_softmax=cast(Any, 1))
+        with self.assertRaisesRegex(TypeError, "sync_distributed_stats must be a bool"):
+            ADTConfig(num_experts=3, sync_distributed_stats=cast(Any, 1))
+
+        adt = ADT(num_experts=3)
+        with self.assertRaisesRegex(TypeError, "collect_stats must be a bool"):
+            adt(torch.randn(4, 3), collect_stats=cast(Any, 1))
+
     def test_disable_uses_unit_temperature_tensor(self):
         adt = ADT(num_experts=3)
         logits = torch.randn(5, 3)

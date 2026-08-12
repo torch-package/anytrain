@@ -57,6 +57,11 @@ def _positive_optional(name: str, value: int | None) -> None:
         raise ValueError(f"{name} must be positive when configured.")
 
 
+def _require_bool(name: str, value: bool) -> None:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool.")
+
+
 def _position(
     length: int,
     hidden_dim: int,
@@ -431,6 +436,7 @@ class DiT(nn.Module):
         condition_mask: Tensor | None = None,
         validate: bool = True,
     ) -> DiTConditionState:
+        _require_bool("validate", validate)
         if self.condition_type is DiTConditionType.NONE:
             if validate and (condition is not None or condition_mask is not None):
                 raise ValueError("condition_type none does not accept condition inputs.")
@@ -533,6 +539,7 @@ class DiT(nn.Module):
         mask: Tensor | None,
         validate: bool,
     ) -> tuple[Tensor, Tensor]:
+        _require_bool("validate", validate)
         if condition_state is not None and (condition is not None or condition_mask is not None):
             raise ValueError("condition_state cannot be combined with raw condition inputs.")
         if condition_state is None:

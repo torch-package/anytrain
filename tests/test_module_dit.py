@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -22,6 +23,16 @@ class DiTModuleTest(unittest.TestCase):
         self.assertEqual(output.shape, x_t.shape)
         with self.assertRaisesRegex(ValueError, "does not accept"):
             model.prepare_condition(torch.randn(2, 3, 4))
+
+    def test_validate_control_requires_boolean(self):
+        model = DiT(input_dim=5, hidden_dim=8, layers=1, heads=2, ffn_ratio=2)
+        x_t = torch.randn(2, 3, 5)
+        t = torch.tensor([0.2, 0.4])
+
+        with self.assertRaisesRegex(TypeError, "validate must be a bool"):
+            model(x_t, t, validate=cast(Any, 1))
+        with self.assertRaisesRegex(TypeError, "validate must be a bool"):
+            model.prepare_condition(validate=cast(Any, 1))
 
     def test_frame_film_condition_trains_and_masks_output(self):
         model = DiT(

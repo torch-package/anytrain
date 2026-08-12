@@ -31,6 +31,11 @@ class ADTConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.stat_ema_decays, tuple):
             raise TypeError("stat_ema_decays must be a tuple.")
+        for name, value in (
+            ("use_gumbel_softmax", self.use_gumbel_softmax),
+            ("sync_distributed_stats", self.sync_distributed_stats),
+        ):
+            _require_bool(name, value)
         if self.num_experts <= 0:
             raise ValueError(f"num_experts must be positive, got {self.num_experts}.")
         if self.temperature_groups <= 0:
@@ -396,6 +401,8 @@ class AdaptiveDirichletTempering(nn.Module):
             probabilities over the expert dimension and sum to 1 along the last
             dimension.
         """
+        if collect_stats is not None:
+            _require_bool("collect_stats", collect_stats)
         self._validate_logits(logits)
 
         should_update = self.training if collect_stats is None else collect_stats
@@ -587,6 +594,11 @@ class AdaptiveDirichletTempering(nn.Module):
             )
 
 ADT = AdaptiveDirichletTempering
+
+
+def _require_bool(name: str, value: bool) -> None:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool.")
 
 
 def refine_alpha_minka(

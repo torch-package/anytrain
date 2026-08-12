@@ -87,6 +87,8 @@ MoE/gate routing 日志输出，ADT stats metrics 不提供 usage logging 入口
 ADT 专用 callback 或 monitor adapter。ADT 内部统计本身已经是运行期 EMA，因此这些 Curve 不再叠加第二层
 observation EMA。
 `ADT` 短名保留为兼容别名，新代码和文档应优先使用 `AdaptiveDirichletTempering` 全名。
+ADT 的 `collect_stats`、`use_gumbel_softmax` 和 `sync_distributed_stats` 是严格 bool 控制项；
+不会把整数或字符串解释为开关。
 
 `anytrain.module.moe` 的公共模型是统一 `MoE`：`num_experts` 为顶层真相，核心契约是 `Expert` 对象 + 已是 `(E,...)` 的 `weight`/`bias` + 可选薄 `grid`。`expand_expert` 只对 stock `nn.Linear`/`nn.Conv*` 做几何拷贝和参数扩维，**不能**也不应用于自定义 `nn.Module` 推断。Conv 与 ConvTranspose 共享 `expand_param`、`Grid1d` 和「restore 后再加 bias」；weight 布局与 restore（concat vs OLA）由各自 Expert.`bind` 选择。设计见 [`moe.md`](moe.md) 与 [`moe-routing.md`](moe-routing.md)。
 
@@ -137,6 +139,7 @@ codec 逻辑：
   CUDA/dtype 场景下选择 flash / memory-efficient kernel。
 - `forward_with_features()` 可返回指定中间层投影，供下游 REPA、蒸馏或诊断目标使用；具体
   loss 仍由下游或 `anytrain.framework.flow_matching` 组合。
+- `validate=False` 是供已预检输入使用的显式 trusted fast path，参数本身只接受 bool。
 
 Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFSQ 和 AGRVQ：
 

@@ -255,3 +255,33 @@
 - `ruff`：通过。
 - `basedpyright`：0 errors。
 - `tests/test_optim.py` / `tests/test_optim_peft.py`：79 passed，3 subtests passed。
+
+## `anytrain.module`
+
+状态：完成，不含后续单独审阅的 `moe`、`idspace` 与 `stream`。
+
+审计结论：
+
+- 根包只转发 ADT 与 DiT 的稳定契约；quantization、Qwen、MoE、idspace 和 stream 保持显式子包，
+  不会因 `import anytrain.module` 加载 optional Transformers。
+- ADT 单文件共同维护统计 EMA、温度状态和 observation declaration；DiT 单文件共同维护 block、
+  condition cache 与 trusted forward shape 契约，按行数拆分都会引入新的私有跨文件协议。
+- quantization 与 Qwen 已有独立子包 owner 和完整模块文档，本轮不改它们已稳定的数值/optional 边界。
+
+完成的调整：
+
+- ADT config 与 forward 的统计开关改为严格 bool，拒绝隐式真值转换。
+- DiT 的 `validate` 明确为严格 bool，同时保留 `validate=False` 的 trusted fast path。
+- 模块文档补充这些控制项及根包/显式子包 ownership。
+
+刻意保留：
+
+- ADT 的统计、warmup、温度、checkpoint 与 observation 语义。
+- DiT 的 condition modes、KV cache、mask、attention backend 和 feature projection 语义。
+- quantization、Qwen 及各显式子包的 public import 边界。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- ADT / DiT tests：45 passed。
