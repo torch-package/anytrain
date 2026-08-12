@@ -81,6 +81,10 @@ class MossTTS:
         runtime_kwargs: Mapping[str, object] | None = None,
         **load_kwargs: Unpack[MossLoadKwargs],
     ) -> MossTTS:
+        if not isinstance(local_files_only, bool):
+            raise TypeError("local_files_only must be a bool.")
+        if not isinstance(trust_remote_code, bool):
+            raise TypeError("trust_remote_code must be a bool.")
         runtime = dict(runtime_kwargs or {})
         config = MossTTSConfig(
             model=str(model),

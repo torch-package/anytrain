@@ -51,6 +51,13 @@ Passing a single string returns one `TTSOutput`; passing a sequence of strings
 returns `list[TTSOutput]`. Batch synthesis shares one `TTSOptions` object across
 all texts and keeps each variable-length waveform as a separate output item.
 
+`protocol.py` owns the stable reference/capability/options/output/backend contract. Numeric controls are
+strict host values: sample rates and token limits are positive integers, `temperature` is finite positive,
+`top_p` is finite in `(0, 1]`, and bool/string coercions are rejected. `TTSOutput` requires a non-empty
+`[channels, time]` Tensor, finite positive duration, positive integer sample rate, and string-keyed metadata.
+`_common.py` owns only shared validation and deterministic config hashing; provider support policy remains in
+each backend adapter.
+
 Every loaded backend exposes `capabilities`. `TTSVoiceMode.SPEAKER_ID` means a
 caller can persist one speaker id and reuse it across texts and languages;
 `TTSVoiceMode.REFERENCE_AUDIO` means it can reuse one audio reference. The
@@ -234,3 +241,18 @@ anytrain batch API preserves aligned variable-length outputs but executes those
 items sequentially; it must not be reported as native model batching. Treat
 this backend as smoke/probe-only and do not use it for long-running production
 materialization until the upstream runtime provides native batched inference.
+
+MOSS is split by actual lifecycle ownership: `_config.py` owns serializable semantic configuration,
+`_loading.py` owns lazy Hugging Face construction, `_runtime.py` owns generation and request-scoped reference
+materialization, and `_output.py` owns processor decode normalization. Processor sample-rate/duration metadata
+is validated with the same strict numeric contract as the public output rather than coerced with `int()` or
+`float()`. Qwen, CosyVoice, and Spark keep their upstream inference state machines intact because their native
+batching, voice conditioning, and output protocols differ materially.
+
+## Verification
+
+```bash
+python -m pytest \
+  tests/test_tts_moss.py tests/test_qwen_tts.py \
+  tests/test_cosyvoice_tts.py tests/test_spark_tts.py
+```

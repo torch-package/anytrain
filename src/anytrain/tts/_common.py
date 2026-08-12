@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
+from numbers import Real
 from pathlib import Path
 
 
@@ -35,6 +37,32 @@ def positive_int(value: object, name: str) -> int:
         raise TypeError(f"{name} must be an integer.")
     if value <= 0:
         raise ValueError(f"{name} must be positive.")
+    return value
+
+
+def positive_float(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a real number.")
+    resolved = float(value)
+    if not math.isfinite(resolved) or resolved <= 0:
+        raise ValueError(f"{name} must be finite and positive.")
+    return resolved
+
+
+def probability(value: object, name: str) -> float:
+    resolved = positive_float(value, name)
+    if resolved > 1:
+        raise ValueError(f"{name} must be in (0, 1].")
+    return resolved
+
+
+def optional_non_empty_string(value: object | None, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string when set.")
+    if not value:
+        raise ValueError(f"{name} must be non-empty when set.")
     return value
 
 

@@ -18,7 +18,7 @@ from anytrain.tts import (
     WaveformReference,
     validate_text,
 )
-from anytrain.tts._common import positive_int, validate_mapping
+from anytrain.tts._common import positive_float, positive_int, probability, validate_mapping
 
 from ._config import MossRuntimeKwargs
 from ._types import AudioTokenizerProcessor, DeviceMovable, Processor
@@ -191,9 +191,10 @@ def processor_batch_inputs(batch: object, device: torch.device) -> dict[str, Ten
 
 
 def processor_sample_rate(processor: Processor, fallback: int) -> int:
+    positive_int(fallback, "fallback sample rate")
     model_config = getattr(processor, "model_config", None)
     value = getattr(model_config, "sampling_rate", None)
-    return fallback if value is None else int(value)
+    return fallback if value is None else positive_int(value, "processor sample rate")
 
 
 @contextmanager
@@ -245,20 +246,8 @@ def validate_runtime_kwargs(value: Mapping[str, object], name: str) -> None:
         raise TypeError(f"unsupported MOSS-TTS v1.5 runtime options: {names}.")
 
 
-def positive_float(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{name} must be a number.")
-    resolved = float(value)
-    if resolved <= 0:
-        raise ValueError(f"{name} must be positive.")
-    return resolved
-
-
 def top_p_value(value: object) -> float:
-    resolved = positive_float(value, "top_p")
-    if resolved > 1:
-        raise ValueError("top_p must be in (0, 1].")
-    return resolved
+    return probability(value, "top_p")
 
 
 def resolve_device(device: str | torch.device | None) -> torch.device:

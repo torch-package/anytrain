@@ -462,3 +462,36 @@
 - `basedpyright`：0 errors。
 - codec core/cache：39 passed。
 - concrete backend/assets：108 passed。
+
+## `anytrain.tts`
+
+状态：完成。
+
+审计结论：
+
+- `protocol.py` 已经集中拥有 reference/capability/options/output/backend public contract，不需要按类型
+  数量拆文件。
+- MOSS 已按 config、optional loading、runtime/reference lifecycle、output normalization 拆成真实职责；
+  Qwen/CosyVoice/Spark 的 conditioning 和 upstream inference 协议不同，不应抽一个分支繁多的基类。
+
+完成的调整：
+
+- 公共 option/output 统一复用 strict positive real/probability/string/mapping validator。
+- `language`、`temperature`、`top_p`、`duration`、`meta` 与 `waveform_duration()` 显式校验类型、有限性
+  和非空 shape，不再依赖比较运算或隐式属性错误。
+- MOSS config/loader 控制项严格校验字符串和 bool；processor sample rate、output duration/sample rate
+  不再通过 `int()` / `float()` 接受字符串或 bool。
+- `docs/tts.md` 记录 public/shared/provider ownership 与各 backend 的保留边界。
+
+刻意保留：
+
+- 单条/批量返回类型、explicit-none option merge、voice capability 与 speaker inventory 语义。
+- in-memory/path reference 的 request-scoped materialization 和 compatibility alias。
+- MOSS processor generation、Qwen CustomVoice、CosyVoice vLLM concurrency 与 Spark sequential batch 的
+  upstream-specific 行为和 optional dependencies。
+
+验收：
+
+- `ruff`：通过。
+- `basedpyright`：0 errors。
+- TTS public contract 与四个 backend tests：69 passed。

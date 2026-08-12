@@ -5,7 +5,12 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 
 from anytrain.tts import TTSOptions
-from anytrain.tts._common import hashable_mapping, validate_mapping
+from anytrain.tts._common import (
+    hashable_mapping,
+    optional_non_empty_string,
+    positive_int,
+    validate_mapping,
+)
 
 DEFAULT_MODEL = "OpenMOSS-Team/MOSS-TTS-v1.5"
 DEFAULT_CODEC_MODEL = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
@@ -41,14 +46,13 @@ class MossTTSConfig:
     runtime_kwargs: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.model:
-            raise ValueError("model must be non-empty.")
-        if not self.codec_model:
-            raise ValueError("codec_model must be non-empty.")
-        if isinstance(self.sample_rate, bool) or not isinstance(self.sample_rate, int):
-            raise TypeError("sample_rate must be an integer.")
-        if self.sample_rate <= 0:
-            raise ValueError("sample_rate must be positive.")
+        optional_non_empty_string(self.model, "model")
+        optional_non_empty_string(self.codec_model, "codec_model")
+        positive_int(self.sample_rate, "sample_rate")
+        optional_non_empty_string(self.language, "language")
+        optional_non_empty_string(self.revision, "revision")
+        if not isinstance(self.trust_remote_code, bool):
+            raise TypeError("trust_remote_code must be a bool.")
         validate_mapping(self.load_kwargs, "load_kwargs")
         validate_mapping(self.runtime_kwargs, "runtime_kwargs")
 

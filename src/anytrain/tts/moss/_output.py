@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 
 from anytrain.tts import TTSOutput, waveform_duration
+from anytrain.tts._common import positive_float, positive_int
 
 
 def processor_outputs(
@@ -95,8 +96,15 @@ def output(value: object, *, sample_rate: int) -> TTSOutput:
         )
     if isinstance(value, Mapping):
         wave = waveform(waveform_value(value))
-        output_sample_rate = int(value.get("sample_rate", sample_rate))
-        duration = float(value.get("duration", waveform_duration(wave, output_sample_rate)))
+        output_sample_rate = positive_int(
+            value.get("sample_rate", sample_rate),
+            "output sample_rate",
+        )
+        duration_value = value.get(
+            "duration",
+            waveform_duration(wave, output_sample_rate),
+        )
+        duration = positive_float(duration_value, "output duration")
         meta = value.get("meta", {})
         if not isinstance(meta, Mapping):
             raise TypeError("output meta must be a mapping when set.")

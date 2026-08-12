@@ -53,12 +53,48 @@ class TTSProtocolTest(unittest.TestCase):
                 duration=1.0,
             )
 
+    def test_output_requires_strict_duration_and_meta(self):
+        for duration in (True, "1.0", float("nan"), float("inf")):
+            with self.subTest(duration=duration), self.assertRaisesRegex(
+                (TypeError, ValueError),
+                "duration",
+            ):
+                TTSOutput(
+                    waveform=torch.zeros(1, 8),
+                    sample_rate=24_000,
+                    duration=cast(Any, duration),
+                )
+        with self.assertRaisesRegex(TypeError, "meta"):
+            TTSOutput(
+                waveform=torch.zeros(1, 8),
+                sample_rate=24_000,
+                duration=1.0,
+                meta=cast(Any, []),
+            )
+
     def test_options_validate_sampling_parameters(self):
         with self.assertRaisesRegex(ValueError, "top_p"):
             TTSOptions(top_p=1.2)
 
         with self.assertRaisesRegex(ValueError, "temperature"):
             TTSOptions(temperature=0.0)
+
+        for name, value in (
+            ("temperature", True),
+            ("temperature", "0.8"),
+            ("top_p", False),
+            ("top_p", "0.9"),
+        ):
+            with self.subTest(name=name, value=value), self.assertRaisesRegex(
+                TypeError,
+                name,
+            ):
+                TTSOptions(**cast(Any, {name: value}))
+
+        with self.assertRaisesRegex(TypeError, "language"):
+            TTSOptions(language=cast(Any, 1))
+        with self.assertRaisesRegex(ValueError, "language"):
+            TTSOptions(language="")
 
     def test_options_merge_preserves_explicit_fields_and_none(self):
         defaults = TTSOptions(speaker="default", language="Chinese", seed=7)
@@ -116,6 +152,20 @@ class MossTTSImportTest(unittest.TestCase):
             ),
         ):
             MossTTS.from_pretrained(local_files_only=True)
+
+    def test_from_pretrained_validates_bool_controls_before_loading(self):
+        with self.assertRaisesRegex(TypeError, "local_files_only"):
+            MossTTS.from_pretrained(local_files_only=cast(Any, 1))
+        with self.assertRaisesRegex(TypeError, "trust_remote_code"):
+            MossTTS.from_pretrained(trust_remote_code=cast(Any, "yes"))
+
+    def test_config_validates_text_and_bool_metadata(self):
+        with self.assertRaisesRegex(TypeError, "model"):
+            MossTTSConfig(model=cast(Any, 1))
+        with self.assertRaisesRegex(ValueError, "language"):
+            MossTTSConfig(language="")
+        with self.assertRaisesRegex(TypeError, "trust_remote_code"):
+            MossTTSConfig(trust_remote_code=cast(Any, 1))
 
 
 class MossTTSAdapterTest(unittest.TestCase):
@@ -473,6 +523,29 @@ class MossTTSAdapterTest(unittest.TestCase):
                 sample_rate=24000,
                 backend="moss",
             )
+
+    def test_processor_output_rejects_coercible_numeric_metadata(self):
+        from anytrain.tts.moss._output import output
+
+        for field, value in (("sample_rate", "24000"), ("duration", "1.0")):
+            with self.subTest(field=field), self.assertRaisesRegex(TypeError, field):
+                output(
+                    {
+                        "waveform": torch.zeros(8),
+                        field: value,
+                    },
+                    sample_rate=24_000,
+                )
+
+    def test_processor_sample_rate_rejects_coercible_metadata(self):
+        from anytrain.tts.moss._runtime import processor_sample_rate
+
+        processor = cast(
+            Any,
+            SimpleNamespace(model_config=SimpleNamespace(sampling_rate="24000")),
+        )
+        with self.assertRaisesRegex(TypeError, "processor sample rate"):
+            processor_sample_rate(processor, 24_000)
 
 
 class FakeMossModel:

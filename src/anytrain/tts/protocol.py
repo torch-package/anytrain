@@ -10,7 +10,13 @@ from torch import Tensor
 
 from anytrain._compat import StrEnum
 
-from ._common import positive_int, validate_mapping
+from ._common import (
+    optional_non_empty_string,
+    positive_float,
+    positive_int,
+    probability,
+    validate_mapping,
+)
 
 PathAudioReference = str | PathLike[str]
 
@@ -173,14 +179,15 @@ class TTSOptions:
         if self.sample_rate is not None:
             positive_int(self.sample_rate, "sample_rate")
         _validate_speaker(self.speaker)
+        optional_non_empty_string(self.language, "language")
         _validate_text_option(self.prompt_text, "prompt_text")
         _validate_text_option(self.instruction, "instruction")
         if self.max_new_tokens is not None:
             positive_int(self.max_new_tokens, "max_new_tokens")
-        if self.temperature is not None and self.temperature <= 0:
-            raise ValueError("temperature must be positive when set.")
-        if self.top_p is not None and not 0 < self.top_p <= 1:
-            raise ValueError("top_p must be in (0, 1] when set.")
+        if self.temperature is not None:
+            positive_float(self.temperature, "temperature")
+        if self.top_p is not None:
+            probability(self.top_p, "top_p")
         if self.seed is not None and (
             isinstance(self.seed, bool) or not isinstance(self.seed, int)
         ):
@@ -233,8 +240,8 @@ class TTSOutput:
         if self.waveform.shape[0] <= 0 or self.waveform.shape[-1] <= 0:
             raise ValueError("waveform must not be empty.")
         positive_int(self.sample_rate, "sample_rate")
-        if self.duration <= 0:
-            raise ValueError("duration must be positive.")
+        positive_float(self.duration, "duration")
+        validate_mapping(self.meta, "meta")
 
 
 class TTSBackend(Protocol):
@@ -288,8 +295,12 @@ def validate_text(text: str) -> str:
 
 def waveform_duration(waveform: Tensor, sample_rate: int) -> float:
     positive_int(sample_rate, "sample_rate")
+    if not isinstance(waveform, Tensor):
+        raise TypeError("waveform must be a torch.Tensor.")
     if waveform.ndim != 2:
         raise ValueError("waveform must have shape [channels, time].")
+    if waveform.shape[0] <= 0 or waveform.shape[-1] <= 0:
+        raise ValueError("waveform must not be empty.")
     return float(waveform.shape[-1]) / float(sample_rate)
 
 
