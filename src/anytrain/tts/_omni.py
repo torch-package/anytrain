@@ -15,6 +15,7 @@ import torch
 from torch import Tensor
 
 from ._common import positive_float, positive_int, probability
+from ._environment import VLLM_OMNI_ENVIRONMENT
 from .protocol import TTSOptions, TTSOutput, waveform_duration
 
 
@@ -43,6 +44,7 @@ class StageSamplingParams(Protocol):
 def load_omni(model: str, kwargs: Mapping[str, object]) -> OmniEngine:
     """Construct the optional offline vLLM-Omni engine."""
 
+    VLLM_OMNI_ENVIRONMENT.validate()
     try:
         from vllm_omni import Omni  # pyright: ignore[reportMissingImports]
     except ImportError as exc:

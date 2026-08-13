@@ -25,6 +25,7 @@ from anytrain.tts import (
     waveform_duration,
 )
 from anytrain.tts._common import config_hash, hashable_mapping, positive_int, validate_mapping
+from anytrain.tts._environment import QWEN_TORCH_ENVIRONMENT
 from anytrain.tts._omni import OmniEngine, generate_audio, load_omni
 
 from ._omni import QwenOmniPromptBuilder
@@ -200,13 +201,14 @@ class QwenCustomVoiceTTS:
             effective_load_kwargs["revision"] = revision
         if local_files_only:
             effective_load_kwargs["local_files_only"] = True
+        QWEN_TORCH_ENVIRONMENT.validate()
         try:
             from qwen_tts import Qwen3TTSModel  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
             raise ImportError(
                 "anytrain.tts.qwen requires Qwen3-TTS. "
-                "Install Qwen3-TTS with "
-                "`python -m pip install git+https://github.com/QwenLM/Qwen3-TTS.git`."
+                "Install the PyTorch backend with "
+                "`python -m pip install 'anytrain[qwen-tts]'`."
             ) from exc
 
         runtime = dict(runtime_kwargs or {})

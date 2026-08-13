@@ -35,22 +35,29 @@ Install the optional vLLM-Omni runtime in a dedicated CUDA environment:
 python -m pip install 'anytrain[tts-vllm-omni]'
 ```
 
-The extra installs matching `vllm` and `vllm-omni` 0.26 release lines because
-vLLM-Omni does not declare the core vLLM wheel itself and their request and
-pipeline contracts evolve together. Qwen3-TTS and MOSS-TTS keep their processor
-dependencies in their backend extras.
+The extra installs matching `vllm` and `vllm-omni` 0.26 release lines plus
+`transformers>=5.5.3`. vLLM-Omni does not declare the core vLLM wheel itself,
+and their request and pipeline contracts evolve together.
+
+Qwen3-TTS's PyTorch wrapper is a different environment contract. The pinned
+upstream package requires `transformers==4.57.3`, so install it in its own
+environment:
+
+```bash
+python -m pip install 'anytrain[qwen-tts]'
+```
+
+Do not install `anytrain[qwen-tts,tts-vllm-omni]` together. The dependency
+constraints are intentionally unsatisfiable: a caller that needs both engines
+must run them behind separate process boundaries. AnyTrain validates the
+selected backend's installed distributions before model construction and
+reports missing, mismatched, or mutually incompatible runtimes. It does not
+patch Transformers APIs or fall back to a different engine.
 
 Install the MOSS backend dependencies from the anytrain repository root:
 
 ```bash
 python -m pip install "torchaudio>=2.0" transformers
-```
-
-Install the Qwen3-TTS CustomVoice backend when speaker-id based synthesis is
-needed:
-
-```bash
-python -m pip install git+https://github.com/QwenLM/Qwen3-TTS.git
 ```
 
 CosyVoice 2/3 uses the official source tree because the upstream runtime also
@@ -230,7 +237,9 @@ tokens = prompt_cost.estimate("hello")
 
 The estimator is lazy and pickle-safe. It calls
 `AutoProcessor.from_pretrained(..., fix_mistral_regex=True)` without loading the
-TTS model, then applies the same
+TTS model, so it uses the Transformers processor already present in either
+selected backend environment and does not require the `qwen-tts` distribution.
+It then applies the same
 `<|im_start|>assistant\n...<|im_end|>\n<|im_start|>assistant\n` protocol as
 Qwen3-TTS CustomVoice. Its `identity` includes only the logical model id, pinned
 model revision, and prompt protocol. Cache paths and `local_files_only` are

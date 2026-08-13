@@ -76,7 +76,7 @@ class QwenCustomVoicePromptEstimator:
             except ImportError as exc:
                 raise ImportError(
                     "Qwen CustomVoice prompt estimation requires transformers; "
-                    "install `anytrain[qwen-tts]`."
+                    "install the extra for the selected Qwen TTS backend."
                 ) from exc
 
             options: dict[str, object] = {

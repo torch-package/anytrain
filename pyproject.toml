@@ -50,9 +50,16 @@ longcat = [
     "PyYAML>=6.0",
 ]
 moss-tts = ["torchaudio>=2.0", "transformers"]
-tts-vllm-omni = ["vllm>=0.26,<0.27", "vllm-omni>=0.26,<0.27"]
+tts-vllm-omni = [
+    "packaging>=24",
+    "transformers>=5.5.3",
+    "vllm>=0.26,<0.27",
+    "vllm-omni>=0.26,<0.27",
+]
 qwen-tts = [
+    "packaging>=24",
     "qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "transformers==4.57.3",
 ]
 spark-tts = [
     "huggingface-hub>=0.23",

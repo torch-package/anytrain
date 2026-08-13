@@ -4,6 +4,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar, cast
+from unittest.mock import patch
 
 import torch
 
@@ -42,6 +43,14 @@ class QwenTTSAdapterTest(unittest.TestCase):
             FakeQwen3TTSModel.loaded.load_args,
             ("fake-qwen", {"device": "cpu", "torch_dtype": torch.bfloat16}),
         )
+
+    def test_from_pretrained_validates_the_qwen_torch_environment_before_import(self):
+        with (
+            patch("anytrain.tts.qwen.tts.QWEN_TORCH_ENVIRONMENT") as environment,
+            self.assertRaisesRegex(RuntimeError, "separate environments"),
+        ):
+            environment.validate.side_effect = RuntimeError("use separate environments")
+            QwenCustomVoiceTTS.from_pretrained("fake-qwen")
 
     def test_synthesize_custom_voice_accepts_per_sample_speakers(self):
         with _fake_qwen_tts():
@@ -396,8 +405,12 @@ class FakeQwen3TTSModel:
 class _fake_qwen_tts:
     def __init__(self) -> None:
         self.previous = {}
+        self.environment = patch(
+            "anytrain.tts.qwen.tts.QWEN_TORCH_ENVIRONMENT"
+        )
 
     def __enter__(self):
+        self.environment.start()
         module: Any = types.ModuleType("qwen_tts")
         module.Qwen3TTSModel = FakeQwen3TTSModel
         self.previous = {"qwen_tts": sys.modules.get("qwen_tts")}
@@ -405,6 +418,7 @@ class _fake_qwen_tts:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        self.environment.stop()
         previous = self.previous["qwen_tts"]
         if previous is None:
             sys.modules.pop("qwen_tts", None)

@@ -14,12 +14,113 @@ from anytrain.tts import (
     TTSOptions,
     TTSTransformerEngine,
 )
+from anytrain.tts._environment import QWEN_TORCH_ENVIRONMENT, VLLM_OMNI_ENVIRONMENT
 from anytrain.tts._omni import generate_audio, load_omni
 from anytrain.tts.cosyvoice import CosyVoiceTTSConfig
 from anytrain.tts.moss import MossTTS, MossTTSConfig
 from anytrain.tts.moss._omni import build_prompts as build_moss_prompts
 from anytrain.tts.qwen import QwenCustomVoiceTTS, QwenCustomVoiceTTSConfig
 from anytrain.tts.qwen._omni import QwenOmniPromptBuilder
+
+
+def _installed(versions: dict[str, str]):
+    def lookup(distribution: str) -> str:
+        try:
+            return versions[distribution]
+        except KeyError:
+            from importlib.metadata import PackageNotFoundError
+
+            raise PackageNotFoundError(distribution) from None
+
+    return lookup
+
+
+@pytest.mark.parametrize(
+    ("contract", "versions"),
+    (
+        (
+            QWEN_TORCH_ENVIRONMENT,
+            {"qwen-tts": "0.1.1", "transformers": "4.57.3"},
+        ),
+        (
+            VLLM_OMNI_ENVIRONMENT,
+            {
+                "transformers": "5.5.3",
+                "vllm": "0.26.0",
+                "vllm-omni": "0.26.0",
+            },
+        ),
+    ),
+)
+def test_tts_environment_contracts_accept_only_their_backend_family(
+    contract: Any,
+    versions: dict[str, str],
+) -> None:
+    with patch("anytrain.tts._environment.version", side_effect=_installed(versions)):
+        contract.validate()
+
+
+@pytest.mark.parametrize(
+    ("contract", "versions"),
+    (
+        (
+            QWEN_TORCH_ENVIRONMENT,
+            {
+                "qwen-tts": "0.1.1",
+                "transformers": "4.57.3",
+                "vllm": "0.26.0",
+            },
+        ),
+        (
+            VLLM_OMNI_ENVIRONMENT,
+            {
+                "qwen-tts": "0.1.1",
+                "transformers": "5.5.3",
+                "vllm": "0.26.0",
+                "vllm-omni": "0.26.0",
+            },
+        ),
+    ),
+)
+def test_tts_environment_contracts_reject_mixed_qwen_and_vllm_families(
+    contract: Any,
+    versions: dict[str, str],
+) -> None:
+    with (
+        patch("anytrain.tts._environment.version", side_effect=_installed(versions)),
+        pytest.raises(RuntimeError, match="separate environments and process boundaries"),
+    ):
+        contract.validate()
+
+
+@pytest.mark.parametrize(
+    ("contract", "versions", "message", "error"),
+    (
+        (
+            QWEN_TORCH_ENVIRONMENT,
+            {"qwen-tts": "0.1.1", "transformers": "5.5.3"},
+            "transformers==4.57.3",
+            RuntimeError,
+        ),
+        (
+            VLLM_OMNI_ENVIRONMENT,
+            {"transformers": "5.5.3", "vllm": "0.26.0"},
+            "vllm-omni",
+            ImportError,
+        ),
+    ),
+)
+def test_tts_environment_contracts_report_version_and_missing_dependencies(
+    contract: Any,
+    versions: dict[str, str],
+    message: str,
+    error: type[Exception],
+) -> None:
+    with (
+        patch("anytrain.tts._environment.version", side_effect=_installed(versions)),
+        pytest.raises(error, match=message),
+    ):
+        contract.validate()
 
 
 def test_engine_config_validates_capabilities_and_excludes_concurrency_from_hash() -> None:
@@ -466,7 +567,17 @@ def test_moss_from_pretrained_constructs_omni_and_processor_only() -> None:
 
 def test_load_omni_reports_missing_optional_dependency() -> None:
     with (
+        patch("anytrain.tts._omni.VLLM_OMNI_ENVIRONMENT"),
         patch.dict("sys.modules", {"vllm_omni": None}),
         pytest.raises(ImportError, match="vllm-omni"),
     ):
+        load_omni("fake", {})
+
+
+def test_load_omni_validates_the_environment_before_import() -> None:
+    with (
+        patch("anytrain.tts._omni.VLLM_OMNI_ENVIRONMENT") as environment,
+        pytest.raises(RuntimeError, match="separate environments"),
+    ):
+        environment.validate.side_effect = RuntimeError("use separate environments")
         load_omni("fake", {})
