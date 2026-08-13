@@ -40,6 +40,7 @@ from anytrain.tts import (
     waveform_duration,
 )
 from anytrain.tts._common import config_hash, hashable_mapping, validate_mapping
+from anytrain.tts.environments import COSYVOICE_VLLM_ENVIRONMENT
 
 DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
 DEFAULT_MODEL_V3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
@@ -180,13 +181,16 @@ class CosyVoiceTTS:
             max_concurrency=max_concurrency,
         )
         resolved_load_kwargs = _load_kwargs(config.resolved_inference(), load_kwargs)
+        if config.resolved_inference().transformer_engine is TTSTransformerEngine.VLLM:
+            COSYVOICE_VLLM_ENVIRONMENT.validate()
         try:
             from cosyvoice.cli.cosyvoice import AutoModel  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
             raise ImportError(
                 "anytrain.tts.cosyvoice requires the official CosyVoice source package "
-                "and its Matcha-TTS submodule. Install the pinned CosyVoice checkout "
-                "before loading this backend."
+                "and its Matcha-TTS submodule. Install the validated engine runtime "
+                "with `anytrain[cosyvoice-vllm]` when load_vllm is enabled, then make "
+                "the pinned CosyVoice checkout importable."
             ) from exc
         if config.resolved_inference().transformer_engine is TTSTransformerEngine.VLLM:
             _register_vllm_model()

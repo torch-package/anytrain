@@ -25,8 +25,8 @@ from anytrain.tts import (
     waveform_duration,
 )
 from anytrain.tts._common import config_hash, hashable_mapping, positive_int, validate_mapping
-from anytrain.tts._environment import QWEN_TORCH_ENVIRONMENT
 from anytrain.tts._omni import OmniEngine, generate_audio, load_omni
+from anytrain.tts.environments import QWEN_TORCH_ENVIRONMENT
 
 from ._omni import QwenOmniPromptBuilder
 

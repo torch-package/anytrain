@@ -57,8 +57,27 @@ patch Transformers APIs or fall back to a different engine.
 Install the MOSS backend dependencies from the anytrain repository root:
 
 ```bash
-python -m pip install "torchaudio>=2.0" transformers
+python -m pip install 'anytrain[moss-tts]'
 ```
+
+The optional TTS runtimes are intentionally separate environment families. AnyTrain
+publishes their inspectable distribution contracts through
+`anytrain.tts.environments` so a workspace installer can validate the same rules
+without importing a backend:
+
+| id | validated distribution family | boundary |
+| --- | --- | --- |
+| `qwen_torch` | `qwen-tts==0.1.1`, `transformers==4.57.3` | Qwen3-TTS CustomVoice PyTorch |
+| `moss_torch` | Torch/TorchAudio 2.9, TorchCodec 0.8, `transformers==5.0.0` | MOSS-TTS v1.5 PyTorch |
+| `cosyvoice_vllm` | Torch/TorchAudio 2.8, `transformers==4.57.1`, `vllm==0.11.0`, ORT GPU 1.20.2 | CosyVoice embedded vLLM |
+| `vllm_omni` | `vllm`/`vllm-omni` 0.26 release line, `transformers>=5.5.3` | Qwen3-TTS or MOSS vLLM-Omni |
+
+Use `environment_contract("moss_torch")` or the read-only
+`ENVIRONMENT_CONTRACTS` mapping to inspect requirements and conflicts. Calling
+`contract.validate()` checks the current interpreter; passing a mapping such as
+`contract.validate({"transformers": "5.0.0", ...})` validates a recorded inventory.
+The MOSS and CosyVoice rows describe the verified runtime inventories, not a
+promise that arbitrary CUDA wheels or an unpinned upstream checkout are portable.
 
 CosyVoice 2/3 uses the official source tree because the upstream runtime also
 depends on its Matcha-TTS submodule. Keep a production checkout pinned by the
@@ -70,6 +89,15 @@ git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /path/to/Cosy
 python -m pip install -r /path/to/CosyVoice/requirements.txt
 export PYTHONPATH=/path/to/CosyVoice:$PYTHONPATH
 ```
+
+For the embedded-vLLM path, install the validated AnyTrain runtime first:
+
+```bash
+python -m pip install 'anytrain[cosyvoice-vllm]'
+```
+
+The source checkout and Matcha-TTS revision remain workspace-owned because they
+are upstream source boundaries rather than Python distribution contracts.
 
 The stable public boundary is:
 

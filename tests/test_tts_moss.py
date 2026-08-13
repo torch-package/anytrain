@@ -148,9 +148,18 @@ class MossTTSImportTest(unittest.TestCase):
             ),
             self.assertRaisesRegex(
                 ImportError,
-                r'pip install "torchaudio>=2.0" transformers',
+                r"anytrain\[moss-tts\]",
             ),
+            patch("anytrain.tts.moss.tts.MOSS_TORCH_ENVIRONMENT"),
         ):
+            MossTTS.from_pretrained(local_files_only=True)
+
+    def test_from_pretrained_validates_torch_environment_before_import(self):
+        with (
+            patch("anytrain.tts.moss.tts.MOSS_TORCH_ENVIRONMENT") as environment,
+            self.assertRaisesRegex(RuntimeError, "separate environment"),
+        ):
+            environment.validate.side_effect = RuntimeError("use a separate environment")
             MossTTS.from_pretrained(local_files_only=True)
 
     def test_from_pretrained_validates_bool_controls_before_loading(self):
@@ -203,6 +212,7 @@ class MossTTSAdapterTest(unittest.TestCase):
                 "anytrain.tts.moss._loading.pretrained_source",
                 side_effect=lambda source, **kwargs: str(source),
             ),
+            patch("anytrain.tts.moss.tts.MOSS_TORCH_ENVIRONMENT"),
         ):
             tts = MossTTS.from_pretrained(
                 "OpenMOSS-Team/MOSS-TTS-v1.5",

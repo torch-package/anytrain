@@ -83,7 +83,8 @@ extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，�
 - text evaluator：安装 `text` extra 使用 sacreBLEU/jiwer backend；无 extra 时有显式 warning
   的轻量 fallback。
 - speech evaluator：安装 `speech` extra 使用 Whisper、UTMOS 和 speech text metrics。
-- TTS：公共协议保留轻量，MOSS adapter 安装 `moss-tts` extra。
+- TTS：公共协议保留轻量，MOSS adapter 安装 `moss-tts` extra；可选运行时的
+  发行包契约集中在 `anytrain.tts.environments`，供下游安装器复用。
 
 ### Optional Framework
 

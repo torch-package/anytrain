@@ -29,6 +29,7 @@ from anytrain.tts import (
 )
 from anytrain.tts._common import config_hash
 from anytrain.tts._omni import OmniEngine, generate_audio, load_omni
+from anytrain.tts.environments import MOSS_TORCH_ENVIRONMENT
 
 from ._config import (
     DEFAULT_CODEC_MODEL,
@@ -151,6 +152,7 @@ class MossTTS:
                 device=torch.device("cpu"),
                 model_loaded_from="vllm_omni",
             )
+        MOSS_TORCH_ENVIRONMENT.validate()
         loaded, processor = load_pretrained_pair(
             model,
             cache_dir=cache_dir,

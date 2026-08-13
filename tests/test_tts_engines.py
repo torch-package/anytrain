@@ -14,25 +14,20 @@ from anytrain.tts import (
     TTSOptions,
     TTSTransformerEngine,
 )
-from anytrain.tts._environment import QWEN_TORCH_ENVIRONMENT, VLLM_OMNI_ENVIRONMENT
 from anytrain.tts._omni import generate_audio, load_omni
 from anytrain.tts.cosyvoice import CosyVoiceTTSConfig
+from anytrain.tts.environments import (
+    COSYVOICE_VLLM_ENVIRONMENT,
+    ENVIRONMENT_CONTRACTS,
+    MOSS_TORCH_ENVIRONMENT,
+    QWEN_TORCH_ENVIRONMENT,
+    VLLM_OMNI_ENVIRONMENT,
+    environment_contract,
+)
 from anytrain.tts.moss import MossTTS, MossTTSConfig
 from anytrain.tts.moss._omni import build_prompts as build_moss_prompts
 from anytrain.tts.qwen import QwenCustomVoiceTTS, QwenCustomVoiceTTSConfig
 from anytrain.tts.qwen._omni import QwenOmniPromptBuilder
-
-
-def _installed(versions: dict[str, str]):
-    def lookup(distribution: str) -> str:
-        try:
-            return versions[distribution]
-        except KeyError:
-            from importlib.metadata import PackageNotFoundError
-
-            raise PackageNotFoundError(distribution) from None
-
-    return lookup
 
 
 @pytest.mark.parametrize(
@@ -41,6 +36,25 @@ def _installed(versions: dict[str, str]):
         (
             QWEN_TORCH_ENVIRONMENT,
             {"qwen-tts": "0.1.1", "transformers": "4.57.3"},
+        ),
+        (
+            MOSS_TORCH_ENVIRONMENT,
+            {
+                "torch": "2.9.0+cu129",
+                "torchaudio": "2.9.0+cu129",
+                "torchcodec": "0.8.0+cu128",
+                "transformers": "5.0.0",
+            },
+        ),
+        (
+            COSYVOICE_VLLM_ENVIRONMENT,
+            {
+                "torch": "2.8.0+cu128",
+                "torchaudio": "2.8.0+cu128",
+                "transformers": "4.57.1",
+                "vllm": "0.11.0",
+                "onnxruntime_gpu": "1.20.2",
+            },
         ),
         (
             VLLM_OMNI_ENVIRONMENT,
@@ -56,8 +70,23 @@ def test_tts_environment_contracts_accept_only_their_backend_family(
     contract: Any,
     versions: dict[str, str],
 ) -> None:
-    with patch("anytrain.tts._environment.version", side_effect=_installed(versions)):
-        contract.validate()
+    contract.validate(versions)
+
+
+def test_tts_environment_contract_registry_is_public_and_read_only() -> None:
+    assert tuple(ENVIRONMENT_CONTRACTS) == (
+        "qwen_torch",
+        "moss_torch",
+        "cosyvoice_vllm",
+        "vllm_omni",
+    )
+    assert environment_contract("moss_torch") is MOSS_TORCH_ENVIRONMENT
+    assert MOSS_TORCH_ENVIRONMENT.incompatible
+    assert MOSS_TORCH_ENVIRONMENT.incompatibility is not None
+    with pytest.raises(KeyError, match="unknown TTS environment"):
+        environment_contract("unknown")
+    with pytest.raises(TypeError):
+        cast(Any, ENVIRONMENT_CONTRACTS)["new"] = MOSS_TORCH_ENVIRONMENT
 
 
 @pytest.mark.parametrize(
@@ -80,17 +109,35 @@ def test_tts_environment_contracts_accept_only_their_backend_family(
                 "vllm-omni": "0.26.0",
             },
         ),
+        (
+            MOSS_TORCH_ENVIRONMENT,
+            {
+                "torch": "2.9.0",
+                "torchaudio": "2.9.0",
+                "torchcodec": "0.8.0",
+                "transformers": "5.0.0",
+                "vllm-omni": "0.26.0",
+            },
+        ),
+        (
+            COSYVOICE_VLLM_ENVIRONMENT,
+            {
+                "torch": "2.8.0",
+                "torchaudio": "2.8.0",
+                "transformers": "4.57.1",
+                "vllm": "0.11.0",
+                "onnxruntime-gpu": "1.20.2",
+                "qwen-tts": "0.1.1",
+            },
+        ),
     ),
 )
 def test_tts_environment_contracts_reject_mixed_qwen_and_vllm_families(
     contract: Any,
     versions: dict[str, str],
 ) -> None:
-    with (
-        patch("anytrain.tts._environment.version", side_effect=_installed(versions)),
-        pytest.raises(RuntimeError, match="separate environments and process boundaries"),
-    ):
-        contract.validate()
+    with pytest.raises(RuntimeError, match="separate"):
+        contract.validate(versions)
 
 
 @pytest.mark.parametrize(
@@ -108,6 +155,28 @@ def test_tts_environment_contracts_reject_mixed_qwen_and_vllm_families(
             "vllm-omni",
             ImportError,
         ),
+        (
+            MOSS_TORCH_ENVIRONMENT,
+            {
+                "torch": "2.9.0",
+                "torchaudio": "2.9.0",
+                "torchcodec": "0.8.0",
+                "transformers": "4.57.3",
+            },
+            "transformers==5.0.0",
+            RuntimeError,
+        ),
+        (
+            COSYVOICE_VLLM_ENVIRONMENT,
+            {
+                "torch": "2.8.0",
+                "torchaudio": "2.8.0",
+                "transformers": "4.57.1",
+                "vllm": "0.11.0",
+            },
+            "onnxruntime-gpu",
+            ImportError,
+        ),
     ),
 )
 def test_tts_environment_contracts_report_version_and_missing_dependencies(
@@ -116,11 +185,8 @@ def test_tts_environment_contracts_report_version_and_missing_dependencies(
     message: str,
     error: type[Exception],
 ) -> None:
-    with (
-        patch("anytrain.tts._environment.version", side_effect=_installed(versions)),
-        pytest.raises(error, match=message),
-    ):
-        contract.validate()
+    with pytest.raises(error, match=message):
+        contract.validate(versions)
 
 
 def test_engine_config_validates_capabilities_and_excludes_concurrency_from_hash() -> None:
@@ -532,6 +598,7 @@ def test_moss_from_pretrained_constructs_omni_and_processor_only() -> None:
             "anytrain.tts.moss.tts.load_pretrained_processor",
             return_value=processor,
         ) as load_processor,
+        patch("anytrain.tts.moss.tts.MOSS_TORCH_ENVIRONMENT"),
     ):
         backend = MossTTS.from_pretrained(
             "fake-moss",

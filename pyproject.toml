@@ -49,7 +49,21 @@ longcat = [
     "longcat-audio-codec @ git+https://github.com/rookiejune/LongCat-Audio-Codec.git@f338c4fb346bbd040c942ccbe3928bd9a1cb81a0",
     "PyYAML>=6.0",
 ]
-moss-tts = ["torchaudio>=2.0", "transformers"]
+moss-tts = [
+    "packaging>=24",
+    "torch>=2.9,<2.10",
+    "torchaudio>=2.9,<2.10",
+    "torchcodec>=0.8,<0.9",
+    "transformers==5.0.0",
+]
+cosyvoice-vllm = [
+    "packaging>=24",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "transformers==4.57.1",
+    "vllm==0.11.0",
+    "onnxruntime-gpu==1.20.2; sys_platform == 'linux'",
+]
 tts-vllm-omni = [
     "packaging>=24",
     "transformers>=5.5.3",

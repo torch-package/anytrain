@@ -24,8 +24,8 @@ def load_pretrained_pair(
     except ImportError as exc:
         raise ImportError(
             "`anytrain.tts.moss` requires `transformers` to load remote-code "
-            "MOSS-TTS v1.5 checkpoints and processors. Install Moss TTS "
-            'dependencies with `python -m pip install "torchaudio>=2.0" transformers`.'
+            "MOSS-TTS v1.5 checkpoints and processors. Install MOSS-TTS "
+            "dependencies with `python -m pip install 'anytrain[moss-tts]'`."
         ) from exc
 
     try:

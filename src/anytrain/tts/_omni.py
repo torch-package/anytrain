@@ -15,7 +15,7 @@ import torch
 from torch import Tensor
 
 from ._common import positive_float, positive_int, probability
-from ._environment import VLLM_OMNI_ENVIRONMENT
+from .environments import VLLM_OMNI_ENVIRONMENT
 from .protocol import TTSOptions, TTSOutput, waveform_duration
 
 

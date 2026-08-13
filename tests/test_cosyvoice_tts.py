@@ -25,7 +25,10 @@ from anytrain.tts.cosyvoice import (
 class CosyVoiceTTSAdapterTest(unittest.TestCase):
     def test_from_pretrained_selects_version_default_and_load_options(self):
         FakeCosyVoiceModel.loaded = None
-        with _fake_cosyvoice():
+        with (
+            patch("anytrain.tts.cosyvoice.tts.COSYVOICE_VLLM_ENVIRONMENT"),
+            _fake_cosyvoice(),
+        ):
             backend = CosyVoiceTTS.from_pretrained(
                 version="v2",
                 device="auto",
@@ -58,6 +61,7 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
             with (
                 patch.object(torch.cuda, "is_available", return_value=True),
                 patch.object(torch.cuda, "device", return_value=nullcontext()),
+                patch("anytrain.tts.cosyvoice.tts.COSYVOICE_VLLM_ENVIRONMENT"),
                 _fake_cosyvoice(),
             ):
                 CosyVoiceTTS.from_pretrained(device="cuda:0", load_vllm=True)
@@ -65,6 +69,14 @@ class CosyVoiceTTSAdapterTest(unittest.TestCase):
             self.assertEqual(FakeCosyVoiceModel.loaded.cuda_visible_devices, "7")
             self.assertEqual(FakeModelRegistry.registration_visibility, ["7"])
             self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "7")
+
+    def test_vllm_load_validates_environment_before_import(self):
+        with (
+            patch("anytrain.tts.cosyvoice.tts.COSYVOICE_VLLM_ENVIRONMENT") as environment,
+            self.assertRaisesRegex(RuntimeError, "separate environment"),
+        ):
+            environment.validate.side_effect = RuntimeError("use a separate environment")
+            CosyVoiceTTS.from_pretrained(load_vllm=True)
 
     def test_capabilities_expose_reference_and_available_speakers(self):
         backend = CosyVoiceTTS(FakeCosyVoiceModel())

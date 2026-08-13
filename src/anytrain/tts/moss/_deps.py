@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 INSTALL_HINT = (
-    'Install Moss TTS dependencies with `python -m pip install "torchaudio>=2.0" transformers`.'
+    "Install MOSS-TTS dependencies with `python -m pip install 'anytrain[moss-tts]'`."
 )
 
 
