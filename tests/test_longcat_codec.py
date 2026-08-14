@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -234,6 +234,36 @@ class LongCatCodecTest(unittest.TestCase):
 
         self.assertAlmostEqual(codec.semantic_frame_rate, 16000 / 960)
 
+    def test_factor_capability_hides_upstream_quantizer_layout(self):
+        decoder = FakeFactorLongCatDecoder()
+        codec = LongCat(
+            encoder=FakeLongCatEncoder(),
+            decoders={"16k_4codebooks": decoder},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+
+        self.assertEqual(codec.acoustic_factor_sizes, ((90, 90),) * 3)
+        self.assertEqual(len(codec.acoustic_factor_codebooks), 6)
+        projected = codec.project_acoustic_factor_features(
+            torch.ones((1, 2, 4)),
+            active_codebooks=1,
+        )
+        self.assertEqual(tuple(projected.shape), (1, 2, 4))
+
+        decoder.acoustic_quantizer.stage(1).retarget_code = 2 * 90 + 3
+        residual_codes = codec.quantize_acoustic_residual(
+            torch.zeros((1, 2, 4)),
+            codebook=1,
+        )
+        self.assertTrue(torch.equal(residual_codes, torch.tensor([[[2, 3], [2, 3]]])))
+
+        native = codec.native_acoustic_features(
+            torch.zeros((1, 2, 1), dtype=torch.long),
+            active_codebooks=1,
+        )
+        self.assertEqual(tuple(native.shape), (1, 2, 4))
+
 
 class FakeLongCatDecoder(nn.Module):
     def __init__(self) -> None:
@@ -260,6 +290,71 @@ class FakeLongCatDecoder(nn.Module):
     def decoder(self, features: torch.Tensor) -> torch.Tensor:
         self.acoustic = features
         return torch.ones((features.size(0), 1, features.size(-1) * 3))
+
+
+class FakeFactorStage(nn.Module):
+    codebook_size_a: int
+    codebook_size_b: int
+    codebook_a: nn.Embedding
+    codebook_b: nn.Embedding
+    out_proj_a: nn.Conv1d
+    out_proj_b: nn.Conv1d
+    retarget_code: int
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.codebook_size_a = 90
+        self.codebook_size_b = 90
+        self.codebook_a = nn.Embedding(90, 2)
+        self.codebook_b = nn.Embedding(90, 2)
+        self.out_proj_a = nn.Conv1d(2, 2, kernel_size=1)
+        self.out_proj_b = nn.Conv1d(2, 2, kernel_size=1)
+        self.retarget_code = 0
+
+    def forward(self, residual: torch.Tensor):
+        codes = torch.full(
+            residual.shape[:1] + residual.shape[2:],
+            self.retarget_code,
+            dtype=torch.long,
+            device=residual.device,
+        )
+        empty = residual.new_zeros(residual.size(0))
+        return residual, empty, empty, codes
+
+
+class FakeFactorQuantizer(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quantizers = nn.ModuleList([FakeFactorStage() for _ in range(3)])
+
+    def stage(self, index: int) -> FakeFactorStage:
+        return cast(FakeFactorStage, self.quantizers[index])
+
+    def from_codes(self, codes: torch.Tensor):
+        projected: torch.Tensor | None = None
+        for index in range(codes.size(1)):
+            stage = self.stage(index)
+            composite = codes[:, index]
+            code_a = torch.div(composite, stage.codebook_size_b, rounding_mode="floor")
+            code_b = composite.remainder(stage.codebook_size_b)
+            value = torch.cat(
+                (
+                    stage.out_proj_a(stage.codebook_a(code_a).transpose(1, 2)),
+                    stage.out_proj_b(stage.codebook_b(code_b).transpose(1, 2)),
+                ),
+                dim=1,
+            )
+            projected = value if projected is None else projected + value
+        if projected is None:
+            raise AssertionError("factor test quantizer requires at least one codebook.")
+        return projected, projected, codes
+
+
+class FakeFactorLongCatDecoder(FakeLongCatDecoder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.latent_dim = 4
+        self.acoustic_quantizer = FakeFactorQuantizer()
 
 
 class FakeLongCatEncoder(nn.Module):

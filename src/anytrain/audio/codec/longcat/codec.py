@@ -94,6 +94,35 @@ class LongCat(DeviceModule):
         return value
 
     @property
+    def acoustic_factor_codebooks(self) -> tuple[Tensor, ...]:
+        """Return the two factor embedding tables for each acoustic codebook."""
+        codebooks: list[Tensor] = []
+        for index in range(len(self.acoustic_codebook_sizes)):
+            quantizer = self._acoustic_quantizer(index)
+            codebooks.extend(
+                (
+                    _embedding_weight(quantizer.codebook_a, f"acoustic factor {index}a"),
+                    _embedding_weight(quantizer.codebook_b, f"acoustic factor {index}b"),
+                )
+            )
+        return tuple(codebooks)
+
+    @property
+    def acoustic_factor_sizes(self) -> tuple[tuple[int, int], ...]:
+        """Return the factor vocabulary sizes behind each composite acoustic codebook."""
+        sizes: list[tuple[int, int]] = []
+        for index in range(len(self.acoustic_codebook_sizes)):
+            quantizer = self._acoustic_quantizer(index)
+            size_a = _positive_int(quantizer.codebook_size_a, f"acoustic factor {index}a size")
+            size_b = _positive_int(quantizer.codebook_size_b, f"acoustic factor {index}b size")
+            if size_a * size_b != self.acoustic_codebook_sizes[index]:
+                raise ValueError(
+                    f"LongCat acoustic factor sizes for codebook {index} do not match its vocabulary."
+                )
+            sizes.append((size_a, size_b))
+        return tuple(sizes)
+
+    @property
     def semantic_codebook(self) -> Tensor:
         codebook = self.encoder.get_semantic_codebook()
         if not isinstance(codebook, Tensor):
@@ -227,29 +256,127 @@ class LongCat(DeviceModule):
         if acoustic.size(-1) == self.acoustic_feature_dim:
             return self.decode_feature_streams(semantic, (acoustic,))
 
-        projected: list[Tensor] = []
-        offset = 0
+        feature_dim = 0
+        codebooks = self.acoustic_factor_codebooks
         for index in range(len(self.acoustic_codebook_sizes)):
-            quantizer = self._acoustic_quantizer(index)
-            dim_a = _embedding_dim(quantizer.codebook_a, "acoustic codebook_a")
-            dim_b = _embedding_dim(quantizer.codebook_b, "acoustic codebook_b")
-            end = offset + dim_a + dim_b
-            if end > acoustic.size(-1):
+            feature_dim += codebooks[index * 2].size(1) + codebooks[index * 2 + 1].size(1)
+            if feature_dim == acoustic.size(-1):
+                projected = self.project_acoustic_factor_features(
+                    acoustic,
+                    active_codebooks=index + 1,
+                )
+                return self.decode_feature_streams(semantic, (projected,))
+            if feature_dim > acoustic.size(-1):
                 break
-            feature_a = acoustic[..., offset : offset + dim_a].transpose(1, 2)
-            feature_b = acoustic[..., offset + dim_a : end].transpose(1, 2)
-            projected.append(
-                torch.cat(
-                    (quantizer.out_proj_a(feature_a), quantizer.out_proj_b(feature_b)),
-                    dim=1,
-                ).transpose(1, 2)
-            )
-            offset = end
-            if offset == acoustic.size(-1):
-                return self.decode_feature_streams(semantic, tuple(projected))
         raise ValueError(
             "LongCat acoustic features must match the native feature dim or a complete "
             "prefix of factor codebook feature dims."
+        )
+
+    @torch.no_grad()
+    def project_acoustic_factor_features(
+        self,
+        factor_features: Tensor,
+        *,
+        active_codebooks: int,
+    ) -> Tensor:
+        """Project concatenated factor embeddings into native decoder features."""
+        count = _active_codebooks(active_codebooks, len(self.acoustic_codebook_sizes))
+        features = _feature_tensor(factor_features, name="factor features")
+        codebooks = self.acoustic_factor_codebooks[: count * 2]
+        dimensions = tuple(codebook.size(1) for codebook in codebooks)
+        if features.size(-1) != sum(dimensions):
+            raise ValueError(
+                "LongCat factor features must contain both embeddings for every active codebook."
+            )
+        reference = codebooks[0]
+        factors = features.to(device=reference.device, dtype=reference.dtype).split(
+            dimensions,
+            dim=-1,
+        )
+        projected: Tensor | None = None
+        for index in range(count):
+            quantizer = self._acoustic_quantizer(index)
+            value = torch.cat(
+                (
+                    quantizer.out_proj_a(factors[index * 2].transpose(1, 2).contiguous()),
+                    quantizer.out_proj_b(factors[index * 2 + 1].transpose(1, 2).contiguous()),
+                ),
+                dim=1,
+            )
+            projected = value if projected is None else projected + value
+        if projected is None:
+            raise AssertionError("positive active_codebooks must project at least one codebook.")
+        result = projected.transpose(1, 2).contiguous()
+        result = _feature_tensor(
+            result,
+            name="projected factor features",
+            shape=features.shape[:2],
+        )
+        if result.size(-1) != self.acoustic_feature_dim:
+            raise ValueError("LongCat projected factor features must match acoustic_feature_dim.")
+        return result
+
+    @torch.no_grad()
+    def quantize_acoustic_residual(self, residual: Tensor, *, codebook: int) -> Tensor:
+        """Quantize one native residual into its two factor code IDs."""
+        if not 0 <= codebook < len(self.acoustic_codebook_sizes):
+            raise ValueError("LongCat residual codebook index is outside the configured range.")
+        values = _feature_tensor(residual, name="acoustic residual")
+        if values.size(-1) != self.acoustic_feature_dim:
+            raise ValueError("LongCat acoustic residual must match acoustic_feature_dim.")
+        quantizer = self._acoustic_quantizer(codebook)
+        reference = self.acoustic_factor_codebooks[codebook * 2]
+        prepared = values.to(device=reference.device, dtype=reference.dtype)
+        output = quantizer(prepared.transpose(1, 2).contiguous())
+        if not isinstance(output, tuple) or len(output) < 4 or not isinstance(output[3], Tensor):
+            raise TypeError("LongCat acoustic quantizer must return code indices at position 3.")
+        composite = integer_tensor(output[3], "LongCat acoustic residual codes")
+        if composite.shape != values.shape[:2]:
+            raise ValueError("LongCat acoustic residual codes must align on batch and time.")
+        size_a, size_b = self.acoustic_factor_sizes[codebook]
+        if bool((composite < 0).any()) or bool((composite >= size_a * size_b).any()):
+            raise ValueError("LongCat acoustic residual codes contain an ID outside the codebook.")
+        return torch.stack(
+            (
+                torch.div(composite, size_b, rounding_mode="floor"),
+                composite.remainder(size_b),
+            ),
+            dim=-1,
+        )
+
+    @torch.no_grad()
+    def native_acoustic_features(
+        self,
+        acoustic_codes: Tensor,
+        *,
+        active_codebooks: int,
+    ) -> Tensor:
+        """Convert a prefix of composite acoustic codes to native decoder latents."""
+        count = _active_codebooks(active_codebooks, len(self.acoustic_codebook_sizes))
+        values = integer_tensor(acoustic_codes, "LongCat acoustic codes")
+        if values.dim() != 3 or values.size(-1) != count:
+            raise ValueError(
+                "LongCat acoustic codes must have shape [batch, time, active_codebooks]."
+            )
+        for index, size in enumerate(self.acoustic_codebook_sizes[:count]):
+            codes = values[..., index]
+            if bool((codes < 0).any()) or bool((codes >= size).any()):
+                raise ValueError(f"LongCat acoustic codebook {index} contains an ID outside its range.")
+        acoustic = getattr(self._decoder(), "acoustic_quantizer", None)
+        convert = getattr(acoustic, "from_codes", None)
+        if not callable(convert):
+            raise TypeError("LongCat acoustic quantizer must provide from_codes().")
+        output = convert(values.transpose(1, 2).contiguous().to(self.device))
+        if not isinstance(output, tuple) or not output or not isinstance(output[0], Tensor):
+            raise TypeError("LongCat acoustic quantizer from_codes() must return native features.")
+        features = output[0]
+        if features.dim() != 3:
+            raise ValueError("LongCat native acoustic features must have shape [batch, dim, time].")
+        return _feature_tensor(
+            features.transpose(1, 2).contiguous(),
+            name="native acoustic features",
+            shape=values.shape[:2],
         )
 
     def _acoustic_quantizer(self, index: int) -> Any:
@@ -332,11 +459,18 @@ def _positive_int(value: object, name: str) -> int:
     return value
 
 
-def _embedding_dim(value: object, name: str) -> int:
-    dimension = getattr(value, "embedding_dim", None)
-    if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
-        raise TypeError(f"LongCat {name} must expose a positive embedding_dim.")
-    return dimension
+def _embedding_weight(value: object, name: str) -> Tensor:
+    weight = getattr(value, "weight", None)
+    if not isinstance(weight, Tensor) or weight.dim() != 2:
+        raise TypeError(f"LongCat {name} must expose a rank-2 weight Tensor.")
+    return weight
+
+
+def _active_codebooks(value: object, total: int) -> int:
+    count = _positive_int(value, "active_codebooks")
+    if count > total:
+        raise ValueError("LongCat active_codebooks exceeds the configured acoustic codebooks.")
+    return count
 
 
 def _load_longcat_loaders():

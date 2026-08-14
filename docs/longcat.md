@@ -99,6 +99,12 @@ LongCat preset 把四个单码本解释为 `semantic`、`rvq_0`、`rvq_1`、`rvq
 `decode_features()` 组合 semantic 与 RVQ feature streams。下游 DiT 或 flow sampler 直接接这个
 feature 边界，不依赖 concrete backend 的 factor codebook 布局。
 
+需要直接预测 LongCat factor embedding 的下游可以使用 concrete `LongCat` 的公开能力：
+`acoustic_factor_codebooks` / `acoustic_factor_sizes` 暴露选定 decoder 的 factor 契约，
+`project_acoustic_factor_features()`、`quantize_acoustic_residual()` 和
+`native_acoustic_features()` 分别负责投影、残差量化和原生 latent 转换。上游 decoder 与
+`acoustic_quantizer.quantizers` 的对象结构仍由 AnyTrain adapter 独占，下游不得访问这些私有字段。
+
 默认从 Hugging Face 仓库 `meituan-longcat/LongCat-Audio-Codec` 下载：
 
 - `LongCatAudioCodec_encoder.pt`
