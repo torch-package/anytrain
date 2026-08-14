@@ -31,6 +31,7 @@ _PLACEMENT_LOAD_KWARGS = frozenset(
     (
         "batch_timeout",
         "cache_dir",
+        "deploy_config",
         "device_map",
         "devices",
         "gpu_memory_utilization",

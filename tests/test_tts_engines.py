@@ -481,7 +481,7 @@ def test_vllm_omni_backends_use_real_engine_objects() -> None:
     assert len(moss_outputs) == 2
 
 
-def test_backend_hashes_keep_engine_but_ignore_concurrency() -> None:
+def test_backend_hashes_keep_engine_but_ignore_execution_placement() -> None:
     first = QwenCustomVoiceTTS(
         model=object(),
         config=QwenCustomVoiceTTSConfig(
@@ -489,7 +489,11 @@ def test_backend_hashes_keep_engine_but_ignore_concurrency() -> None:
                 transformer_engine=TTSTransformerEngine.VLLM_OMNI,
                 max_concurrency=1,
             ),
-            load_kwargs={"cache_dir": "first", "device_map": "cuda:0"},
+            load_kwargs={
+                "cache_dir": "first",
+                "deploy_config": "single-gpu-a.yaml",
+                "device_map": "cuda:0",
+            },
         ),
     )
     replica = QwenCustomVoiceTTS(
@@ -499,7 +503,11 @@ def test_backend_hashes_keep_engine_but_ignore_concurrency() -> None:
                 transformer_engine=TTSTransformerEngine.VLLM_OMNI,
                 max_concurrency=8,
             ),
-            load_kwargs={"cache_dir": "second", "device_map": "cuda:1"},
+            load_kwargs={
+                "cache_dir": "second",
+                "deploy_config": "single-gpu-b.yaml",
+                "device_map": "cuda:1",
+            },
         ),
     )
     torch_backend = QwenCustomVoiceTTS(model=object())
@@ -508,14 +516,22 @@ def test_backend_hashes_keep_engine_but_ignore_concurrency() -> None:
             transformer_engine=TTSTransformerEngine.VLLM_OMNI,
             max_concurrency=1,
         ),
-        load_kwargs={"cache_dir": "first", "devices": "0"},
+        load_kwargs={
+            "cache_dir": "first",
+            "deploy_config": "single-gpu-a.yaml",
+            "devices": "0",
+        },
     )
     moss_replica = MossTTSConfig(
         inference=TTSInferenceConfig(
             transformer_engine=TTSTransformerEngine.VLLM_OMNI,
             max_concurrency=8,
         ),
-        load_kwargs={"cache_dir": "second", "devices": "1"},
+        load_kwargs={
+            "cache_dir": "second",
+            "deploy_config": "single-gpu-b.yaml",
+            "devices": "1",
+        },
     )
 
     assert first.config_hash() == replica.config_hash()
@@ -565,7 +581,10 @@ def test_qwen_from_pretrained_constructs_omni_and_exact_prompt_builder() -> None
             inference=TTSInferenceConfig(
                 transformer_engine=TTSTransformerEngine.VLLM_OMNI
             ),
-            omni_kwargs={"stage_init_timeout": 600},
+            omni_kwargs={
+                "deploy_config": "qwen-two-gpu.yaml",
+                "stage_init_timeout": 600,
+            },
             cache_dir="storage/hf",
             revision="revision",
             local_files_only=True,
@@ -576,6 +595,7 @@ def test_qwen_from_pretrained_constructs_omni_and_exact_prompt_builder() -> None
     load.assert_called_once_with(
         "fake-qwen",
         {
+            "deploy_config": "qwen-two-gpu.yaml",
             "stage_init_timeout": 600,
             "revision": "revision",
             "dtype": "bfloat16",
@@ -606,7 +626,10 @@ def test_moss_from_pretrained_constructs_omni_and_processor_only() -> None:
             inference=TTSInferenceConfig(
                 transformer_engine=TTSTransformerEngine.VLLM_OMNI
             ),
-            omni_kwargs={"stage_init_timeout": 600},
+            omni_kwargs={
+                "deploy_config": "moss-two-gpu.yaml",
+                "stage_init_timeout": 600,
+            },
             cache_dir="storage/hf",
             revision="revision",
             local_files_only=True,
@@ -618,6 +641,7 @@ def test_moss_from_pretrained_constructs_omni_and_processor_only() -> None:
     load.assert_called_once_with(
         "fake-moss",
         {
+            "deploy_config": "moss-two-gpu.yaml",
             "stage_init_timeout": 600,
             "revision": "revision",
         },

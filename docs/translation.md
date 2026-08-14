@@ -97,6 +97,8 @@ decoded = estimator.decoded_target_tokens("translated text")
 post-output work proxy; it is not the number of token ids emitted by
 `generate()`. The estimator lazily loads only `AutoTokenizer`, never the model.
 
-Install the optional backend with `anytrain[translation]`. Dataset-specific row
-selection, language/role mapping, durable provider-id compatibility, source
-scheduling, and quality filtering stay outside AnyTrain.
+Install the optional backend with `anytrain[translation]`. The extra includes
+Accelerate because the worker-local `device_map` passed to Transformers uses its
+loading dispatch. Dataset-specific row selection, language/role mapping,
+durable provider-id compatibility, source scheduling, and quality filtering
+stay outside AnyTrain.

@@ -29,6 +29,17 @@ numerical output. Dataset batching, OOM splitting, materialized stores and
 worker scheduling remain in AnyDataset. Model ids, revisions, prompt choices
 and production profiles remain in workspace or the calling project.
 
+For vLLM-Omni, `omni_kwargs["deploy_config"]` describes one engine instance:
+it may place or split that instance's stages across the GPUs visible to the
+process. AnyTrain forwards it unchanged, does not infer it, and excludes it
+from `config_hash` as physical execution policy. Full-model replicas are a
+separate orchestration concern: start one isolated provider process per GPU,
+expose only that GPU through `CUDA_VISIBLE_DEVICES`, and let the provider use
+the process-local `cuda:0`. This is replica/data parallel inference, not DDP;
+replica count and dataset-worker `RANK`/`WORLD_SIZE` do not belong in
+`deploy_config` or semantic identity. AnyTrain does not enumerate GPUs or
+spawn these replicas.
+
 Install the optional vLLM-Omni runtime in a dedicated CUDA environment:
 
 ```bash
