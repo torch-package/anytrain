@@ -16,6 +16,7 @@ from weakref import proxy
 import torch
 from lightning import pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint as LightningModelCheckpoint
+from lightning_utilities.core.rank_zero import rank_zero_info
 
 from .. import _capability
 
@@ -83,6 +84,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._deferred_async_removes: list[str] = []
         self._prepared_last_paths: tuple[str, str] | None = None
         self._reused_last_save: tuple[str, str, Path, Path, Future[None] | None] | None = None
+        self._restored_last_checkpoint: Path | None = None
         self._async_lock = threading.Lock()
 
     def __getstate__(self) -> dict[str, Any]:
@@ -109,6 +111,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
     def __setstate__(self, state: dict[str, Any]) -> None:
         state.setdefault("max_pending_async_saves", 1)
         state.setdefault("_last_persistent_checkpoint", None)
+        state.setdefault("_restored_last_checkpoint", None)
         self.__dict__.update(state)
         self._async_executor = None
         self._async_tmp_dir = None
@@ -125,6 +128,47 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._reused_last_save = None
         self._async_lock = threading.Lock()
 
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        super().load_state_dict(state_dict)
+        self._restored_last_checkpoint = None
+        restored = state_dict.get("last_model_path")
+        same_dirpath = self.dirpath == state_dict.get("dirpath", self.dirpath)
+        if self.async_save and self.save_last == "link" and same_dirpath and restored:
+            self._restored_last_checkpoint = self._target_path(restored)
+
+    def on_train_batch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        self._restored_last_checkpoint = None
+        super().on_train_batch_start(trainer, pl_module, batch, batch_idx)
+
+    def on_train_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        restored = self._restored_last_checkpoint
+        if restored is not None:
+            checkpoint_path = getattr(trainer, "ckpt_path", None)
+            reuse_last = (
+                _capability.is_global_zero(trainer)
+                and checkpoint_path is not None
+                and self._same_checkpoint(restored, checkpoint_path)
+            )
+            self._restored_last_checkpoint = None
+            if self._synchronize_rank_zero_flag(trainer, reuse_last):
+                if _capability.is_global_zero(trainer):
+                    rank_zero_info(
+                        "Skipping last checkpoint save: fit resumed from unchanged "
+                        f"checkpoint {restored!s} and ran no training batches."
+                    )
+                return
+        super().on_train_end(trainer, pl_module)
+
     def wait_async_saves(self) -> None:
         if not self.async_save:
             return
@@ -140,6 +184,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
             raise RuntimeError("Asynchronous checkpoint storage failed.") from first_error
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._restored_last_checkpoint = None
         hook_error: BaseException | None = None
         try:
             super().on_fit_end(trainer, pl_module)
@@ -153,6 +198,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         pl_module: pl.LightningModule,
         exception: BaseException,
     ) -> None:
+        self._restored_last_checkpoint = None
         prepared = self._prepare_exception_last_save(trainer)
         hook_error: BaseException | None = None
         try:
@@ -892,6 +938,13 @@ class ModelCheckpoint(LightningModelCheckpoint):
         if parsed.scheme == "file":
             return Path(parsed.path)
         return Path(filepath_str)
+
+    @classmethod
+    def _same_checkpoint(cls, left: Path, right: str | Path) -> bool:
+        try:
+            return left.is_file() and left.samefile(cls._target_path(right))
+        except (OSError, ValueError):
+            return False
 
 
 def _storage_error(cause: BaseException) -> RuntimeError:

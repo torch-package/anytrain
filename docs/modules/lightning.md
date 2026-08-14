@@ -256,6 +256,12 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 
 同一次 top-k 和 `save_last` 保存会复用一份本地序列化结果：先异步发布持久 top-k checkpoint，再从它原子更新或链接 `last.ckpt`，不会重复调用 `trainer.save_checkpoint()`。异常 checkpoint 同样复用该路径；`save_top_k=0` 只保存 `last.ckpt` 一次。
 
+从当前 `last.ckpt` 或其指向的同一文件恢复的 `async_save=True, save_last="link"` fit 如果没有进入
+train batch，会复用仍存在的 `last.ckpt`，避免在 train end 重写未变化的模型状态。跳过时 global
+rank 0 会输出 `Skipping last checkpoint save` 日志，并包含被复用的路径和零 batch 原因；进入任意
+train batch 后继续使用原有保存语义。从其它 checkpoint 恢复、路径缺失或目录变化时不复用，DDP 由
+global rank 0 广播统一决定。
+
 异步模式要求 `trainer.save_checkpoint()` 产出普通文件，并明确不支持 FSDP/DeepSpeed 的目录型或分片 checkpoint；这类训练应设置 `async_save=False`。异步复制完成后才通知 logger 的 `after_save_checkpoint`。
 
 `PerformanceCallback` 记录参数量、optimizer step time、硬件峰值算力和 MFU。固定计算量使用
@@ -410,7 +416,7 @@ trainer = pl.Trainer(
 - experiment text/scalar/audio/histogram/raw-histogram 能力探测及缺失路径。
 - `LightningLogMixin` 的 prefixed dict、媒体 logger 错误路径和 rank logging 策略。
 - `DebugCallback` 的异常定位路径和 Trainer 集成。
-- `ModelCheckpoint` 的原生接口兼容、异步复制、有界背压、同步 opt-out 和删除排队。
+- `ModelCheckpoint` 的原生接口兼容、异步复制、有界背压、同步 opt-out、删除排队和零 batch 恢复复用。
 - module observation registry 的 exact-type/duplicate/bound-collector 约束，以及 ADT、MoE 和六个
   quantizer 的自动 discovery。
 - module observation 的类型约束、State/Output/Event binding、render-only Curve/Heatmap、interval `observation_time`、

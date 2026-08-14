@@ -3,7 +3,7 @@ from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace as _SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from lightning import pytorch as pl
 
@@ -1028,6 +1028,290 @@ class LightningTest(unittest.TestCase):
 
         self.assertTrue(restored.async_save)
         restored.wait_async_saves()
+
+    def test_model_checkpoint_link_resume_without_batches_reuses_last_and_logs(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        for linked in (False, True):
+            with self.subTest(linked=linked), TemporaryDirectory() as tmp_dir:
+                persistent = Path(tmp_dir) / "step-01.ckpt"
+                last = Path(tmp_dir) / "last.ckpt"
+                persistent.write_bytes(b"saved")
+                if linked:
+                    last.symlink_to(persistent.name)
+                else:
+                    last.write_bytes(b"saved")
+
+                previous = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last="link",
+                    save_top_k=-1,
+                    async_save=True,
+                )
+                previous.last_model_path = str(last)
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last="link",
+                    save_top_k=-1,
+                    async_save=True,
+                )
+                callback.load_state_dict(previous.state_dict())
+                trainer = _CheckpointTrainer()
+                trainer.ckpt_path = str(last)
+                module = SimpleNamespace()
+
+                with (
+                    patch.object(callback, "_monitor_candidates") as candidates,
+                    patch.object(callback, "_save_last_checkpoint") as save,
+                    patch("anytrain.lightning.callback.checkpoint.rank_zero_info") as log_info,
+                ):
+                    callback.on_train_end(trainer, module)
+
+                candidates.assert_not_called()
+                save.assert_not_called()
+                log_info.assert_called_once_with(
+                    "Skipping last checkpoint save: fit resumed from unchanged "
+                    f"checkpoint {last!s} and ran no training batches."
+                )
+
+    def test_model_checkpoint_link_resume_only_skips_unchanged_available_last(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        for scenario in ("missing", "older", "trained"):
+            with self.subTest(scenario=scenario), TemporaryDirectory() as tmp_dir:
+                last = Path(tmp_dir) / "last.ckpt"
+                previous = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last="link",
+                    save_top_k=-1,
+                    async_save=True,
+                )
+                previous.last_model_path = str(last)
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last="link",
+                    save_top_k=-1,
+                    async_save=True,
+                )
+                callback.load_state_dict(previous.state_dict())
+                trainer = _CheckpointTrainer()
+                trainer.ckpt_path = str(last)
+                module = SimpleNamespace()
+
+                if scenario == "older":
+                    older = Path(tmp_dir) / "step-01.ckpt"
+                    current = Path(tmp_dir) / "step-02.ckpt"
+                    older.write_bytes(b"older")
+                    current.write_bytes(b"current")
+                    last.symlink_to(current.name)
+                    trainer.ckpt_path = str(older)
+                elif scenario == "trained":
+                    last.write_bytes(b"saved")
+                    callback.on_train_batch_start(trainer, module, None, 0)
+
+                with (
+                    patch.object(callback, "_monitor_candidates", return_value={}),
+                    patch.object(callback, "_save_last_checkpoint") as save,
+                    patch("anytrain.lightning.callback.checkpoint.rank_zero_info") as log_info,
+                ):
+                    callback.on_train_end(trainer, module)
+
+                save.assert_called_once_with(trainer, {})
+                log_info.assert_not_called()
+
+    def test_model_checkpoint_noop_resume_keeps_native_modes_unchanged(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        modes: tuple[tuple[bool, bool | Literal["link"]], ...] = (
+            (False, "link"),
+            (True, True),
+        )
+        for async_save, save_last in modes:
+            with (
+                self.subTest(async_save=async_save, save_last=save_last),
+                TemporaryDirectory() as tmp_dir,
+            ):
+                last = Path(tmp_dir) / "last.ckpt"
+                last.write_bytes(b"saved")
+                previous = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last=save_last,
+                    save_top_k=-1,
+                    async_save=async_save,
+                )
+                previous.last_model_path = str(last)
+                callback = ModelCheckpoint(
+                    dirpath=tmp_dir,
+                    save_last=save_last,
+                    save_top_k=-1,
+                    async_save=async_save,
+                )
+                callback.load_state_dict(previous.state_dict())
+                trainer = _CheckpointTrainer()
+                trainer.ckpt_path = str(last)
+
+                with (
+                    patch.object(callback, "_monitor_candidates", return_value={}),
+                    patch.object(callback, "_save_last_checkpoint") as save,
+                ):
+                    callback.on_train_end(trainer, SimpleNamespace())
+
+                save.assert_called_once_with(trainer, {})
+
+    def test_model_checkpoint_link_resume_uses_rank_zero_reuse_decision(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class Strategy:
+            def __init__(self):
+                self.calls = []
+
+            def broadcast(self, value, *, src):
+                self.calls.append((value, src))
+                return True
+
+        with TemporaryDirectory() as tmp_dir:
+            last = Path(tmp_dir) / "last.ckpt"
+            last.write_bytes(b"saved")
+            previous = ModelCheckpoint(
+                dirpath=tmp_dir,
+                save_last="link",
+                save_top_k=-1,
+                async_save=True,
+            )
+            previous.last_model_path = str(last)
+            callback = ModelCheckpoint(
+                dirpath=tmp_dir,
+                save_last="link",
+                save_top_k=-1,
+                async_save=True,
+            )
+            callback.load_state_dict(previous.state_dict())
+            trainer = _CheckpointTrainer()
+            trainer.ckpt_path = str(last)
+            cast(Any, trainer).is_global_zero = False
+            cast(Any, trainer).world_size = 2
+            trainer.strategy = Strategy()
+
+            with (
+                patch.object(Path, "is_file", side_effect=AssertionError),
+                patch.object(callback, "_monitor_candidates") as candidates,
+                patch.object(callback, "_save_last_checkpoint") as save,
+                patch("anytrain.lightning.callback.checkpoint.rank_zero_info") as log_info,
+            ):
+                callback.on_train_end(trainer, SimpleNamespace())
+
+            self.assertEqual(trainer.strategy.calls, [(None, 0)])
+            candidates.assert_not_called()
+            save.assert_not_called()
+            log_info.assert_not_called()
+
+    def test_model_checkpoint_link_resume_lifecycle_skips_only_noop_fit(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        import torch
+        from lightning import pytorch as pl
+        from torch.utils.data import DataLoader, TensorDataset
+
+        from anytrain.lightning import ModelCheckpoint
+
+        class Module(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                return (self.weight - batch[0]).square().mean()
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.1)
+
+        def checkpoint(root: str) -> ModelCheckpoint:
+            return ModelCheckpoint(
+                dirpath=root,
+                filename="step-{step:02d}",
+                save_last="link",
+                save_top_k=-1,
+                every_n_train_steps=2,
+                save_on_train_epoch_end=False,
+                auto_insert_metric_name=False,
+                enable_version_counter=False,
+                async_save=True,
+            )
+
+        def trainer(callback: ModelCheckpoint, max_epochs: int) -> pl.Trainer:
+            return pl.Trainer(
+                accelerator="cpu",
+                devices=1,
+                max_epochs=max_epochs,
+                callbacks=[callback],
+                logger=False,
+                enable_model_summary=False,
+                enable_progress_bar=False,
+                num_sanity_val_steps=0,
+            )
+
+        with TemporaryDirectory() as tmp_dir:
+            data = DataLoader(TensorDataset(torch.ones(2)), batch_size=1)
+            first = checkpoint(tmp_dir)
+            trainer(first, 1).fit(Module(), train_dataloaders=data)
+            last = Path(tmp_dir) / "last.ckpt"
+            self.assertTrue(last.is_symlink())
+            first_target = last.resolve()
+            first_last_stat = last.lstat()
+            first_target_stat = first_target.stat()
+
+            noop = checkpoint(tmp_dir)
+            with (
+                patch.object(noop, "_save_checkpoint", wraps=noop._save_checkpoint) as noop_save,
+                self.assertLogs(
+                    "lightning.pytorch.utilities.rank_zero",
+                    level="INFO",
+                ) as logs,
+            ):
+                trainer(noop, 1).fit(
+                    Module(),
+                    train_dataloaders=data,
+                    ckpt_path=last,
+                )
+
+            noop_save.assert_not_called()
+            self.assertTrue(any("ran no training batches" in line for line in logs.output))
+            self.assertEqual(last.resolve(), first_target)
+            self.assertEqual(last.lstat().st_ino, first_last_stat.st_ino)
+            self.assertEqual(last.lstat().st_mtime_ns, first_last_stat.st_mtime_ns)
+            self.assertEqual(first_target.stat().st_ino, first_target_stat.st_ino)
+            self.assertEqual(first_target.stat().st_mtime_ns, first_target_stat.st_mtime_ns)
+
+            resumed = checkpoint(tmp_dir)
+            with patch.object(
+                resumed,
+                "_save_checkpoint",
+                wraps=resumed._save_checkpoint,
+            ) as resumed_save:
+                progressed = trainer(resumed, 2)
+                progressed.fit(
+                    Module(),
+                    train_dataloaders=DataLoader(TensorDataset(torch.ones(1)), batch_size=1),
+                    ckpt_path=last,
+                )
+
+            self.assertEqual(resumed_save.call_count, 1)
+            self.assertEqual(progressed.global_step, 3)
+            self.assertNotEqual(last.resolve(), first_target)
 
     def test_model_checkpoint_async_save_copies_from_local_tmp(self):
         from tempfile import TemporaryDirectory
