@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
 from torch import Tensor
 
-from anytrain.audio._tokenizer import AudioTokenizer
+from anytrain.audio._tokenizer import AudioTokenizer, PaddedAudioCodes
 
 if TYPE_CHECKING:
     from .protocol import CodecBackend
@@ -57,6 +58,21 @@ class BackendTokenizer(AudioTokenizer):
             stream.name: streams[index]
             for index, stream in enumerate(self.code_spec.streams)
         }
+
+    def _padded(
+        self,
+        codes: Mapping[str, Tensor],
+        lengths: Mapping[str, Tensor],
+    ) -> PaddedAudioCodes:
+        """Build padded codes with valid lengths on each code stream's device."""
+
+        if codes.keys() != lengths.keys():
+            return PaddedAudioCodes(codes=codes, lengths=lengths)
+        aligned_lengths = {
+            name: lengths[name].to(device=value.device)
+            for name, value in codes.items()
+        }
+        return PaddedAudioCodes(codes=codes, lengths=aligned_lengths)
 
 
 class FrameBackendTokenizer(BackendTokenizer):

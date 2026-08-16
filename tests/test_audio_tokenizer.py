@@ -5,7 +5,8 @@ import pytest
 import torch
 from torch import Tensor
 
-from anytrain.audio.codec import AudioCodeStreamSpec
+from anytrain.audio.codec import AudioBackendIdentity, AudioCodeStreamSpec
+from anytrain.audio.codec._tokenizer import FrameBackendTokenizer
 from anytrain.audio.tokenizer import AudioCodeSpec, AudioTokenizer, PaddedAudioCodes
 
 
@@ -28,6 +29,20 @@ class _ExampleTokenizer(AudioTokenizer):
     def _tokenize(self, audio: Tensor, sample_rate: int) -> Mapping[str, Tensor]:
         del audio, sample_rate
         return self.output
+
+
+class _ExampleBackend:
+    @property
+    def name(self) -> str:
+        return "example"
+
+    @property
+    def sample_rate(self) -> int:
+        return 16_000
+
+    @property
+    def frame_rate(self) -> float:
+        return 50.0
 
 
 def test_audio_tokenizer_orders_and_validates_named_streams() -> None:
@@ -60,6 +75,44 @@ def test_audio_tokenizer_rejects_invalid_code_ids() -> None:
 
     with pytest.raises(ValueError, match="invalid code ID"):
         tokenizer.tokenize(torch.zeros((1, 1, 8)), 16_000)
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(),
+                reason="CUDA is required for device alignment",
+            ),
+        ),
+    ],
+)
+def test_backend_tokenizer_aligns_lengths_to_code_device(device: str) -> None:
+    tokenizer = FrameBackendTokenizer(
+        _ExampleBackend(),
+        _ExampleTokenizer._code_spec,
+        AudioBackendIdentity("example"),
+    )
+    codes = {
+        "semantic": torch.tensor([[1, 2]], device=device),
+        "rvq_0": torch.tensor([[3, 4]], device=device),
+    }
+
+    padded = tokenizer._padded(
+        codes,
+        {
+            "semantic": torch.tensor([2]),
+            "rvq_0": torch.tensor([1]),
+        },
+    )
+
+    assert tuple(padded.codes) == tuple(codes)
+    for name, code in codes.items():
+        assert torch.equal(padded.codes[name], code)
+        assert padded.lengths[name].device == code.device
 
 
 @pytest.mark.parametrize(

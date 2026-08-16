@@ -37,7 +37,7 @@ class GLM4AudioTokenizer(BackendTokenizer):
             sample_rate,
             lengths,
         )
-        return PaddedAudioCodes(
+        return self._padded(
             codes=self._named(codes),
             lengths={"rvq_0": code_lengths},
         )

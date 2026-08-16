@@ -68,7 +68,7 @@ class BiCodecTokenizer(BackendTokenizer):
                     f"BiCodec {name} valid lengths exceed the encoded stream extent."
                 )
             semantic_lengths = semantic_lengths.to(device=lengths.device, dtype=torch.long)
-        return PaddedAudioCodes(
+        return self._padded(
             codes=codes,
             lengths={
                 "semantic": semantic_lengths,
