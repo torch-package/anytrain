@@ -13,8 +13,11 @@ from torch import nn
 from anytrain.lightning.checkpoint import (
     STATE_DICT_SCHEMA_GRAMMAR,
     Difference,
+    StepCheckpoint,
     canonical_sha256,
     canonical_value,
+    discover_step_checkpoints,
+    evaluate_checkpoints,
     first_difference,
     load_checkpoint,
     stable_json,
@@ -215,6 +218,88 @@ class LightningCheckpointTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "Missing key"):
                 load_checkpoint(module, path)
+
+
+class CheckpointEvaluationTest(unittest.TestCase):
+    def test_discovers_durable_step_checkpoints_in_numeric_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in (
+                "step-00000010.ckpt",
+                "last.ckpt",
+                ".step-00000020.ckpt.part",
+                "step-00000002.ckpt",
+                "notes.txt",
+            ):
+                (root / name).touch()
+
+            checkpoints = discover_step_checkpoints(root)
+
+        self.assertEqual([checkpoint.step for checkpoint in checkpoints], [2, 10])
+        self.assertEqual(
+            [checkpoint.name for checkpoint in checkpoints],
+            ["step-00000002", "step-00000010"],
+        )
+
+    def test_rejects_duplicate_numeric_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "step-1.ckpt").touch()
+            (root / "step-01.ckpt").touch()
+
+            with self.assertRaisesRegex(ValueError, "multiple files for step 1"):
+                discover_step_checkpoints(root)
+
+    def test_requires_a_directory_with_step_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = root / "empty"
+            empty.mkdir()
+            file = root / "checkpoint.ckpt"
+            file.touch()
+
+            with self.assertRaisesRegex(FileNotFoundError, "does not exist"):
+                discover_step_checkpoints(root / "missing")
+            with self.assertRaisesRegex(NotADirectoryError, "not a directory"):
+                discover_step_checkpoints(file)
+            with self.assertRaisesRegex(FileNotFoundError, "contains no"):
+                discover_step_checkpoints(empty)
+
+    def test_evaluates_one_snapshot_in_step_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "step-20.ckpt").touch()
+            (root / "step-3.ckpt").touch()
+            evaluated: list[int] = []
+
+            checkpoints = evaluate_checkpoints(
+                root,
+                lambda checkpoint: evaluated.append(checkpoint.step),
+            )
+
+        self.assertEqual(evaluated, [3, 20])
+        self.assertEqual([checkpoint.step for checkpoint in checkpoints], [3, 20])
+
+    def test_evaluation_is_fail_fast(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for step in (1, 2, 3):
+                (root / f"step-{step}.ckpt").touch()
+            evaluated: list[int] = []
+
+            def evaluate(checkpoint: StepCheckpoint) -> None:
+                evaluated.append(checkpoint.step)
+                if checkpoint.step == 2:
+                    raise RuntimeError("failed")
+
+            with self.assertRaisesRegex(RuntimeError, "failed"):
+                evaluate_checkpoints(root, evaluate)
+
+        self.assertEqual(evaluated, [1, 2])
+
+    def test_evaluation_validates_callback_before_directory_access(self) -> None:
+        with self.assertRaisesRegex(TypeError, "evaluate must be callable"):
+            evaluate_checkpoints("missing", cast(Any, None))
 
 
 if __name__ == "__main__":
