@@ -19,6 +19,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint as LightningModelCheckpo
 from lightning_utilities.core.rank_zero import rank_zero_info
 
 from .. import _capability
+from ..schedule import UnitScheduleCallback
 
 
 class ModelCheckpoint(LightningModelCheckpoint):
@@ -42,7 +43,44 @@ class ModelCheckpoint(LightningModelCheckpoint):
         *,
         async_save: bool = True,
         max_pending_async_saves: int = 1,
+        unit_schedule: UnitScheduleCallback | None = None,
+        every_n_unit_epochs: int | None = None,
     ) -> None:
+        unit_epoch_trigger = every_n_unit_epochs is not None
+        if unit_epoch_trigger:
+            if not isinstance(unit_schedule, UnitScheduleCallback):
+                raise TypeError(
+                    "every_n_unit_epochs requires a UnitScheduleCallback."
+                )
+            if (
+                isinstance(every_n_unit_epochs, bool)
+                or not isinstance(every_n_unit_epochs, int)
+            ):
+                raise TypeError("every_n_unit_epochs must be an integer or None.")
+            if every_n_unit_epochs <= 0:
+                raise ValueError("every_n_unit_epochs must be positive.")
+            if unit_schedule.clock.units_per_epoch is None:
+                raise ValueError(
+                    "unit epoch checkpointing requires clock.units_per_epoch."
+                )
+            if every_n_train_steps not in (None, 0):
+                raise ValueError(
+                    "every_n_unit_epochs and every_n_train_steps are mutually exclusive."
+                )
+            if train_time_interval is not None:
+                raise ValueError(
+                    "every_n_unit_epochs and train_time_interval are mutually exclusive."
+                )
+            if every_n_epochs not in (None, 0):
+                raise ValueError(
+                    "every_n_unit_epochs and every_n_epochs are mutually exclusive."
+                )
+            every_n_train_steps = 0
+            every_n_epochs = 0
+        elif unit_schedule is not None:
+            raise ValueError(
+                "unit_schedule requires every_n_unit_epochs."
+            )
         super().__init__(
             dirpath=dirpath,
             filename=filename,
@@ -70,6 +108,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
             raise ValueError("max_pending_async_saves must be a positive integer.")
         self.async_save = async_save
         self.max_pending_async_saves = max_pending_async_saves
+        self.unit_schedule = unit_schedule
+        self.every_n_unit_epochs = every_n_unit_epochs
         self._async_executor: ThreadPoolExecutor | None = None
         self._async_tmp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._async_futures: list[Future[None]] = []
@@ -86,6 +126,17 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._reused_last_save: tuple[str, str, Path, Path, Future[None] | None] | None = None
         self._restored_last_checkpoint: Path | None = None
         self._async_lock = threading.Lock()
+
+    @property
+    def state_key(self) -> str:
+        if self.unit_schedule is None:
+            return super().state_key
+        return self._generate_state_key(
+            monitor=self.monitor,
+            mode=self.mode,
+            unit=self.unit_schedule.clock.unit,
+            every_n_unit_epochs=self.every_n_unit_epochs,
+        )
 
     def __getstate__(self) -> dict[str, Any]:
         if self._async_futures or self._deferred_async_removes:
@@ -110,6 +161,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         state.setdefault("max_pending_async_saves", 1)
+        state.setdefault("unit_schedule", None)
+        state.setdefault("every_n_unit_epochs", None)
         state.setdefault("_last_persistent_checkpoint", None)
         state.setdefault("_restored_last_checkpoint", None)
         self.__dict__.update(state)
@@ -136,6 +189,52 @@ class ModelCheckpoint(LightningModelCheckpoint):
         if self.async_save and self.save_last == "link" and same_dirpath and restored:
             self._restored_last_checkpoint = self._target_path(restored)
 
+    def on_train_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        super().on_train_start(trainer, pl_module)
+        schedule = self.unit_schedule
+        if schedule is None:
+            return
+        if not pl_module.automatic_optimization:
+            raise RuntimeError(
+                "unit epoch checkpointing requires automatic optimization."
+            )
+        if trainer.world_size > 1 and not schedule.clock.sync_distributed:
+            raise RuntimeError(
+                "distributed unit epoch checkpointing requires a globally "
+                "synchronized unit clock."
+            )
+        raw_callbacks = getattr(trainer, "callbacks", None)
+        if not isinstance(raw_callbacks, list):
+            raise RuntimeError("unit epoch checkpointing requires trainer callbacks.")
+        schedule_index = next(
+            (
+                index
+                for index, callback in enumerate(raw_callbacks)
+                if callback is schedule
+            ),
+            None,
+        )
+        checkpoint_index = next(
+            (
+                index
+                for index, callback in enumerate(raw_callbacks)
+                if callback is self
+            ),
+            None,
+        )
+        if schedule_index is None or checkpoint_index is None:
+            raise RuntimeError(
+                "unit epoch checkpointing requires both callbacks on the trainer."
+            )
+        if schedule_index > checkpoint_index:
+            raise RuntimeError(
+                "UnitScheduleCallback must run before unit epoch checkpointing."
+            )
+
     def on_train_batch_start(
         self,
         trainer: pl.Trainer,
@@ -145,6 +244,44 @@ class ModelCheckpoint(LightningModelCheckpoint):
     ) -> None:
         self._restored_last_checkpoint = None
         super().on_train_batch_start(trainer, pl_module, batch, batch_idx)
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        schedule = self.unit_schedule
+        every_n_epochs = self.every_n_unit_epochs
+        if schedule is None or every_n_epochs is None:
+            super().on_train_batch_end(
+                trainer,
+                pl_module,
+                outputs,
+                batch,
+                batch_idx,
+            )
+            return
+        if not pl_module.automatic_optimization:
+            raise RuntimeError(
+                "unit epoch checkpointing requires automatic optimization."
+            )
+        if not schedule.crossed_unit_epoch_interval(every_n_epochs):
+            return
+        if self._should_skip_saving_checkpoint(trainer):
+            return
+
+        monitor_candidates = self._monitor_candidates(trainer)
+        if self.monitor is not None and (
+            self.monitor not in monitor_candidates
+            or _validation_due_after_batch(trainer)
+        ):
+            self._defer_save_until_validation = True
+            return
+        self._save_topk_checkpoint(trainer, monitor_candidates)
+        self._save_last_checkpoint(trainer, monitor_candidates)
 
     def on_train_end(
         self,
@@ -938,13 +1075,26 @@ class ModelCheckpoint(LightningModelCheckpoint):
         if parsed.scheme == "file":
             return Path(parsed.path)
         return Path(filepath_str)
-
     @classmethod
     def _same_checkpoint(cls, left: Path, right: str | Path) -> bool:
         try:
             return left.is_file() and left.samefile(cls._target_path(right))
         except (OSError, ValueError):
             return False
+
+
+def _validation_due_after_batch(trainer: pl.Trainer) -> bool:
+    if not trainer.enable_validation:
+        return False
+    if trainer.should_stop and trainer.fit_loop._can_stop_early:
+        return True
+    if trainer.check_val_every_n_epoch is not None:
+        return False
+    interval = trainer.val_check_batch
+    if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+        return False
+    current_iteration = trainer.fit_loop.epoch_loop.total_batch_idx
+    return (current_iteration + 1) % interval == 0
 
 
 def _storage_error(cause: BaseException) -> RuntimeError:

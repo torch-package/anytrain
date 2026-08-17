@@ -82,6 +82,7 @@ class UnitScheduleCallback(pl.Callback):
         self._next_log_at: float | None = None
         self._measurements: deque[_Measurement] = deque()
         self._measurement_batches = 0
+        self._unit_epochs_advanced = 0
 
     @property
     def state_key(self) -> str:
@@ -91,7 +92,28 @@ class UnitScheduleCallback(pl.Callback):
     def clock(self) -> UnitClock:
         return self._clock
 
+    @property
+    def completed_unit_epochs(self) -> int:
+        units_per_epoch = self.clock.units_per_epoch
+        if units_per_epoch is None:
+            raise RuntimeError("unit epochs require clock.units_per_epoch.")
+        return int(math.floor(self.total_valid / units_per_epoch))
+
+    @property
+    def unit_epochs_advanced(self) -> int:
+        return self._unit_epochs_advanced
+
+    def crossed_unit_epoch_interval(self, every_n_epochs: int) -> bool:
+        if isinstance(every_n_epochs, bool) or not isinstance(every_n_epochs, int):
+            raise TypeError("every_n_epochs must be an integer.")
+        if every_n_epochs <= 0:
+            raise ValueError("every_n_epochs must be positive.")
+        current = self.completed_unit_epochs
+        previous = current - self.unit_epochs_advanced
+        return current // every_n_epochs > previous // every_n_epochs
+
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._unit_epochs_advanced = 0
         self._reject_lightning_schedulers(trainer)
         if self._base_lrs is None:
             self._base_lrs = _current_lrs(_optimizers(trainer))
@@ -112,6 +134,7 @@ class UnitScheduleCallback(pl.Callback):
         batch_idx: int,
     ) -> None:
         del trainer, pl_module, batch, batch_idx
+        self._unit_epochs_advanced = 0
         if self._batch_active:
             raise RuntimeError("A training batch started before the previous batch ended.")
         self._batch_active = True
@@ -152,6 +175,11 @@ class UnitScheduleCallback(pl.Callback):
         if elapsed <= 0:
             raise RuntimeError(f"non-positive measured unit schedule time={elapsed}.")
 
+        previous_unit_epochs = (
+            self.completed_unit_epochs
+            if self.clock.units_per_epoch is not None
+            else 0
+        )
         measurement = self._resolve_pending_update(
             trainer,
             pl_module,
@@ -160,6 +188,10 @@ class UnitScheduleCallback(pl.Callback):
         self.total_valid += measurement.valid
         if measurement.padded is not None:
             self.total_padded += measurement.padded
+        if self.clock.units_per_epoch is not None:
+            self._unit_epochs_advanced = (
+                self.completed_unit_epochs - previous_unit_epochs
+            )
         self._append_measurement(measurement)
 
         self._apply_lr(trainer, self.schedule.lr_ratio(self.total_valid))
@@ -170,7 +202,11 @@ class UnitScheduleCallback(pl.Callback):
         if should_stop:
             trainer.should_stop = True
 
-        self._log_if_due(pl_module, measurement, force=should_stop)
+        self._log_if_due(
+            pl_module,
+            measurement,
+            force=should_stop or self.unit_epochs_advanced > 0,
+        )
 
     def on_train_epoch_end(
         self,
@@ -229,6 +265,7 @@ class UnitScheduleCallback(pl.Callback):
         self._base_lrs = base_lrs
         self._last_global_step = last_step
         self._last_lrs = last_lrs
+        self._unit_epochs_advanced = 0
 
     def _local_units(self, units: object) -> _ResolvedUnits:
         if not isinstance(units, UnitBatch):
@@ -368,6 +405,16 @@ class UnitScheduleCallback(pl.Callback):
             ),
             "progress/lr_ratio": self.schedule.lr_ratio(self.total_valid),
         }
+        if self.clock.units_per_epoch is not None:
+            completed = self.completed_unit_epochs
+            metrics.update(
+                {
+                    "progress/unit_epoch": completed,
+                    "progress/unit_epoch_progress": (
+                        self.total_valid / self.clock.units_per_epoch - completed
+                    ),
+                }
+            )
         if measurement.padded is not None:
             window_padded = math.fsum(
                 item.padded for item in self._measurements if item.padded is not None

@@ -20,6 +20,7 @@ class UnitClock:
 
     unit: str
     provider: UnitProvider
+    units_per_epoch: float | None = None
     log_every_n_units: float | None = None
     measure_window_batches: int = 100
     sync_cuda: bool = True
@@ -30,6 +31,8 @@ class UnitClock:
         require_unit_name(self.unit)
         if not callable(self.provider):
             raise TypeError("unit provider must be callable.")
+        if self.units_per_epoch is not None:
+            _require_positive(self.units_per_epoch, "units_per_epoch")
         if self.log_every_n_units is not None:
             _require_positive(self.log_every_n_units, "log_every_n_units")
         _require_positive_int(self.measure_window_batches, "measure_window_batches")
@@ -121,11 +124,23 @@ class LRSchedule:
     def fingerprint(self) -> str:
         clock = "unit" if isinstance(self.clock, UnitClock) else "step"
         unit = self.clock.unit if isinstance(self.clock, UnitClock) else ""
+        units_per_epoch = (
+            self.clock.units_per_epoch if isinstance(self.clock, UnitClock) else None
+        )
         phases = tuple(
             (phase.name, float(phase.duration), type(phase.lr).__name__, repr(phase.lr))
             for phase in self.phases
         )
-        return repr((clock, unit, phases, self.stop_at, self.stop_at_end))
+        return repr(
+            (
+                clock,
+                unit,
+                units_per_epoch,
+                phases,
+                self.stop_at,
+                self.stop_at_end,
+            )
+        )
 
 
 def _require_positive_int(value: int, name: str) -> None:

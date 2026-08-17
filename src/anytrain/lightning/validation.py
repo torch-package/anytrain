@@ -12,6 +12,7 @@ from torch import Tensor
 
 from ..evaluator.weighted import Metric, reduce
 from . import _capability
+from .schedule import UnitScheduleCallback
 
 
 def log(
@@ -118,6 +119,72 @@ class History(Callback):
         self.interval = interval
 
 
+class UnitEpochInterval(Callback):
+    """Run Lightning validation when the shared unit clock crosses an epoch boundary."""
+
+    def __init__(
+        self,
+        schedule: UnitScheduleCallback,
+        *,
+        every_n_epochs: int = 1,
+    ) -> None:
+        super().__init__()
+        if not isinstance(schedule, UnitScheduleCallback):
+            raise TypeError("unit epoch validation requires a UnitScheduleCallback.")
+        if isinstance(every_n_epochs, bool) or not isinstance(every_n_epochs, int):
+            raise TypeError("validation every_n_epochs must be an integer.")
+        if every_n_epochs <= 0:
+            raise ValueError("validation every_n_epochs must be positive.")
+        if schedule.clock.units_per_epoch is None:
+            raise ValueError("unit epoch validation requires clock.units_per_epoch.")
+        self.schedule = schedule
+        self.every_n_epochs = every_n_epochs
+
+    @property
+    def state_key(self) -> str:
+        return self._generate_state_key(
+            unit=self.schedule.clock.unit,
+            every_n_epochs=self.every_n_epochs,
+        )
+
+    def on_train_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        del pl_module
+        if not trainer.enable_validation:
+            raise RuntimeError("unit epoch validation requires an enabled validation loop.")
+        if trainer.check_val_every_n_epoch is not None:
+            raise RuntimeError(
+                "unit epoch validation requires check_val_every_n_epoch=None."
+            )
+        if trainer.world_size > 1 and not self.schedule.clock.sync_distributed:
+            raise RuntimeError(
+                "distributed unit epoch validation requires a globally synchronized unit clock."
+            )
+        raw_callbacks = getattr(trainer, "callbacks", None)
+        if not isinstance(raw_callbacks, list):
+            raise RuntimeError("unit epoch validation requires trainer callbacks.")
+        callbacks = list(raw_callbacks)
+        if callbacks.index(self.schedule) > callbacks.index(self):
+            raise RuntimeError(
+                "UnitScheduleCallback must run before unit epoch validation."
+            )
+
+    def on_train_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        del pl_module, outputs, batch, batch_idx
+        epoch_loop = trainer.fit_loop.epoch_loop
+        current_iteration = epoch_loop.total_batch_idx
+        due = self.schedule.crossed_unit_epoch_interval(self.every_n_epochs)
+        # Lightning checks this value immediately after callback hooks. Setting the
+        # next non-matching integer suppresses dataloader-epoch validation.
+        trainer.val_check_batch = current_iteration + (1 if due else 2)
+
+
 def _prefix(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("validation metric prefix must be a string.")
@@ -219,4 +286,4 @@ def _history_name(value: object) -> str:
     return value
 
 
-__all__ = ["History", "Metric", "Record", "Report", "log"]
+__all__ = ["History", "Metric", "Record", "Report", "UnitEpochInterval", "log"]

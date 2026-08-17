@@ -1009,7 +1009,21 @@ class LightningTest(unittest.TestCase):
         original = inspect.signature(LightningModelCheckpoint.__init__)
         custom = inspect.signature(ModelCheckpoint.__init__)
 
-        self.assertEqual(list(custom.parameters)[:-2], list(original.parameters))
+        original_parameters = list(original.parameters)
+        custom_parameters = list(custom.parameters)
+        self.assertEqual(
+            custom_parameters[: len(original_parameters)],
+            original_parameters,
+        )
+        self.assertEqual(
+            custom_parameters[len(original_parameters) :],
+            [
+                "async_save",
+                "max_pending_async_saves",
+                "unit_schedule",
+                "every_n_unit_epochs",
+            ],
+        )
         self.assertEqual(custom.parameters["async_save"].default, True)
         self.assertEqual(custom.parameters["async_save"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(custom.parameters["max_pending_async_saves"].default, 1)

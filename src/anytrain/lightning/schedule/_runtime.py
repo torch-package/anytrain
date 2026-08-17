@@ -41,5 +41,14 @@ class ScheduleRuntime:
             self._callbacks = [UnitScheduleCallback(self.schedule)]
         return list(self._callbacks)
 
+    def unit_callback(self) -> UnitScheduleCallback:
+        if not isinstance(self.schedule.clock, UnitClock):
+            raise RuntimeError("step-clock schedules do not have a unit callback.")
+        callbacks = self.callbacks()
+        callback = callbacks[0]
+        if not isinstance(callback, UnitScheduleCallback):
+            raise RuntimeError("unit schedule runtime callback is invalid.")
+        return callback
+
 
 __all__ = ["ScheduleRuntime"]

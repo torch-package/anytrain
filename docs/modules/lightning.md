@@ -47,7 +47,7 @@ src/anytrain/lightning/
 
 - `checkpoint`：canonical contract、state-dict schema 与严格单文件恢复。
 - `experiment`：从 Trainer 主 logger 获取 text/scalar/audio/image/histogram/raw-histogram 能力。
-- `validation`：加权 validation logging 与可恢复指标历史。
+- `validation`：加权 validation logging、可恢复指标历史与 unit-epoch cadence。
 - `schedule`：统一 step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制。
 - `LightningLogMixin`
 - `ModelCheckpoint`
@@ -93,6 +93,12 @@ callback 的公开 re-export 由 `anytrain.lightning.callback` 唯一维护，ro
 `ScheduleRuntime.callbacks()` 生成唯一 owner 的 unit runtime callback。`Phase.duration` 和
 `LRSchedule.milestones()` 的单位都由 clock 决定：step clock 下是 optimizer steps，unit clock
 下是 global valid units。
+
+`UnitClock.units_per_epoch` 可选地在同一 global-unit clock 上定义逻辑 epoch。它不修改 Lightning
+的 dataloader epoch 或 sampler `set_epoch()`；`UnitScheduleCallback` 只在 optimizer-step 边界计算
+本次 update 跨过的 unit epoch 数，并记录 `progress/unit_epoch` 与
+`progress/unit_epoch_progress`。一个变长 update 可以越过多个边界，但每个消费 callback 在该
+update 上最多执行一次。
 
 schedule spec 构造器拥有字段不变量：duration、unit interval、stop position 和 curve ratio 只接受
 有限 host real number，不接受 bool、Tensor 或字符串转换；整数窗口严格要求 `int`，phase name 必须
@@ -147,6 +153,10 @@ validation.log(
     {"loss": validation.Metric(values, counts)},
 )
 history = validation.History(prefix="val")
+interval = validation.UnitEpochInterval(
+    runtime.unit_callback(),
+    every_n_epochs=1,
+)
 ```
 
 `Metric` 是 `anytrain.evaluator.weighted.Metric` 在 validation 子模块中的转发名；它的 weights 是
@@ -157,8 +167,10 @@ reduction 截断分母；`History` 只消费已经归约到 `trainer.callback_me
 callback。数值归约委托给 `evaluator.weighted.reduce()`，共享 weights tensor 的指标只同步读取一次
 count。
 
-下游负责是否创建 validation dataloader、是否执行 validation，以及具体指标按 sample、token 还是 frame
-计数。没有 validation dataloader 时 callback 不会自行触发 validation。
+下游负责创建 validation dataloader，并可继续使用 Lightning 的 step/epoch cadence，或显式加入
+`UnitEpochInterval` 让 validation 消费共享 unit clock。该 callback 必须排在
+`UnitScheduleCallback` 后；DDP 下要求 `sync_distributed=True`。没有 validation dataloader 时不能
+启用该 callback。
 
 ## Experiment 能力
 
@@ -253,6 +265,12 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 错误。`save_last="link"` 只在持久 target 发布成功后原子替换 `last.ckpt`，不链接会被清理的
 临时 source；后台复制期间已有 last 保持可读，首次保存则暂不创建。显式 wait 或训练结束 drain
 后保证新 last 可读。旧 top-k 仅在该更新成功后删除；更新失败时旧链接及其目标都会保留。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
+
+设置 `unit_schedule=<UnitScheduleCallback>` 与 `every_n_unit_epochs=N` 后，checkpoint 复用同一个
+unit-epoch boundary；该触发方式与 Lightning 的 step/time/dataloader-epoch trigger 互斥。若同时
+配置 validation-only monitor，checkpoint 会等同一边界的 validation 完成后再保存。schedule 与
+checkpoint callback 都必须注册到 Trainer，且 schedule 排在前面；DDP 下同样要求
+`sync_distributed=True`。
 
 同一次 top-k 和 `save_last` 保存会复用一份本地序列化结果：先异步发布持久 top-k checkpoint，再从它原子更新或链接 `last.ckpt`，不会重复调用 `trainer.save_checkpoint()`。异常 checkpoint 同样复用该路径；`save_top_k=0` 只保存 `last.ckpt` 一次。
 

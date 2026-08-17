@@ -114,6 +114,15 @@ class ScheduleTest(unittest.TestCase):
                     log_every_n_units=cast(Any, value),
                 )
             with (
+                self.subTest(field="units_per_epoch", value=value),
+                self.assertRaisesRegex(TypeError, "host real number"),
+            ):
+                UnitClock(
+                    unit="tokens",
+                    provider=provider,
+                    units_per_epoch=cast(Any, value),
+                )
+            with (
                 self.subTest(field="stop_at", value=value),
                 self.assertRaisesRegex(TypeError, "host real number"),
             ):
@@ -247,6 +256,66 @@ class ScheduleTest(unittest.TestCase):
         restored = UnitScheduleCallback(schedule)
         restored.load_state_dict(state)
         self.assertEqual(restored.total_valid, 6.0)
+
+    def test_unit_clock_exposes_epoch_boundaries(self):
+        optimizer = _optimizer()
+        provider = _Provider(
+            UnitBatch(valid=3.0, unit="tokens"),
+            UnitBatch(valid=8.0, unit="tokens"),
+        )
+        runtime = ScheduleRuntime(
+            LRSchedule(
+                clock=UnitClock(
+                    unit="tokens",
+                    provider=provider,
+                    units_per_epoch=5.0,
+                    sync_cuda=False,
+                ),
+                phases=[Phase("main", duration=20.0, lr=Constant(1.0))],
+            )
+        )
+        callback = runtime.unit_callback()
+        trainer = SimpleNamespace(
+            global_step=0,
+            optimizers=[optimizer],
+            lr_scheduler_configs=[],
+            should_stop=False,
+        )
+        module = _module()
+
+        callback.on_train_start(trainer, module)
+        with patch("time.perf_counter", side_effect=[1.0, 2.0, 3.0, 4.0]):
+            callback.on_train_batch_start(trainer, module, batch=None, batch_idx=0)
+            trainer.global_step = 1
+            callback.on_train_batch_end(
+                trainer,
+                module,
+                outputs=None,
+                batch=None,
+                batch_idx=0,
+            )
+            self.assertEqual(callback.completed_unit_epochs, 0)
+            self.assertEqual(callback.unit_epochs_advanced, 0)
+            self.assertFalse(callback.crossed_unit_epoch_interval(1))
+
+            callback.on_train_batch_start(trainer, module, batch=None, batch_idx=1)
+            trainer.global_step = 2
+            callback.on_train_batch_end(
+                trainer,
+                module,
+                outputs=None,
+                batch=None,
+                batch_idx=1,
+            )
+
+        self.assertIs(runtime.unit_callback(), callback)
+        self.assertEqual(callback.completed_unit_epochs, 2)
+        self.assertEqual(callback.unit_epochs_advanced, 2)
+        self.assertTrue(callback.crossed_unit_epoch_interval(1))
+        self.assertTrue(callback.crossed_unit_epoch_interval(2))
+        values, _ = module.log_dict_calls[-1]
+        self.assertEqual(values["progress/unit_epoch"], 2)
+        self.assertAlmostEqual(values["progress/unit_epoch_progress"], 0.2)
 
     def test_unit_clock_state_rejects_coerced_or_malformed_lrs(self):
         schedule = LRSchedule(
