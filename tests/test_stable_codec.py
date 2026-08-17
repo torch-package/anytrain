@@ -179,6 +179,30 @@ class StableCodecTest(unittest.TestCase):
 
         self.assertEqual(codec.frame_rate, 25.0)
 
+    def test_frame_rate_accepts_numpy_real_metadata(self):
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy is not installed.")
+
+        cases = (
+            ("frame_rate", np.float64(50), 50.0, False),
+            ("hop_length", np.int64(512), 31.25, False),
+            ("downsampling_ratio", np.int64(512), 31.25, True),
+        )
+        for attribute, value, expected, nested in cases:
+            with self.subTest(attribute=attribute):
+                model = _backend(pretrained_model="fake", device=torch.device("cpu"))
+                target = model.model if nested else model
+                setattr(target, attribute, value)
+                codec = StableCodec(
+                    model=model,
+                    device=torch.device("cpu"),
+                    posthoc_bottleneck=None,
+                )
+
+                self.assertEqual(codec.frame_rate, expected)
+
     def test_decode_uses_tokens(self):
         model = _backend(pretrained_model="fake", device=torch.device("cpu"))
         codec = StableCodec(model=model, device=torch.device("cpu"), posthoc_bottleneck=None)
