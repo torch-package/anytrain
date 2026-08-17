@@ -23,7 +23,7 @@ bicodec = [
     "safetensors>=0.5",
     "soundfile>=0.12",
     "soxr>=0.5",
-    "spark-tts @ https://github.com/rookiejune/Spark-TTS/archive/44ddcbf8b382ce5a55a7d500f5e9266c05516bb0.tar.gz#sha256=dc3f225776568ca14b9e3e76ce7cf5cd3bf1e6856c7757bf056a7213f3a55090",
+    "spark-tts @ https://codeload.github.com/rookiejune/Spark-TTS/tar.gz/44ddcbf8b382ce5a55a7d500f5e9266c05516bb0#sha256=dc3f225776568ca14b9e3e76ce7cf5cd3bf1e6856c7757bf056a7213f3a55090",
     "torchaudio>=2.5",
     "transformers>=4.46",
 ]
@@ -46,7 +46,7 @@ speech = [
 flow = ["flow_matching"]
 longcat = [
     "huggingface-hub>=0.23",
-    "longcat-audio-codec @ https://github.com/rookiejune/LongCat-Audio-Codec/archive/f338c4fb346bbd040c942ccbe3928bd9a1cb81a0.tar.gz#sha256=9f1c4776b5986950b455cbcc6f25ccf12f652ba1ed4611fe3891ecb4c8dbfde3",
+    "longcat-audio-codec @ https://codeload.github.com/rookiejune/LongCat-Audio-Codec/tar.gz/f338c4fb346bbd040c942ccbe3928bd9a1cb81a0#sha256=9f1c4776b5986950b455cbcc6f25ccf12f652ba1ed4611fe3891ecb4c8dbfde3",
     "PyYAML>=6.0",
 ]
 moss-tts = [
@@ -72,12 +72,12 @@ tts-vllm-omni = [
 ]
 qwen-tts = [
     "packaging>=24",
-    "qwen-tts @ https://github.com/QwenLM/Qwen3-TTS/archive/022e286b98fbec7e1e916cb940cdf532cd9f488e.tar.gz#sha256=c7129dc1399dac840ccd99ef62ebef82849378b9a5486f553b1264e59e1012e1",
+    "qwen-tts @ https://codeload.github.com/QwenLM/Qwen3-TTS/tar.gz/022e286b98fbec7e1e916cb940cdf532cd9f488e#sha256=c7129dc1399dac840ccd99ef62ebef82849378b9a5486f553b1264e59e1012e1",
     "transformers==4.57.3",
 ]
 spark-tts = [
     "huggingface-hub>=0.23",
-    "spark-tts @ https://github.com/rookiejune/Spark-TTS/archive/44ddcbf8b382ce5a55a7d500f5e9266c05516bb0.tar.gz#sha256=dc3f225776568ca14b9e3e76ce7cf5cd3bf1e6856c7757bf056a7213f3a55090",
+    "spark-tts @ https://codeload.github.com/rookiejune/Spark-TTS/tar.gz/44ddcbf8b382ce5a55a7d500f5e9266c05516bb0#sha256=dc3f225776568ca14b9e3e76ce7cf5cd3bf1e6856c7757bf056a7213f3a55090",
     "torchaudio>=2.5",
 ]
 test = ["basedpyright>=1.31", "pytest>=8.0", "ruff>=0.8"]
