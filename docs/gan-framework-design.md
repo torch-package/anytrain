@@ -48,9 +48,13 @@ g_loss = generator_step(
 
 `discriminator_step()` 默认将 real/fake 沿 batch 维拼接，减少一次 discriminator forward；
 `generator_step()` 在整个 generator forward/backward 期间冻结 discriminator 参数，并恢复原始
-`requires_grad` 状态。需要 batch 统计保持独立时，把 `combine_inputs=False` 传给 D step。
+`requires_grad` 状态。默认保留 discriminator 的 train/eval 状态；如果 discriminator 含有
+BatchNorm 等运行统计层，可传 `eval_discriminator=True`，临时冻结这些 buffer 的更新并在退出
+时恢复原状态。需要 batch 统计保持独立时，把 `combine_inputs=False` 传给 D step。
 `gradient_penalty=False` 可用于 lazy GP；在执行 step 使用
 `gradient_penalty_scale=interval`，可以保持原本的期望 regularization 权重。
+WGAN-GP 的 per-sample gradient 假设 discriminator 不包含 BatchNorm 或其他跨样本耦合操作；
+这类 discriminator 不应直接启用 GP。
 
 返回约定沿用 scalar-only loss 层：
 

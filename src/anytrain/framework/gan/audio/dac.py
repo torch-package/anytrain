@@ -10,6 +10,7 @@ from torch.nn.utils import parametrizations
 
 from anytrain._buffer import register_buffer
 from anytrain._compat import strict_zip
+from anytrain.framework._validation import finite_real, integer_at_least
 
 _BANDS = (0.1, 0.25, 0.5, 0.75)
 
@@ -29,10 +30,17 @@ class DACDiscriminator(nn.Module):
         bands: Sequence[float] = _BANDS,
     ) -> None:
         super().__init__()
-        if in_channels <= 0:
-            raise ValueError("in_channels must be positive.")
-        if sample_rate <= 0:
-            raise ValueError("sample_rate must be positive.")
+        in_channels = integer_at_least(in_channels, "in_channels", 1)
+        msd_dim = integer_at_least(msd_dim, "msd_dim", 1)
+        mpd_dim = integer_at_least(mpd_dim, "mpd_dim", 1)
+        mrd_dim = integer_at_least(mrd_dim, "mrd_dim", 1)
+        sample_rate = integer_at_least(sample_rate, "sample_rate", 1)
+        sample_rates = tuple(
+            integer_at_least(rate, "sample_rates item", 1) for rate in sample_rates
+        )
+        periods = tuple(integer_at_least(period, "periods item", 1) for period in periods)
+        n_ffts = tuple(integer_at_least(n_fft, "n_ffts item", 1) for n_fft in n_ffts)
+        bands = tuple(finite_real(band, "bands item") for band in bands)
 
         layers: list[nn.Module] = []
         layers.extend(
@@ -61,8 +69,8 @@ class DACDiscriminator(nn.Module):
 class _MPD(nn.Module):
     def __init__(self, *, in_channels: int, period: int, dim: int) -> None:
         super().__init__()
-        if period <= 0:
-            raise ValueError("period must be positive.")
+        period = integer_at_least(period, "period", 1)
+        dim = integer_at_least(dim, "dim", 1)
         self.period = period
         self.convs = nn.ModuleList(
             [
@@ -82,6 +90,11 @@ class _MPD(nn.Module):
         )
 
     def forward(self, x: Tensor) -> list[Tensor]:
+        if x.shape[-1] < self.period:
+            raise ValueError(
+                f"MPD period {self.period} requires at least {self.period} time samples; "
+                f"got {x.shape[-1]}."
+            )
         x = F.pad(x, (0, -x.shape[-1] % self.period), mode="reflect")
         x = rearrange(x, "b c (l p) -> b c l p", p=self.period)
         return _forward_stack(x, self.convs, self.post)
@@ -97,8 +110,9 @@ class _MSD(nn.Module):
         dim: int,
     ) -> None:
         super().__init__()
-        if sample_rate <= 0:
-            raise ValueError("sample rate must be positive.")
+        sample_rate = integer_at_least(sample_rate, "sample rate", 1)
+        source_sample_rate = integer_at_least(source_sample_rate, "source sample rate", 1)
+        dim = integer_at_least(dim, "dim", 1)
         self.sample_rate = sample_rate
         self.source_sample_rate = source_sample_rate
         if dim % 4 != 0:
@@ -150,13 +164,15 @@ class _MRD(nn.Module):
         hop_factor: float = 0.25,
     ) -> None:
         super().__init__()
-        if n_fft <= 0:
-            raise ValueError("n_fft must be positive.")
+        n_fft = integer_at_least(n_fft, "n_fft", 1)
+        hop_factor = finite_real(hop_factor, "hop_factor")
         if hop_factor <= 0:
             raise ValueError("hop_factor must be positive.")
 
         self.n_fft = n_fft
         self.hop_length = int(hop_factor * n_fft)
+        if self.hop_length < 1:
+            raise ValueError("hop_factor * n_fft must produce a hop_length of at least 1.")
         register_buffer(self, "window", torch.hann_window(n_fft), persistent=False)
         bins = n_fft // 2 + 1
         self.bands = _split_indices(bands, bins=bins)
@@ -189,6 +205,11 @@ class _MRD(nn.Module):
         )
 
     def forward(self, x: Tensor) -> list[Tensor]:
+        if x.shape[-1] <= self.n_fft // 2:
+            raise ValueError(
+                f"MRD n_fft={self.n_fft} requires more than {self.n_fft // 2} time samples; "
+                f"got {x.shape[-1]}."
+            )
         spec = torch.stft(
             x.reshape(-1, x.shape[-1]),
             n_fft=self.n_fft,
@@ -238,6 +259,8 @@ class _Stack(nn.Module):
 
 
 def _preprocess(x: Tensor) -> Tensor:
+    if not isinstance(x, Tensor):
+        raise TypeError("DACDiscriminator expects a torch.Tensor input.")
     if x.ndim != 3:
         raise ValueError("DACDiscriminator expects input shape (batch, channels, time).")
     x = x - x.mean(dim=-1, keepdim=True)
@@ -249,6 +272,7 @@ def _split_indices(bands: Sequence[float], *, bins: int) -> list[int]:
     indices: list[int] = []
     previous = 0
     for band in bands:
+        band = finite_real(band, "band")
         if not 0 < band < 1:
             raise ValueError("bands must contain ratios between 0 and 1.")
         index = int(band * bins)

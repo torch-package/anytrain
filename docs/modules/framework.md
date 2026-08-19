@@ -95,7 +95,8 @@ flow matching、GAN 和 RL 的训练生命周期、张量布局及数值目标�
 - `Loss.from_preset(Preset.DAC, **kwargs)`：创建 DAC 风格 MPD / MRD discriminator；`kwargs` 转发给 `DACDiscriminator`。
 - `anytrain.framework.gan.audio.DACDiscriminator`：可直接使用的音频判别器。
 - `discriminator_step()` / `generator_step()`：不绑定 Lightning 的 manual optimization helper；D step 默认合并 real/fake batch，G step 自动临时冻结 discriminator 参数。
-- `freeze_parameters()`：保留原始 `requires_grad` 状态的上下文管理器。
+- `generator_step(..., eval_discriminator=True)`：在 G step 期间额外临时切换 discriminator 到 eval mode，防止 BatchNorm 等运行统计更新，并恢复原状态。
+- `freeze_parameters()`：保留原始 `requires_grad` 状态的上下文管理器，可选临时切换 eval mode。
 - `should_apply_gradient_penalty()`：按 discriminator step 间隔实现 lazy GP。
 - 私有 `_LogitCriterion` / `_FeatureMatching` / `_GradientPenalty`：作为 `Loss` 的内部实现，不作为稳定 public API。
 
@@ -155,6 +156,7 @@ tensor 是 logits，前面 tensor 是 feature maps；简单判别器返回 `[[lo
 - `Loss` 不自动 freeze discriminator 参数；`generator_step()` helper 会在 G objective 期间完成 freeze/unfreeze。
 - `generator_step()` 会在 generator forward/backward 期间自动 freeze discriminator，并在退出后恢复每个参数原来的 `requires_grad` 状态。
 - `GAN.WGAN` 默认启用 `gp_weight=10.0` 的 gradient penalty；其他 GAN 默认不启用。显式 `gp_weight=0.0` 可以关闭。
+- WGAN-GP 要求 discriminator 不包含 BatchNorm 或其他跨样本耦合层，否则一次 `autograd.grad` 不能得到独立的 per-sample gradient norm。
 - `reduction` 公开入口支持 `Reduction` enum 或 torch 风格字符串；内部统一使用 `Reduction`，默认 `Reduction.Mean`。
 - DAC preset 只提供判别器和 loss 计算，不接管 codec 模型、batch schema 或重建 loss 组合；其默认 periods、FFT、bands 和 channel dimensions 保持第三方实现原值。
 

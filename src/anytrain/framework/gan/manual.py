@@ -17,19 +17,29 @@ class _OptimizerLike(Protocol):
 
 
 @contextmanager
-def freeze_parameters(module: nn.Module) -> Iterator[None]:
-    """Temporarily disable parameter gradients while preserving their states."""
+def freeze_parameters(module: nn.Module, *, eval_mode: bool = False) -> Iterator[None]:
+    """Temporarily disable parameter gradients and optionally enter eval mode."""
 
     if not isinstance(module, nn.Module):
         raise TypeError("module must be a torch.nn.Module.")
+    if not isinstance(eval_mode, bool):
+        raise TypeError("eval_mode must be a bool.")
     states = [(parameter, parameter.requires_grad) for parameter in module.parameters()]
+    training_states = (
+        [(submodule, submodule.training) for submodule in module.modules()] if eval_mode else ()
+    )
     for parameter, _ in states:
         parameter.requires_grad_(False)
+    if eval_mode:
+        module.eval()
     try:
         yield
     finally:
         for parameter, requires_grad in states:
             parameter.requires_grad_(requires_grad)
+        if eval_mode:
+            for submodule, training in training_states:
+                submodule.train(training)
 
 
 def discriminator_step(
@@ -66,16 +76,20 @@ def generator_step(
     optimizer: _OptimizerLike,
     backward: Callable[[Tensor], None],
     objective: Callable[[], Tensor],
+    *,
+    eval_discriminator: bool = False,
 ) -> Tensor:
-    """Run a complete generator objective with discriminator gradients disabled."""
+    """Run a generator objective with discriminator gradients optionally disabled."""
 
     _require_loss(loss_fn)
     _require_optimizer(optimizer)
     _require_backward(backward)
     if not callable(objective):
         raise TypeError("objective must be callable.")
+    if not isinstance(eval_discriminator, bool):
+        raise TypeError("eval_discriminator must be a bool.")
     optimizer.zero_grad(set_to_none=True)
-    with freeze_parameters(loss_fn.discriminator):
+    with freeze_parameters(loss_fn.discriminator, eval_mode=eval_discriminator):
         loss = objective()
         if not isinstance(loss, Tensor) or loss.ndim != 0:
             raise ValueError("generator objective must return a scalar Tensor.")

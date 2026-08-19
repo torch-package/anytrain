@@ -18,6 +18,7 @@ from anytrain.framework.gan import (
     generator_step,
     should_apply_gradient_penalty,
 )
+from anytrain.framework.gan.feature import _FeatureMatching
 
 
 def _run_with_observations(call):
@@ -70,6 +71,16 @@ class TensorDiscriminator(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return [[self.linear(x).squeeze(-1)]]
+
+
+class BatchNormDiscriminator(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.norm = nn.BatchNorm1d(4)
+        self.linear = nn.Linear(4, 1, bias=False)
+
+    def forward(self, x: torch.Tensor):
+        return [[self.linear(self.norm(x)).squeeze(-1)]]
 
 
 class RawTensorDiscriminator(nn.Module):
@@ -335,6 +346,15 @@ class LossTest(unittest.TestCase):
             self.assertTrue(all(not parameter.requires_grad for parameter in discriminator.parameters()))
         self.assertEqual(states, [parameter.requires_grad for parameter in discriminator.parameters()])
 
+    def test_freeze_parameters_eval_mode_restores_training_states(self):
+        discriminator = nn.Sequential(nn.BatchNorm1d(4), nn.Linear(4, 1))
+        discriminator[1].eval()
+        states = [module.training for module in discriminator.modules()]
+
+        with freeze_parameters(discriminator, eval_mode=True):
+            self.assertTrue(all(not module.training for module in discriminator.modules()))
+        self.assertEqual(states, [module.training for module in discriminator.modules()])
+
     def test_generator_step_freezes_discriminator_parameters(self):
         discriminator = TensorDiscriminator()
         loss_fn = Loss(discriminator)
@@ -361,6 +381,25 @@ class LossTest(unittest.TestCase):
         self.assertEqual(observed_requires_grad, [False])
         self.assertIsNone(discriminator.linear.weight.grad)
         self.assertTrue(discriminator.linear.weight.requires_grad)
+
+    def test_generator_step_eval_discriminator_preserves_batch_norm_state(self):
+        discriminator = BatchNormDiscriminator()
+        loss_fn = Loss(discriminator)
+        generator_parameter = nn.Parameter(torch.randn(4))
+        optimizer = torch.optim.SGD([generator_parameter], lr=0.1)
+        fake = generator_parameter.unsqueeze(0).expand(3, -1)
+        running_mean = discriminator.norm.running_mean.detach().clone()
+
+        generator_step(
+            loss_fn,
+            optimizer,
+            lambda loss: loss.backward(),
+            lambda: loss_fn.generator_loss(fake),
+            eval_discriminator=True,
+        )
+
+        torch.testing.assert_close(discriminator.norm.running_mean, running_mean)
+        self.assertTrue(discriminator.training)
 
     def test_discriminator_step_uses_zero_grad_set_to_none_and_combined_forward(self):
         discriminator = TensorDiscriminator()
@@ -465,6 +504,12 @@ class LossTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "feature count"):
             loss_fn.generator_loss(fake, real)
+
+    def test_feature_matching_rejects_non_tensor_loss(self):
+        matcher = _FeatureMatching(loss_fn=lambda fake, real: 1.0)
+
+        with self.assertRaisesRegex(TypeError, "return a Tensor"):
+            matcher([[torch.ones(2, 3)]], [[torch.zeros(2, 3)]])
 
     def test_wgan_uses_default_gradient_penalty(self):
         discriminator = TensorDiscriminator()
@@ -573,6 +618,23 @@ class LossTest(unittest.TestCase):
             output = discriminator(torch.randn(2, 1, 64))
 
         self.assertEqual(len(output), 1)
+
+    def test_dac_rejects_zero_stft_hop_length(self):
+        from anytrain.framework.gan.audio import DACDiscriminator
+
+        with self.assertRaisesRegex(ValueError, "hop_length"):
+            DACDiscriminator(periods=(), n_ffts=(1,))
+
+    def test_dac_rejects_short_mpd_and_mrd_inputs(self):
+        from anytrain.framework.gan.audio import DACDiscriminator
+
+        mpd = DACDiscriminator(in_channels=1, periods=(5,), n_ffts=(), mpd_dim=2)
+        with self.assertRaisesRegex(ValueError, "MPD period 5"):
+            mpd(torch.randn(2, 1, 4))
+
+        mrd = DACDiscriminator(in_channels=1, periods=(), n_ffts=(16,), bands=(), mrd_dim=2)
+        with self.assertRaisesRegex(ValueError, "MRD n_fft=16"):
+            mrd(torch.randn(2, 1, 8))
 
     def test_dac_default_configuration_is_unchanged(self):
         from anytrain.framework.gan.audio import DACDiscriminator
