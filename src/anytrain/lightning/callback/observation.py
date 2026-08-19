@@ -881,13 +881,22 @@ class ObservationCallback(pl.Callback):
         batch: Any,
         batch_idx: int,
     ) -> None:
-        del pl_module, batch, batch_idx
+        del batch, batch_idx
         if not self._enabled:
             return
         self._active_stage = "train"
         self._forward_active = True
         step = _capability.global_step(trainer)
+        # Manual optimization (for example GAN discriminator/generator
+        # updates) can commit more than one optimizer step before batch end.
+        # The final step is not known yet, so keep render-only collectors
+        # active for the whole batch and decide whether to log at batch end.
+        manual_optimization = not bool(
+            getattr(pl_module, "automatic_optimization", True)
+        )
         self._render_active = (
+            manual_optimization and self.every_n_steps is not None
+        ) or (
             self.every_n_steps is not None
             and (step + 1) % self.every_n_steps == 0
         )
@@ -918,7 +927,9 @@ class ObservationCallback(pl.Callback):
             self._add_observation_time(started_at)
             self._active_stage = None
             return
-        if optimizer_steps != 1:
+        if optimizer_steps != 1 and bool(
+            getattr(pl_module, "automatic_optimization", True)
+        ):
             raise RuntimeError(
                 "ObservationCallback cannot partition one train batch across multiple "
                 "optimizer steps."

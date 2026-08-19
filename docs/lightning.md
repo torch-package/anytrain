@@ -402,7 +402,9 @@ callback state identity 必须保持稳定，`half_life_steps` 与 `sync_distrib
 `ForwardEvent`，`StateObservation` 也仍会在 step boundary 读取；领域方法是否 emit 由 module 自己的
 公开 contract 决定，不提供 module-specific callback 兜底。当前提交边界基于 train batch end 的
 `global_step` 变化，因此支持常规自动优化和梯度
-累积；同一个 train batch 内执行多个 optimizer step 的 manual optimization 会 fail-fast。
+累积；`automatic_optimization=False` 的 manual optimization 允许同一个 train batch 内执行多个
+optimizer step（例如 GAN 的 discriminator/generator 更新），这些 observation 会在 batch end 合并后提交。
+自动优化若在单 batch 内出现多个 optimizer step 仍会 fail-fast。
 
 更完整的 registry、类型和 hook 边界见
 [`anytrain.observation` 设计](modules/observation.md)。module 外计算的 aux loss、最终 evaluator、性能指标
