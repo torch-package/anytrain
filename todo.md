@@ -37,7 +37,6 @@
 
 - 后续新增 framework 子模块时，需要明确依赖 extra、最小测试和至少一个下游复用方。
 - masked autoencoder 等训练范式只有在跨项目复用明确后再迁入；没有 owner 前不作为 active todo。
-- `framework.gan` 后续根据真实复用需求补 manual optimization helper。
 - framework 不替用户写完整 `pl_module`，只提供训练逻辑可复用组件。
 
 ## MOSS vLLM-Omni codec loading

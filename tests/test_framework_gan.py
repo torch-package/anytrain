@@ -1,3 +1,4 @@
+import inspect
 import sys
 import unittest
 from typing import Any, cast
@@ -7,7 +8,16 @@ import torch
 from torch import nn
 
 from anytrain import observation
-from anytrain.framework.gan import GAN, Loss, Preset, Reduction
+from anytrain.framework.gan import (
+    GAN,
+    Loss,
+    Preset,
+    Reduction,
+    discriminator_step,
+    freeze_parameters,
+    generator_step,
+    should_apply_gradient_penalty,
+)
 
 
 def _run_with_observations(call):
@@ -36,6 +46,16 @@ def _run_with_observations(call):
 class IdentityDiscriminator(nn.Module):
     def forward(self, x: torch.Tensor):
         return [[x]]
+
+
+class CountingIdentityDiscriminator(IdentityDiscriminator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, x: torch.Tensor):
+        self.calls += 1
+        return super().forward(x)
 
 
 class ScaleBranchDiscriminator(nn.Module):
@@ -263,6 +283,138 @@ class LossTest(unittest.TestCase):
         self.assertIsNotNone(discriminator.linear.weight.grad)
         self.assertFalse(diagnostics["real"].requires_grad)
 
+    def test_discriminator_loss_can_combine_real_and_fake_forward(self):
+        discriminator = CountingIdentityDiscriminator()
+        loss_fn = Loss(discriminator, gan=GAN.LSGAN)
+        fake = torch.zeros(2, 4)
+        real = torch.ones(3, 4)
+
+        combined = loss_fn.discriminator_loss(fake, real, combine_inputs=True)
+        self.assertEqual(discriminator.calls, 1)
+
+        discriminator.calls = 0
+        separate = loss_fn.discriminator_loss(fake, real, combine_inputs=False)
+        self.assertEqual(discriminator.calls, 2)
+        torch.testing.assert_close(combined, separate)
+
+    def test_discriminator_loss_can_skip_gradient_penalty(self):
+        discriminator = TensorDiscriminator()
+        loss_fn = Loss(discriminator, gan=GAN.WGAN)
+        fake = torch.randn(3, 4)
+        real = torch.randn(3, 4)
+
+        _, diagnostics, _ = _run_with_observations(
+            lambda: loss_fn.discriminator_loss(fake, real, gradient_penalty=False)
+        )
+        self.assertNotIn("gp", diagnostics)
+
+        _, diagnostics, _ = _run_with_observations(
+            lambda: loss_fn.discriminator_loss(
+                fake, real, gradient_penalty=True, gradient_penalty_scale=0.0
+            )
+        )
+        self.assertNotIn("gp", diagnostics)
+
+    def test_combined_discriminator_loss_still_detaches_fake(self):
+        discriminator = TensorDiscriminator()
+        loss_fn = Loss(discriminator)
+        fake = torch.randn(3, 4, requires_grad=True)
+        real = torch.randn(3, 4)
+
+        loss_fn.discriminator_loss(fake, real, combine_inputs=True).backward()
+
+        self.assertIsNone(fake.grad)
+        self.assertIsNotNone(discriminator.linear.weight.grad)
+
+    def test_freeze_parameters_restores_original_states(self):
+        discriminator = nn.Linear(4, 1)
+        discriminator.bias.requires_grad_(False)
+        states = [parameter.requires_grad for parameter in discriminator.parameters()]
+
+        with freeze_parameters(discriminator):
+            self.assertTrue(all(not parameter.requires_grad for parameter in discriminator.parameters()))
+        self.assertEqual(states, [parameter.requires_grad for parameter in discriminator.parameters()])
+
+    def test_generator_step_freezes_discriminator_parameters(self):
+        discriminator = TensorDiscriminator()
+        loss_fn = Loss(discriminator)
+        generator_parameter = nn.Parameter(torch.randn(4))
+        optimizer = torch.optim.SGD([generator_parameter], lr=0.1)
+        fake = generator_parameter.unsqueeze(0).expand(3, -1)
+        observed_requires_grad = []
+
+        original_forward = discriminator.forward
+
+        def capture_forward(x):
+            observed_requires_grad.append(discriminator.linear.weight.requires_grad)
+            return original_forward(x)
+
+        with mock.patch.object(discriminator, "forward", side_effect=capture_forward):
+            reconstruction = generator_parameter.square().mean()
+            generator_step(
+                loss_fn,
+                optimizer,
+                lambda loss: loss.backward(),
+                lambda: reconstruction + loss_fn.generator_loss(fake),
+            )
+
+        self.assertEqual(observed_requires_grad, [False])
+        self.assertIsNone(discriminator.linear.weight.grad)
+        self.assertTrue(discriminator.linear.weight.requires_grad)
+
+    def test_discriminator_step_uses_zero_grad_set_to_none_and_combined_forward(self):
+        discriminator = TensorDiscriminator()
+        loss_fn = Loss(discriminator)
+        optimizer = torch.optim.SGD(discriminator.parameters(), lr=0.1)
+        zero_grad_calls = []
+        original_zero_grad = optimizer.zero_grad
+
+        def capture_zero_grad(*, set_to_none=False):
+            zero_grad_calls.append(set_to_none)
+            return original_zero_grad(set_to_none=set_to_none)
+
+        with mock.patch.object(optimizer, "zero_grad", side_effect=capture_zero_grad), mock.patch.object(
+            discriminator, "forward", wraps=discriminator.forward
+        ) as forward:
+            discriminator_step(
+                loss_fn,
+                torch.randn(2, 4),
+                torch.randn(2, 4),
+                optimizer,
+                lambda loss: loss.backward(),
+            )
+
+        self.assertEqual(zero_grad_calls, [True])
+        self.assertEqual(forward.call_count, 1)
+
+    def test_gradient_penalty_interval(self):
+        self.assertTrue(should_apply_gradient_penalty(0))
+        self.assertFalse(should_apply_gradient_penalty(1, interval=2))
+        self.assertTrue(should_apply_gradient_penalty(2, interval=2))
+        with self.assertRaises((TypeError, ValueError)):
+            should_apply_gradient_penalty(-1)
+        with self.assertRaises((TypeError, ValueError)):
+            should_apply_gradient_penalty(0, interval=0)
+
+    def test_gradient_penalty_scale_preserves_lazy_regularization_weight(self):
+        discriminator = TensorDiscriminator()
+        loss_fn = Loss(discriminator, gan=GAN.WGAN)
+        fake = torch.randn(3, 4)
+        real = torch.randn(3, 4)
+
+        torch.manual_seed(0)
+        base, base_diagnostics, _ = _run_with_observations(
+            lambda: loss_fn.discriminator_loss(fake, real)
+        )
+        torch.manual_seed(0)
+        scaled, scaled_diagnostics, _ = _run_with_observations(
+            lambda: loss_fn.discriminator_loss(fake, real, gradient_penalty_scale=4.0)
+        )
+
+        expected_delta = 30.0 * base_diagnostics["gp"]
+        torch.testing.assert_close(scaled - base, expected_delta)
+        torch.testing.assert_close(scaled_diagnostics["gp"], base_diagnostics["gp"])
+
     def test_generator_loss_keeps_fake_grad(self):
         discriminator = TensorDiscriminator()
         loss_fn = Loss(discriminator)
@@ -421,6 +573,27 @@ class LossTest(unittest.TestCase):
             output = discriminator(torch.randn(2, 1, 64))
 
         self.assertEqual(len(output), 1)
+
+    def test_dac_default_configuration_is_unchanged(self):
+        from anytrain.framework.gan.audio import DACDiscriminator
+
+        parameters = inspect.signature(DACDiscriminator).parameters
+        defaults = {name: parameter.default for name, parameter in parameters.items()}
+
+        self.assertEqual(
+            defaults,
+            {
+                "in_channels": 2,
+                "msd_dim": 16,
+                "mpd_dim": 32,
+                "mrd_dim": 32,
+                "sample_rates": (),
+                "periods": (2, 3, 5, 7, 11),
+                "n_ffts": (2048, 1024, 512),
+                "sample_rate": 44_100,
+                "bands": (0.1, 0.25, 0.5, 0.75),
+            },
+        )
 
     def test_from_preset_requires_preset_enum(self):
         with self.assertRaisesRegex(TypeError, "Preset"):

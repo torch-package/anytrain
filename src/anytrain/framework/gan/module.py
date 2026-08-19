@@ -75,24 +75,67 @@ class Loss(nn.Module):
         real: Tensor | None = None,
         *,
         objective: Literal["discriminator", "generator"],
+        combine_inputs: bool = False,
+        gradient_penalty: bool | None = None,
+        gradient_penalty_scale: float = 1.0,
     ) -> Tensor:
         if objective == "discriminator":
             if real is None:
                 raise ValueError("real must be provided for the discriminator objective.")
-            return self._discriminator_loss(fake, real)
+            return self._discriminator_loss(
+                fake,
+                real,
+                combine_inputs=combine_inputs,
+                gradient_penalty=gradient_penalty,
+                gradient_penalty_scale=gradient_penalty_scale,
+            )
         if objective == "generator":
             return self._generator_loss(fake, real)
         raise ValueError("objective must be 'discriminator' or 'generator'.")
 
-    def discriminator_loss(self, fake: Tensor, real: Tensor) -> Tensor:
-        return self(fake, real, objective="discriminator")
+    def discriminator_loss(
+        self,
+        fake: Tensor,
+        real: Tensor,
+        *,
+        combine_inputs: bool = False,
+        gradient_penalty: bool | None = None,
+        gradient_penalty_scale: float = 1.0,
+    ) -> Tensor:
+        return self(
+            fake,
+            real,
+            objective="discriminator",
+            combine_inputs=combine_inputs,
+            gradient_penalty=gradient_penalty,
+            gradient_penalty_scale=gradient_penalty_scale,
+        )
 
     def generator_loss(self, fake: Tensor, real: Tensor | None = None) -> Tensor:
         return self(fake, real, objective="generator")
 
-    def _discriminator_loss(self, fake: Tensor, real: Tensor) -> Tensor:
-        _, fake_logits = self._discriminate(fake.detach())
-        _, real_logits = self._discriminate(real)
+    def _discriminator_loss(
+        self,
+        fake: Tensor,
+        real: Tensor,
+        *,
+        combine_inputs: bool,
+        gradient_penalty: bool | None,
+        gradient_penalty_scale: float,
+    ) -> Tensor:
+        if not isinstance(combine_inputs, bool):
+            raise TypeError("combine_inputs must be a bool.")
+        if gradient_penalty is not None and not isinstance(gradient_penalty, bool):
+            raise TypeError("gradient_penalty must be a bool or None.")
+        gradient_penalty_scale = non_negative_real(
+            gradient_penalty_scale, "gradient_penalty_scale"
+        )
+
+        if combine_inputs:
+            real_logits, fake_logits = self._discriminate_pair(real, fake.detach())
+        else:
+            _, fake_logits = self._discriminate(fake.detach())
+            _, real_logits = self._discriminate(real)
         real_loss, fake_loss = self._criterion.discriminator_components(
             real_logits,
             fake_logits,
@@ -107,9 +150,10 @@ class Loss(nn.Module):
             },
         )
 
-        if self._gp is not None and self.gp_weight > 0:
+        use_gradient_penalty = self.gp_weight > 0 if gradient_penalty is None else gradient_penalty
+        if self._gp is not None and use_gradient_penalty and gradient_penalty_scale > 0:
             gp = self._gp(self.discriminator, fake.detach(), real.detach())
-            total = total + total.new_tensor(self.gp_weight) * gp
+            total = total + total.new_tensor(self.gp_weight * gradient_penalty_scale) * gp
             observation.emit(
                 self,
                 "discriminator/gradient_penalty",
@@ -145,6 +189,33 @@ class Loss(nn.Module):
 
     def _discriminate(self, x: Tensor) -> tuple[Features, list[Tensor]]:
         return split(self.discriminator(x))
+
+    def _discriminate_pair(
+        self,
+        real: Tensor,
+        fake: Tensor,
+    ) -> tuple[list[Tensor], list[Tensor]]:
+        if real.ndim == 0 or fake.ndim == 0:
+            raise ValueError("combined discriminator inputs must include a batch dimension.")
+        if real.shape[1:] != fake.shape[1:]:
+            raise ValueError(
+                "combined discriminator inputs must match in every dimension except batch."
+            )
+
+        _, logits = split(self.discriminator(torch.cat((real, fake), dim=0)))
+        real_size = real.shape[0]
+        total_size = real_size + fake.shape[0]
+        real_logits: list[Tensor] = []
+        fake_logits: list[Tensor] = []
+        for index, branch_logits in enumerate(logits):
+            if branch_logits.ndim == 0 or branch_logits.shape[0] != total_size:
+                raise ValueError(
+                    "combined discriminator logits must preserve the concatenated batch dimension; "
+                    f"branch {index} has shape {tuple(branch_logits.shape)}."
+                )
+            real_logits.append(branch_logits[:real_size])
+            fake_logits.append(branch_logits[real_size:])
+        return real_logits, fake_logits
 
 
 def _collect_discriminator_loss(

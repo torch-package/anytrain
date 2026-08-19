@@ -7,10 +7,14 @@
 的是训练范式：同一个判别器会参与 discriminator step、generator step、feature
 matching 和可选 gradient penalty。
 
-第一版的根 public API 只暴露：
+根 public API 暴露 loss contract 和轻量 manual optimization helper：
 
 ```python
-from anytrain.framework.gan import GAN, Loss, Preset, Reduction
+from anytrain.framework.gan import (
+    GAN, Loss, Preset, Reduction,
+    discriminator_step, freeze_parameters, generator_step,
+    should_apply_gradient_penalty,
+)
 ```
 
 `Loss` 持有 discriminator，提供：
@@ -19,6 +23,34 @@ from anytrain.framework.gan import GAN, Loss, Preset, Reduction
 d_loss = loss_fn.discriminator_loss(fake, real)
 g_loss = loss_fn.generator_loss(fake, real)
 ```
+
+性能 helper：
+
+```python
+from anytrain.framework.gan import (
+    discriminator_step,
+    generator_step,
+    should_apply_gradient_penalty,
+)
+
+gp_interval = 4
+d_loss = discriminator_step(
+    loss_fn, fake, real, opt_d, self.manual_backward,
+    combine_inputs=True,
+    gradient_penalty=should_apply_gradient_penalty(d_step, interval=gp_interval),
+    gradient_penalty_scale=gp_interval,
+)
+g_loss = generator_step(
+    loss_fn, opt_g, self.manual_backward,
+    lambda: rec_loss + gan_weight * loss_fn.generator_loss(fake, real),
+)
+```
+
+`discriminator_step()` 默认将 real/fake 沿 batch 维拼接，减少一次 discriminator forward；
+`generator_step()` 在整个 generator forward/backward 期间冻结 discriminator 参数，并恢复原始
+`requires_grad` 状态。需要 batch 统计保持独立时，把 `combine_inputs=False` 传给 D step。
+`gradient_penalty=False` 可用于 lazy GP；在执行 step 使用
+`gradient_penalty_scale=interval`，可以保持原本的期望 regularization 权重。
 
 返回约定沿用 scalar-only loss 层：
 
@@ -33,7 +65,7 @@ g_loss = loss_fn.generator_loss(fake, real)
 
 - 完整 `LightningModule`、训练入口、配置系统或默认 app 层。
 - 自动创建 generator / discriminator optimizer。
-- 自动 freeze / unfreeze discriminator 参数。
+- `Loss` 不自动 freeze / unfreeze discriminator 参数；使用 `generator_step()` 时由 helper 在 G step 内完成。
 - 判别器更新频率、warmup、EMA、混合精度策略。
 - 完整音频 codec 模型或预训练权重管理。
 - 和 `deepaudio` API 的逐字段兼容。
@@ -77,6 +109,7 @@ src/anytrain/framework/gan/
   criterion.py
   feature.py
   penalty.py
+  manual.py
   audio/
     __init__.py
     dac.py
@@ -92,9 +125,10 @@ tests/
 - `criterion.py`：私有 `_LogitCriterion`，实现 Hinge / LSGAN / WGAN 公式。
 - `feature.py`：私有 `_FeatureMatching`。
 - `penalty.py`：私有 `_GradientPenalty`。
+- `manual.py`：public D/G optimizer step、freeze context 和 lazy GP cadence helper。
 - `audio/dac.py`：DAC 风格 MPD / MSD / MRD 判别器。
 - `module.py`：public `Loss` 组合器。
-- `__init__.py`：只导出 `GAN`、`Loss`、`Preset` 和 `Reduction`。
+- `__init__.py`：导出 loss contract 和轻量 manual optimization helper。
 
 `anytrain.framework.__init__` 不默认导入 `framework.gan`。用户显式使用：
 
@@ -286,18 +320,16 @@ class CodecModule(pl.LightningModule):
         real = batch.waveform
         fake = self.model(real)
 
-        d_loss = self.gan.discriminator_loss(fake, real)
-        opt_d.zero_grad()
-        self.manual_backward(d_loss)
-        opt_d.step()
-
+        d_loss = discriminator_step(
+            self.gan, fake, real, opt_d, self.manual_backward,
+        )
         rec_loss = self.rec_loss(fake, real)
-        g_gan_loss = self.gan.generator_loss(fake, real)
-        g_loss = rec_loss + self.gan_weight * g_gan_loss
-
-        opt_g.zero_grad()
-        self.manual_backward(g_loss)
-        opt_g.step()
+        g_loss = generator_step(
+            self.gan,
+            opt_g,
+            self.manual_backward,
+            lambda: rec_loss + self.gan_weight * self.gan.generator_loss(fake, real),
+        )
 ```
 
 这里的 `self.gan_weight` 属于任务目标组合权重，不属于 `Loss` 内部。重建
@@ -308,7 +340,7 @@ loss、commitment loss、adversarial loss 如何组合，应由下游 task modul
 或 microbatch 的有效 count 不同时，事后平均多个已归约 scalar 不能恢复精确结果；调用方
 必须提供完整 domain，或在 loss 内实现所需的全局 normalizer。
 
-后续如果多个项目复用同一套 manual optimization 模式，可以新增：
+如果多个项目需要更复杂的 manual optimization 编排，可以继续扩展：
 
 ```text
 src/anytrain/framework/gan/
