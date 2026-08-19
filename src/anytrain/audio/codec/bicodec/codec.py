@@ -37,11 +37,14 @@ class BiCodec(DeviceModule):
         assets: BiCodecAssets | None = None,
         config: dict[str, Any] | None = None,
         feature_hidden_state_indexes: tuple[int, ...] = FEATURE_HIDDEN_STATE_INDEXES,
+        non_blocking: bool = False,
     ) -> None:
         super().__init__()
 
         if not feature_hidden_state_indexes:
             raise ValueError("feature_hidden_state_indexes must not be empty.")
+        if not isinstance(non_blocking, bool):
+            raise TypeError("BiCodec non_blocking must be a bool.")
 
         self.model = model
         self.processor = processor
@@ -50,6 +53,7 @@ class BiCodec(DeviceModule):
         self.assets = assets
         self.config = {} if config is None else config
         self.feature_hidden_state_indexes = feature_hidden_state_indexes
+        self.non_blocking = non_blocking
         self.sample_rate = int(self.config.get("sample_rate", SAMPLE_RATE))
         self.ref_segment_length = _ref_segment_length(self.config)
         self.semantic_codebook_sizes = _codebook_sizes(getattr(model, "quantizer", None))
@@ -161,6 +165,7 @@ class BiCodec(DeviceModule):
         local_files_only: bool = False,
         force_download: bool = False,
         allow_unpinned_revision: bool = False,
+        non_blocking: bool = False,
     ) -> BiCodec:
         model_cls = _load_bicodec_model()
         processor_cls, feature_extractor_cls = _load_wav2vec2_classes()
@@ -199,6 +204,7 @@ class BiCodec(DeviceModule):
             model_dir=root,
             assets=assets,
             config=config,
+            non_blocking=non_blocking,
         )
 
     @torch.no_grad()
@@ -224,9 +230,9 @@ class BiCodec(DeviceModule):
             raise TypeError("BiCodec model must provide tokenize().")
         result = tokenize(
             {
-                "wav": wav.to(self.device),
-                "ref_wav": ref_wav.to(self.device),
-                "feat": features.to(self.device),
+                "wav": self._to_device(wav),
+                "ref_wav": self._to_device(ref_wav),
+                "feat": self._to_device(features),
             }
         )
         if not isinstance(result, tuple) or len(result) != 2:
@@ -255,7 +261,7 @@ class BiCodec(DeviceModule):
             padding=True,
             output_hidden_states=True,
         ).input_values
-        output = self.feature_extractor(inputs.to(self.device))
+        output = self.feature_extractor(self._to_device(inputs))
         hidden_states = output.hidden_states
         if hidden_states is None:
             raise ValueError("BiCodec wav2vec2 feature extractor did not return hidden states.")
@@ -285,7 +291,7 @@ class BiCodec(DeviceModule):
         convert = getattr(quantizer, "get_output_from_indices", None)
         if not callable(convert):
             raise TypeError("BiCodec speaker quantizer must provide get_output_from_indices().")
-        features = convert(global_codes.to(self.device))
+        features = convert(self._to_device(global_codes))
         if not isinstance(features, Tensor):
             raise TypeError("BiCodec global feature conversion must return a Tensor.")
         if features.dim() != 3 or features.shape[:2] != global_codes.shape[:2]:
@@ -305,7 +311,7 @@ class BiCodec(DeviceModule):
         detokenize = getattr(quantizer, "detokenize", None)
         if not callable(detokenize):
             raise TypeError("BiCodec semantic quantizer must provide detokenize().")
-        z_q = detokenize(semantic[..., 0].to(self.device))
+        z_q = detokenize(self._to_device(semantic[..., 0]))
         if not isinstance(z_q, Tensor) or z_q.dim() != 3:
             raise ValueError("BiCodec semantic quantizer must return [batch, feature, time].")
         return z_q.transpose(1, 2).contiguous()
@@ -327,7 +333,7 @@ class BiCodec(DeviceModule):
         if not callable(project):
             raise TypeError("BiCodec speaker encoder must provide project().")
         d_vector = project(
-            global_features.to(self.device)
+            self._to_device(global_features)
             .transpose(1, 2)
             .reshape(semantic_features.size(0), -1)
         )
@@ -337,11 +343,22 @@ class BiCodec(DeviceModule):
         decoder = getattr(self.model, "decoder", None)
         if not callable(prenet) or not callable(decoder):
             raise TypeError("BiCodec model must provide prenet and decoder modules.")
-        x = prenet(semantic_features.transpose(1, 2).to(self.device), d_vector)
+        x = prenet(self._to_device(semantic_features.transpose(1, 2)), d_vector)
         if not isinstance(x, Tensor) or x.dim() != 3:
             raise ValueError("BiCodec prenet must return [batch, feature, time].")
         audio = decoder(x + d_vector.unsqueeze(-1))
         return _audio_tensor(audio)
+
+    def _to_device(self, value: Tensor) -> Tensor:
+        """Move a tensor to the codec device using the configured transfer mode."""
+        if (
+            self.non_blocking
+            and self.device.type == "cuda"
+            and value.device.type == "cpu"
+            and not value.is_pinned()
+        ):
+            value = value.pin_memory()
+        return value.to(self.device, non_blocking=self.non_blocking)
 
     def _audio(self, audio: Tensor, sample_rate: int) -> Tensor:
         if audio.dim() != 3:
