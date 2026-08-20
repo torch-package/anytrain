@@ -14,6 +14,8 @@ from torch import nn
 from anytrain._buffer import register_buffer
 from anytrain.audio.codec.longcat.assets import LongCatAssets, LongCatConfigPaths
 from anytrain.audio.codec.longcat.codec import LongCat
+from anytrain.audio.codec.longcat.tokenizer import LongCatTokenizer
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec, AudioCodeStreamSpec
 
 
 class LongCatCodecTest(unittest.TestCase):
@@ -83,6 +85,37 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertEqual(tuple(codes.shape), (2, 2, 4))
         self.assertTrue(torch.equal(codes[..., 0], torch.tensor([[7, 8], [7, 8]])))
         self.assertTrue(torch.equal(codes[..., 1:], torch.ones((2, 2, 3), dtype=torch.long)))
+
+    def test_padded_tokenizer_uses_native_lengths_for_one_batched_encode(self):
+        codec = LongCat(
+            encoder=FakeLengthAwareLongCatEncoder(),
+            decoders={"16k_4codebooks": FakeLongCatDecoder()},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+        tokenizer = LongCatTokenizer(
+            codec,
+            AudioCodeSpec(
+                sample_rate=16_000,
+                streams=(
+                    AudioCodeStreamSpec("semantic", 8192, frame_rate=16_000 / 960),
+                    AudioCodeStreamSpec("rvq_0", 8100, frame_rate=16_000 / 960),
+                    AudioCodeStreamSpec("rvq_1", 8100, frame_rate=16_000 / 960),
+                    AudioCodeStreamSpec("rvq_2", 8100, frame_rate=16_000 / 960),
+                ),
+            ),
+            AudioBackendIdentity("longcat"),
+        )
+
+        encoded = tokenizer.tokenize_padded(
+            torch.zeros((2, 1, 12)),
+            16_000,
+            torch.tensor([12, 8]),
+        )
+
+        self.assertEqual(encoded.codes["semantic"].shape, (2, 3))
+        for name in encoded.codes:
+            self.assertTrue(torch.equal(encoded.lengths[name], torch.tensor([3, 2])))
 
     def test_encode_debug_boundary_writes_shape_and_elapsed_record(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -378,6 +411,29 @@ class FakeLongCatEncoder(nn.Module):
 
     def get_semantic_codebook(self) -> torch.Tensor:
         return torch.zeros((3, 8192))
+
+
+class FakeLengthAwareLongCatEncoder(FakeLongCatEncoder):
+    def get_semantic_codes_with_lengths(
+        self,
+        audio_data: torch.Tensor,
+        *,
+        wav_lens: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch = audio_data.size(0)
+        codes = torch.tensor([[7, 8, 9]]).expand(batch, -1)
+        return codes, torch.div(wav_lens, 4, rounding_mode="floor")
+
+    def get_acoustic_codes_with_lengths(
+        self,
+        audio_data: torch.Tensor,
+        *,
+        audio_lens: torch.Tensor,
+        n_acoustic_codebooks: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch = audio_data.size(0)
+        codes = torch.ones((batch, n_acoustic_codebooks, 3), dtype=torch.long)
+        return codes, torch.div(audio_lens, 4, rounding_mode="floor")
 
 
 def _assets() -> LongCatAssets:

@@ -405,6 +405,71 @@ class LongCat(DeviceModule):
             _trace_finish(trace, error=exc)
             raise
         _trace_finish(trace, extra={"encoder_output_shapes": _shape(backend_codes)})
+        return self._codes_from_backend(backend_codes)
+
+    @torch.no_grad()
+    def encode_padded(
+        self,
+        audio: Tensor,
+        sample_rate: int,
+        lengths: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode one padded batch and return its valid frame lengths."""
+
+        _validate_padded_inputs(audio, lengths)
+        encoder_sample_rate = _encoder_sample_rate(self.encoder, self.sample_rate)
+        if sample_rate != encoder_sample_rate:
+            raise ValueError(
+                "LongCat padded encoding requires audio at the encoder sample rate: "
+                f"got {sample_rate}, expected {encoder_sample_rate}."
+            )
+
+        semantic_with_lengths = getattr(self.encoder, "get_semantic_codes_with_lengths", None)
+        acoustic_with_lengths = getattr(self.encoder, "get_acoustic_codes_with_lengths", None)
+        if callable(semantic_with_lengths) and callable(acoustic_with_lengths):
+            device_audio = audio.to(self.device)
+            device_lengths = lengths.to(device=self.device, dtype=torch.int32)
+            semantic_result = semantic_with_lengths(
+                device_audio,
+                wav_lens=device_lengths,
+            )
+            acoustic_result = acoustic_with_lengths(
+                device_audio,
+                audio_lens=device_lengths,
+                n_acoustic_codebooks=len(self.acoustic_codebook_sizes),
+            )
+            if (
+                not isinstance(semantic_result, tuple)
+                or len(semantic_result) != 2
+                or not isinstance(acoustic_result, tuple)
+                or len(acoustic_result) != 2
+            ):
+                raise TypeError(
+                    "LongCat length-aware encoder methods must return codes and lengths."
+                )
+            semantic, semantic_lengths = semantic_result
+            acoustic, acoustic_lengths = acoustic_result
+            if not isinstance(semantic_lengths, Tensor) or not isinstance(acoustic_lengths, Tensor):
+                raise TypeError("LongCat length-aware encoder methods must return Tensor lengths.")
+            codes = self._codes_from_backend((semantic, acoustic))
+            valid_lengths = torch.minimum(
+                semantic_lengths.to(device=codes.device, dtype=torch.long),
+                acoustic_lengths.to(device=codes.device, dtype=torch.long),
+            )
+        else:
+            codes = self.encode(audio, sample_rate)
+            valid_lengths = _fallback_frame_lengths(
+                lengths.to(device=codes.device),
+                sample_rate=sample_rate,
+                encoder=self.encoder,
+            )
+
+        valid_lengths = valid_lengths.clamp(min=1, max=codes.size(1))
+        return codes, valid_lengths
+
+    def _codes_from_backend(self, backend_codes: object) -> Tensor:
+        if not isinstance(backend_codes, (tuple, list)) or len(backend_codes) != 2:
+            raise TypeError("LongCat encoder must return semantic and acoustic code tensors.")
         semantic = integer_tensor(backend_codes[0], "LongCat semantic codes")
         acoustic = integer_tensor(backend_codes[1], "LongCat acoustic codes")
         if semantic.dim() != 2:
@@ -413,8 +478,13 @@ class LongCat(DeviceModule):
             raise ValueError(
                 "LongCat acoustic encoder output must have shape [batch, codebook, time]."
             )
+        extent = min(semantic.size(1), acoustic.size(2))
+        if extent <= 0:
+            raise ValueError("LongCat encoder must return at least one frame.")
+        if semantic.size(0) != acoustic.size(0):
+            raise ValueError("LongCat semantic and acoustic codes must align on batch.")
         codes = torch.cat(
-            (semantic[..., None], acoustic.transpose(1, 2).contiguous()),
+            (semantic[:, :extent, None], acoustic.transpose(1, 2)[:, :extent]),
             dim=-1,
         )
         return validate_frame_codes(codes, self.codebook_sizes)
@@ -471,6 +541,43 @@ def _active_codebooks(value: object, total: int) -> int:
     if count > total:
         raise ValueError("LongCat active_codebooks exceeds the configured acoustic codebooks.")
     return count
+
+
+def _validate_padded_inputs(audio: Tensor, lengths: Tensor) -> None:
+    if audio.dim() != 3 or audio.size(1) != NUM_CHANNELS:
+        raise ValueError("LongCat padded encoding expects mono audio shape [batch, 1, time].")
+    if not isinstance(lengths, Tensor) or lengths.dim() != 1:
+        raise ValueError("LongCat padded waveform lengths must have shape [batch].")
+    if lengths.dtype not in {
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    }:
+        raise TypeError("LongCat padded waveform lengths must contain signed integers.")
+    if lengths.numel() != audio.size(0):
+        raise ValueError("LongCat padded waveform lengths must align with the batch.")
+    if lengths.numel() == 0 or bool((lengths <= 0).any()):
+        raise ValueError("LongCat padded waveform lengths must be positive.")
+    if bool((lengths > audio.size(-1)).any()):
+        raise ValueError("LongCat padded waveform lengths exceed the waveform extent.")
+
+
+def _encoder_sample_rate(encoder: object, fallback: int) -> int:
+    value = getattr(encoder, "input_sample_rate", fallback)
+    if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+        raise TypeError("LongCat encoder must expose a positive input_sample_rate.")
+    return int(value)
+
+
+def _fallback_frame_lengths(lengths: Tensor, *, sample_rate: int, encoder: object) -> Tensor:
+    input_sample_rate = _encoder_sample_rate(encoder, sample_rate)
+    hop_length = getattr(encoder, "hop_length", None)
+    if isinstance(hop_length, bool) or not isinstance(hop_length, Integral) or hop_length <= 0:
+        raise TypeError("LongCat encoder must expose a positive hop_length.")
+    numerator = lengths.to(dtype=torch.long) * input_sample_rate
+    denominator = int(sample_rate) * int(hop_length)
+    return torch.div(numerator, denominator, rounding_mode="floor")
 
 
 def _load_longcat_loaders():
