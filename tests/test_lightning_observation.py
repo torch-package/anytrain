@@ -681,6 +681,27 @@ class ObservationCallbackTest(unittest.TestCase):
         )
         self.assertEqual(current["bucket_counts"], [2.0, 2.0])
 
+    def test_manual_optimization_allows_multiple_optimizer_steps_per_batch(self):
+        writer = _Writer()
+        trainer = _trainer(writer)
+        module = _Module()
+        module.automatic_optimization = False
+        callback = ObservationCallback(every_n_steps=2)
+        _start(callback, trainer, module)
+
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0]))
+        module.observed(torch.tensor([1]))
+        trainer.global_step = 2
+        callback.on_train_batch_end(trainer, module, None, None, 0)
+
+        current = next(
+            kwargs
+            for tag, kwargs in writer.histograms
+            if tag == "module/observed/stats/codes/book_0/step"
+        )
+        self.assertEqual(current["bucket_counts"], [1.0, 1.0])
+
     def test_observation_time_counts_gradient_accumulation_as_one_optimizer_step(self):
         trainer = _trainer(_Writer())
         module = _Module()

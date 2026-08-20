@@ -21,7 +21,7 @@
 concrete type 注册推荐的 `OutputObservation("loss", reduction=observation.Reduction.Mean)`；自定义 continuous loss 只观察其已归约
 输出，不重算或猜测 per-item 统计。
 
-`framework.gan` 的设计见 [`docs/gan-framework-design.md`](../gan-framework-design.md)。当前不提供完整 manual optimization helper；音频只提供 DAC 风格 discriminator preset，不接管 codec 任务训练。
+`framework.gan` 的设计见 [`docs/gan-framework-design.md`](../gan-framework-design.md)。当前提供轻量 manual optimization helper，但不接管完整训练循环；音频只提供 DAC 风格 discriminator preset，不接管 codec 任务训练。
 
 `framework.rl` 的设计见 [`docs/rl-framework-design.md`](../rl-framework-design.md)。它只消费
 下游已计算的 log-prob、reward 和 mask tensor；RL-specific batch record、采样与评分流程
@@ -39,6 +39,7 @@ src/anytrain/framework/
     _output.py
     criterion.py
     feature.py
+    manual.py
     module.py
     penalty.py
     audio/
@@ -85,7 +86,7 @@ flow matching、GAN 和 RL 的训练生命周期、张量布局及数值目标�
 
 ## GAN
 
-`framework.gan` 放 adversarial training 需要的通用组件，但不接管 manual optimization、batch schema 或 generator forward。
+`framework.gan` 放 adversarial training 需要的通用组件和轻量 manual optimization helper，但不接管完整训练循环、batch schema 或 generator forward。
 
 当前提供：
 
@@ -93,6 +94,10 @@ flow matching、GAN 和 RL 的训练生命周期、张量布局及数值目标�
 - `GAN`：`StrEnum`，当前支持 `GAN.Hinge`、`GAN.LSGAN`、`GAN.WGAN`。
 - `Loss.from_preset(Preset.DAC, **kwargs)`：创建 DAC 风格 MPD / MRD discriminator；`kwargs` 转发给 `DACDiscriminator`。
 - `anytrain.framework.gan.audio.DACDiscriminator`：可直接使用的音频判别器。
+- `discriminator_step()` / `generator_step()`：不绑定 Lightning 的 manual optimization helper；D step 默认合并 real/fake batch，G step 自动临时冻结 discriminator 参数。
+- `generator_step(..., eval_discriminator=True)`：在 G step 期间额外临时切换 discriminator 到 eval mode，防止 BatchNorm 等运行统计更新，并恢复原状态。
+- `freeze_parameters()`：保留原始 `requires_grad` 状态的上下文管理器，可选临时切换 eval mode。
+- `should_apply_gradient_penalty()`：按 discriminator step 间隔实现 lazy GP。
 - 私有 `_LogitCriterion` / `_FeatureMatching` / `_GradientPenalty`：作为 `Loss` 的内部实现，不作为稳定 public API。
 
 示例：
@@ -111,6 +116,27 @@ d_loss = loss_fn.discriminator_loss(fake, real)
 g_loss = loss_fn.generator_loss(fake, real)
 ```
 
+性能选项是显式 opt-in，不改变现有默认行为：
+
+```python
+d_loss = loss_fn.discriminator_loss(fake, real, combine_inputs=True)
+g_loss = generator_step(
+    loss_fn, opt_g, self.manual_backward,
+    lambda: rec_loss + gan_weight * loss_fn.generator_loss(fake, real),
+)
+gp_interval = 4
+d_loss = discriminator_step(
+    loss_fn, fake, real, opt_d, self.manual_backward,
+    gradient_penalty=should_apply_gradient_penalty(d_step, interval=gp_interval),
+    gradient_penalty_scale=gp_interval,
+)
+```
+
+`combine_inputs=True` 要求判别器保持 batch 维度，并把 real 放在拼接 batch 的前半段；
+含 BatchNorm 或依赖 batch 统计的判别器应保持默认 `False`。lazy GP 只控制本次是否计算；
+要保持期望 regularization 权重，应在执行 step 使用 `gradient_penalty_scale=interval`。没有正的
+`gp_weight` 时不会凭空启用 GP。
+
 两个入口都返回 0-D Tensor。`Loss.forward(..., objective=...)` 是它们共享的 scalar
 内核，兼容方法仍保留，因而已有 manual optimization 接线只需删除 tuple 解包。
 
@@ -127,10 +153,12 @@ tensor 是 logits，前面 tensor 是 feature maps；简单判别器返回 `[[lo
 
 - `discriminator_loss()` 内部会 detach fake，避免 D step 回传到 generator。
 - `generator_loss()` 不 detach fake，让 generator 可以收到 adversarial 和 feature matching 梯度。
-- `framework.gan` 不自动 freeze discriminator 参数；下游 LightningModule 或后续 helper 负责训练调度。
+- `Loss` 不自动 freeze discriminator 参数；`generator_step()` helper 会在 G objective 期间完成 freeze/unfreeze。
+- `generator_step()` 会在 generator forward/backward 期间自动 freeze discriminator，并在退出后恢复每个参数原来的 `requires_grad` 状态。
 - `GAN.WGAN` 默认启用 `gp_weight=10.0` 的 gradient penalty；其他 GAN 默认不启用。显式 `gp_weight=0.0` 可以关闭。
+- WGAN-GP 要求 discriminator 不包含 BatchNorm 或其他跨样本耦合层，否则一次 `autograd.grad` 不能得到独立的 per-sample gradient norm。
 - `reduction` 公开入口支持 `Reduction` enum 或 torch 风格字符串；内部统一使用 `Reduction`，默认 `Reduction.Mean`。
-- DAC preset 只提供判别器和 loss 计算，不接管 codec 模型、batch schema 或重建 loss 组合。
+- DAC preset 只提供判别器和 loss 计算，不接管 codec 模型、batch schema 或重建 loss 组合；其默认 periods、FFT、bands 和 channel dimensions 保持第三方实现原值。
 
 `GAN Loss`、`DPOLoss`、`GRPOLoss`、`ContinuousGRPOLoss` 和 `NeighborGRPOLoss` 都在
 具体 module 定义旁注册推荐 observation。总 loss 从 scalar forward output 采集；本次 forward

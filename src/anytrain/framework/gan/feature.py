@@ -36,6 +36,8 @@ class _FeatureMatching(nn.Module):
             for fake_feature, real_feature in strict_zip(fake_branch, real_branch):
                 target = real_feature.detach() if self.detach_real else real_feature
                 loss = self.loss_fn(fake_feature, target)
+                if not isinstance(loss, Tensor):
+                    raise TypeError("feature matching loss_fn must return a Tensor.")
                 if loss.ndim != 0:
                     raise ValueError("feature matching loss_fn must return a scalar tensor.")
                 losses.append(loss)
