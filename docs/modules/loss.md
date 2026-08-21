@@ -207,7 +207,12 @@ Tensor mapping 的 safetensors-only 保存链需要由调用方单独保存并�
 - `teacher_loss`：cosine distance 和 Smooth L1 各自按有效 frame 求均值，再计算
   `cosine + smooth_l1_weight * smooth_l1`。
 - `MaskedCodebookCrossEntropyLoss`：只对有效 frame 执行 CE；每个 codebook 先对
-  有效 frame 求均值，最后对 codebook 求均值。已经压紧有效帧时，直接调用 module 并传入
+  有效 frame 求均值，最后对 codebook 求均值。设置 `geometry_weight > 0` 并传入
+  `codebook_embeddings` 后，额外加入 `geometry_weight * mean_frame[(1 / D) * sum_i p_i ||e_anchor - e_i||²]`，
+  其中 `p` 是 logits 的 softmax（可用 `geometry_temperature` 调节），`e_anchor` 默认为
+  top-1 token embedding，也可设置 `geometry_anchor="target"` 使用标签 embedding。这个
+  几何项只提供软邻域/置信度约束，通常应与 CE 一起使用；`detach_embeddings=True` 可避免
+  更新外部 codebook。已经压紧有效帧时，直接调用 module 并传入
   `PackedCodebookLogits(logits, labels)`，其中 logits 是每个 codebook 的 `[N, vocab]`
   Tensor，labels 是 `[N, Q]`。packed 输入不携带 batch row metadata，因为 scalar reduction
   只依赖完整有效 frame domain；普通输入和 packed 输入都使用标准 `module(...)` 调用。
@@ -244,8 +249,9 @@ group 复制或缓存 child 的中间状态。
   term、scale 和 family 的 scalar 由正常调用的 child module 各自记录。
 - `MaskedFrameMSELoss` 额外记录 `valid_frames`；`MaskedCosineAlignmentLoss` 记录
   `cosine` 和 `valid_frames`；`TeacherLoss` 记录 `cosine`、`smooth_l1` 和 `valid_frames`。
-- `MaskedCodebookCrossEntropyLoss` 记录每个 codebook 的 CE 与 `valid_frames`；显式传入
-  `include_top1=True` 时才额外记录逐 codebook top-1。
+- `MaskedCodebookCrossEntropyLoss` 记录每个 codebook 的 CE、总 `cross_entropy` 与
+  `valid_frames`；启用几何项时额外记录逐 codebook `geometry`、总 `geometry` 和
+  `geometry_weighted`；显式传入 `include_top1=True` 时才额外记录逐 codebook top-1。
 - `CompressedSpectrogramLoss` 记录内部相加的 `magnitude`、`real` 和 `imag` 三项；不记录
   spectrum、phase 或其它高维变换结果。
 

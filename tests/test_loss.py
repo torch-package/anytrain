@@ -1087,6 +1087,60 @@ class LossTest(unittest.TestCase):
         self.assertEqual(loss.ndim, 0)
         torch.testing.assert_close(loss, expected)
 
+    def test_masked_codebook_geometry_adds_probability_weighted_top1_distance(self):
+        labels = torch.tensor([[[1], [0]]])
+        mask = torch.ones(1, 2, dtype=torch.bool)
+        logits = (
+            torch.tensor(
+                [[[2.0, 0.0, -1.0], [0.0, 3.0, 1.0]]],
+                requires_grad=True,
+            ),
+        )
+        embeddings = (torch.tensor([[0.0], [2.0], [5.0]]),)
+        weight = 0.25
+
+        loss_fn = MaskedCodebookCrossEntropyLoss(
+            geometry_weight=weight,
+            geometry_anchor="top1",
+        )
+        loss = loss_fn(logits, labels, mask, codebook_embeddings=embeddings)
+
+        valid_logits = logits[0][mask]
+        probabilities = torch.softmax(valid_logits, dim=-1)
+        anchor = embeddings[0][valid_logits.argmax(dim=-1)]
+        distances = (anchor[..., None, :] - embeddings[0]).square().mean(dim=-1)
+        geometry = (probabilities * distances).sum(dim=-1).mean()
+        expected = torch.nn.functional.cross_entropy(valid_logits, labels[mask, 0]) + weight * geometry
+
+        torch.testing.assert_close(loss, expected)
+        loss.backward()
+        self.assertIsNotNone(logits[0].grad)
+
+    def test_masked_codebook_geometry_can_anchor_on_target_embedding(self):
+        labels = torch.tensor([[[2]]])
+        mask = torch.ones(1, 1, dtype=torch.bool)
+        logits = (torch.tensor([[[2.0, 1.0, 0.0]]], requires_grad=True),)
+        embeddings = (torch.tensor([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]]),)
+
+        loss = MaskedCodebookCrossEntropyLoss(
+            geometry_weight=1.0,
+            geometry_anchor="target",
+        )(logits, labels, mask, codebook_embeddings=embeddings)
+        probabilities = torch.softmax(logits[0].squeeze(0), dim=-1)
+        distances = (embeddings[0][2] - embeddings[0]).square().mean(dim=-1)
+        expected_geometry = (probabilities * distances).sum()
+        expected = torch.nn.functional.cross_entropy(logits[0][0], labels[0, 0]) + expected_geometry
+
+        torch.testing.assert_close(loss, expected)
+
+    def test_masked_codebook_geometry_requires_embeddings_when_enabled(self):
+        labels = torch.tensor([[[0]]])
+        mask = torch.ones(1, 1, dtype=torch.bool)
+        logits = (torch.zeros(1, 1, 2),)
+
+        with self.assertRaisesRegex(ValueError, "codebook_embeddings are required"):
+            MaskedCodebookCrossEntropyLoss(geometry_weight=1.0)(logits, labels, mask)
+
     def test_masked_codebook_cross_entropy_rejects_no_valid_frames(self):
         labels = torch.full((2, 1, 1), -1)
         mask = torch.zeros(2, 1, dtype=torch.bool)
