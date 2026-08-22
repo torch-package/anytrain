@@ -4,6 +4,13 @@
 does not own datasets, waveform caches, manifest files, training steps, or a
 default CLI.
 
+## Model source and cache policy
+
+TTS preset 的模型来源决定缓存位置。Hugging Face model id 使用 Transformers/Hugging Face
+的标准缓存（可通过 `HF_HOME` 或显式 `cache_dir` 控制），不会默认写入
+`ANYTRAIN_HOME/<model>`；本地模型目录和上游 source checkout 由调用方管理。缓存路径是物理
+加载策略，不属于 TTS semantic identity。
+
 ## Inference engines
 
 Engine selection is an AnyTrain model-runtime concern. `TTSInferenceConfig`

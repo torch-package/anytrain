@@ -4,6 +4,13 @@
 uses strings and position-aligned sequences; it does not import dataset roles,
 workspace paths, or materialization contracts.
 
+## Model source and cache policy
+
+Qwen 等 Hugging Face model id 遵循 Transformers/Hugging Face 的标准缓存；可以通过
+`HF_HOME` 或 `QwenTranslationLoadOptions.cache_dir` 显式指定位置。翻译 backend 不应把
+Hugging Face 下载写入 `ANYTRAIN_HOME`，而本地模型路径仍由调用方拥有。cache path 与
+offline policy 只属于物理加载策略，不进入 translation semantic identity。
+
 The stable runtime protocol remains:
 
 ```python

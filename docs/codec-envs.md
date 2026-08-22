@@ -5,6 +5,22 @@
 可以放进 extra；如果上游只支持低于 anytrain 下限的 Python 或不兼容的 Torch/PIP 链，
 则该 backend 暂不属于受支持运行路径。下文中的旧环境 smoke 仅作为历史验证记录。
 
+## Upstream source and cache policy
+
+每个 preset 的 artifact/source 决定下载位置；不要因为资源由某个 wrapper 使用，就把不同
+来源的文件统一写进 `ANYTRAIN_HOME`：
+
+- Hugging Face 权重和 checkpoint 使用 Hugging Face 的缓存体系。codec asset helper 默认把
+  它们放在 `HF_HOME/<component>`；若调用上游 Transformers/Hugging Face loader，则由
+  `HF_HOME`（以及上游支持的专用环境变量）决定默认位置。显式 `cache_dir` 仍可覆盖默认值。
+- GitHub Release 等非 Hugging Face 资源使用来源对应的 AnyTrain 缓存；当前 DAC 的默认位置
+  是 `ANYTRAIN_HOME/dac`。
+- 本地 checkpoint、source checkout 和解析后的 cache path 都由调用方控制，不进入 preset 的
+  semantic identity；registry identity 继续记录逻辑 artifact 与 pinned revision。
+
+新增 preset 时必须保留这条来源边界：HF 资源不能落到 `ANYTRAIN_HOME/<name>`，非 HF 资源也
+不能伪装成 Hugging Face cache。
+
 ## GLM-4 online tokenizer
 
 `anytrain.audio.codec.glm4.GLM4Tokenizer` 采用目前经过 exact token-ID 审计的官方 API 和数值契约：
