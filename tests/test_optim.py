@@ -807,6 +807,13 @@ class LLMOptimizerTest(unittest.TestCase):
             create_scheduler(optimizer, schedule="linear")
         with self.assertRaisesRegex(ValueError, "only valid"):
             create_scheduler(optimizer, schedule="constant", warmup_steps=1)
+        with self.assertRaisesRegex(ValueError, "only valid for wsd"):
+            create_scheduler(
+                optimizer,
+                schedule="warmup_cosine",
+                total_steps=10,
+                decay_steps=2,
+            )
         with self.assertRaisesRegex(TypeError, "total_steps"):
             create_scheduler(
                 optimizer,

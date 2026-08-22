@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from numbers import Real
+
 import torch
 from torch import Tensor
 
@@ -16,11 +19,37 @@ def _sum_channels_and_time(signal: Tensor) -> Tensor:
     return signal.square().sum(dim=(-2, -1))
 
 
-def global_sdr(estimate: Tensor, reference: Tensor, *, eps: float = 1e-8) -> Tensor:
+def _validate_audio_pair(estimate: Tensor, reference: Tensor) -> None:
+    if not isinstance(estimate, Tensor) or not isinstance(reference, Tensor):
+        raise TypeError("estimate and reference must be tensors.")
     if estimate.shape != reference.shape:
         raise ValueError("estimate and reference must have the same shape.")
     if estimate.ndim < 2:
         raise ValueError("estimate and reference must include batch and time dimensions.")
+
+
+def _finite_parameter(
+    value: object,
+    *,
+    name: str,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a real number.")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite.")
+    if positive and result <= 0:
+        raise ValueError(f"{name} must be positive.")
+    if nonnegative and result < 0:
+        raise ValueError(f"{name} must be non-negative.")
+    return result
+
+
+def global_sdr(estimate: Tensor, reference: Tensor, *, eps: float = 1e-8) -> Tensor:
+    _validate_audio_pair(estimate, reference)
+    eps = _finite_parameter(eps, name="eps", positive=True)
 
     error = estimate - reference
     numerator = _sum_channels_and_time(reference) + eps
@@ -36,10 +65,10 @@ def scale_invariant_signal(
     min_energy: float = 1e-12,
     fallback_scale: float = 1.0,
 ) -> Tensor:
-    if estimate.shape != reference.shape:
-        raise ValueError("estimate and reference must have the same shape.")
-    if estimate.ndim < 2:
-        raise ValueError("estimate and reference must include batch and time dimensions.")
+    _validate_audio_pair(estimate, reference)
+    eps = _finite_parameter(eps, name="eps", positive=True)
+    min_energy = _finite_parameter(min_energy, name="min_energy", nonnegative=True)
+    fallback_scale = _finite_parameter(fallback_scale, name="fallback_scale")
 
     if estimate.ndim == 2:
         reduce_dims: tuple[int, ...] = (-1,)
@@ -71,8 +100,10 @@ class SDRLoss(LossABC):
         eps: float = 1e-8,
     ) -> None:
         super().__init__()
+        if not isinstance(scale_invariant, bool):
+            raise TypeError("scale_invariant must be a bool.")
         self.scale_invariant = scale_invariant
-        self.eps = eps
+        self.eps = _finite_parameter(eps, name="eps", positive=True)
 
     def compute_loss(self, input: Tensor, target: Tensor) -> Tensor:
         score = (

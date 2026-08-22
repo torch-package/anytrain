@@ -1,5 +1,6 @@
 import math
 import unittest
+from typing import Any, cast
 
 import torch
 
@@ -148,6 +149,32 @@ class QuantizationStatsTest(unittest.TestCase):
                 torch.tensor([True, False]),
                 codebook_sizes=(4,),
             )
+
+    def test_active_mask_requires_bool_tensor_on_indices_device(self):
+        indices = torch.tensor([0, -1])
+
+        with self.assertRaisesRegex(TypeError, "active_codebook_mask must be a Tensor"):
+            codebook_usage(
+                indices,
+                codebook_sizes=(2,),
+                active_codebook_mask=cast(Any, [True, False]),
+            )
+        with self.assertRaisesRegex(TypeError, "active_codebook_mask must use torch.bool"):
+            codebook_usage(
+                indices,
+                codebook_sizes=(2,),
+                active_codebook_mask=torch.tensor([1, 0]),
+            )
+        with self.assertRaisesRegex(ValueError, "same device"):
+            codebook_usage(
+                indices,
+                codebook_sizes=(2,),
+                active_codebook_mask=torch.empty(2, dtype=torch.bool, device="meta"),
+            )
+
+    def test_indices_requires_tensor(self):
+        with self.assertRaisesRegex(TypeError, "indices must be a Tensor"):
+            codebook_usage(cast(Any, [0, 1]), codebook_sizes=(2,))
 
     def test_empty_usage_returns_zero_metrics(self):
         usage = codebook_usage(torch.empty(0, dtype=torch.long), codebook_sizes=(4,))

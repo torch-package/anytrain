@@ -27,7 +27,12 @@ def log(
     if not metrics:
         raise ValueError("validation metrics must contain at least one value.")
 
-    resolved = {_name(name): metric for name, metric in metrics.items()}
+    resolved: dict[str, Metric] = {}
+    for raw_name, metric in metrics.items():
+        name = _name(raw_name)
+        if name in resolved:
+            raise ValueError(f"Duplicate validation metric name {name!r}.")
+        resolved[name] = metric
     for name, (value, count) in reduce(resolved).items():
         module.log(
             f"{resolved_prefix}{name}",

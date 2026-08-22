@@ -36,7 +36,7 @@ from anytrain.loss.spectral import (
     SpectralRMSELoss,
     STFTLoss,
 )
-from anytrain.loss.temporal import SDRLoss, global_sdr
+from anytrain.loss.temporal import SDRLoss, global_sdr, scale_invariant_signal
 
 
 class ScalarLoss(LossABC):
@@ -1322,6 +1322,26 @@ class LossTest(unittest.TestCase):
         self.assertEqual(loss.ndim, 0)
         self.assertAlmostEqual(float(loss), float(-score.mean()), places=5)
 
+    def test_temporal_losses_validate_numeric_options_and_inputs(self):
+        audio = torch.ones(1, 8)
+        for value in (True, "1"):
+            with self.subTest(name="eps", value=value), self.assertRaisesRegex(
+                TypeError, "real number"
+            ):
+                global_sdr(audio, audio, eps=cast(Any, value))
+        for value in (0.0, float("nan"), float("inf")):
+            with self.subTest(name="eps", value=value), self.assertRaisesRegex(
+                (ValueError,), "positive|finite"
+            ):
+                global_sdr(audio, audio, eps=value)
+
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            scale_invariant_signal(audio, audio, min_energy=-1.0)
+        with self.assertRaisesRegex(TypeError, "bool"):
+            SDRLoss(scale_invariant=cast(Any, 1))
+        with self.assertRaisesRegex(TypeError, "tensors"):
+            global_sdr(cast(Any, [1.0]), cast(Any, [1.0]))
+
     def test_spectral_single_losses(self):
         estimate = torch.randn(2, 8, 4, dtype=torch.complex64)
         reference = estimate + 0.1 * torch.randn(2, 8, 4, dtype=torch.complex64)
@@ -1329,6 +1349,28 @@ class LossTest(unittest.TestCase):
         self.assertEqual(LogMagnitudeLoss()(estimate, reference).ndim, 0)
         self.assertEqual(CompressedSpectrogramLoss()(estimate, reference).ndim, 0)
         self.assertEqual(SpectralRMSELoss()(estimate, reference).ndim, 0)
+
+    def test_spectral_losses_validate_stability_options(self):
+        for loss_type in (LogMagnitudeLoss, CompressedSpectrogramLoss, SpectralRMSELoss):
+            for value in (True, "1"):
+                with self.subTest(loss=loss_type.__name__, value=value), self.assertRaisesRegex(
+                    TypeError, "real number"
+                ):
+                    loss_type(eps=cast(Any, value))
+            for value in (0.0, float("nan"), float("inf"), -1.0):
+                with self.subTest(loss=loss_type.__name__, value=value), self.assertRaisesRegex(
+                    ValueError, "positive|finite"
+                ):
+                    loss_type(eps=value)
+            with self.subTest(loss=loss_type.__name__), self.assertRaisesRegex(
+                TypeError, "callable"
+            ):
+                loss_type(loss_fn=cast(Any, 1))
+
+        with self.assertRaisesRegex(ValueError, "positive"):
+            CompressedSpectrogramLoss(compression=0.0)
+        with self.assertRaisesRegex(ValueError, "shapes must match"):
+            LogMagnitudeLoss()(torch.ones(2), torch.ones(3))
 
     def test_compressed_spectrogram_loss_emits_nonredundant_components(self):
         estimate = torch.randn(2, 8, 4, dtype=torch.complex64)

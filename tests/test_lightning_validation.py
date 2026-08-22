@@ -136,6 +136,15 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual(resolve.call_count, 1)
         self.assertEqual(module.log.call_count, 2)
 
+    def test_log_rejects_metric_names_that_normalize_to_the_same_path(self):
+        module = SimpleNamespace(log=Mock())
+        metric = validation.Metric(torch.tensor([1.0]), torch.tensor([1]))
+
+        with self.assertRaisesRegex(ValueError, "Duplicate validation metric name"):
+            validation.log(module, {"score": metric, "/score/": metric})
+
+        module.log.assert_not_called()
+
     def test_lightning_aggregates_unequal_validation_counts(self):
         class Module(LightningModule):
             def validation_step(self, batch, batch_idx):

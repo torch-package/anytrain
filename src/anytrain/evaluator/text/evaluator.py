@@ -35,6 +35,8 @@ class TextComparisonEvaluator(EvaluatorABC):
             lowercase=lowercase,
             chinese=chinese,
         )
+        if not isinstance(bleu_smoothing, bool):
+            raise TypeError("bleu_smoothing must be a boolean.")
         self.bleu_smoothing = bleu_smoothing
         self._predictions: list[str] = []
         self._targets: list[str] = []

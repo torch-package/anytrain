@@ -1,13 +1,28 @@
+import sys
+import types
 import unittest
 from typing import Any
 from unittest.mock import patch
 
 from anytrain.evaluator import EvaluatorABC, EvaluatorGroup, MetricDict
-from anytrain.evaluator.text import TextComparisonEvaluator
+from anytrain.evaluator.text import TextComparisonEvaluator, TextNormalizationConfig
 from anytrain.evaluator.text.scores import corpus_chrf_score, word_error_rate
 
 
 class TextComparisonEvaluatorTest(unittest.TestCase):
+    def test_text_configuration_rejects_non_boolean_flags(self):
+        for name in (
+            "strip",
+            "collapse_whitespace",
+            "remove_punctuation",
+            "lowercase",
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(TypeError, "boolean"):
+                TextNormalizationConfig(**{name: 1})
+
+        with self.assertRaisesRegex(TypeError, "boolean"):
+            TextComparisonEvaluator(bleu_smoothing=1)
+
     def test_text_evaluator_inherits_evaluator_abc(self):
         self.assertIsInstance(TextComparisonEvaluator(), EvaluatorABC)
 
@@ -333,6 +348,38 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
                 fallback = corpus_chrf_score(predictions, targets)
 
             self.assertAlmostEqual(fallback, expected)
+
+    def test_chrf_preserves_fractional_beta_and_rejects_nonfinite_values(self):
+        predictions = ["ab"]
+        targets = ["ac"]
+        observed: list[float] = []
+
+        class FakeCHRF:
+            def __init__(self, *, char_order: int, beta: float):
+                self.char_order = char_order
+                observed.append(beta)
+
+            def corpus_score(self, _predictions, _targets):
+                return types.SimpleNamespace(score=37.0)
+
+        fake_chrf = types.ModuleType("sacrebleu.metrics.chrf")
+        fake_chrf.CHRF = FakeCHRF
+        with patch.dict(
+            sys.modules,
+            {
+                "sacrebleu": types.ModuleType("sacrebleu"),
+                "sacrebleu.metrics": types.ModuleType("sacrebleu.metrics"),
+                "sacrebleu.metrics.chrf": fake_chrf,
+            },
+        ):
+            self.assertEqual(corpus_chrf_score(predictions, targets, beta=2.5), 37.0)
+        self.assertEqual(observed, [2.5])
+
+        for value in (float("nan"), float("inf"), 0.0):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "finite|positive"
+            ):
+                corpus_chrf_score(predictions, targets, beta=value)
 
 
 if __name__ == "__main__":

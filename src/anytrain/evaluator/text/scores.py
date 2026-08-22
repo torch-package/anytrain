@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
+from numbers import Real
 from warnings import warn
 
 from . import _fallback
@@ -96,7 +98,7 @@ def corpus_chrf_score(
             )
         )
 
-    scorer = CHRF(char_order=max_order, beta=int(beta))
+    scorer = CHRF(char_order=max_order, beta=beta)
     return _clip_percent(float(scorer.corpus_score(list(predictions), [list(targets)]).score))
 
 
@@ -115,8 +117,10 @@ def _validate_positive_integer(value: int, *, name: str) -> None:
 
 
 def _validate_positive_float(value: float, *, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, (float, int)):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError(f"{name} must be a float.")
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be finite.")
     if value <= 0:
         raise ValueError(f"{name} must be positive.")
 

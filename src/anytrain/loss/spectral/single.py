@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import torch
@@ -21,8 +22,38 @@ def _magnitude(spectrum: Tensor) -> Tensor:
 
 
 def _require_complex(estimate: Tensor, reference: Tensor, *, loss_name: str) -> None:
+    _require_matching_tensors(estimate, reference, loss_name=loss_name)
     if not torch.is_complex(estimate) or not torch.is_complex(reference):
         raise ValueError(f"{loss_name} requires complex estimate and reference tensors.")
+
+
+def _require_matching_tensors(
+    estimate: Tensor,
+    reference: Tensor,
+    *,
+    loss_name: str,
+) -> None:
+    if not isinstance(estimate, Tensor) or not isinstance(reference, Tensor):
+        raise TypeError(f"{loss_name} requires Tensor estimate and reference inputs.")
+    if estimate.shape != reference.shape:
+        raise ValueError(f"{loss_name} estimate and reference shapes must match.")
+
+
+def _finite_positive(value: object, *, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a real number.")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite.")
+    if result <= 0:
+        raise ValueError(f"{name} must be positive.")
+    return result
+
+
+def _require_callable(value: object, *, name: str) -> Callable[[Tensor, Tensor], Tensor]:
+    if not callable(value):
+        raise TypeError(f"{name} must be callable.")
+    return value
 
 
 @register_loss
@@ -34,10 +65,11 @@ class LogMagnitudeLoss(LossABC):
         loss_fn: Callable[[Tensor, Tensor], Tensor] = F.l1_loss,
     ) -> None:
         super().__init__()
-        self.eps = eps
-        self.loss_fn = loss_fn
+        self.eps = _finite_positive(eps, name="eps")
+        self.loss_fn = _require_callable(loss_fn, name="loss_fn")
 
     def compute_loss(self, estimate: Tensor, reference: Tensor) -> Tensor:
+        _require_matching_tensors(estimate, reference, loss_name=type(self).__name__)
         estimate_log_magnitude = _magnitude(estimate).clamp_min(self.eps).log10()
         reference_log_magnitude = _magnitude(reference).clamp_min(self.eps).log10()
         return self.loss_fn(estimate_log_magnitude, reference_log_magnitude)
@@ -53,11 +85,9 @@ class CompressedSpectrogramLoss(LossABC):
         loss_fn: Callable[[Tensor, Tensor], Tensor] = F.l1_loss,
     ) -> None:
         super().__init__()
-        if compression <= 0:
-            raise ValueError("compression must be positive.")
-        self.compression = compression
-        self.eps = eps
-        self.loss_fn = loss_fn
+        self.compression = _finite_positive(compression, name="compression")
+        self.eps = _finite_positive(eps, name="eps")
+        self.loss_fn = _require_callable(loss_fn, name="loss_fn")
 
     def compute_loss(self, estimate: Tensor, reference: Tensor) -> Tensor:
         _require_complex(estimate, reference, loss_name=type(self).__name__)
@@ -107,8 +137,8 @@ class SpectralRMSELoss(LossABC):
         loss_fn: Callable[[Tensor, Tensor], Tensor] = F.mse_loss,
     ) -> None:
         super().__init__()
-        self.eps = eps
-        self.loss_fn = loss_fn
+        self.eps = _finite_positive(eps, name="eps")
+        self.loss_fn = _require_callable(loss_fn, name="loss_fn")
 
     def compute_loss(self, estimate: Tensor, reference: Tensor) -> Tensor:
         _require_complex(estimate, reference, loss_name=type(self).__name__)

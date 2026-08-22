@@ -227,15 +227,18 @@ def _flatten_indices(
     if active_codebook_mask is None:
         active_mask = flat_indices >= 0
     else:
+        if not isinstance(active_codebook_mask, Tensor):
+            raise TypeError("active_codebook_mask must be a Tensor or None.")
         if active_codebook_mask.shape != indices.shape:
             raise ValueError(
                 "active_codebook_mask must have the same shape as indices: "
                 f"got {tuple(active_codebook_mask.shape)} and {tuple(indices.shape)}."
             )
-        active_mask = _reshape_indices(
-            active_codebook_mask.to(dtype=torch.bool),
-            num_codebooks=len(codebook_sizes),
-        )
+        if active_codebook_mask.dtype != torch.bool:
+            raise TypeError("active_codebook_mask must use torch.bool.")
+        if active_codebook_mask.device != indices.device:
+            raise ValueError("active_codebook_mask and indices must be on the same device.")
+        active_mask = _reshape_indices(active_codebook_mask, num_codebooks=len(codebook_sizes))
 
     if flat_indices.numel() > 0:
         max_values = flat_indices.new_tensor(observed_codebook_sizes).view(1, -1)
@@ -264,6 +267,8 @@ def _reshape_indices(indices: Tensor, *, num_codebooks: int) -> Tensor:
 
 
 def _validate_index_inputs(indices: Tensor, *, codebook_sizes: tuple[int, ...]) -> None:
+    if not isinstance(indices, Tensor):
+        raise TypeError("indices must be a Tensor.")
     _checks.index_dtype(indices)
     if not codebook_sizes:
         raise ValueError("codebook_sizes must contain at least one value.")

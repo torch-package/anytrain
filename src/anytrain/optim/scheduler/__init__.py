@@ -31,6 +31,10 @@ def create_scheduler(
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
 
     if schedule == "warmup_cosine":
+        if stable_steps is not None or decay_steps is not None:
+            raise ValueError(
+                "stable_steps and decay_steps are only valid for wsd schedules."
+            )
         resolved_total_steps = _require_positive_int(total_steps, name="total_steps")
         if resolved_total_steps <= warmup_steps:
             raise ValueError("total_steps must be greater than warmup_steps.")

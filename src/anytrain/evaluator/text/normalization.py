@@ -17,6 +17,16 @@ class TextNormalizationConfig:
     lowercase: bool = False
     chinese: str | None = "simplified"
 
+    def __post_init__(self) -> None:
+        for name in (
+            "strip",
+            "collapse_whitespace",
+            "remove_punctuation",
+            "lowercase",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean.")
+
 
 def coerce_text_batch(
     text: TextInput,
