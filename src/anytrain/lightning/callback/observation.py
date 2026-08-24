@@ -802,6 +802,10 @@ class ObservationCallback(pl.Callback):
             return prefix
         return join_tag(stage_prefix, prefix)
 
+    def _tag_context(self, stage: Literal["train", "validation"]) -> str:
+        context = self._context(stage)
+        return join_tag("observation", context) if context else "observation"
+
     def _stage_keys(self, stage: Literal["train", "validation"]) -> tuple[str, ...]:
         return tuple(
             key for key, entry in self._states.items() if entry.owner.stage == stage
@@ -1379,8 +1383,9 @@ class ObservationCallback(pl.Callback):
                 if not self._render_active:
                     continue
             context = self._context(stage)
+            tag_context = self._tag_context(stage)
             key = join_tag(context, collector.state_prefix, item)
-            tag = join_tag(context, self.tag, collector.tag_prefix, item)
+            tag = join_tag(tag_context, self.tag, collector.tag_prefix, item)
             self._update_state(
                 key,
                 tag,
@@ -1512,9 +1517,11 @@ class ObservationCallback(pl.Callback):
                 f"same state key {key!r}."
             )
         if entry is not None and entry.tag and entry.tag != tag:
-            raise ValueError(
-                f"observation {key!r} changed logger tag from {entry.tag!r} to {tag!r}."
-            )
+            if tag != join_tag("observation", entry.tag):
+                raise ValueError(
+                    f"observation {key!r} changed logger tag from {entry.tag!r} to {tag!r}."
+                )
+            entry.tag = tag
         output_tags = _state_output_tags(tag, state)
         for output_tag in output_tags:
             previous_key = self._output_tag_owners.get(output_tag)
@@ -1641,7 +1648,7 @@ class ObservationCallback(pl.Callback):
             _merge_metrics(
                 metrics,
                 {
-                    join_tag(self.tag, "observation_time"): torch.tensor(
+                    "observation/time": torch.tensor(
                         self._observation_time_sum / self._observation_time_steps,
                         dtype=torch.float32,
                         device=pl_module.device,

@@ -341,7 +341,7 @@ checkpoint schema、distributed preflight 和 callback lifecycle 共享同一组
 - spec 的 `EMAHistory.half_life_steps` 是默认值；callback 构造参数 `half_life_steps` 非 `None` 时统一
   覆盖。
 
-callback 在每次 render 的同一批 scalar 中加入 `module/observation_time`。该值累计 interval 内 collector、
+callback 在每次 render 的同一批 scalar 中加入 `observation/time`。该值累计 interval 内 collector、
 state/EMA、distributed reduction、校验、histogram writer 和 Heatmap image writer 的 host wall time，再按
 实际 optimizer step 数取平均；它不额外调用 CUDA synchronize，也不包含最终 `pl_module.log_dict()` submission。计时窗口
 不进入 checkpoint，`sync_distributed=True` 时保持各 rank 本地口径。

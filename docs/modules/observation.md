@@ -212,8 +212,8 @@ EMA state 随 callback checkpoint 保存，pending microbatch/validation state�
 slash prefix 猜测 collector；`tag` 是 callback identity。render cadence 可以改变，half-life 和 distributed
 语义必须兼容。
 
-每次 render 还会在同一次 `log_dict()` 中输出 callback 自身的 `module/observation_time` 曲线（`module`
-由 `tag` 参数决定）。它累计该 render interval 内所有 module collector、state/EMA 更新、distributed
+每次 render 还会在同一次 `log_dict()` 中输出 callback 自身的 `observation/time` 曲线（固定为 `observation/time`，
+不随 `tag` 参数变化）。它累计该 render interval 内所有 module collector、state/EMA 更新、distributed
 归约、校验、histogram writer 和 Heatmap image writer 的 host wall time，再按实际 optimizer step 数取平均，
 单位为秒。最终 scalar `log_dict()` submission 不计入该值，也不会为了计时额外执行 CUDA synchronize；因此它表达训练在
 observation callback 入口实际承担的 host stall，不是隔离后的 GPU kernel 时间。该 interval 计时不进入

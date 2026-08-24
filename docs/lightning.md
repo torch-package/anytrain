@@ -372,7 +372,7 @@ concrete type 查找，不保存实例或 tensor，deepcopy 直接复用 class d
 `every_n_steps` 控制 render 和无 history 的 State/Output/Event collector，默认每 100 个 optimizer step 输出一次；
 State/Output collector 在 cadence 外不调用，ForwardEvent 的 `emit()` 仍由 module 执行，但 callback 直接丢弃 payload。
 需要 EMA 的 Distribution/Profile/Bins 在被跳过的 step 仍更新状态。传 `None` 会关闭 render 和无 history
-collector，但保留 Distribution/Profile/Bins 的 EMA 更新。每次 render 同时输出 `module/observation_time`：它是当前 interval
+collector，但保留 Distribution/Profile/Bins 的 EMA 更新。每次 render 同时输出 `observation/time`：它是当前 interval
 内全部 observation collector、状态更新、归约、校验、histogram writer 和 Heatmap image writer 的 host
 wall time，按实际 optimizer step 数取平均。它不额外同步 CUDA，也不包含最终 scalar `log_dict()` submission。
 callback 级 `half_life_steps` 会覆盖 spec 自带的 `EMAHistory`。TensorBoard 等 backend 支持

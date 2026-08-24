@@ -29,7 +29,7 @@ core 提供：
   observation context 为一次父子 module 调用树提供公共 tag 前缀。callback 默认只在 global rank 0 注册。ADT、MoE
   和公开 quantizer 已声明推荐 observation。`BackwardObservation` 暂为 TODO 占位，使用时 warning 并
   建议改用 `GradientProbeLoggerCallback` 观察 loss 对参数的梯度。`every_n_steps` 控制统一输出间隔，
-  每次 render 同时记录 interval 平均的 `module/observation_time`。
+  每次 render 同时记录 interval 平均的 `observation/time`。
 - `DebugCallback` 等训练调试 callback。
 - `ManagedServiceCallback`：由 global rank 启动、检查和关闭 task-agnostic 长驻服务，并同步传播 owner 错误。
 - `PerformanceCallback`：记录参数量、step time、硬件峰值算力和 MFU。

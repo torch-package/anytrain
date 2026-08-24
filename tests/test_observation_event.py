@@ -170,7 +170,7 @@ class ObservationEventTest(unittest.TestCase):
         )
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertEqual(values["module/observed/stats/value"].item(), 2.0)
+        self.assertEqual(values["observation/module/observed/stats/value"].item(), 2.0)
 
     def test_forward_event_history_includes_steps_between_renders(self):
         class EventModule(nn.Module):
@@ -202,7 +202,7 @@ class ObservationEventTest(unittest.TestCase):
         _run_step(callback, trainer, module, torch.tensor([1, 1, 1, 1]), batch_idx=1)
 
         ema = next(
-            kwargs for tag, kwargs in writer.histograms if tag == "module/observed/codes/value/ema"
+            kwargs for tag, kwargs in writer.histograms if tag == "observation/module/observed/codes/value/ema"
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
 
@@ -292,7 +292,7 @@ class ObservationEventTest(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 1)
 
         tag, image, step, dataformats = writer.images[-1]
-        self.assertEqual(tag, "module/observed/attention/value")
+        self.assertEqual(tag, "observation/module/observed/attention/value")
         self.assertEqual(step, 1)
         self.assertEqual(dataformats, "HW")
         self.assertEqual(image.device.type, "cpu")
@@ -667,7 +667,7 @@ class ObservationEventTest(unittest.TestCase):
             _run_step(callback, trainer, module, torch.zeros(2, 2), batch_idx=0)
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertAlmostEqual(values["module/observation_time"].item(), 0.3)
+        self.assertAlmostEqual(values["observation/time"].item(), 0.3)
 
     def test_compile_capture_and_detached_callbacks_leave_emit_as_a_noop(self):
         class EventModule(nn.Module):
@@ -732,8 +732,8 @@ class ObservationEventTest(unittest.TestCase):
         first.on_train_batch_end(trainer, module, None, None, 0)
         second.on_train_batch_end(trainer, module, None, None, 0)
         logged = {tag for values, _kwargs in module.log_dict_calls for tag in values}
-        self.assertIn("first/observed/stats/value", logged)
-        self.assertIn("second/observed/stats/value", logged)
+        self.assertIn("observation/first/observed/stats/value", logged)
+        self.assertIn("observation/second/observed/stats/value", logged)
 
         first.on_fit_end(trainer, module)
         second.on_train_batch_start(trainer, module, None, 1)
@@ -741,7 +741,7 @@ class ObservationEventTest(unittest.TestCase):
         trainer.global_step = 2
         second.on_train_batch_end(trainer, module, None, None, 1)
         self.assertEqual(
-            module.log_dict_calls[-1][0]["second/observed/stats/value"].item(),
+            module.log_dict_calls[-1][0]["observation/second/observed/stats/value"].item(),
             2.0,
         )
 

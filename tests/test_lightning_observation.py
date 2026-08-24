@@ -386,8 +386,8 @@ class ObservationCallbackTest(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 1)
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertEqual(values["module/observed/last/value"].item(), 3.0)
-        self.assertEqual(values["module/observed/mean/value"].item(), 2.0)
+        self.assertEqual(values["observation/module/observed/last/value"].item(), 3.0)
+        self.assertEqual(values["observation/module/observed/mean/value"].item(), 2.0)
 
     def test_curve_reduction_folds_one_validation_epoch(self):
         class Curves(nn.Module):
@@ -424,8 +424,8 @@ class ObservationCallbackTest(unittest.TestCase):
         callback.on_validation_epoch_end(trainer, module)
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertEqual(values["val/module/observed/last/value"].item(), 3.0)
-        self.assertEqual(values["val/module/observed/mean/value"].item(), 2.0)
+        self.assertEqual(values["observation/val/module/observed/last/value"].item(), 3.0)
+        self.assertEqual(values["observation/val/module/observed/mean/value"].item(), 2.0)
 
     def test_context_prefix_is_shared_by_parent_and_child_observations(self):
         class Parent(nn.Module):
@@ -461,11 +461,11 @@ class ObservationCallbackTest(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 0)
 
         values, _kwargs = module.log_dict_calls[-1]
-        prefix = "train/reconstruction/module/observed"
+        prefix = "observation/train/reconstruction/module/observed"
         self.assertEqual(values[f"{prefix}/total/value"].item(), 0.5)
         self.assertEqual(
             values[
-                "train/reconstruction/module/observed.child/stats/codes/book_0/step/observations"
+                "observation/train/reconstruction/module/observed.child/stats/codes/book_0/step/observations"
             ].item(),
             2.0,
         )
@@ -483,7 +483,7 @@ class ObservationCallbackTest(unittest.TestCase):
 
         values, kwargs = module.log_dict_calls[-1]
         self.assertEqual(
-            values["val/module/observed/stats/codes/book_0/step/observations"].item(),
+            values["observation/val/module/observed/stats/codes/book_0/step/observations"].item(),
             2.0,
         )
         self.assertFalse(kwargs["on_step"])
@@ -554,7 +554,7 @@ class ObservationCallbackTest(unittest.TestCase):
         )
         trainer.fit(Tiny(), loader, loader)
 
-        key = "val/reconstruction/module/observed/value/value"
+        key = "observation/val/reconstruction/module/observed/value/value"
         self.assertEqual(trainer.callback_metrics[key].item(), 2.0)
 
     def test_cadence_only_controls_render_and_ema_includes_skipped_step(self):
@@ -571,21 +571,21 @@ class ObservationCallbackTest(unittest.TestCase):
         ema = next(
             kwargs
             for tag, kwargs in writer.histograms
-            if tag == "module/observed/stats/codes/book_0/ema"
+            if tag == "observation/module/observed/stats/codes/book_0/ema"
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
         values, kwargs = module.log_dict_calls[-1]
         self.assertEqual(kwargs["sync_dist"], False)
         self.assertEqual(
-            values["module/observed/stats/codes/book_0/step/observations"].item(),
+            values["observation/module/observed/stats/codes/book_0/step/observations"].item(),
             4.0,
         )
         self.assertEqual(
-            values["module/observed/stats/codes/book_0/step/occupied_count"].item(),
+            values["observation/module/observed/stats/codes/book_0/step/occupied_count"].item(),
             1.0,
         )
         self.assertEqual(
-            values["module/observed/stats/codes/book_0/ema/occupied_count"].item(),
+            values["observation/module/observed/stats/codes/book_0/ema/occupied_count"].item(),
             2.0,
         )
 
@@ -606,7 +606,7 @@ class ObservationCallbackTest(unittest.TestCase):
             _run_step(callback, trainer, module, torch.tensor([1]), batch_idx=1)
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertAlmostEqual(values["module/observation_time"].item(), 0.5)
+        self.assertAlmostEqual(values["observation/time"].item(), 0.5)
 
     def test_disabled_render_does_not_measure_observation_time(self):
         trainer = _trainer(_Writer())
@@ -677,7 +677,7 @@ class ObservationCallbackTest(unittest.TestCase):
         current = next(
             kwargs
             for tag, kwargs in writer.histograms
-            if tag == "module/observed/stats/codes/book_0/step"
+            if tag == "observation/module/observed/stats/codes/book_0/step"
         )
         self.assertEqual(current["bucket_counts"], [2.0, 2.0])
 
@@ -698,7 +698,7 @@ class ObservationCallbackTest(unittest.TestCase):
         current = next(
             kwargs
             for tag, kwargs in writer.histograms
-            if tag == "module/observed/stats/codes/book_0/step"
+            if tag == "observation/module/observed/stats/codes/book_0/step"
         )
         self.assertEqual(current["bucket_counts"], [1.0, 1.0])
 
@@ -723,7 +723,7 @@ class ObservationCallbackTest(unittest.TestCase):
             callback.on_train_batch_end(trainer, module, None, None, 1)
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertAlmostEqual(values["module/observation_time"].item(), 0.8)
+        self.assertAlmostEqual(values["observation/time"].item(), 0.8)
 
     def test_backward_window_ignores_checkpoint_replay_then_resumes_forward(self):
         class ReplayObserved(nn.Module):
@@ -781,7 +781,7 @@ class ObservationCallbackTest(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 0)
 
         metrics, _ = module.log_dict_calls[-1]
-        prefix = "module/observed/replay"
+        prefix = "observation/module/observed/replay"
         self.assertEqual(metrics[f"{prefix}/scalars/curve"].item(), 0.25)
         self.assertEqual(
             metrics[f"{prefix}/distribution/step/observations"].item(),
@@ -823,7 +823,7 @@ class ObservationCallbackTest(unittest.TestCase):
         ema = next(
             kwargs
             for tag, kwargs in restored_writer.histograms
-            if tag == "module/observed/stats/codes/book_0/ema"
+            if tag == "observation/module/observed/stats/codes/book_0/ema"
         )
         self.assertEqual(ema["bucket_counts"], [1.0, 2.0])
 
@@ -851,7 +851,7 @@ class ObservationCallbackTest(unittest.TestCase):
             batch_idx=1,
         )
         values, _ = restored_module.log_dict_calls[-1]
-        prefix = "module/observed/profile/value/ema"
+        prefix = "observation/module/observed/profile/value/ema"
         self.assertAlmostEqual(values[f"{prefix}/bin_0/mean"].item(), 2.0)
         self.assertAlmostEqual(values[f"{prefix}/bin_1/mean"].item(), 4.0)
 
@@ -922,11 +922,11 @@ class ObservationCallbackTest(unittest.TestCase):
         _run_step(callback, trainer, module, torch.randn(3, 2), batch_idx=0)
 
         values, _ = module.log_dict_calls[-1]
-        self.assertIn("module/observed/quantization/loss/commitment", values)
-        self.assertIn("module/observed/quantization/loss/codebook", values)
+        self.assertIn("observation/module/observed/quantization/loss/commitment", values)
+        self.assertIn("observation/module/observed/quantization/loss/codebook", values)
         self.assertTrue(
             any(
-                tag == "module/observed/quantization/codes/book_0/ema"
+                tag == "observation/module/observed/quantization/codes/book_0/ema"
                 for tag, _kwargs in writer.histograms
             )
         )
@@ -946,9 +946,9 @@ class ObservationCallbackTest(unittest.TestCase):
         )
 
         values, _ = module.log_dict_calls[-1]
-        self.assertIn("module/observed/adt/variance_mean", values)
-        self.assertIn("module/observed/adt/alpha_std", values)
-        self.assertIn("module/observed/adt/temperature_max", values)
+        self.assertIn("observation/module/observed/adt/variance_mean", values)
+        self.assertIn("observation/module/observed/adt/alpha_std", values)
+        self.assertIn("observation/module/observed/adt/temperature_max", values)
 
     def test_moe_registry_logs_forward_routing_summaries(self):
         def scale(input, weight, bias=None):
@@ -976,10 +976,10 @@ class ObservationCallbackTest(unittest.TestCase):
         )
 
         values, _ = module.log_dict_calls[-1]
-        self.assertIn("module/observed/routing/effective_experts", values)
-        self.assertIn("module/observed/routing/usage_mean", values)
-        self.assertIn("module/observed/routing/tokens/total", values)
-        self.assertIn("module/observed/routing/dropped/ratio", values)
+        self.assertIn("observation/module/observed/routing/effective_experts", values)
+        self.assertIn("observation/module/observed/routing/usage_mean", values)
+        self.assertIn("observation/module/observed/routing/tokens/total", values)
+        self.assertIn("observation/module/observed/routing/dropped/ratio", values)
 
     def test_dense_bin_limit_fails_before_allocation(self):
         writer = _Writer()
@@ -1012,7 +1012,7 @@ class ObservationCallbackTest(unittest.TestCase):
         _run_step(callback, trainer, module, torch.tensor([0, 1]), batch_idx=0)
         values, _ = module.log_dict_calls[-1]
         self.assertEqual(
-            values["module/observed/stats/codes/book_0/step/observations"].item(),
+            values["observation/module/observed/stats/codes/book_0/step/observations"].item(),
             4.0,
         )
         self.assertIn(((1, 2), "sum"), strategy.shapes)
@@ -1034,7 +1034,7 @@ class ObservationCallbackTest(unittest.TestCase):
         _run_step(callback, trainer, module, torch.tensor([1.0, 3.0]), batch_idx=0)
 
         values, _ = module.log_dict_calls[-1]
-        prefix = "module/observed/profile/value/step"
+        prefix = "observation/module/observed/profile/value/step"
         self.assertEqual(values[f"{prefix}/observations"].item(), 4.0)
         self.assertEqual(values[f"{prefix}/bin_0/count"].item(), 2.0)
         self.assertEqual(values[f"{prefix}/bin_1/count"].item(), 2.0)
@@ -1299,7 +1299,7 @@ class ObservationCallbackTest(unittest.TestCase):
         callback.on_train_batch_end(trainer, module, None, None, 1)
 
         values, _kwargs = module.log_dict_calls[-1]
-        self.assertEqual(values["module/observed/curve/value"].item(), 4.0)
+        self.assertEqual(values["observation/module/observed/curve/value"].item(), 4.0)
         self.assertEqual(strategy.reduce_calls, 2)
 
     def test_distributed_schema_includes_curve_reduction(self):
@@ -1556,10 +1556,10 @@ class ObservationCallbackTest(unittest.TestCase):
         step = next(
             kwargs
             for tag, kwargs in writer.histograms
-            if tag == "module/observed/stats/values/step"
+            if tag == "observation/module/observed/stats/values/step"
         )
         ema = next(
-            kwargs for tag, kwargs in writer.histograms if tag == "module/observed/stats/values/ema"
+            kwargs for tag, kwargs in writer.histograms if tag == "observation/module/observed/stats/values/ema"
         )
         self.assertEqual(step["bucket_counts"], [1.0, 1.0])
         self.assertEqual(ema["bucket_counts"], [1.0, 1.0])
@@ -1655,7 +1655,7 @@ class ObservationCallbackTest(unittest.TestCase):
         _run_step(callback, trainer, module, torch.tensor([3.0, 5.0]), batch_idx=1)
 
         values, _ = module.log_dict_calls[-1]
-        prefix = "module/observed/profile/value"
+        prefix = "observation/module/observed/profile/value"
         self.assertEqual(values[f"{prefix}/step/observations"].item(), 2.0)
         self.assertEqual(values[f"{prefix}/step/active_ratio"].item(), 1.0)
         self.assertEqual(values[f"{prefix}/step/bin_0/count"].item(), 1.0)
@@ -1846,7 +1846,7 @@ class ObservationCallbackTest(unittest.TestCase):
         _start(callback, trainer, module)
         _run_step(callback, trainer, module, torch.tensor([2, 4]), batch_idx=0)
         values, _ = module.log_dict_calls[-1]
-        self.assertEqual(values["module/observed/state/value"].item(), 3.0)
+        self.assertEqual(values["observation/module/observed/state/value"].item(), 3.0)
 
     def test_backward_observation_warns_once_and_is_not_attached(self):
         class BackwardObserved(nn.Module):
@@ -1966,7 +1966,7 @@ class ObservationCallbackTest(unittest.TestCase):
         step = next(
             kwargs
             for tag, kwargs in trainer.logger.experiment.histograms
-            if tag == "module/observed/stats/codes/book_0/step"
+            if tag == "observation/module/observed/stats/codes/book_0/step"
         )
         self.assertEqual(step["bucket_counts"], [1.0, 0.0])
 
@@ -2008,9 +2008,9 @@ class ObservationCallbackTest(unittest.TestCase):
         trainer.global_step = 1
         callback.on_train_batch_end(trainer, module, None, None, 0)
         values, _ = module.log_dict_calls[-1]
-        self.assertIn("module/root/value", values)
+        self.assertIn("observation/module/root/value", values)
         self.assertIn(
-            "module/module/stats/codes/book_0/step/observations",
+            "observation/module/module/stats/codes/book_0/step/observations",
             values,
         )
 
