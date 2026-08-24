@@ -95,6 +95,11 @@ LongCat preset 把四个单码本解释为 `semantic`、`rvq_0`、`rvq_1`、`rvq
 `codec.sample_rate` 是所选 decoder 的输出采样率。encoder 内部固定使用 16 kHz，
 `encode(audio, sample_rate)` 会把输入采样率交给上游预处理逻辑。
 
+对 padded batch 保留每条音频的有效 frame 数时，使用 `PaddedAudioTokenizer.tokenize_padded()`。
+LongCat 的 padded 编码要求输入已经预采样到 encoder 的 16 kHz；返回的
+`PaddedAudioCodes.lengths` 按 `semantic` 和各个 `rvq_*` stream 提供相同的可用 frame 数。
+当 semantic encoder 多出一个尾部 frame 时，acoustic length 作为可训练的对齐边界。
+
 `codes_to_features(stream, codes)` 对单个 named stream 返回 `[batch, time, dim]` 连续特征；
 `decode_features()` 组合 semantic 与 RVQ feature streams。下游 DiT 或 flow sampler 直接接这个
 feature 边界，不依赖 concrete backend 的 factor codebook 布局。

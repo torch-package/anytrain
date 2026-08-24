@@ -14,6 +14,9 @@ from torch import nn
 from anytrain._buffer import register_buffer
 from anytrain.audio.codec.longcat.assets import LongCatAssets, LongCatConfigPaths
 from anytrain.audio.codec.longcat.codec import LongCat
+from anytrain.audio.codec.longcat.tokenizer import represent_tokenizer
+from anytrain.audio.codec.spec import AudioBackendIdentity, AudioCodeSpec, AudioCodeStreamSpec
+from anytrain.audio.tokenizer import PaddedAudioTokenizer
 
 
 class LongCatCodecTest(unittest.TestCase):
@@ -83,6 +86,52 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertEqual(tuple(codes.shape), (2, 2, 4))
         self.assertTrue(torch.equal(codes[..., 0], torch.tensor([[7, 8], [7, 8]])))
         self.assertTrue(torch.equal(codes[..., 1:], torch.ones((2, 2, 3), dtype=torch.long)))
+
+    def test_padded_tokenizer_reports_named_frame_lengths(self):
+        codec = _codec(FakeLongCatEncoder())
+        tokenizer = represent_tokenizer(codec, _code_spec(), AudioBackendIdentity("longcat"))
+
+        self.assertIsInstance(tokenizer, PaddedAudioTokenizer)
+        output = tokenizer.tokenize_padded(
+            torch.zeros((2, 1, 12)),
+            16_000,
+            torch.tensor([12, 5]),
+        )
+
+        self.assertEqual(tuple(output.codes), ("semantic", "rvq_0", "rvq_1", "rvq_2"))
+        for value in output.lengths.values():
+            self.assertTrue(torch.equal(value, torch.tensor([2, 1])))
+
+    def test_padded_tokenizer_uses_acoustic_length_when_semantic_has_tail_frame(self):
+        codec = _codec(FakeLongCatEncoder(semantic_tail=True))
+        tokenizer = represent_tokenizer(codec, _code_spec(), AudioBackendIdentity("longcat"))
+
+        output = tokenizer.tokenize_padded(
+            torch.zeros((2, 1, 12)),
+            16_000,
+            torch.tensor([12, 5]),
+        )
+
+        self.assertEqual(tuple(output.codes["semantic"].shape), (2, 3))
+        self.assertTrue(torch.equal(output.lengths["semantic"], torch.tensor([2, 1])))
+
+    def test_padded_encode_requires_length_aware_encoder_and_native_sample_rate(self):
+        codec = _codec(FakeLongCatEncoder())
+        with self.assertRaisesRegex(ValueError, "pre-resampled to 16000 Hz"):
+            codec.encode_padded(
+                torch.zeros((2, 1, 12)),
+                48_000,
+                torch.tensor([12, 7]),
+            )
+
+        encoder = nn.Identity()
+        encoder.input_sample_rate = 16_000
+        with self.assertRaisesRegex(TypeError, "length-aware encode methods"):
+            _codec(encoder).encode_padded(
+                torch.zeros((2, 1, 12)),
+                16_000,
+                torch.tensor([12, 7]),
+            )
 
     def test_encode_debug_boundary_writes_shape_and_elapsed_record(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,11 +407,12 @@ class FakeFactorLongCatDecoder(FakeLongCatDecoder):
 
 
 class FakeLongCatEncoder(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *, semantic_tail: bool = False) -> None:
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
         self.input_sample_rate: Any = 16000
         self.hop_length: Any = 960
+        self.semantic_tail = semantic_tail
 
     def forward(
         self,
@@ -375,6 +425,39 @@ class FakeLongCatEncoder(nn.Module):
         semantic = torch.tensor([[7, 8]]).expand(batch, -1)
         acoustic = torch.ones((batch, n_acoustic_codebooks, 2), dtype=torch.long)
         return semantic, acoustic
+
+    def preprocess(self, audio: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        if sample_rate != self.input_sample_rate:
+            raise ValueError("unexpected sample rate")
+        return audio
+
+    def get_semantic_codes_with_lengths(
+        self,
+        audio: torch.Tensor,
+        lengths: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch = audio.size(0)
+        codes = torch.tensor([[7, 8, 9]], device=audio.device).expand(batch, -1)
+        code_lengths = torch.div(lengths + 5, 6, rounding_mode="floor")
+        if self.semantic_tail:
+            code_lengths = code_lengths + 1
+        return codes[:, : 3 if self.semantic_tail else 2], code_lengths
+
+    def get_acoustic_codes_with_lengths(
+        self,
+        audio: torch.Tensor,
+        lengths: torch.Tensor,
+        *,
+        n_acoustic_codebooks: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch = audio.size(0)
+        code_time = 3 if self.semantic_tail else 2
+        codes = torch.ones(
+            (batch, n_acoustic_codebooks, code_time),
+            dtype=torch.long,
+            device=audio.device,
+        )
+        return codes, torch.div(lengths + 5, 6, rounding_mode="floor")
 
     def get_semantic_codebook(self) -> torch.Tensor:
         return torch.zeros((3, 8192))
@@ -391,6 +474,27 @@ def _assets() -> LongCatAssets:
             decoder_24k_4codebooks=Path(),
         ),
         checkpoints={},
+    )
+
+
+def _code_spec() -> AudioCodeSpec:
+    return AudioCodeSpec(
+        sample_rate=16_000,
+        streams=(
+            AudioCodeStreamSpec("semantic", 8192, frame_rate=16_000 / 960),
+            AudioCodeStreamSpec("rvq_0", 8100, frame_rate=16_000 / 960),
+            AudioCodeStreamSpec("rvq_1", 8100, frame_rate=16_000 / 960),
+            AudioCodeStreamSpec("rvq_2", 8100, frame_rate=16_000 / 960),
+        ),
+    )
+
+
+def _codec(encoder: nn.Module) -> LongCat:
+    return LongCat(
+        encoder=encoder,
+        decoders={"16k_4codebooks": FakeLongCatDecoder()},
+        device=torch.device("cpu"),
+        assets=_assets(),
     )
 
 
