@@ -10,6 +10,7 @@
 - [`anytrain.lightning.checkpoint`](lightning-checkpoint.md)：canonical contract、state-dict schema、严格单文件 Lightning checkpoint 恢复与 checkpoint series 评估编排。
 - [`anytrain.observation`](observation.md)：module concrete-type registry、observation 类型、显式 reduction 和 step/EMA 状态契约。
 - [`anytrain.lightning`](lightning.md)：LightningModule logging mixin、后台服务生命周期、调试 callback 和性能观测 callback。
+- [`anytrain.lightning.auto_cost`](../auto-cost.md)：与 batch/model/pl_module 结构无关的 CUDA 显存校准和自动 cost 预算。
 - `anytrain.lightning.schedule`：step/unit LR schedule spec、unit 进度、unit LR runtime 和停止控制；归入 [`anytrain.lightning`](lightning.md)。
 - [`anytrain.lightning.perf`](perf.md)：参数量、FLOPs、硬件峰值算力和 MFU。
 - [`anytrain.loss`](loss.md)：通用 loss 组件和组合器。

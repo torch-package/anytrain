@@ -1,4 +1,15 @@
 from . import checkpoint, experiment, oom, schedule, validation
+from .auto_cost import (
+    AutoCostBudget,
+    AutoCostCalibration,
+    AutoCostHooks,
+    AutoCostMeasurement,
+    AutoCostMemoryCalibration,
+    CostProbe,
+    calibrate_auto_cost,
+    fit_memory_calibration,
+    resolve_auto_cost,
+)
 from .cadence import StepInterval
 from .callback import (
     DebugCallback,
@@ -44,7 +55,13 @@ from .service import ManagedService, ManagedServiceCallback, ManagedServiceProvi
 
 __all__ = [
     "BackgroundMaterialization",
+    "AutoCostBudget",
+    "AutoCostCalibration",
+    "AutoCostHooks",
+    "AutoCostMeasurement",
+    "AutoCostMemoryCalibration",
     "DebugCallback",
+    "CostProbe",
     "EMACallback",
     "FlopsProvider",
     "GradientComparison",
@@ -82,9 +99,12 @@ __all__ = [
     "checkpoint",
     "experiment",
     "find_ema_callback",
+    "calibrate_auto_cost",
+    "fit_memory_calibration",
     "gradient_loss_groups",
     "oom",
     "prefixed_log_dict",
+    "resolve_auto_cost",
     "schedule",
     "validation",
     "window_summary",
