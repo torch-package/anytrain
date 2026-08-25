@@ -412,8 +412,8 @@ class LongCat(DeviceModule):
         audio: Tensor,
         sample_rate: int,
     ) -> Tensor:
-        if audio.dim() != 3 or audio.size(1) != NUM_CHANNELS:
-            raise ValueError("LongCat encode expects mono audio shape [batch, 1, time].")
+        _validate_audio(audio)
+        sample_rate = _sample_rate(sample_rate)
         trace = _trace_start(audio, sample_rate, self.device)
         try:
             backend_codes = self.encoder(
@@ -421,23 +421,26 @@ class LongCat(DeviceModule):
                 sample_rate,
                 n_acoustic_codebooks=len(self.acoustic_codebook_sizes),
             )
+            semantic = integer_tensor(backend_codes[0], "LongCat semantic codes")
+            acoustic = integer_tensor(backend_codes[1], "LongCat acoustic codes")
+            if semantic.dim() != 2:
+                raise ValueError(
+                    "LongCat semantic encoder output must have shape [batch, time]."
+                )
+            if acoustic.dim() != 3:
+                raise ValueError(
+                    "LongCat acoustic encoder output must have shape [batch, codebook, time]."
+                )
+            codes = torch.cat(
+                (semantic[..., None], acoustic.transpose(1, 2).contiguous()),
+                dim=-1,
+            )
+            codes = validate_frame_codes(codes, self.codebook_sizes)
         except BaseException as exc:
             _trace_finish(trace, error=exc)
             raise
         _trace_finish(trace, extra={"encoder_output_shapes": _shape(backend_codes)})
-        semantic = integer_tensor(backend_codes[0], "LongCat semantic codes")
-        acoustic = integer_tensor(backend_codes[1], "LongCat acoustic codes")
-        if semantic.dim() != 2:
-            raise ValueError("LongCat semantic encoder output must have shape [batch, time].")
-        if acoustic.dim() != 3:
-            raise ValueError(
-                "LongCat acoustic encoder output must have shape [batch, codebook, time]."
-            )
-        codes = torch.cat(
-            (semantic[..., None], acoustic.transpose(1, 2).contiguous()),
-            dim=-1,
-        )
-        return validate_frame_codes(codes, self.codebook_sizes)
+        return codes
 
     @torch.no_grad()
     def encode_padded(
@@ -448,13 +451,8 @@ class LongCat(DeviceModule):
     ) -> tuple[Tensor, Tensor]:
         """Encode padded audio while retaining the usable frame count per sample."""
 
-        if audio.dim() != 3 or audio.size(1) != NUM_CHANNELS:
-            raise ValueError("LongCat encode expects mono audio shape [batch, 1, time].")
-        if isinstance(sample_rate, bool) or not isinstance(sample_rate, Integral):
-            raise TypeError("LongCat sample_rate must be an integer.")
-        sample_rate = int(sample_rate)
-        if sample_rate <= 0:
-            raise ValueError("LongCat sample_rate must be positive.")
+        _validate_audio(audio)
+        sample_rate = _sample_rate(sample_rate)
 
         input_rate = getattr(self.encoder, "input_sample_rate", None)
         if isinstance(input_rate, bool) or not isinstance(input_rate, Integral):
@@ -590,6 +588,24 @@ def _feature_tensor(
     return value
 
 
+def _validate_audio(value: object) -> None:
+    if not isinstance(value, Tensor):
+        raise TypeError("LongCat encode expects audio to be a Tensor.")
+    if value.dim() != 3 or value.size(1) != NUM_CHANNELS:
+        raise ValueError("LongCat encode expects mono audio shape [batch, 1, time].")
+    if value.size(0) <= 0 or value.size(-1) <= 0:
+        raise ValueError("LongCat audio must not be empty.")
+
+
+def _sample_rate(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError("LongCat sample_rate must be an integer.")
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError("LongCat sample_rate must be positive.")
+    return resolved
+
+
 def _waveform_lengths(
     value: Tensor,
     *,
@@ -634,8 +650,10 @@ def _code_lengths(
 
 
 def _positive_int(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"LongCat {name} must be a positive integer.")
+    if value <= 0:
+        raise ValueError(f"LongCat {name} must be a positive integer.")
     return value
 
 

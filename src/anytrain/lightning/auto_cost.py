@@ -46,9 +46,11 @@ class CostProbe(Generic[BatchT]):
             raise ValueError("probe target_cost must be positive.")
         for name in ("actual_cost", "padded_cost", "sample_count"):
             value = getattr(self, name)
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value <= 0
-            ):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"probe {name} must be a positive integer or None.")
+            if value <= 0:
                 raise ValueError(f"probe {name} must be a positive integer or None.")
 
 
@@ -63,6 +65,21 @@ class AutoCostHooks(Generic[BatchT, ModuleT, PLModuleT]):
     padded_cost: Callable[[PLModuleT, BatchT], int | None] | None = None
     clear_gradients: Callable[[PLModuleT, ModuleT], None] = _clear_module_gradients
     autocast: Callable[[torch.device], AbstractContextManager[object]] = _no_autocast
+
+    def __post_init__(self) -> None:
+        for name in (
+            "prepare",
+            "move_to_device",
+            "run_forward_backward",
+            "clear_gradients",
+            "autocast",
+        ):
+            if not callable(getattr(self, name)):
+                raise TypeError(f"automatic cost hook {name} must be callable.")
+        for name in ("actual_cost", "padded_cost"):
+            value = getattr(self, name)
+            if value is not None and not callable(value):
+                raise TypeError(f"automatic cost hook {name} must be callable or None.")
 
 
 @dataclass(frozen=True)
@@ -135,6 +152,8 @@ def calibrate_auto_cost(
     normalized = tuple(probes)
     if not normalized:
         raise ValueError("automatic cost calibration requires at least one probe.")
+    if any(not isinstance(probe, CostProbe) for probe in normalized):
+        raise TypeError("automatic cost calibration probes must contain CostProbe values.")
 
     measurements: list[AutoCostMeasurement] = []
     oom_targets: list[int] = []
@@ -178,7 +197,18 @@ def fit_memory_calibration(
     points: Sequence[tuple[int, int]],
 ) -> AutoCostMemoryCalibration:
     """Fit peak_bytes = intercept + slope * cost for arbitrary cost units."""
-    normalized = tuple((int(cost), int(peak)) for cost, peak in points)
+    normalized_points: list[tuple[int, int]] = []
+    for index, point in enumerate(points):
+        try:
+            cost, peak = point
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"memory calibration point {index} must contain exactly two integers."
+            ) from exc
+        _exact_int(cost, f"memory calibration point {index} cost")
+        _exact_int(peak, f"memory calibration point {index} peak")
+        normalized_points.append((cost, peak))
+    normalized = tuple(normalized_points)
     if len(normalized) < 2:
         raise ValueError("memory calibration requires at least two points.")
     if any(cost <= 0 or peak < 0 for cost, peak in normalized):
@@ -344,6 +374,8 @@ def _measurement(
 
 
 def _cuda_device(value: torch.device | str | int) -> torch.device:
+    if isinstance(value, bool):
+        raise TypeError("automatic cost device must be a CUDA device, string, or integer index.")
     device = torch.device("cuda", value) if isinstance(value, int) else torch.device(value)
     if device.type != "cuda":
         raise ValueError("automatic cost calibration requires a CUDA device.")
@@ -353,13 +385,22 @@ def _cuda_device(value: torch.device | str | int) -> torch.device:
 
 
 def _positive_int(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be a positive integer.")
+    if value <= 0:
         raise ValueError(f"{name} must be a positive integer.")
 
 
 def _non_negative_int(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be a non-negative integer.")
+    if value < 0:
         raise ValueError(f"{name} must be a non-negative integer.")
+
+
+def _exact_int(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
 
 
 def _positive_real(value: float, name: str) -> None:

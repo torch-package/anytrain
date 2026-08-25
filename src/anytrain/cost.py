@@ -50,6 +50,7 @@ class BackgroundCostProducer:
         self._completed = 0
         self._failed = 0
         self._dropped = 0
+        self._closing = False
         self._closed = False
 
     @property
@@ -95,21 +96,21 @@ class BackgroundCostProducer:
         resolved = _non_negative_int(index, "index")
         if self._thread is None:
             raise RuntimeError("cost producer must be started before submit().")
-        if self._closed:
-            return False
         self.check()
         with self._lock:
+            if self._closed or self._closing:
+                return False
+            if self._error is not None:
+                raise RuntimeError("background cost producer failed.") from self._error
             if resolved in self._inflight:
                 return True
             self._inflight.add(resolved)
-        try:
-            self._queue.put_nowait(resolved)
-        except Full:
-            with self._lock:
+            try:
+                self._queue.put_nowait(resolved)
+            except Full:
                 self._inflight.discard(resolved)
                 self._dropped += 1
-            return False
-        with self._lock:
+                return False
             self._submitted += 1
         return True
 
@@ -135,14 +136,26 @@ class BackgroundCostProducer:
         thread = self._thread
         if thread is None:
             return
-        if self._closed:
-            return
         self.check()
-        self._queue.put(None)
+        with self._lock:
+            if self._closed and not thread.is_alive():
+                return
+            enqueue_stop = not self._closing
+            self._closing = True
+        if enqueue_stop:
+            try:
+                self._queue.put(None, timeout=timeout)
+            except Full as exc:
+                with self._lock:
+                    self._closing = False
+                raise TimeoutError(
+                    "background cost producer did not accept the stop request in time."
+                ) from exc
         thread.join(timeout=timeout)
         if thread.is_alive():
             raise TimeoutError("background cost producer did not stop in time.")
-        self._closed = True
+        with self._lock:
+            self._closed = True
         self.check()
 
     def __enter__(self) -> BackgroundCostProducer:

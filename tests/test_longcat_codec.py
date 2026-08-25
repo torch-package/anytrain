@@ -125,7 +125,7 @@ class LongCatCodecTest(unittest.TestCase):
             )
 
         encoder = nn.Identity()
-        encoder.input_sample_rate = 16_000
+        cast(Any, encoder).input_sample_rate = 16_000
         with self.assertRaisesRegex(TypeError, "length-aware encode methods"):
             _codec(encoder).encode_padded(
                 torch.zeros((2, 1, 12)),
@@ -155,6 +155,53 @@ class LongCatCodecTest(unittest.TestCase):
             self.assertEqual(record["audio_seconds"], 0.0015)
             self.assertEqual(record["encoder_output_shapes"], [[2, 2], [2, 3, 2]])
             self.assertIn("elapsed_seconds", record)
+
+    def test_encode_debug_boundary_records_invalid_backend_output_as_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_path = Path(tmp) / "longcat.jsonl"
+            encoder = FakeLongCatEncoder()
+            codec = _codec(encoder)
+            with (
+                patch.dict(os.environ, {"ANYTRAIN_LONGCAT_DEBUG_LOG": str(trace_path)}),
+                patch.object(
+                    encoder,
+                    "forward",
+                    return_value=(
+                        torch.zeros((2, 2)),
+                        torch.ones((2, 3, 2), dtype=torch.long),
+                    ),
+                ),
+                self.assertRaisesRegex(TypeError, "semantic codes"),
+            ):
+                codec.encode(torch.zeros((2, 1, 12)), 16_000)
+
+            record = json.loads(trace_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["status"], "error")
+            self.assertEqual(record["error_type"], "TypeError")
+
+    def test_encode_validates_inputs_before_calling_the_backend(self):
+        encoder = FakeLongCatEncoder()
+        codec = _codec(encoder)
+        with (
+            patch.object(encoder, "forward") as forward,
+            self.assertRaisesRegex(TypeError, "audio to be a Tensor"),
+        ):
+            codec.encode(cast(Any, [0.0]), 16_000)
+        forward.assert_not_called()
+
+        with (
+            patch.object(encoder, "forward") as forward,
+            self.assertRaisesRegex(ValueError, "audio must not be empty"),
+        ):
+            codec.encode(torch.zeros((1, 1, 0)), 16_000)
+        forward.assert_not_called()
+
+        with (
+            patch.object(encoder, "forward") as forward,
+            self.assertRaisesRegex(TypeError, "sample_rate"),
+        ):
+            codec.encode(torch.zeros((1, 1, 12)), cast(Any, True))
+        forward.assert_not_called()
 
     def test_semantic_feature_dim_matches_semantic_codebook(self):
         codec = LongCat(
@@ -312,6 +359,20 @@ class LongCatCodecTest(unittest.TestCase):
             active_codebooks=1,
         )
         self.assertEqual(tuple(native.shape), (1, 2, 4))
+
+    def test_factor_projection_requires_positive_active_codebooks(self):
+        codec = LongCat(
+            encoder=FakeLongCatEncoder(),
+            decoders={"16k_4codebooks": FakeFactorLongCatDecoder()},
+            device=torch.device("cpu"),
+            assets=_assets(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "active_codebooks"):
+            codec.project_acoustic_factor_features(
+                torch.zeros((1, 2, 4)),
+                active_codebooks=0,
+            )
 
 
 class FakeLongCatDecoder(nn.Module):

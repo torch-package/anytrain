@@ -271,6 +271,16 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, r"\[\[logits\]\]"):
             loss_fn.discriminator_loss(fake, real)
 
+    def test_loss_rejects_non_tensor_inputs_before_discriminator_call(self):
+        loss_fn = Loss(IdentityDiscriminator())
+
+        with self.assertRaisesRegex(TypeError, "fake input"):
+            loss_fn.discriminator_loss(cast(Any, [torch.zeros(2)]), torch.zeros(2))
+        with self.assertRaisesRegex(TypeError, "real input"):
+            loss_fn.discriminator_loss(torch.zeros(2), cast(Any, [torch.zeros(2)]))
+        with self.assertRaisesRegex(TypeError, "fake input"):
+            loss_fn.generator_loss(cast(Any, [torch.zeros(2)]))
+
     def test_discriminator_loss_rejects_mismatched_branch_count(self):
         loss_fn = Loss(VariableBranchDiscriminator())
 

@@ -50,7 +50,9 @@ class SparkTTSConfig:
     load_kwargs: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.model, str) or not self.model:
+        if not isinstance(self.model, str):
+            raise TypeError("model must be a string.")
+        if not self.model:
             raise ValueError("model must be a non-empty string.")
         validate_mapping(self.runtime_kwargs, "runtime_kwargs")
         validate_mapping(self.load_kwargs, "load_kwargs")
@@ -275,8 +277,10 @@ def _runtime_kwargs(options: TTSOptions) -> dict[str, object]:
         runtime["top_p"] = options.top_p
     top_k = options.extra.get("top_k")
     if top_k is not None:
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+        if isinstance(top_k, bool) or not isinstance(top_k, int):
             raise TypeError("Spark-TTS top_k must be a positive integer.")
+        if top_k <= 0:
+            raise ValueError("Spark-TTS top_k must be a positive integer.")
         runtime["top_k"] = top_k
     return runtime
 

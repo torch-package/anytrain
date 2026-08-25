@@ -173,3 +173,21 @@ def test_spark_config_rejects_non_numeric_sampling_defaults() -> None:
 
     with pytest.raises(TypeError, match="temperature must be numeric"):
         config.options()
+
+
+def test_spark_top_k_separates_type_and_range_errors(tmp_path: Path) -> None:
+    with _FakeSparkModules():
+        tts = SparkTTS.from_pretrained(tmp_path, device="cpu")
+
+    with pytest.raises(TypeError, match="top_k"):
+        tts.synthesize(
+            "hello",
+            TTSOptions(prompt_text="reference", extra={"top_k": 1.5}),
+            reference_audio=EncodedAudioReference(b"audio", ".wav"),
+        )
+    with pytest.raises(ValueError, match="top_k"):
+        tts.synthesize(
+            "hello",
+            TTSOptions(prompt_text="reference", extra={"top_k": 0}),
+            reference_audio=EncodedAudioReference(b"audio", ".wav"),
+        )

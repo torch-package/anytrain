@@ -100,11 +100,11 @@ class ModelCheckpoint(LightningModelCheckpoint):
         )
         if not isinstance(async_save, bool):
             raise TypeError("async_save must be a boolean.")
-        if (
-            isinstance(max_pending_async_saves, bool)
-            or not isinstance(max_pending_async_saves, int)
-            or max_pending_async_saves <= 0
+        if isinstance(max_pending_async_saves, bool) or not isinstance(
+            max_pending_async_saves, int
         ):
+            raise TypeError("max_pending_async_saves must be an integer.")
+        if max_pending_async_saves <= 0:
             raise ValueError("max_pending_async_saves must be a positive integer.")
         self.async_save = async_save
         self.max_pending_async_saves = max_pending_async_saves

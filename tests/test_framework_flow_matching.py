@@ -299,6 +299,11 @@ class FlowMatchingComponentTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "same dtype"):
             runtime.training_sample(x_1, x_0=torch.zeros_like(x_1, dtype=torch.float32))
 
+        with self.assertRaisesRegex(TypeError, "x_1 must be a tensor"):
+            runtime.training_sample(cast(Any, [1, 2]))
+        with self.assertRaisesRegex(TypeError, "x_0 and x_1 must be tensors"):
+            runtime.training_sample(x_1, x_0=cast(Any, [1, 2]))
+
     def test_continuous_custom_loss_must_return_scalar(self):
         from anytrain.framework.flow_matching import (
             ContinuousFlowRuntime,

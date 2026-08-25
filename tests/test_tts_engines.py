@@ -189,6 +189,18 @@ def test_tts_environment_contracts_report_version_and_missing_dependencies(
         contract.validate(versions)
 
 
+def test_tts_environment_contract_rejects_duplicate_normalized_distributions() -> None:
+    with pytest.raises(ValueError, match="duplicate normalized name 'vllm-omni'"):
+        VLLM_OMNI_ENVIRONMENT.validate(
+            {
+                "transformers": "5.5.3",
+                "vllm": "0.26.0",
+                "vllm-omni": "0.26.0",
+                "vllm_omni": "0.26.0",
+            }
+        )
+
+
 def test_engine_config_validates_capabilities_and_excludes_concurrency_from_hash() -> None:
     capabilities = TTSEngineCapabilities(
         transformer_engines=frozenset(
@@ -320,6 +332,45 @@ def test_omni_output_normalization_preserves_request_order_and_sampling() -> Non
     assert params[0].temperature == 0.7
     assert params[0].top_p == 0.8
     assert params[0].seed == 7
+
+
+def test_omni_output_metadata_cannot_override_backend_provenance() -> None:
+    output = generate_audio(
+        cast(Any, _FakeOmni()),
+        [{"prompt_token_ids": [0]}],
+        options=TTSOptions(),
+        sample_rate=24_000,
+        backend="trusted",
+        meta=[
+            {
+                "backend": "spoofed",
+                "transformer_engine": "spoofed",
+                "speaker": "Vivian",
+            }
+        ],
+    )[0]
+
+    assert output.meta == {
+        "backend": "trusted",
+        "transformer_engine": "vllm_omni",
+        "speaker": "Vivian",
+    }
+
+
+def test_omni_sampling_does_not_treat_zero_max_tokens_as_unset() -> None:
+    options = TTSOptions()
+    # TTSOptions validates construction, but remains mutable for compatibility;
+    # preserve the runtime validator if a caller changes a field afterwards.
+    options.max_new_tokens = 0
+
+    with pytest.raises(ValueError, match="max_new_tokens"):
+        generate_audio(
+            cast(Any, _FakeOmni()),
+            [{"prompt_token_ids": [0]}],
+            options=options,
+            sample_rate=24_000,
+            backend="trusted",
+        )
 
 
 def test_omni_max_concurrency_chunks_submissions_without_changing_order() -> None:

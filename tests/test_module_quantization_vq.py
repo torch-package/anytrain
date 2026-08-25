@@ -3,7 +3,7 @@ from dataclasses import fields
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -128,6 +128,14 @@ class EmbeddingVectorQuantizerTest(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "bool tensors are not valid indices"):
             quantizer.indices_to_codebook_vectors(torch.tensor([True, False]))
+
+    def test_quantization_inputs_reject_non_tensors(self):
+        quantizer = EmbeddingVectorQuantizer(VQConfig(input_dim=4, codebook_size=8))
+
+        with self.assertRaisesRegex(TypeError, "latents must be a tensor"):
+            quantizer.quantize(cast(Any, [[0.0, 0.0, 0.0, 0.0]]))
+        with self.assertRaisesRegex(TypeError, "indices must be a tensor"):
+            quantizer.indices_to_codebook_vectors(cast(Any, [[0]]))
 
     def test_backward_reaches_input_and_codebook_without_ema(self):
         quantizer = EmbeddingVectorQuantizer(

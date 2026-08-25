@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from .._validation import strict_bool
+from .._validation import positive_real, strict_bool
 
 
 def group_relative_advantages(
@@ -20,6 +20,7 @@ def group_relative_advantages(
     """
 
     validate = strict_bool(validate, "validate")
+    eps = positive_real(eps, "eps")
     if validate:
         if not isinstance(rewards, Tensor):
             raise TypeError("rewards must be a tensor.")
@@ -27,8 +28,6 @@ def group_relative_advantages(
             raise ValueError("rewards must have shape [batch, group].")
         if rewards.is_complex() or rewards.dtype == torch.bool:
             raise TypeError("rewards must be real-valued.")
-        if eps <= 0:
-            raise ValueError("eps must be positive.")
     mask = _candidate_mask(rewards, group_mask, validate=validate)
     if validate and not bool(torch.isfinite(rewards.masked_select(mask)).all()):
         raise ValueError("selected rewards must be finite.")

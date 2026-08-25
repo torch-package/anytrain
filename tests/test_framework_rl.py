@@ -260,6 +260,14 @@ class AdvantageTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least two"):
             group_relative_advantages(torch.tensor([[1.0, 2.0]]), torch.tensor([[True, False]]))
 
+    def test_group_relative_advantages_rejects_nonfinite_epsilon(self):
+        for eps in (float("nan"), float("inf"), 0.0):
+            with self.subTest(eps=eps), self.assertRaises((TypeError, ValueError)):
+                group_relative_advantages(
+                    torch.tensor([[1.0, 2.0]]),
+                    eps=eps,
+                )
+
 
 class GRPOLossTest(unittest.TestCase):
     def test_grpo_policy_loss_uses_group_advantages_and_clipping(self):

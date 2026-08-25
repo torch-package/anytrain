@@ -5,6 +5,8 @@ from torch import Tensor
 
 
 def input_latents(latents: Tensor, input_dim: int) -> None:
+    if not isinstance(latents, Tensor):
+        raise TypeError("latents must be a tensor.")
     if latents.ndim == 0:
         raise ValueError("latents must have at least one dimension.")
     if latents.shape[-1] != input_dim:
@@ -23,6 +25,8 @@ def codebook_vectors(
     name: str = "codebook_vectors",
     require_non_empty: bool = True,
 ) -> None:
+    if not isinstance(values, Tensor):
+        raise TypeError(f"{name} must be a tensor.")
     if values.ndim == 0:
         raise ValueError(f"{name} must have at least one dimension.")
     if values.shape[-1] != codebook_dim:
@@ -40,6 +44,8 @@ def active_codebook_vectors(
     codebook_dim: int,
     num_codebooks: int,
 ) -> None:
+    if not isinstance(values, Tensor):
+        raise TypeError("codebook_vectors must be a tensor.")
     if values.ndim < 2:
         raise ValueError(f"codebook_vectors must have shape (..., n, {codebook_dim}).")
     if values.shape[-1] != codebook_dim:
@@ -62,6 +68,8 @@ def indices(
     allow_inactive: bool = False,
     require_ndim: bool = False,
 ) -> None:
+    if not isinstance(values, Tensor):
+        raise TypeError("indices must be a tensor.")
     if require_ndim and values.ndim == 0:
         raise ValueError("indices must have at least one dimension.")
     index_dtype(values)
@@ -96,6 +104,8 @@ def active_indices(
     num_codebooks: int,
     allow_inactive: bool = False,
 ) -> None:
+    if not isinstance(values, Tensor):
+        raise TypeError("indices must be a tensor.")
     if values.ndim == 0:
         raise ValueError("indices must have at least one dimension.")
     active_count = values.shape[-1]
@@ -108,5 +118,9 @@ def active_indices(
 
 
 def dropout(value: float | None) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+    ):
+        raise TypeError("dropout must be a real number or None.")
     if value is not None and not 0 <= value <= 1:
         raise ValueError(f"dropout must be in [0, 1], got {value}.")

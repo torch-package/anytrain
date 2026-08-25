@@ -6,7 +6,7 @@ import unittest
 from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest.mock import patch
 
 import torch
@@ -266,6 +266,19 @@ class CosyVoiceConfigTest(unittest.TestCase):
             CosyVoiceTTSConfig(max_concurrency=2)
         with self.assertRaisesRegex(ValueError, "positive integer"):
             CosyVoiceTTSConfig(max_concurrency=0)
+        with self.assertRaisesRegex(TypeError, "positive integer"):
+            CosyVoiceTTSConfig(max_concurrency=1.5)
+
+    def test_runtime_speed_rejects_nonfinite_values(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite"):
+                CosyVoiceTTSConfig(runtime_kwargs={"speed": value})
+
+    def test_config_separates_model_type_and_value_errors(self):
+        with self.assertRaisesRegex(TypeError, "model must be a string"):
+            CosyVoiceTTSConfig(model=cast(Any, 1))
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            CosyVoiceTTSConfig(model="")
 
     def test_tts_options_merge_prompt_fields(self):
         merged = TTSOptions(prompt_text="base", instruction=None).merged(

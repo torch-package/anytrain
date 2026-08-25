@@ -39,7 +39,12 @@ from anytrain.tts import (
     validate_text,
     waveform_duration,
 )
-from anytrain.tts._common import config_hash, hashable_mapping, validate_mapping
+from anytrain.tts._common import (
+    config_hash,
+    hashable_mapping,
+    positive_float,
+    validate_mapping,
+)
 from anytrain.tts.environments import COSYVOICE_VLLM_ENVIRONMENT
 
 DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
@@ -83,7 +88,9 @@ class CosyVoiceTTSConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.version, CosyVoiceVersion):
             raise TypeError("version must be a CosyVoiceVersion.")
-        if not isinstance(self.model, str) or not self.model:
+        if not isinstance(self.model, str):
+            raise TypeError("model must be a string.")
+        if not self.model:
             raise ValueError("model must be a non-empty string.")
         validate_mapping(self.load_kwargs, "load_kwargs")
         validate_mapping(self.runtime_kwargs, "runtime_kwargs")
@@ -95,8 +102,9 @@ class CosyVoiceTTSConfig:
         if self.max_concurrency is not None and (
             isinstance(self.max_concurrency, bool)
             or not isinstance(self.max_concurrency, int)
-            or self.max_concurrency <= 0
         ):
+            raise TypeError("max_concurrency must be a positive integer.")
+        if self.max_concurrency is not None and self.max_concurrency <= 0:
             raise ValueError("max_concurrency must be a positive integer.")
         if self.version is CosyVoiceVersion.V3 and "load_jit" in self.load_kwargs:
             raise ValueError("CosyVoice 3 does not accept load_jit.")
@@ -495,12 +503,8 @@ def _runtime_kwargs(value: Mapping[str, object]) -> dict[str, object]:
         raise TypeError(f"unsupported CosyVoice runtime options: {names}.")
     result = dict(value)
     speed = result.get("speed")
-    if speed is not None and (
-        isinstance(speed, bool)
-        or not isinstance(speed, (int, float))
-        or speed <= 0
-    ):
-        raise ValueError("CosyVoice speed must be positive when set.")
+    if speed is not None:
+        result["speed"] = positive_float(speed, "CosyVoice speed")
     text_frontend = result.get("text_frontend")
     if text_frontend is not None and not isinstance(text_frontend, bool):
         raise TypeError("CosyVoice text_frontend must be a bool when set.")

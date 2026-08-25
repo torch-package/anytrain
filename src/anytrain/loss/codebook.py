@@ -19,7 +19,10 @@ from .observation import emit_diagnostics, loss_with_diagnostics
 class PackedCodebookLogits:
     """Valid-frame logits and labels for scalar codebook losses."""
 
-    logits: tuple[Tensor, ...]
+    # Keep this as a generic sequence at the boundary: callers commonly build
+    # packed codebooks incrementally and hand us a list.  The dense path still
+    # materializes a tuple, but validation should not reject an equivalent list.
+    logits: Sequence[Tensor]
     labels: Tensor
 
 
@@ -79,6 +82,10 @@ class MaskedCodebookCrossEntropyLoss(LossABC):
         validate: bool = True,
         include_top1: bool = False,
     ) -> Tensor:
+        if not isinstance(validate, bool):
+            raise TypeError("validate must be a bool.")
+        if not isinstance(include_top1, bool):
+            raise TypeError("include_top1 must be a bool.")
         if isinstance(logits, PackedCodebookLogits):
             if labels is not None or mask is not None:
                 raise TypeError(
@@ -90,6 +97,8 @@ class MaskedCodebookCrossEntropyLoss(LossABC):
                 include_top1=include_top1,
                 codebook_embeddings=codebook_embeddings,
             )
+        if not isinstance(logits, Sequence):
+            raise TypeError("codebook logits must be a sequence of Tensor values.")
         if labels is None or mask is None:
             raise TypeError("labels and mask are required with unpacked codebook logits.")
         if validate:
@@ -175,6 +184,10 @@ class MaskedCodebookCrossEntropyLoss(LossABC):
 
 
 def _validate_inputs(logits: Sequence[Tensor], labels: Tensor, mask: Tensor) -> None:
+    if not isinstance(labels, Tensor):
+        raise TypeError("codebook labels must be a Tensor.")
+    if not isinstance(mask, Tensor):
+        raise TypeError("codebook target mask must be a Tensor.")
     if labels.ndim != 3 or mask.shape != labels.shape[:2]:
         raise ValueError(
             "codebook labels and mask must have shapes [B, F, Q] and [B, F]."
@@ -188,6 +201,8 @@ def _validate_inputs(logits: Sequence[Tensor], labels: Tensor, mask: Tensor) -> 
     if len(logits) == 0:
         raise ValueError("codebook logits must provide at least one tensor.")
     for value in logits:
+        if not isinstance(value, Tensor):
+            raise TypeError("codebook logits must contain Tensor values.")
         if value.ndim != 3 or value.shape[:2] != labels.shape[:2]:
             raise ValueError(
                 "codebook logits must have shape [B, F, vocab] and align with labels."
@@ -221,6 +236,8 @@ def _validate_embeddings(
                 f"codebook embedding {codebook} must have shape ["
                 f"{value.size(-1)}, dimension]."
             )
+        if embedding.size(1) == 0:
+            raise ValueError(f"codebook embedding {codebook} dimension must be positive.")
         if not embedding.is_floating_point():
             raise TypeError(f"codebook embedding {codebook} must use a floating dtype.")
         if embedding.device != labels.device:
@@ -280,19 +297,27 @@ def _finite_positive(value: object, name: str) -> float:
 
 def _validate_packed_inputs(packed: PackedCodebookLogits) -> None:
     labels = packed.labels
+    if not isinstance(labels, Tensor):
+        raise TypeError("packed codebook labels must be a Tensor.")
+    if isinstance(packed.logits, (str, bytes)) or not isinstance(
+        packed.logits, Sequence
+    ):
+        raise TypeError("packed codebook logits must be a sequence of Tensor values.")
     if labels.ndim != 2:
         raise ValueError("packed codebook labels must have shape [N, Q].")
     if not is_signed_integer_dtype(labels.dtype):
         raise TypeError("packed codebook labels must use a signed integer dtype.")
     if len(packed.logits) != labels.size(-1):
         raise ValueError("packed codebook logits must provide one tensor per codebook.")
-    if any(value.device != labels.device for value in packed.logits):
-        raise ValueError("packed codebook logits and labels must share a device.")
     for value in packed.logits:
+        if not isinstance(value, Tensor):
+            raise TypeError("packed codebook logits must contain Tensor values.")
         if value.ndim != 2 or value.size(0) != labels.size(0):
             raise ValueError(
                 "packed codebook logits must have shape [N, vocab] and align with labels."
             )
+    if any(value.device != labels.device for value in packed.logits):
+        raise ValueError("packed codebook logits and labels must share a device.")
     limits = torch.tensor(
         [value.size(-1) for value in packed.logits],
         device=labels.device,

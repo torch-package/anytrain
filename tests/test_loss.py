@@ -1141,6 +1141,30 @@ class LossTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "codebook_embeddings are required"):
             MaskedCodebookCrossEntropyLoss(geometry_weight=1.0)(logits, labels, mask)
 
+    def test_masked_codebook_geometry_rejects_empty_embedding_dimension(self):
+        labels = torch.tensor([[[0]]])
+        mask = torch.ones(1, 1, dtype=torch.bool)
+        logits = (torch.zeros(1, 1, 2),)
+
+        with self.assertRaisesRegex(ValueError, "dimension must be positive"):
+            MaskedCodebookCrossEntropyLoss(geometry_weight=1.0)(
+                logits,
+                labels,
+                mask,
+                codebook_embeddings=(torch.empty(2, 0),),
+            )
+
+    def test_masked_codebook_controls_require_booleans(self):
+        labels = torch.tensor([[[0]]])
+        mask = torch.ones(1, 1, dtype=torch.bool)
+        logits = (torch.zeros(1, 1, 2),)
+        loss_fn = MaskedCodebookCrossEntropyLoss()
+
+        with self.assertRaisesRegex(TypeError, "validate must be a bool"):
+            loss_fn(logits, labels, mask, validate=cast(Any, 1))
+        with self.assertRaisesRegex(TypeError, "include_top1 must be a bool"):
+            loss_fn(logits, labels, mask, include_top1=cast(Any, 1))
+
     def test_masked_codebook_cross_entropy_rejects_no_valid_frames(self):
         labels = torch.full((2, 1, 1), -1)
         mask = torch.zeros(2, 1, dtype=torch.bool)
@@ -1217,6 +1241,14 @@ class LossTest(unittest.TestCase):
 
         torch.testing.assert_close(direct, masked)
         self.assertEqual(direct.ndim, 0)
+
+    def test_packed_codebook_accepts_list_logits(self):
+        labels = torch.tensor([[0], [1]])
+        packed = PackedCodebookLogits([torch.randn(2, 3)], labels)
+
+        loss = MaskedCodebookCrossEntropyLoss()(packed)
+
+        self.assertEqual(loss.ndim, 0)
 
     def test_packed_codebook_routes_through_one_output_observation_hook(self):
         labels = torch.tensor([[0], [1]])

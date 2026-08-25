@@ -148,12 +148,13 @@ def _generate_audio_batch(
     for index in range(len(prompts)):
         waveform = _waveform(chunks[index])
         output_sample_rate = sample_rates[index]
-        output_meta: dict[str, object] = {
-            "backend": backend,
-            "transformer_engine": "vllm_omni",
-        }
-        if meta is not None:
-            output_meta.update(meta[index])
+        output_meta = {} if meta is None else dict(meta[index])
+        output_meta.update(
+            {
+                "backend": backend,
+                "transformer_engine": "vllm_omni",
+            }
+        )
         outputs.append(
             TTSOutput(
                 waveform=waveform,
@@ -204,7 +205,11 @@ def _sampling_params(
     if not params:
         raise RuntimeError("vLLM-Omni returned no stage sampling parameters.")
     talker = cast(StageSamplingParams, params[0])
-    max_new_tokens = options.max_new_tokens or options.extra.get("max_new_tokens")
+    max_new_tokens = (
+        options.max_new_tokens
+        if options.max_new_tokens is not None
+        else options.extra.get("max_new_tokens")
+    )
     if max_new_tokens is not None:
         talker.max_tokens = positive_int(max_new_tokens, "max_new_tokens")
     temperature = (

@@ -123,6 +123,8 @@ class Loss(nn.Module):
         gradient_penalty: bool | None,
         gradient_penalty_scale: float,
     ) -> Tensor:
+        _require_tensor(fake, "fake")
+        _require_tensor(real, "real")
         if not isinstance(combine_inputs, bool):
             raise TypeError("combine_inputs must be a bool.")
         if gradient_penalty is not None and not isinstance(gradient_penalty, bool):
@@ -162,6 +164,7 @@ class Loss(nn.Module):
         return total
 
     def _generator_loss(self, fake: Tensor, real: Tensor | None) -> Tensor:
+        _require_tensor(fake, "fake")
         fake_features, fake_logits = self._discriminate(fake)
         adversarial = self._criterion.generator_loss(fake_logits)
         total = adversarial
@@ -174,6 +177,7 @@ class Loss(nn.Module):
         if self.feature_weight > 0:
             if real is None:
                 raise ValueError("real must be provided when feature matching is enabled.")
+            _require_tensor(real, "real")
             if self._feature is None:
                 raise RuntimeError("feature_loss is not configured.")
             with torch.no_grad():
@@ -216,6 +220,11 @@ class Loss(nn.Module):
             real_logits.append(branch_logits[:real_size])
             fake_logits.append(branch_logits[real_size:])
         return real_logits, fake_logits
+
+
+def _require_tensor(value: object, name: str) -> None:
+    if not isinstance(value, Tensor):
+        raise TypeError(f"GAN {name} input must be a torch.Tensor.")
 
 
 def _collect_discriminator_loss(

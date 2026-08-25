@@ -1032,6 +1032,17 @@ class LightningTest(unittest.TestCase):
             inspect.Parameter.KEYWORD_ONLY,
         )
 
+    def test_model_checkpoint_validates_async_capacity_type_and_range(self):
+        from anytrain.lightning import ModelCheckpoint
+
+        for value in (True, "1", 1.0):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                TypeError, "max_pending_async_saves must be an integer"
+            ):
+                ModelCheckpoint(max_pending_async_saves=cast(Any, value))
+        with self.assertRaisesRegex(ValueError, "must be a positive integer"):
+            ModelCheckpoint(max_pending_async_saves=0)
+
     def test_model_checkpoint_can_be_pickled_before_async_work(self):
         import pickle
 

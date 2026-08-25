@@ -247,7 +247,10 @@ class CheckpointEvaluationTest(unittest.TestCase):
             (root / "step-1.ckpt").touch()
             (root / "step-01.ckpt").touch()
 
-            with self.assertRaisesRegex(ValueError, "multiple files for step 1"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "multiple files for step 1: 'step-01.ckpt' and 'step-1.ckpt'",
+            ):
                 discover_step_checkpoints(root)
 
     def test_requires_a_directory_with_step_checkpoints(self) -> None:

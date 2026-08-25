@@ -25,7 +25,10 @@ def discover_step_checkpoints(directory: str | Path) -> tuple[StepCheckpoint, ..
 
     root = _directory(directory)
     checkpoints: dict[int, StepCheckpoint] = {}
-    for path in root.iterdir():
+    # Snapshot in a deterministic directory order so duplicate-step diagnostics
+    # are stable across filesystems; the returned series is sorted numerically
+    # below.
+    for path in sorted(root.iterdir(), key=lambda item: item.name):
         match = _STEP_CHECKPOINT.fullmatch(path.name)
         if match is None or not path.is_file():
             continue

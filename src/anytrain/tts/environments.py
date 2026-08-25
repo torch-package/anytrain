@@ -216,7 +216,13 @@ def _inventory(installed: Mapping[str, str]) -> dict[str, str]:
             raise ValueError("installed distribution names must be non-empty strings.")
         if not isinstance(found, str) or not found:
             raise ValueError("installed distribution versions must be non-empty strings.")
-        versions[_canonical(distribution)] = found
+        canonical = _canonical(distribution)
+        if canonical in versions:
+            raise ValueError(
+                f"installed distribution inventory contains duplicate normalized name "
+                f"{canonical!r}."
+            )
+        versions[canonical] = found
     return versions
 
 
