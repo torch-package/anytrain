@@ -1,4 +1,15 @@
 from . import checkpoint, experiment, oom, schedule, validation
+from .audit import (
+    AuditSink,
+    JsonlAuditSink,
+    TrainingAuditCallback,
+    audit_collective,
+    audit_directory,
+    audit_enabled,
+    audit_event,
+    audit_operation,
+    set_audit_step,
+)
 from .auto_cost import (
     AutoCostBudget,
     AutoCostCalibration,
@@ -54,6 +65,8 @@ from .oom import (
 from .service import ManagedService, ManagedServiceCallback, ManagedServiceProvider
 
 __all__ = [
+    "AuditSink",
+    "JsonlAuditSink",
     "BackgroundMaterialization",
     "AutoCostBudget",
     "AutoCostCalibration",
@@ -95,6 +108,13 @@ __all__ = [
     "PerformanceReport",
     "RankLogMode",
     "StepInterval",
+    "TrainingAuditCallback",
+    "audit_collective",
+    "audit_directory",
+    "audit_enabled",
+    "audit_event",
+    "audit_operation",
+    "set_audit_step",
     "apply_parameter_trainability",
     "checkpoint",
     "experiment",

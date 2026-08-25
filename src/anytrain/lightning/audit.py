@@ -1,0 +1,238 @@
+"""Task-agnostic Lightning training and collective audit hooks."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any, TypeVar
+
+from lightning import LightningModule, Trainer
+from lightning.pytorch.callbacks import Callback
+
+from . import _capability
+
+_AUDIT_DIR_ENV = "ANYTRAIN_AUDIT_DIR"
+_AUDIT_STEP_ENV = "ANYTRAIN_AUDIT_STEP"
+_T = TypeVar("_T")
+BatchReporter = Callable[[object], Mapping[str, object]]
+
+
+class AuditSink:
+    def emit(self, event: str, **fields: object) -> None:
+        raise NotImplementedError
+
+
+class JsonlAuditSink(AuditSink):
+    """Append flushed JSONL records to a rank-local stream."""
+
+    def __init__(self, directory: str | Path) -> None:
+        self.directory = Path(directory).expanduser()
+        if not str(self.directory):
+            raise ValueError("audit directory must not be empty.")
+
+    def emit(self, event: str, **fields: object) -> None:
+        if not isinstance(event, str) or not event:
+            raise ValueError("audit event must be a non-empty string.")
+        context = _process_context()
+        rank = fields.get("rank", context["rank"])
+        world_size = fields.get("world_size", context["world_size"])
+        record: dict[str, object] = {
+            "event": event,
+            "time_ns": time.time_ns(),
+            "monotonic_ns": time.monotonic_ns(),
+            **{**context, "rank": rank, "world_size": world_size},
+            **_step_context(),
+        }
+        record.update({name: _json_value(value) for name, value in fields.items() if value is not None})
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            path = self.directory / f"rank-{rank}-worker-{context['worker']}.jsonl"
+            payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                view = memoryview(payload)
+                while view:
+                    view = view[os.write(descriptor, view) :]
+            finally:
+                os.close(descriptor)
+        except (OSError, TypeError, ValueError):
+            return
+
+
+def audit_enabled() -> bool:
+    value = os.environ.get(_AUDIT_DIR_ENV)
+    return value is not None and bool(value.strip())
+
+
+def audit_directory() -> Path | None:
+    value = os.environ.get(_AUDIT_DIR_ENV)
+    return None if value is None or not value.strip() else Path(value).expanduser()
+
+
+def set_audit_step(step: int) -> None:
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        raise ValueError("audit step must be a non-negative integer.")
+    os.environ[_AUDIT_STEP_ENV] = str(step)
+
+
+def audit_event(event: str, *, sink: AuditSink | None = None, **fields: object) -> None:
+    actual = sink if sink is not None else _env_sink()
+    if actual is not None:
+        actual.emit(event, **fields)
+
+
+def audit_collective(name: str, operation: Callable[[], _T], *, sink: AuditSink | None = None, **fields: object) -> _T:
+    if not callable(operation):
+        raise TypeError("collective operation must be callable.")
+    if not audit_enabled() and sink is None:
+        return operation()
+    started = time.perf_counter_ns()
+    audit_event("collective_start", sink=sink, collective=name, **fields)
+    try:
+        result = operation()
+    except BaseException as error:
+        audit_event("collective_error", sink=sink, collective=name, latency_ms=(time.perf_counter_ns() - started) / 1_000_000.0, error_type=type(error).__name__, error=str(error)[:500], **fields)
+        raise
+    audit_event("collective_done", sink=sink, collective=name, latency_ms=(time.perf_counter_ns() - started) / 1_000_000.0, **fields)
+    return result
+
+
+def audit_operation(name: str, operation: Callable[[], _T], *, sink: AuditSink | None = None, result_report: Callable[[object], Mapping[str, object]] | None = None, **fields: object) -> _T:
+    """Trace an arbitrary train-side phase such as host-to-device transfer."""
+    if not callable(operation):
+        raise TypeError("audited operation must be callable.")
+    if not audit_enabled() and sink is None:
+        return operation()
+    started = time.perf_counter_ns()
+    audit_event(f"{name}_start", sink=sink, **fields)
+    try:
+        result = operation()
+    except BaseException as error:
+        audit_event(f"{name}_error", sink=sink, latency_ms=(time.perf_counter_ns() - started) / 1_000_000.0, error_type=type(error).__name__, error=str(error)[:1000], **fields)
+        raise
+    result_fields = {} if result_report is None else dict(result_report(result))
+    audit_event(f"{name}_done", sink=sink, latency_ms=(time.perf_counter_ns() - started) / 1_000_000.0, **fields, **result_fields)
+    return result
+
+
+class TrainingAuditCallback(Callback):
+    """Rank/step-aware Lightning lifecycle audit callback."""
+
+    def __init__(self, *, sink: AuditSink | None = None, directory: str | Path | None = None, batch_report: BatchReporter | None = None) -> None:
+        super().__init__()
+        if sink is not None and directory is not None:
+            raise ValueError("pass either sink or directory, not both.")
+        if directory is not None:
+            sink = JsonlAuditSink(directory)
+        if batch_report is not None and not callable(batch_report):
+            raise TypeError("batch_report must be callable when provided.")
+        self.sink, self.batch_report = sink, batch_report
+
+    def _emit(self, event: str, trainer: Trainer, **fields: object) -> None:
+        audit_event(
+            event,
+            sink=self.sink,
+            rank=_capability.global_rank(trainer),
+            world_size=_capability.world_size(trainer),
+            global_step=_capability.global_step(trainer),
+            **fields,
+        )
+
+    def _batch_fields(self, batch: object) -> dict[str, object]:
+        if self.batch_report is None:
+            return {"batch_type": type(batch).__name__}
+        return dict(self.batch_report(batch))
+
+    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        del pl_module
+        set_audit_step(_capability.global_step(trainer))
+        self._emit("fit_start", trainer)
+
+    def on_train_batch_start(self, trainer: Trainer, pl_module: LightningModule, batch: object, batch_idx: int) -> None:
+        del pl_module
+        set_audit_step(_capability.global_step(trainer))
+        self._emit("train_batch_start", trainer, batch_idx=batch_idx, **self._batch_fields(batch))
+
+    def on_before_backward(self, trainer: Trainer, pl_module: LightningModule, loss: object) -> None:
+        del pl_module
+        self._emit("backward_start", trainer, loss_type=type(loss).__name__)
+
+    def on_after_backward(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        del pl_module
+        self._emit("backward_done", trainer)
+
+    def on_before_optimizer_step(self, trainer: Trainer, pl_module: LightningModule, optimizer: Any) -> None:
+        del pl_module, optimizer
+        self._emit("optimizer_step_start", trainer)
+
+    def on_before_zero_grad(self, trainer: Trainer, pl_module: LightningModule, optimizer: Any) -> None:
+        del pl_module, optimizer
+        self._emit("optimizer_step_done", trainer)
+
+    def on_train_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: object, batch: object, batch_idx: int) -> None:
+        del pl_module, outputs
+        set_audit_step(_capability.global_step(trainer))
+        self._emit("train_batch_end", trainer, batch_idx=batch_idx, **self._batch_fields(batch))
+
+    def on_validation_batch_start(self, trainer: Trainer, pl_module: LightningModule, batch: object, batch_idx: int, dataloader_idx: int = 0) -> None:
+        del pl_module
+        self._emit("validation_batch_start", trainer, batch_idx=batch_idx, dataloader_idx=dataloader_idx, **self._batch_fields(batch))
+
+    def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: object, batch: object, batch_idx: int, dataloader_idx: int = 0) -> None:
+        del pl_module, outputs
+        self._emit("validation_batch_end", trainer, batch_idx=batch_idx, dataloader_idx=dataloader_idx, **self._batch_fields(batch))
+
+    def on_exception(self, trainer: Trainer, pl_module: LightningModule, exception: BaseException) -> None:
+        del pl_module
+        self._emit("trainer_exception", trainer, error_type=type(exception).__name__, error=str(exception)[:1000])
+
+    def on_fit_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        del pl_module
+        self._emit("fit_end", trainer)
+
+
+def _env_sink() -> AuditSink | None:
+    directory = audit_directory()
+    return None if directory is None else JsonlAuditSink(directory)
+
+
+def _process_context() -> dict[str, object]:
+    rank, world_size = _env_int("RANK", 0), _env_int("WORLD_SIZE", 1)
+    if rank == 0 and world_size == 1:
+        try:
+            import torch.distributed as dist
+
+            if dist.is_available() and dist.is_initialized():
+                rank, world_size = dist.get_rank(), dist.get_world_size()
+        except (RuntimeError, ValueError):
+            pass
+    return {"rank": rank, "world_size": world_size, "worker": "main", "worker_count": 1, "pid": os.getpid()}
+
+
+def _step_context() -> dict[str, object]:
+    value = os.environ.get(_AUDIT_STEP_ENV)
+    try:
+        return {"step_hint": None if value is None else int(value)}
+    except ValueError:
+        return {"step_hint": None}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _json_value(value: object) -> object:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(child) for key, child in value.items()}
+    return str(value)
+
+
+__all__ = ["AuditSink", "JsonlAuditSink", "TrainingAuditCallback", "audit_collective", "audit_directory", "audit_enabled", "audit_event", "audit_operation", "set_audit_step"]

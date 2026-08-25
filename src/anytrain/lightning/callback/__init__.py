@@ -1,3 +1,4 @@
+from ..audit import TrainingAuditCallback
 from ..oom import OOMDiagnostics
 from .checkpoint import ModelCheckpoint
 from .debug import DebugCallback
@@ -41,6 +42,7 @@ __all__ = [
     "LossOutputProvider",
     "LossSummaryCallback",
     "OOMDiagnostics",
+    "TrainingAuditCallback",
     "ModuleSelector",
     "ModelCheckpoint",
     "ObservationCallback",
