@@ -81,7 +81,9 @@ def test_unit_epochs_trigger_validation_and_checkpoint(tmp_path: Path) -> None:
     validation_data = TensorDataset(torch.ones(1, 1), torch.zeros(1, 1))
     trainer = Trainer(
         accelerator="cpu",
-        callbacks=[schedule, validation.UnitEpochInterval(schedule), checkpoint],
+        # Consumers register with the schedule; their Trainer callback-list order
+        # must not affect the shared unit-boundary decision.
+        callbacks=[checkpoint, validation.UnitEpochInterval(schedule), schedule],
         check_val_every_n_epoch=None,
         enable_model_summary=False,
         enable_progress_bar=False,

@@ -12,7 +12,11 @@ from torch import Tensor
 
 from ..evaluator.weighted import Metric, reduce
 from . import _capability
-from .schedule import UnitScheduleCallback
+from .schedule import (
+    UnitScheduleCallback,
+    UnitScheduleUpdate,
+    register_unit_schedule_consumer,
+)
 
 
 def log(
@@ -164,27 +168,24 @@ class UnitEpochInterval(Callback):
             raise RuntimeError(
                 "distributed unit epoch validation requires a globally synchronized unit clock."
             )
-        raw_callbacks = getattr(trainer, "callbacks", None)
-        if not isinstance(raw_callbacks, list):
-            raise RuntimeError("unit epoch validation requires trainer callbacks.")
-        callbacks = list(raw_callbacks)
-        if callbacks.index(self.schedule) > callbacks.index(self):
-            raise RuntimeError(
-                "UnitScheduleCallback must run before unit epoch validation."
-            )
+        register_unit_schedule_consumer(
+            trainer,
+            self.schedule,
+            self,
+            validation_every_n_epochs=self.every_n_epochs,
+        )
 
-    def on_train_batch_end(
+    def on_unit_schedule_update(
         self,
         trainer: Trainer,
         pl_module: LightningModule,
-        outputs: Any,
-        batch: Any,
-        batch_idx: int,
+        update: UnitScheduleUpdate,
     ) -> None:
-        del pl_module, outputs, batch, batch_idx
-        epoch_loop = trainer.fit_loop.epoch_loop
-        current_iteration = epoch_loop.total_batch_idx
-        due = self.schedule.crossed_unit_epoch_interval(self.every_n_epochs)
+        del pl_module
+        current_iteration = update.batch_index
+        if current_iteration is None:
+            raise RuntimeError("unit schedule update is missing the batch index.")
+        due = update.crossed_unit_epoch_interval(self.every_n_epochs)
         # Lightning checks this value immediately after callback hooks. Setting the
         # next non-matching integer suppresses dataloader-epoch validation.
         trainer.val_check_batch = current_iteration + (1 if due else 2)

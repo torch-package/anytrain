@@ -19,7 +19,11 @@ from lightning.pytorch.callbacks import ModelCheckpoint as LightningModelCheckpo
 from lightning_utilities.core.rank_zero import rank_zero_info
 
 from .. import _capability
-from ..schedule import UnitScheduleCallback
+from ..schedule import (
+    UnitScheduleCallback,
+    UnitScheduleUpdate,
+    register_unit_schedule_consumer,
+)
 
 
 class ModelCheckpoint(LightningModelCheckpoint):
@@ -207,33 +211,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
                 "distributed unit epoch checkpointing requires a globally "
                 "synchronized unit clock."
             )
-        raw_callbacks = getattr(trainer, "callbacks", None)
-        if not isinstance(raw_callbacks, list):
-            raise RuntimeError("unit epoch checkpointing requires trainer callbacks.")
-        schedule_index = next(
-            (
-                index
-                for index, callback in enumerate(raw_callbacks)
-                if callback is schedule
-            ),
-            None,
-        )
-        checkpoint_index = next(
-            (
-                index
-                for index, callback in enumerate(raw_callbacks)
-                if callback is self
-            ),
-            None,
-        )
-        if schedule_index is None or checkpoint_index is None:
-            raise RuntimeError(
-                "unit epoch checkpointing requires both callbacks on the trainer."
-            )
-        if schedule_index > checkpoint_index:
-            raise RuntimeError(
-                "UnitScheduleCallback must run before unit epoch checkpointing."
-            )
+        register_unit_schedule_consumer(trainer, schedule, self)
 
     def on_train_batch_start(
         self,
@@ -264,19 +242,29 @@ class ModelCheckpoint(LightningModelCheckpoint):
                 batch_idx,
             )
             return
-        if not pl_module.automatic_optimization:
-            raise RuntimeError(
-                "unit epoch checkpointing requires automatic optimization."
-            )
-        if not schedule.crossed_unit_epoch_interval(every_n_epochs):
+        # Unit-triggered saves are dispatched by UnitScheduleCallback after it
+        # has produced the corresponding unit-clock update.
+        del trainer, pl_module, outputs, batch, batch_idx
+
+    def on_unit_schedule_update(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        update: UnitScheduleUpdate,
+    ) -> None:
+        every_n_epochs = self.every_n_unit_epochs
+        if self.unit_schedule is None or every_n_epochs is None:
+            return
+        if update.advanced_unit_epochs <= 0:
+            return
+        if not update.crossed_unit_epoch_interval(every_n_epochs):
             return
         if self._should_skip_saving_checkpoint(trainer):
             return
 
         monitor_candidates = self._monitor_candidates(trainer)
         if self.monitor is not None and (
-            self.monitor not in monitor_candidates
-            or _validation_due_after_batch(trainer)
+            self.monitor not in monitor_candidates or update.validation_due
         ):
             self._defer_save_until_validation = True
             return
@@ -1081,20 +1069,6 @@ class ModelCheckpoint(LightningModelCheckpoint):
             return left.is_file() and left.samefile(cls._target_path(right))
         except (OSError, ValueError):
             return False
-
-
-def _validation_due_after_batch(trainer: pl.Trainer) -> bool:
-    if not trainer.enable_validation:
-        return False
-    if trainer.should_stop and trainer.fit_loop._can_stop_early:
-        return True
-    if trainer.check_val_every_n_epoch is not None:
-        return False
-    interval = trainer.val_check_batch
-    if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
-        return False
-    current_iteration = trainer.fit_loop.epoch_loop.total_batch_idx
-    return (current_iteration + 1) % interval == 0
 
 
 def _storage_error(cause: BaseException) -> RuntimeError:

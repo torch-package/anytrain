@@ -33,6 +33,39 @@ class _ResolvedUnits:
     batches: int
 
 
+@dataclass(frozen=True)
+class UnitScheduleUpdate:
+    """One training-batch progress update from a unit-clock schedule."""
+
+    batch_index: int | None
+    global_step: int
+    completed_unit_epochs: int | None
+    previous_unit_epochs: int | None
+    advanced_unit_epochs: int
+    validation_due: bool
+
+    def crossed_unit_epoch_interval(self, every_n_epochs: int) -> bool:
+        if isinstance(every_n_epochs, bool) or not isinstance(every_n_epochs, int):
+            raise TypeError("every_n_epochs must be an integer.")
+        if every_n_epochs <= 0:
+            raise ValueError("every_n_epochs must be positive.")
+        if self.completed_unit_epochs is None or self.previous_unit_epochs is None:
+            raise RuntimeError("unit epochs require clock.units_per_epoch.")
+        return (
+            self.completed_unit_epochs // every_n_epochs
+            > self.previous_unit_epochs // every_n_epochs
+        )
+
+
+class UnitScheduleConsumer(Protocol):
+    def on_unit_schedule_update(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        update: UnitScheduleUpdate,
+    ) -> None: ...
+
+
 class _AllGatherStrategy(Protocol):
     def all_gather(self, tensor: torch.Tensor) -> torch.Tensor: ...
 
@@ -83,6 +116,8 @@ class UnitScheduleCallback(pl.Callback):
         self._measurements: deque[_Measurement] = deque()
         self._measurement_batches = 0
         self._unit_epochs_advanced = 0
+        self._unit_schedule_consumers: list[UnitScheduleConsumer] = []
+        self._unit_validation_intervals: set[int] = set()
 
     @property
     def state_key(self) -> str:
@@ -104,13 +139,26 @@ class UnitScheduleCallback(pl.Callback):
         return self._unit_epochs_advanced
 
     def crossed_unit_epoch_interval(self, every_n_epochs: int) -> bool:
-        if isinstance(every_n_epochs, bool) or not isinstance(every_n_epochs, int):
-            raise TypeError("every_n_epochs must be an integer.")
-        if every_n_epochs <= 0:
-            raise ValueError("every_n_epochs must be positive.")
+        _validate_unit_epoch_interval(every_n_epochs)
         current = self.completed_unit_epochs
         previous = current - self.unit_epochs_advanced
         return current // every_n_epochs > previous // every_n_epochs
+
+    def register_unit_schedule_consumer(
+        self,
+        consumer: UnitScheduleConsumer,
+        *,
+        validation_every_n_epochs: int | None = None,
+    ) -> None:
+        """Register a callback that consumes every unit-clock update."""
+
+        if not callable(getattr(consumer, "on_unit_schedule_update", None)):
+            raise TypeError("unit schedule consumer must expose on_unit_schedule_update.")
+        if validation_every_n_epochs is not None:
+            _validate_unit_epoch_interval(validation_every_n_epochs)
+            self._unit_validation_intervals.add(validation_every_n_epochs)
+        if not any(candidate is consumer for candidate in self._unit_schedule_consumers):
+            self._unit_schedule_consumers.append(consumer)
 
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._unit_epochs_advanced = 0
@@ -165,6 +213,7 @@ class UnitScheduleCallback(pl.Callback):
         global_step = _capability.global_step(trainer)
         optimizer_steps = self._optimizer_steps(global_step)
         if optimizer_steps == 0:
+            self._notify_unit_schedule_consumers(trainer, pl_module, batch_idx)
             return
 
         self._sync_cuda(pl_module)
@@ -207,6 +256,39 @@ class UnitScheduleCallback(pl.Callback):
             measurement,
             force=should_stop or self.unit_epochs_advanced > 0,
         )
+        self._notify_unit_schedule_consumers(trainer, pl_module, batch_idx)
+
+    def _notify_unit_schedule_consumers(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        batch_idx: int,
+    ) -> None:
+        completed: int | None
+        if self.clock.units_per_epoch is None:
+            completed = None
+            previous = None
+        else:
+            completed = self.completed_unit_epochs
+            previous = completed - self.unit_epochs_advanced
+        validation_due = (
+            completed is not None
+            and previous is not None
+            and any(
+                completed // interval > previous // interval
+                for interval in self._unit_validation_intervals
+            )
+        )
+        update = UnitScheduleUpdate(
+            batch_index=_total_batch_index(trainer, fallback=batch_idx),
+            global_step=_capability.global_step(trainer),
+            completed_unit_epochs=completed,
+            previous_unit_epochs=previous,
+            advanced_unit_epochs=self.unit_epochs_advanced,
+            validation_due=validation_due,
+        )
+        for consumer in tuple(self._unit_schedule_consumers):
+            consumer.on_unit_schedule_update(trainer, pl_module, update)
 
     def on_train_epoch_end(
         self,
@@ -570,6 +652,45 @@ def _next_log_at(total_valid: float, every: float | None) -> float | None:
     return (math.floor(total_valid / every) + 1) * every
 
 
+def _validate_unit_epoch_interval(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("every_n_epochs must be an integer.")
+    if value <= 0:
+        raise ValueError("every_n_epochs must be positive.")
+    return value
+
+
+def _total_batch_index(trainer: pl.Trainer, *, fallback: int) -> int | None:
+    fit_loop = getattr(trainer, "fit_loop", None)
+    epoch_loop = getattr(fit_loop, "epoch_loop", None)
+    value = getattr(epoch_loop, "total_batch_idx", None)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback if isinstance(fallback, int) and not isinstance(fallback, bool) else None
+    return value
+
+
+def register_unit_schedule_consumer(
+    trainer: pl.Trainer,
+    schedule: UnitScheduleCallback,
+    consumer: UnitScheduleConsumer,
+    *,
+    validation_every_n_epochs: int | None = None,
+) -> None:
+    """Attach a runtime consumer without imposing callback-list ordering."""
+
+    if not isinstance(schedule, UnitScheduleCallback):
+        raise TypeError("unit schedule consumer requires a UnitScheduleCallback.")
+    raw_callbacks = getattr(trainer, "callbacks", None)
+    if not isinstance(raw_callbacks, list) or not any(
+        callback is schedule for callback in raw_callbacks
+    ):
+        raise RuntimeError("unit schedule consumer requires the schedule on the Trainer.")
+    schedule.register_unit_schedule_consumer(
+        consumer,
+        validation_every_n_epochs=validation_every_n_epochs,
+    )
+
+
 def _non_negative_float(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError(f"{name} must be a real number.")
@@ -597,4 +718,9 @@ def _lr_groups(value: object, name: str) -> list[list[float]]:
     return result
 
 
-__all__ = ["UnitScheduleCallback"]
+__all__ = [
+    "UnitScheduleCallback",
+    "UnitScheduleConsumer",
+    "UnitScheduleUpdate",
+    "register_unit_schedule_consumer",
+]

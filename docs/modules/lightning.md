@@ -96,9 +96,12 @@ callback 的公开 re-export 由 `anytrain.lightning.callback` 唯一维护，ro
 
 `UnitClock.units_per_epoch` 可选地在同一 global-unit clock 上定义逻辑 epoch。它不修改 Lightning
 的 dataloader epoch 或 sampler `set_epoch()`；`UnitScheduleCallback` 只在 optimizer-step 边界计算
-本次 update 跨过的 unit epoch 数，并记录 `progress/unit_epoch` 与
-`progress/unit_epoch_progress`。一个变长 update 可以越过多个边界，但每个消费 callback 在该
-update 上最多执行一次。
+本次 optimizer update 跨过的 unit epoch 数，并记录 `progress/unit_epoch` 与
+`progress/unit_epoch_progress`；每个 train-batch hook 都会发布一个只读 `UnitScheduleUpdate` 事件，
+其中 unit boundary 字段只在 optimizer-step boundary 更新。validation、
+checkpoint 等下游 callback 通过 consumer 接口消费该事件；它们不再依赖 Trainer callback-list 的相对
+顺序，也不会各自重新推断 unit boundary。一个变长 update 可以越过多个边界，但每个消费 callback
+在该 update 上最多执行一次。
 
 schedule spec 构造器拥有字段不变量：duration、unit interval、stop position 和 curve ratio 只接受
 有限 host real number，不接受 bool、Tensor 或字符串转换；整数窗口严格要求 `int`，phase name 必须
@@ -168,9 +171,9 @@ callback。数值归约委托给 `evaluator.weighted.reduce()`，共享 weights 
 count。
 
 下游负责创建 validation dataloader，并可继续使用 Lightning 的 step/epoch cadence，或显式加入
-`UnitEpochInterval` 让 validation 消费共享 unit clock。该 callback 必须排在
-`UnitScheduleCallback` 后；DDP 下要求 `sync_distributed=True`。没有 validation dataloader 时不能
-启用该 callback。
+`UnitEpochInterval` 让 validation 消费共享 unit clock。`UnitEpochInterval` 会在 train start 向
+`UnitScheduleCallback` 注册 consumer，不要求它在 Trainer callback-list 中排在 schedule 后；DDP 下
+要求 `sync_distributed=True`。没有 validation dataloader 时不能启用该 callback。
 
 ## Experiment 能力
 
@@ -266,11 +269,11 @@ global rank 0 完成 backlog/error preflight，并把错误结果同步到所有
 临时 source；后台复制期间已有 last 保持可读，首次保存则暂不创建。显式 wait 或训练结束 drain
 后保证新 last 可读。旧 top-k 仅在该更新成功后删除；更新失败时旧链接及其目标都会保留。它用于目标 checkpoint 目录位于 NFS 等慢文件系统时，缩短训练主循环等待目标文件系统写入的时间；传入 `async_save=False` 时保持原版同步行为。
 
-设置 `unit_schedule=<UnitScheduleCallback>` 与 `every_n_unit_epochs=N` 后，checkpoint 复用同一个
-unit-epoch boundary；该触发方式与 Lightning 的 step/time/dataloader-epoch trigger 互斥。若同时
-配置 validation-only monitor，checkpoint 会等同一边界的 validation 完成后再保存。schedule 与
-checkpoint callback 都必须注册到 Trainer，且 schedule 排在前面；DDP 下同样要求
-`sync_distributed=True`。
+设置 `unit_schedule=<UnitScheduleCallback>` 与 `every_n_unit_epochs=N` 后，checkpoint 消费 schedule
+发布的同一个 unit-epoch update；该触发方式与 Lightning 的 step/time/dataloader-epoch trigger 互斥。
+若同时配置 validation-only monitor，checkpoint 会根据同一 update 的 validation due 标记等 validation
+完成后再保存。schedule、validation 和 checkpoint callback 都只需注册到 Trainer，不要求特定相对
+顺序；DDP 下同样要求 `sync_distributed=True`。
 
 同一次 top-k 和 `save_last` 保存会复用一份本地序列化结果：先异步发布持久 top-k checkpoint，再从它原子更新或链接 `last.ckpt`，不会重复调用 `trainer.save_checkpoint()`。异常 checkpoint 同样复用该路径；`save_top_k=0` 只保存 `last.ckpt` 一次。
 

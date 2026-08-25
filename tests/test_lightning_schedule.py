@@ -19,6 +19,7 @@ from anytrain.lightning.schedule import (
     UnitBatch,
     UnitClock,
     UnitScheduleCallback,
+    UnitScheduleUpdate,
     padding_ratio,
     require_unit_name,
     units_per_second,
@@ -316,6 +317,52 @@ class ScheduleTest(unittest.TestCase):
         values, _ = module.log_dict_calls[-1]
         self.assertEqual(values["progress/unit_epoch"], 2)
         self.assertAlmostEqual(values["progress/unit_epoch_progress"], 0.2)
+
+    def test_unit_schedule_dispatches_read_only_updates_to_consumers(self):
+        optimizer = _optimizer()
+        runtime = ScheduleRuntime(
+            LRSchedule(
+                clock=UnitClock(
+                    unit="tokens",
+                    provider=_Provider(UnitBatch(valid=5.0, unit="tokens")),
+                    units_per_epoch=5.0,
+                    sync_cuda=False,
+                ),
+                phases=[Phase("main", duration=20.0, lr=Constant(1.0))],
+            )
+        )
+        callback = runtime.unit_callback()
+        updates: list[UnitScheduleUpdate] = []
+
+        class Consumer:
+            def on_unit_schedule_update(self, trainer, pl_module, update):
+                del trainer, pl_module
+                updates.append(update)
+
+        callback.register_unit_schedule_consumer(Consumer())
+        trainer = SimpleNamespace(
+            global_step=0,
+            optimizers=[optimizer],
+            lr_scheduler_configs=[],
+            should_stop=False,
+            fit_loop=SimpleNamespace(
+                epoch_loop=SimpleNamespace(total_batch_idx=0),
+            ),
+        )
+        module = _module()
+        callback.on_train_start(trainer, module)
+        with patch("time.perf_counter", side_effect=[1.0, 2.0]):
+            callback.on_train_batch_start(trainer, module, batch=None, batch_idx=0)
+            trainer.global_step = 1
+            callback.on_train_batch_end(
+                trainer, module, outputs=None, batch=None, batch_idx=0
+            )
+
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0].completed_unit_epochs, 1)
+        self.assertEqual(updates[0].previous_unit_epochs, 0)
+        self.assertEqual(updates[0].advanced_unit_epochs, 1)
+        self.assertTrue(updates[0].crossed_unit_epoch_interval(1))
 
     def test_unit_clock_state_rejects_coerced_or_malformed_lrs(self):
         schedule = LRSchedule(
