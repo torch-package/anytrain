@@ -11,7 +11,6 @@ from .audit import (
     audit_flush,
     audit_flush_interval,
     audit_keep_steps,
-    audit_max_events,
     audit_operation,
     set_audit_step,
 )
@@ -122,7 +121,6 @@ __all__ = [
     "audit_flush",
     "audit_flush_interval",
     "audit_keep_steps",
-    "audit_max_events",
     "audit_operation",
     "set_audit_step",
     "apply_parameter_trainability",

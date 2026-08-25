@@ -22,13 +22,13 @@ from lightning.pytorch.callbacks import Callback
 from . import _capability
 
 _AUDIT_DIR_ENV = "ANYTRAIN_AUDIT_DIR"
-_AUDIT_STEP_ENV = "ANYTRAIN_AUDIT_STEP"
+_AUDIT_STEP_ENV = "ANY_AUDIT_STEP"
 _AUDIT_KEEP_STEPS_ENV = "ANYTRAIN_AUDIT_KEEP_STEPS"
 _AUDIT_FLUSH_INTERVAL_ENV = "ANYTRAIN_AUDIT_FLUSH_INTERVAL"
-_AUDIT_MAX_EVENTS_ENV = "ANYTRAIN_AUDIT_MAX_EVENTS"
 _DEFAULT_KEEP_STEPS = 8
 _DEFAULT_FLUSH_INTERVAL = 1.0
-_DEFAULT_MAX_EVENTS = 8192
+_MAX_EVENTS_PER_SINK = 8192
+_audit_step: int | None = None
 _T = TypeVar("_T")
 BatchReporter = Callable[[object], Mapping[str, object]]
 
@@ -61,7 +61,7 @@ class JsonlAuditSink(AuditSink):
         self.flush_interval = _non_negative_float(
             flush_interval, _AUDIT_FLUSH_INTERVAL_ENV, _DEFAULT_FLUSH_INTERVAL
         )
-        self.max_events = _positive_int(max_events, _AUDIT_MAX_EVENTS_ENV, _DEFAULT_MAX_EVENTS)
+        self.max_events = _positive_int(max_events, None, _MAX_EVENTS_PER_SINK)
         self._pid = os.getpid()
         self._records: deque[dict[str, object]] = deque()
         self._lock = threading.RLock()
@@ -250,8 +250,10 @@ def audit_directory() -> Path | None:
 
 
 def set_audit_step(step: int) -> None:
+    global _audit_step
     if isinstance(step, bool) or not isinstance(step, int) or step < 0:
         raise ValueError("audit step must be a non-negative integer.")
+    _audit_step = step
     os.environ[_AUDIT_STEP_ENV] = str(step)
 
 
@@ -413,7 +415,7 @@ def _env_sink() -> AuditSink | None:
         _cached_signature = None
         _cached_pid = None
         return None
-    signature = (str(directory), audit_keep_steps(), audit_flush_interval(), audit_max_events())
+    signature = (str(directory), audit_keep_steps(), audit_flush_interval())
     if _cached_sink is not None and _cached_pid == pid and _cached_signature == signature:
         return _cached_sink
     if _cached_sink is not None and _cached_pid == pid:
@@ -422,7 +424,6 @@ def _env_sink() -> AuditSink | None:
         directory,
         keep_steps=signature[1],
         flush_interval=signature[2],
-        max_events=signature[3],
     )
     _cached_signature, _cached_pid = signature, pid
     return _cached_sink
@@ -434,10 +435,6 @@ def audit_keep_steps() -> int:
 
 def audit_flush_interval() -> float:
     return _non_negative_float(None, _AUDIT_FLUSH_INTERVAL_ENV, _DEFAULT_FLUSH_INTERVAL)
-
-
-def audit_max_events() -> int:
-    return _positive_int(None, _AUDIT_MAX_EVENTS_ENV, _DEFAULT_MAX_EVENTS)
 
 
 def _process_context() -> dict[str, object]:
@@ -454,11 +451,14 @@ def _process_context() -> dict[str, object]:
 
 
 def _step_context() -> dict[str, object]:
-    value = os.environ.get(_AUDIT_STEP_ENV)
-    try:
-        return {"step_hint": None if value is None else int(value)}
-    except ValueError:
-        return {"step_hint": None}
+    value = _audit_step
+    if value is None:
+        raw = os.environ.get(_AUDIT_STEP_ENV)
+        try:
+            value = None if raw is None else int(raw)
+        except ValueError:
+            value = None
+    return {"step_hint": value}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -528,9 +528,9 @@ def _bounded_records(
     return ordered[-max_events:]
 
 
-def _positive_int(value: int | None, env_name: str, default: int) -> int:
+def _positive_int(value: int | None, env_name: str | None, default: int) -> int:
     if value is None:
-        raw = os.environ.get(env_name)
+        raw = None if env_name is None else os.environ.get(env_name)
         try:
             value = default if raw is None else int(raw)
         except (TypeError, ValueError):
@@ -557,4 +557,4 @@ def _non_negative_float(value: float | None, env_name: str, default: float) -> f
     return float(value)
 
 
-__all__ = ["AuditSink", "JsonlAuditSink", "TrainingAuditCallback", "audit_close", "audit_collective", "audit_directory", "audit_enabled", "audit_event", "audit_flush", "audit_flush_interval", "audit_keep_steps", "audit_max_events", "audit_operation", "set_audit_step"]
+__all__ = ["AuditSink", "JsonlAuditSink", "TrainingAuditCallback", "audit_close", "audit_collective", "audit_directory", "audit_enabled", "audit_event", "audit_flush", "audit_flush_interval", "audit_keep_steps", "audit_operation", "set_audit_step"]
