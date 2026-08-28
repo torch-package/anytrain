@@ -7,6 +7,39 @@ import torch
 from torch.optim import Optimizer
 
 
+def checkpoint_optimizers(optimizer: Optimizer) -> tuple[Optimizer, ...]:
+    """Return leaf optimizers suitable for distributed checkpoint state dict APIs.
+
+    ``CompositeOptimizer.state_dict()`` intentionally preserves child names for
+    Lightning and scheduler checkpoint compatibility. PyTorch distributed
+    checkpoint APIs instead require ordinary optimizer state dicts, so callers
+    should pass this result to ``get_optimizer_state_dict()`` and
+    ``set_optimizer_state_dict()``.
+    """
+    if not isinstance(optimizer, Optimizer):
+        raise TypeError("optimizer must be a torch.optim.Optimizer.")
+
+    optimizers: list[Optimizer] = []
+    seen: set[int] = set()
+
+    def visit(current: Optimizer) -> None:
+        if id(current) in seen:
+            raise ValueError(
+                "An optimizer instance appears more than once in a composite optimizer."
+            )
+        seen.add(id(current))
+
+        if isinstance(current, CompositeOptimizer):
+            for child in current.optimizers.values():
+                visit(child)
+            return
+
+        optimizers.append(current)
+
+    visit(optimizer)
+    return tuple(optimizers)
+
+
 class CompositeOptimizer(Optimizer):
     """Expose multiple optimizers as one optimizer for schedulers and Lightning."""
 

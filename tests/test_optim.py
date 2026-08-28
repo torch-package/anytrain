@@ -9,6 +9,7 @@ import anytrain.optim as optim_api
 import anytrain.optim.scheduler as scheduler_api
 from anytrain.optim import (
     CompositeOptimizer,
+    checkpoint_optimizers,
     create_adamw_optimizer,
     create_llm_optimizer,
     create_muon_adamw_optimizer,
@@ -44,6 +45,59 @@ def _adamw_options(lr: float, weight_decay: float = 0.1) -> AdamWOptions:
 
 def _muon_options(lr: float, weight_decay: float = 0.1) -> MuonOptions:
     return {"lr": lr, "weight_decay": weight_decay}
+
+
+class CheckpointOptimizersTest(unittest.TestCase):
+    def test_checkpoint_optimizers_returns_regular_optimizer(self):
+        parameter = nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.SGD([parameter], lr=1.0)
+
+        self.assertEqual(checkpoint_optimizers(optimizer), (optimizer,))
+
+    def test_checkpoint_optimizers_flattens_composite_in_child_order(self):
+        first = torch.optim.SGD([nn.Parameter(torch.tensor(1.0))], lr=1.0)
+        second = torch.optim.AdamW([nn.Parameter(torch.tensor(2.0))], lr=1.0)
+        optimizer = CompositeOptimizer({"first": first, "second": second})
+
+        self.assertEqual(checkpoint_optimizers(optimizer), (first, second))
+
+    def test_checkpoint_optimizers_recursively_flattens_composites(self):
+        first = torch.optim.SGD([nn.Parameter(torch.tensor(1.0))], lr=1.0)
+        second = torch.optim.AdamW([nn.Parameter(torch.tensor(2.0))], lr=1.0)
+        third = torch.optim.SGD([nn.Parameter(torch.tensor(3.0))], lr=1.0)
+        optimizer = CompositeOptimizer(
+            {
+                "nested": CompositeOptimizer({"first": first, "second": second}),
+                "third": third,
+            }
+        )
+
+        self.assertEqual(checkpoint_optimizers(optimizer), (first, second, third))
+
+    def test_checkpoint_optimizers_rejects_duplicate_child_instances(self):
+        parameter = nn.Parameter(torch.tensor(1.0))
+        child = torch.optim.SGD([parameter], lr=1.0)
+        optimizer = CompositeOptimizer({"first": child})
+        optimizer.optimizers["duplicate"] = child
+
+        with self.assertRaisesRegex(ValueError, "appears more than once"):
+            checkpoint_optimizers(optimizer)
+
+    def test_checkpoint_optimizers_supports_distributed_checkpoint_state_dict(self):
+        from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict
+
+        model = nn.Linear(2, 2)
+        sgd = torch.optim.SGD([model.weight], lr=0.1, momentum=0.9)
+        adamw = torch.optim.AdamW([model.bias], lr=0.1)
+        optimizer = CompositeOptimizer({"sgd": sgd, "adamw": adamw})
+
+        model(torch.ones(1, 2)).sum().backward()
+        optimizer.step()
+        state = get_optimizer_state_dict(model, checkpoint_optimizers(optimizer))
+
+        self.assertEqual(set(state), {"state", "param_groups"})
+        self.assertEqual(len(state["state"]), 2)
+        self.assertEqual(len(state["param_groups"]), 2)
 
 
 class TinyLLM(nn.Module):

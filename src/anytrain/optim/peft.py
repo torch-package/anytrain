@@ -64,7 +64,7 @@ def lora_factor_pairs(
                 f"PEFT LoRA layer {label!r} uses tensor parallelism, which LoRA-Muon "
                 "does not support."
             )
-        if type(layer) is not PeftLinear:
+        if not _is_supported_peft_linear(layer):
             raise TypeError(
                 f"PEFT LoRA layer {label!r} has unsupported type "
                 f"{type(layer).__name__}; only vanilla PEFT Linear is supported."
@@ -221,7 +221,9 @@ def _factor_pair(
 
     right_module = layer.lora_A[adapter_name]
     left_module = layer.lora_B[adapter_name]
-    if type(right_module) is not nn.Linear or type(left_module) is not nn.Linear:
+    if not _is_supported_linear_factor(right_module) or not _is_supported_linear_factor(
+        left_module
+    ):
         raise TypeError(
             f"PEFT adapter {adapter_name!r} on layer {path!r} must use plain nn.Linear "
             "A/B factors."
@@ -262,6 +264,26 @@ def _factor_pair(
             f"PEFT adapter {adapter_name!r} on layer {path!r} scale must be positive and finite."
         )
     return LoRAFactorPair(left=left, right=right, scale=scale_value)
+
+
+def _is_supported_peft_linear(layer: nn.Module) -> bool:
+    if type(layer) is PeftLinear:
+        return True
+    try:
+        from torch.distributed.fsdp import FSDPModule
+    except ImportError:  # pragma: no cover - torch>=2.8 exposes FSDPModule.
+        return False
+    return isinstance(layer, FSDPModule) and isinstance(layer, PeftLinear)
+
+
+def _is_supported_linear_factor(module: nn.Module) -> bool:
+    if type(module) is nn.Linear:
+        return True
+    try:
+        from torch.distributed.fsdp import FSDPModule
+    except ImportError:  # pragma: no cover - torch>=2.8 exposes FSDPModule.
+        return False
+    return isinstance(module, FSDPModule) and isinstance(module, nn.Linear)
 
 
 def _uses_tensor_parallel(layer: LoraLayer) -> bool:

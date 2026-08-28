@@ -35,6 +35,25 @@ else:
 
 @unittest.skipUnless(PEFT_AVAILABLE, "PEFT is not installed")
 class PeftLoRAMuonTest(unittest.TestCase):
+    def test_llm_helper_routes_fsdp2_wrapped_peft_linear_to_lora_muon(self):
+        from torch.distributed.fsdp import FSDPModule
+
+        model = _linear_model(bias="all", init_lora_weights=False)
+        layer = _linear_layers(model)[0]
+        wrapped_type = type("FSDPLinear", (FSDPModule, PeftLinear), {})
+        layer.__class__ = wrapped_type
+
+        optimizer = cast(
+            CompositeOptimizer,
+            create_llm_optimizer(model, preset="sft", optimizer="muon", lr=0.03),
+        )
+
+        self.assertIsInstance(optimizer, CompositeOptimizer)
+        self.assertIsInstance(optimizer.optimizers["lora_muon"], LoRAMuon)
+        pair = lora_factor_pairs(model)[0]
+        self.assertIs(type(pair.left), nn.Parameter)
+        self.assertIs(type(pair.right), nn.Parameter)
+
     def setUp(self):
         torch.manual_seed(11)
 

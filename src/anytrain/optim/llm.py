@@ -93,7 +93,18 @@ def _peft_linear_lora_present(module: nn.Module) -> bool:
         from peft.tuners.lora import Linear as PeftLinear
     except ImportError:
         return False
-    return any(type(child) is PeftLinear for child in module.modules())
+    return any(_is_supported_peft_linear(child, PeftLinear) for child in module.modules())
+
+
+def _is_supported_peft_linear(module: nn.Module, peft_linear: type[nn.Module]) -> bool:
+    """Accept PEFT Linear and its FSDP2 dynamic wrapper only."""
+    if type(module) is peft_linear:
+        return True
+    try:
+        from torch.distributed.fsdp import FSDPModule
+    except ImportError:  # pragma: no cover - torch>=2.8 exposes FSDPModule.
+        return False
+    return isinstance(module, FSDPModule) and isinstance(module, peft_linear)
 
 
 def _preset(value: str) -> _OptimizationPreset:
