@@ -69,7 +69,6 @@ class LRSchedule:
     clock: Clock
     phases: Sequence[Phase]
     stop_at: float | None = None
-    stop_at_end: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.clock, (StepClock, UnitClock)):
@@ -86,9 +85,7 @@ class LRSchedule:
             raise ValueError("schedule phase names must be unique.")
         if self.stop_at is not None:
             _require_positive(self.stop_at, "stop_at")
-        if not isinstance(self.stop_at_end, bool):
-            raise TypeError("stop_at_end must be a boolean.")
-        if isinstance(self.clock, StepClock) and (self.stop_at is not None or self.stop_at_end):
+        if isinstance(self.clock, StepClock) and self.stop_at is not None:
             raise ValueError("step-clock schedules use Lightning max_steps for stopping.")
 
     @property
@@ -104,11 +101,7 @@ class LRSchedule:
         return tuple(milestones)
 
     def stop_unit(self) -> float | None:
-        if self.stop_at is not None:
-            return float(self.stop_at)
-        if self.stop_at_end:
-            return self.total_duration
-        return None
+        return None if self.stop_at is None else float(self.stop_at)
 
     def lr_ratio(self, position: float) -> float:
         value = _require_non_negative(position, "schedule position")
@@ -122,6 +115,8 @@ class LRSchedule:
         return curve_ratio(self.phases[-1].lr, 1.0)
 
     def fingerprint(self) -> str:
+        """Return the resumable LR/clock identity, excluding the stop budget."""
+
         clock = "unit" if isinstance(self.clock, UnitClock) else "step"
         unit = self.clock.unit if isinstance(self.clock, UnitClock) else ""
         units_per_epoch = (
@@ -131,16 +126,7 @@ class LRSchedule:
             (phase.name, float(phase.duration), type(phase.lr).__name__, repr(phase.lr))
             for phase in self.phases
         )
-        return repr(
-            (
-                clock,
-                unit,
-                units_per_epoch,
-                phases,
-                self.stop_at,
-                self.stop_at_end,
-            )
-        )
+        return repr((clock, unit, units_per_epoch, phases))
 
 
 def _require_positive_int(value: int, name: str) -> None:

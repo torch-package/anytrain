@@ -223,13 +223,13 @@ class ScheduleTest(unittest.TestCase):
             {"on_step": True, "on_epoch": False, "logger": True, "sync_dist": False},
         )
 
-    def test_unit_clock_stop_at_end_and_state_round_trip(self):
+    def test_unit_clock_stop_at_and_state_round_trip(self):
         optimizer = _optimizer()
         provider = _Provider(UnitBatch(valid=6.0, unit="tokens"))
         schedule = LRSchedule(
             clock=UnitClock(unit="tokens", provider=provider, sync_cuda=False),
             phases=[Phase("main", duration=5.0, lr=Constant(1.0))],
-            stop_at_end=True,
+            stop_at=5.0,
         )
         callback = UnitScheduleCallback(schedule)
         trainer = SimpleNamespace(
@@ -257,6 +257,103 @@ class ScheduleTest(unittest.TestCase):
         restored = UnitScheduleCallback(schedule)
         restored.load_state_dict(state)
         self.assertEqual(restored.total_valid, 6.0)
+        self.assertEqual(state["stop_at"], 5.0)
+
+    def test_schedule_accepts_only_explicit_stop_at_budget(self):
+        with self.assertRaises(TypeError):
+            cast(Any, LRSchedule)(
+                clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+                phases=[Phase("main", duration=5.0, lr=Constant(1.0))],
+                stop_at_end=True,
+            )
+
+    def test_unit_clock_budget_is_not_part_of_fingerprint(self):
+        provider = _Provider()
+        old_schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=provider, sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=100.0,
+        )
+        new_schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=provider, sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=300.0,
+        )
+        self.assertEqual(old_schedule.fingerprint(), new_schedule.fingerprint())
+
+        source = UnitScheduleCallback(old_schedule)
+        source.total_valid = 100.0
+        restored = UnitScheduleCallback(new_schedule)
+        restored.load_state_dict(source.state_dict())
+        self.assertEqual(restored.total_valid, 100.0)
+
+    def test_unit_clock_accepts_legacy_budgeted_fingerprint(self):
+        schedule = LRSchedule(
+            clock=UnitClock(
+                unit="tokens",
+                provider=_Provider(),
+                units_per_epoch=2.0,
+                sync_cuda=False,
+            ),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=300.0,
+        )
+        legacy_fingerprint = repr(
+            (
+                "unit",
+                "tokens",
+                2.0,
+                (("main", 10.0, "Constant", "Constant(value=1.0)"),),
+                100.0,
+                False,
+            )
+        )
+        state = {
+            "unit": "tokens",
+            "total_valid": 100.0,
+            "total_padded": 100.0,
+            "base_lrs": None,
+            "last_global_step": None,
+            "last_lrs": None,
+            "schedule": legacy_fingerprint,
+        }
+        restored = UnitScheduleCallback(schedule)
+        restored.load_state_dict(state)
+        self.assertEqual(restored.total_valid, 100.0)
+
+    def test_unit_clock_resume_rejects_budget_reduction(self):
+        old_schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=100.0,
+        )
+        new_schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=50.0,
+        )
+        state = UnitScheduleCallback(old_schedule).state_dict()
+        with self.assertRaisesRegex(ValueError, "cannot be smaller"):
+            UnitScheduleCallback(new_schedule).load_state_dict(state)
+
+    def test_unit_clock_resume_marks_checkpoint_at_budget(self):
+        schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=5.0,
+        )
+        source = UnitScheduleCallback(schedule)
+        source.total_valid = 6.0
+        restored = UnitScheduleCallback(schedule)
+        restored.load_state_dict(source.state_dict())
+        trainer = SimpleNamespace(
+            global_step=0,
+            optimizers=[_optimizer()],
+            lr_scheduler_configs=[],
+            should_stop=False,
+        )
+        restored.on_train_start(trainer, _module())
+        self.assertTrue(trainer.should_stop)
 
     def test_unit_clock_exposes_epoch_boundaries(self):
         optimizer = _optimizer()

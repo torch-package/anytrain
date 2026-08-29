@@ -114,7 +114,7 @@ batch end 读取下游 `UnitProvider`，梯度累积期间只在 host 聚合 loc
 `UnitBatch.valid` / `padded` 必须是 host real number，不接受 bool 或 Tensor；如果下游只有 device
 计数，显式转换及其同步成本由 provider 自己承担。到 optimizer step boundary 才执行一次固定大小
 payload 的 rank all-gather 和一次 device-to-host 读取，提交 global unit total、更新 LR，并检查
-`stop_at` / `stop_at_end`。DDP throughput 的分子是各 rank unit 总和，分母是该 update 最慢 rank
+`stop_at`。DDP throughput 的分子是各 rank unit 总和，分母是该 update 最慢 rank
 的 elapsed；窗口则累加每个 update 各自的最慢 rank elapsed。正常 epoch 结束时如果仍有未提交到
 optimizer step 的 unit 会直接报错，不会静默丢弃进度。
 
@@ -133,7 +133,9 @@ schedule 源码 ownership 保持五层：`_curve.py` 定义纯 LR ratio，`_data
 `_spec.py` 定义 immutable schedule，`_runtime.py` 负责 step/unit 编译，`_callback.py` 只负责
 unit-clock Lightning lifecycle。callback checkpoint 恢复会先完整校验 totals、optimizer LR group
 结构与每个有限非负 host-real LR，再一次性写入实例；不接受字符串/bool 转换，也不会在后续字段
-失败时留下部分恢复状态。恢复后的 optimizer 数量必须与保存的 base LR group 数一致。
+失败时留下部分恢复状态。恢复后的 optimizer 数量必须与保存的 base LR group 数一致。`stop_at`
+是独立的停止预算，不进入 schedule fingerprint；resume 时允许预算增大或取消上限，但拒绝缩短
+已保存 checkpoint 的预算。
 
 schedule 验收：
 

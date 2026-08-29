@@ -218,13 +218,13 @@
 
 - step-clock LambdaLR 编译、unit-clock provider 和 callback public API。
 - accumulation、DDP all-gather、CUDA timing、throughput window、stop 与 log key 语义。
-- schedule fingerprint 和现有 checkpoint 字段。
+- schedule fingerprint 的 LR/clock 身份，以及 stop budget 的独立 checkpoint 字段。
 
 验收：
 
 - `ruff`：通过。
 - `basedpyright`：0 errors。
-- `tests/test_lightning_schedule.py`：21 passed，30 subtests passed。
+- `tests/test_lightning_schedule.py`：28 passed，33 subtests passed。
 
 ## `anytrain.lightning.perf`
 

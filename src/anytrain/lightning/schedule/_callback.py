@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import math
 import time
 from collections import deque
@@ -14,6 +15,8 @@ import torch
 from .. import _capability
 from ._data import UnitBatch, padding_ratio, units_per_second
 from ._spec import LRSchedule, UnitClock
+
+_LEGACY_NO_MATCH = object()
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,9 @@ class UnitScheduleCallback(pl.Callback):
             self.clock.log_every_n_units,
         )
         self._apply_lr(trainer, self.schedule.lr_ratio(self.total_valid))
+        stop_at = self.schedule.stop_unit()
+        if stop_at is not None and self.total_valid >= stop_at:
+            trainer.should_stop = True
         self._sync_cuda(pl_module)
         del pl_module
 
@@ -323,6 +329,7 @@ class UnitScheduleCallback(pl.Callback):
             "last_global_step": self._last_global_step,
             "last_lrs": self._last_lrs,
             "schedule": self.schedule.fingerprint(),
+            "stop_at": self.schedule.stop_unit(),
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
@@ -330,8 +337,11 @@ class UnitScheduleCallback(pl.Callback):
             raise TypeError("UnitScheduleCallback state must be a dict.")
         if state_dict.get("unit") != self.clock.unit:
             raise ValueError("UnitScheduleCallback state unit does not match callback unit.")
-        if state_dict.get("schedule") != self.schedule.fingerprint():
+        raw_schedule = state_dict.get("schedule")
+        if not _schedule_fingerprint_matches(raw_schedule, self.schedule):
             raise ValueError("UnitScheduleCallback state schedule does not match callback.")
+        saved_stop_at = _saved_stop_at(state_dict, raw_schedule, self.schedule)
+        _validate_resume_stop_at(saved_stop_at, self.schedule.stop_unit())
         total_valid = _non_negative_float(state_dict.get("total_valid"), "total_valid")
         total_padded = _non_negative_float(state_dict.get("total_padded"), "total_padded")
         raw_base_lrs = state_dict.get("base_lrs")
@@ -689,6 +699,99 @@ def register_unit_schedule_consumer(
         consumer,
         validation_every_n_epochs=validation_every_n_epochs,
     )
+
+
+def _schedule_fingerprint_matches(raw: object, schedule: LRSchedule) -> bool:
+    if raw == schedule.fingerprint():
+        return True
+    return _legacy_schedule_state(raw, schedule) is not _LEGACY_NO_MATCH
+
+
+def _saved_stop_at(
+    state_dict: dict[str, Any],
+    raw_schedule: object,
+    schedule: LRSchedule,
+) -> float | None:
+    if "stop_at" in state_dict:
+        return _optional_stop_at(state_dict["stop_at"], "stop_at")
+    legacy = _legacy_schedule_state(raw_schedule, schedule)
+    if legacy is not _LEGACY_NO_MATCH:
+        return cast(float | None, legacy)
+    # Checkpoints written before the separate stop policy field used the
+    # legacy fingerprint.  A matching current fingerprint without the field
+    # is treated as an unbounded policy for forward compatibility.
+    return None
+
+
+def _validate_resume_stop_at(saved: float | None, current: float | None) -> None:
+    """Permit only stop-budget extensions when resuming a checkpoint."""
+
+    if saved is None:
+        if current is not None:
+            raise ValueError(
+                "UnitScheduleCallback resume stop_at cannot introduce a finite "
+                "budget when the checkpoint was unbounded."
+            )
+        return
+    if current is not None and current < saved:
+        raise ValueError(
+            "UnitScheduleCallback resume stop_at cannot be smaller than the "
+            "checkpoint budget."
+        )
+
+
+def _legacy_schedule_state(
+    raw: object,
+    schedule: LRSchedule,
+) -> float | None | object:
+    if not isinstance(raw, str):
+        return _LEGACY_NO_MATCH
+    try:
+        parts = ast.literal_eval(raw)
+        current_parts = ast.literal_eval(schedule.fingerprint())
+    except (SyntaxError, ValueError):
+        return _LEGACY_NO_MATCH
+    if not isinstance(parts, tuple) or not isinstance(current_parts, tuple):
+        return _LEGACY_NO_MATCH
+    if len(current_parts) != 4:
+        return _LEGACY_NO_MATCH
+
+    if len(parts) == 6:
+        core_parts = parts[:4]
+        stop_part = parts[4]
+        legacy_end_flag = parts[5]
+    elif len(parts) == 5 and current_parts[2] is None:
+        # Fingerprints written before units_per_epoch was added omitted the
+        # third core field.  They remain readable only for schedules that do
+        # not define logical unit epochs.
+        core_parts = (parts[0], parts[1], None, parts[2])
+        stop_part = parts[3]
+        legacy_end_flag = parts[4]
+    else:
+        return _LEGACY_NO_MATCH
+
+    if core_parts != current_parts:
+        return _LEGACY_NO_MATCH
+    if not isinstance(legacy_end_flag, bool):
+        return _LEGACY_NO_MATCH
+    try:
+        saved = _optional_stop_at(stop_part, "legacy stop_at")
+    except (TypeError, ValueError):
+        return _LEGACY_NO_MATCH
+    if saved is None and legacy_end_flag:
+        return schedule.total_duration
+    return saved
+
+
+def _optional_stop_at(value: object, name: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"UnitScheduleCallback {name} must be a real number or None.")
+    resolved = float(value)
+    if not math.isfinite(resolved) or resolved <= 0:
+        raise ValueError(f"UnitScheduleCallback {name} must be finite and positive.")
+    return resolved
 
 
 def _non_negative_float(value: object, name: str) -> float:
