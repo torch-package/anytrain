@@ -20,7 +20,8 @@
 - [`anytrain.module.moe.routing`](moe-routing.md)：density-neutral `ExpertRouting`、校验和 mask 语义。
 - [`anytrain.module.moe`](moe.md)：统一 `MoE` 入口（`num_experts` / `expert` / `grid`、dense/top-k runtime）与 metrics。
 - `anytrain.module.moe.conv`：conv router、causal `Conv1d` 模板；归入 [`anytrain.module.moe`](moe.md)。
-- [`anytrain.module.idspace`](idspace.md)：统一 token id space 和 block embedding 路由。
+- [`anytrain.module.token_space`](token-space.md)：统一 token id space 的 global/local 区间映射。
+- [`anytrain.module.embedding`](embedding.md)：共享参数 owner 与输入/输出方向 embedding view。
 - [`anytrain.module.stream`](stream.md)：named 1D stream 的声明式 layout、payload 绑定、embedding materialization 与 target routing。
 - [`anytrain.audio`](audio.md)：waveform tokenizer / detokenizer / codec 组合与 frame BPE。
 - [`anytrain.audio.bpe`](bpe.md)：int BPE over discrete codec frames。

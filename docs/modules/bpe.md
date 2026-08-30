@@ -3,8 +3,8 @@
 ## 定位
 
 `anytrain.audio.bpe` 在离散 codec frame sequence 上训练和评估 int BPE。它不加载神经网络
-codec，也不管理 global id space；统一 token id 与 embedding 路由见
-[`anytrain.module.idspace`](idspace.md)，waveform tokenizer / detokenizer 见
+codec，也不管理 global id space；统一 token id 见
+[`anytrain.module.token_space`](token-space.md)，waveform tokenizer / detokenizer 见
 [`anytrain.audio`](audio.md)。
 
 当前公开对象：

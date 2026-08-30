@@ -137,7 +137,7 @@ optim 不提供魔法 LightningModule 基类。下游在自己的 `configure_opt
 ## Module
 
 `module` 是 core 组件，提供 task-agnostic 的 `torch.nn.Module` 积木。顶层只导出少量稳定组件；
-dynamic conv、MoE、quantization、Qwen 和 idspace 从各自子模块显式导入。
+dynamic conv、MoE、quantization、Qwen、token_space 和 embedding 从各自子模块显式导入。
 
 适合放入：
 
@@ -160,8 +160,9 @@ dynamic conv、MoE、quantization、Qwen 和 idspace 从各自子模块显式导
 - `anytrain.module.quantization`：embedding、finite scalar、grouped、residual 和 auto-group residual quantizer，以及不依赖 Lightning 的 usage/perplexity 统计 helper。
 - `anytrain.module.qwen`：依赖 `module` extra 的 Qwen3 builder 和 experimental MTP codebook predictor。
 
-`anytrain.module.idspace` 也是 core 组件，维护 local/global token id 映射和 block embedding
-路由，不把 tokenizer 或任务 special-token 语义塞进 idspace 或任务层。
+`anytrain.module.token_space` 维护 local/global token id 映射；
+`anytrain.module.embedding` 维护共享参数 owner 和方向 view，不把 tokenizer 或任务
+special-token 语义塞进通用模块。
 
 ## Audio
 
@@ -214,7 +215,7 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
 
 - `import anytrain` 不导入 optional 领域依赖。
 - `import anytrain.lightning` 可以假设 torch/lightning 已安装。
-- `import anytrain.module` 可以假设 torch/einops 已安装；dynamic conv、quantization、Qwen 和 idspace 使用显式子模块入口。
+- `import anytrain.module` 可以假设 torch/einops 已安装；dynamic conv、quantization、Qwen、token_space 和 embedding 使用显式子模块入口。
 - `import anytrain.loss.spectral` 和 `import anytrain.loss.temporal` 当前只依赖 core torch。
 - `import anytrain.optim` 可以假设 torch 已安装。
 - `import anytrain.chat` 不应要求 chat extra；真实 provider 请求路径可以要求 `chat` extra。

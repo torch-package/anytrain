@@ -45,14 +45,15 @@
 - `anytrain.module`：少量稳定的 task-agnostic `torch.nn.Module` 积木。
 - `anytrain.module.moe.routing`：MoE routing 家族共享的专家路由表示、校验和 mask 语义。
 - `anytrain.module.moe`、`anytrain.module.moe.conv`、`anytrain.module.quantization`、`anytrain.module.qwen`：显式子模块组件入口。
-- `anytrain.module.idspace`：local/global token id 映射和 block embedding 路由。
+- `anytrain.module.token_space`：local/global token id 映射。
+- `anytrain.module.embedding`：共享参数 owner 与 directional embedding view。
 - `anytrain.module.stream`：named 1D stream layout、payload 绑定、embedding materialization 与
   target routing。
 - `anytrain.stats` / `anytrain.env` / `anytrain.utils`：保持为小型显式顶层模块的 tensor statistics、
   optional cache root 与 tensor utility。
 
 Lightning、Torch 和 einops 是 core 依赖。`module` 顶层只导出少量稳定组件；MoE、
-MoE conv、quantization、Qwen 和 idspace 从子模块显式导入。只有 Qwen3 builder 需要 `module`
+MoE conv、quantization、Qwen、token_space 和 embedding 从子模块显式导入。只有 Qwen3 builder 需要 `module`
 extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，不影响其余 core API。
 
 ### Optional General
@@ -164,11 +165,12 @@ class MyPLModule(pl.LightningModule):
 
 ### `module`
 
-提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；MoE routing、MoE conv、quantization、Qwen 和 idspace 从对应子模块导入。`anytrain.module.moe.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv.bank` 的 dense parameter-bank mixing 与 `anytrain.module.moe.sparse` 的 top-k module dispatch 是统一 MoE 的两种 executor。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
+提供下游 LightningModule 可显式组合的 task-agnostic `torch.nn.Module` 积木。`anytrain.module` 顶层只放 ADT、DiT 这类少量稳定组件；MoE routing、MoE conv、quantization、Qwen、token_space 和 embedding 从对应子模块导入。`anytrain.module.moe.routing` 只抽专家路由表示、校验和 mask 语义；`anytrain.module.moe.conv.bank` 的 dense parameter-bank mixing 与 `anytrain.module.moe.sparse` 的 top-k module dispatch 是统一 MoE 的两种 executor。`einops` 是默认依赖，用于保持动态层 shape 变换可读；需要其它额外依赖的组件通过 `module` extra 暴露，不进入 package root import。
 
-### `module.idspace`
+### `module.token_space` / `module.embedding`
 
-`anytrain.module.idspace` 是 core 的 local/global token id 映射和 embedding 路由。
+`anytrain.module.token_space` 提供 local/global token id 映射；
+`anytrain.module.embedding` 提供共享参数 owner 和方向 view。
 
 ### `audio` / `tts` / `translation`
 
@@ -204,11 +206,12 @@ src/anytrain/
   evaluator/
   optim/
   module/
+    token_space.py
+    embedding.py
     moe/
       routing.py
       sparse.py
       conv/
-    idspace/
     stream/
     quantization/
   audio/
@@ -223,7 +226,7 @@ src/anytrain/
   example/
 ```
 
-`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace` 和 `module.stream` 是核心体验；`audio`、`chat`、`translation`、
+`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.token_space`、`module.embedding` 和 `module.stream` 是核心体验；`audio`、`chat`、`translation`、
 `framework` 和领域组件按依赖拆分为 optional 子模块。
 
 ## 边界

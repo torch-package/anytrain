@@ -125,7 +125,8 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.module.moe.conv` | 动态卷积和 router 组件。 |
 | `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
-| `anytrain.module.idspace` | 多块 local/global token id 映射和 embedding 路由。 |
+| `anytrain.module.token_space` | 多块 local/global token id 映射。 |
+| `anytrain.module.embedding` | 共享 embedding owner 与 directional view。 |
 | `anytrain.module.stream` | named 1D stream 的声明式 layout、payload 绑定、embedding materialization 与 target routing。 |
 | `anytrain.audio` | waveform tokenizer / detokenizer / codec 与 frame BPE 的 optional 包入口。 |
 | `anytrain.audio.bpe` | 依赖 `bpe` extra 的 codec frame BPE。 |
@@ -144,7 +145,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 - 下游项目负责具体任务语义、`training_step`、batch 解释和模型组合。
 - 配置组合和对象实例化由下游选择，可以用普通 Python、Hydra、argparse、pydantic 或其它项目内约定。
 - `anytrain.lightning` 是核心依赖层；Lightning 不是 optional integration。
-- `lightning.checkpoint`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module`、`module.idspace`、`translation`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
+- `lightning.checkpoint`、`lightning.schedule`、`lightning.perf`、`loss`、`evaluator`、`optim`、`module.token_space`、`module.embedding`、`translation`、`framework` 是下游训练模块可显式组合的组件，按 core/optional 子模块拆分依赖。
 
 明确不做：
 

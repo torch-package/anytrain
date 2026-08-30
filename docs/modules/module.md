@@ -47,7 +47,8 @@ observation 不能改变 forward 输出、autograd graph 或各 rank 的 kernel 
 - `anytrain.module.moe`：统一入口 `MoE(num_experts=..., expert=Expert, weight=(E,...), bias=..., grid=...)`；Expert 对象负责 `__call__` / `bias_kind` / `bind(grid,...)`；`Grid1d` 表达 1D segment intent，`NativeGrid` 表示不切分的 native-resolution 路径；`expand_param` 做 E 轴扩维；`expand_expert` 仅便利 stock `Linear/Conv*`，不是通用 Module→Expert 推断。另有 `CallableExpert`、`linear` / `Conv*Expert`、`LinearRouter`、`NativeGrid`、`MoEOutput`、`ExpertRouting`、MoE aux-loss / metrics helpers。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`RFSQConfig`、`ResidualFiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
 - `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
-- `anytrain.module.idspace`：`Layout` 和 `Embedding`。
+- `anytrain.module.token_space`：`Layout`。
+- `anytrain.module.embedding`：`EmbeddingBank` 和 `EmbeddingView`。
 
 `anytrain.module.moe.conv` 还公开 `eca_kernel_size`，用于按 channel 数计算 router 的 odd
 kernel size。
@@ -197,12 +198,13 @@ Quantization 提供 task-agnostic 的 FSQ、embedding-table VQ、GVQ、RVQ、RFS
 
 迁移设计见 [`docs/quantization-migration.md`](../quantization-migration.md)。第一版不迁入 audio codec、model zoo 或 deepaudio 的 projector/MoE 体系。
 
-多模态 token id space 和 block embedding 路由放在 `anytrain.module.idspace`，
-设计见 [`anytrain.module.idspace`](idspace.md)。
+多模态 token id space 的 global/local 区间放在 `anytrain.module.token_space`，
+设计见 [`anytrain.module.token_space`](token-space.md)。共享参数 owner 和方向 view
+放在 `anytrain.module.embedding`，设计见 [`anytrain.module.embedding`](embedding.md)。
 
 多 stream 的 layout 编译、frame-major RVQ 展开和 embedding 对齐组合放在
 `anytrain.module.stream`，设计见 [`anytrain.module.stream`](stream.md)。它可以复用
-`idspace.Layout` 做 global/local id 编译，但不接管 tokenizer special-id、codec inventory 或生成依赖顺序。
+`token_space.Layout` 做 global/local id 编译，但不接管 tokenizer special-id、codec inventory 或生成依赖顺序。
 
 ## 依赖策略
 

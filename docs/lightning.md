@@ -35,7 +35,7 @@
 `anytrain` 可以提供训练组件，但按依赖层级拆分：
 
 - core：`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、通用
-  loss/evaluator/optim/module 接口和 `module.idspace`。
+  loss/evaluator/optim/module 接口、`module.token_space` 和 `module.embedding`。
 - optional general：通用 torchmetrics evaluator、第三方 logger backend。
 - optional domain：audio/text/speech 等领域 loss、evaluator。
 - optional framework：flow matching、MAE、GAN adversarial training 等研究框架。

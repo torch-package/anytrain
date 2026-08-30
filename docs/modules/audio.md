@@ -10,7 +10,7 @@ waveform
   → AudioTokenizer          # anytrain.audio.tokenizer
   → codes
   → (optional) CodecBPE     # anytrain.audio.bpe
-  → model ids / idspace
+  → model ids / token_space
 codes
   → AudioDetokenizer        # anytrain.audio.detokenizer
   → waveform

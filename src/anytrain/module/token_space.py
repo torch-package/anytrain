@@ -1,3 +1,10 @@
+"""Global/local token-id layout primitives.
+
+This module owns only named, non-overlapping global-id blocks.  Tokenizer
+special ids, codec inventories and model-specific output heads remain in the
+caller that defines the layout.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -9,6 +16,8 @@ Block = tuple[int, int]
 
 
 class Layout:
+    """Map named local id blocks into one global token-id space."""
+
     __slots__ = ("_block_names", "_vocab_size", "blocks")
 
     def __init__(self, **blocks: Block) -> None:
@@ -39,11 +48,7 @@ class Layout:
                 return name
         raise ValueError(f"token_id is outside all id blocks: {token_id}.")
 
-    def to_global(
-        self,
-        name: str,
-        ids: torch.Tensor,
-    ) -> torch.Tensor:
+    def to_global(self, name: str, ids: torch.Tensor) -> torch.Tensor:
         _tensor(ids, name="ids")
         start, end = self.block(name)
         size = end - start
@@ -113,7 +118,4 @@ def _tensor(value: torch.Tensor, *, name: str) -> None:
         raise TypeError(f"{name} must be a torch.Tensor.")
 
 
-__all__ = [
-    "Block",
-    "Layout",
-]
+__all__ = ["Block", "Layout"]

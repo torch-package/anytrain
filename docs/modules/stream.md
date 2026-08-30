@@ -129,7 +129,7 @@ targets = bind_targets(
 `TargetBatch.values` 是 `[B,T]` 的 local ids，`owner`/`source_index` 提供回到 carrier
 stream 的路由，`predict_mask` 决定哪些位置参与预测。control label 使用
 `Layout.control_names` 的局部 id；需要 global vocabulary 时由调用方或
-`anytrain.module.idspace` 再做映射。默认 control 不参与预测，只有显式加入
+`anytrain.module.token_space` 再做映射。默认 control 不参与预测，只有显式加入
 `predicted_controls` 才打开。
 
 ## S2S 集成边界

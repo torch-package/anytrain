@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import torch
 
-from anytrain.module.idspace import Layout
+from anytrain.module.token_space import Layout
 
 
 class LayoutTest(unittest.TestCase):
