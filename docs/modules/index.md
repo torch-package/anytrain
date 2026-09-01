@@ -29,6 +29,7 @@
 - [`anytrain.tts`](../tts.md)：TTS 公共协议和 optional backend adapter。
 - [`anytrain.chat`](chat.md)：环境变量驱动的可选大模型调用入口。
 - [`anytrain.translation`](../translation.md)：dataset-independent 翻译协议与 pinned Qwen backend。
+- [`anytrain.s2s`](../s2s-design.md)：optional speech-language token task、数据、模型能力与日志契约设计。
 - [`anytrain.framework`](framework.md)：可选研究框架层。
 
 ## 关联文档

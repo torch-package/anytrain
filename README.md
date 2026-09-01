@@ -134,6 +134,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.tts` | TTS 公共协议和可选 backend adapter。 |
 | `anytrain.translation` | dataset-independent 批量翻译协议、pinned Qwen semantic spec、lazy factory 和 tokenizer-only token estimator。 |
 | `anytrain.chat` | 可选 LLM provider 调用入口。 |
+| `anytrain.s2s` | 可选 speech-language 语义生成、token scoring 与领域日志契约；不包含具体模型。 |
 | `anytrain.framework` | flow matching、GAN 与 DPO/GRPO 等可选研究训练范式组件。 |
 | `anytrain.example` | 随包分发的短音频 smoke fixtures 与 lazy audio loader；训练示例仍在仓库 `examples/`。 |
 
@@ -141,7 +142,8 @@ PYTHONPATH=src python examples/tiny_regression.py
 
 ## 项目边界
 
-- 数据、canonical sample 和 batch schema 由 `anydataset` 或下游项目负责，`anytrain` 不内置数据适配规则。
+- 数据和 canonical sample 由 `anydataset` 或下游项目负责，`anytrain` 不内置数据适配规则；
+  `anytrain.s2s` 只定义跨多个 provider 复用的模型侧 batch 契约。
 - 下游项目负责具体任务语义、`training_step`、batch 解释和模型组合。
 - 配置组合和对象实例化由下游选择，可以用普通 Python、Hydra、argparse、pydantic 或其它项目内约定。
 - `anytrain.lightning` 是核心依赖层；Lightning 不是 optional integration。

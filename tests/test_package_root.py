@@ -11,6 +11,7 @@ import anytrain.loss
 import anytrain.module
 import anytrain.observation
 import anytrain.optim
+import anytrain.s2s
 import anytrain.translation
 import anytrain.tts
 
@@ -33,6 +34,7 @@ class PackageRootTest(unittest.TestCase):
             anytrain.module,
             anytrain.observation,
             anytrain.optim,
+            anytrain.s2s,
             anytrain.translation,
             anytrain.tts,
         )
