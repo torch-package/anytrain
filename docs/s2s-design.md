@@ -2,7 +2,7 @@
 
 ## 状态与结论
 
-`anytrain.s2s` 第一版已经实现数据、模型能力和日志契约。它服务三类调用方：
+`anytrain.s2s` 第一版已经实现数据、模型能力、条件依赖 gain 和日志契约。它服务三类调用方：
 
 | 能力 | S2S | Qwen-Omni | UniSS |
 | --- | --- | --- | --- |
@@ -22,6 +22,7 @@ Thinker/Talker/Code2Wav 推理系统，第一版不要求它伪装成 token loop
 - teacher-forced token batch 及 source audio condition；
 - 高层生成、可选 token step、可选 token scoring 能力；
 - modality loss 的精确 sum/count；
+- 基于显式 matched/counterfactual pair 的条件依赖 gain；
 - 训练 step report、S2S 指标窗口和生成 latency/status 指标。
 
 不迁入 AnyTrain：
@@ -30,6 +31,7 @@ Thinker/Talker/Code2Wav 推理系统，第一版不要求它伪装成 token loop
 - tokenizer、codec grammar、response program 和模型 prompt 模板；
 - Hugging Face cache、audio-head cache 或 Qwen-Omni 内部输出类型；
 - dataset adapter、collate、Hydra 配置、LightningModule 基类、CLI 和 job；
+- TTS/ASR/CoT prompt grammar、shuffle builder、donor selection 和 probe manifest；
 - ASR、UTMOS、codec decoder 等已经存在的第三方或 AnyTrain evaluator wrapper。
 
 模型 provider 负责把自己的模型和上述契约适配起来。选择 provider 属于 composition，不属于
@@ -172,7 +174,7 @@ IDs；不同时提供 modality、token kind 和 selected IDs 三套重叠入口�
 
 ```python
 class TokenScorer(Protocol):
-    def score_tokens(
+    def __call__(
         self,
         input: TokenInput,
         targets: TokenTargets,
@@ -188,7 +190,10 @@ total.count    = text.count    + audio.count
 loss           = total.loss_sum / total.count
 ```
 
-`total` 是派生值，不作为第三份可写事实保存。Qwen-Omni 当前是 inference-only，不实现 scorer。
+`TokenScorer` 使用标准 callable/`nn.Module.forward` 形状，而不是模型私有 side method。这样 Lightning
+callback 可以通过 `trainer.strategy.model(...)` 进入 DDP/FSDP root wrapper。`total` 是派生值，不作为
+第三份可写事实保存。Qwen-Omni 当前是 inference-only，不实现 scorer；未来如果训练 adapter 暴露相同
+forward 契约，可以直接进入同一评分路径。
 
 ## 统一调用方式
 
@@ -205,6 +210,72 @@ def training_step(provider: TokenScorer, batch):
 
 不存在 `if model == "qwen_omni"` 或 `getattr` fallback。一个入口需要 token step/scoring 时，它在装配
 阶段就要求相应 Protocol；不具备能力的 provider 不进入该入口。
+
+## 条件依赖 gain
+
+gain 描述开放的 `condition -> measured target` 关系，不定义 task enum：
+
+```python
+key = ConditionGainKey(
+    route=Route("s2st", "full_cot"),
+    intervention="target_cot",
+    target="final",
+)
+probe = ConditionGainProbe(name, key, matched, counterfactual)
+```
+
+推荐的依赖拆分是：
+
+| route | intervention | measured target | 下游 counterfactual |
+| --- | --- | --- | --- |
+| `tts/direct` | `source_text` | `final` | shuffle source text，只监督 target audio |
+| `asr/direct` | `source_audio` | `final` | shuffle source audio，只监督 target text |
+| `s2st/full_cot` | `source_audio` | `source_cot` | shuffle source audio，只监督 source CoT |
+| `s2st/full_cot` | `source_cot` | `target_cot` | shuffle source CoT，只监督 target CoT |
+| `s2st/full_cot` | `target_cot` | `final` | shuffle target CoT，只监督 final response |
+
+CoT 不合并成一个 gain。`source -> CoT` 判断输入是否驱动推理过程，`CoT -> final` 判断中间推理产物
+是否驱动最终答案；两者可能独立退化。task、trace、intervention 和 target 只是稳定 lineage/tag，AnyTrain
+不解析控制 token 或 prompt span。
+
+每个 eligible probe 是一个单 row 的 matched/counterfactual pair。第一版限制单 row，是因为公共
+`TokenScorer` 只返回 batch aggregate sum/count；在没有 per-row 充分统计时，扩成多 row 会失去 paired
+bootstrap 的样本单位。pair 必须满足：
+
+- route 与 `ConditionGainKey` 一致，`sample_ids` 两边同时缺省或完全相同；
+- target modality 集相同；序列长度、prompt 长度和 target 绝对位置可以不同；
+- 按因果顺序提取的 `(modality, input_id, label)` teacher-forced target stream 完全相同；
+- `TokenTargets` 只监督当前 measured target，其他 CoT/final stage 的 label 必须是 `IGNORE_INDEX`；
+- scorer 返回的每个 modality count 必须精确等于对应 mask token 数。
+
+这些约束防止把 target 改动、teacher-forced history 改动或监督范围改动误算成 condition gain。下游
+builder 仍负责 intervention 纯度：只替换声明的 source/CoT span、选择 donor、保存 donor lineage，并保证
+未被公共 target-stream 检查覆盖的上下文符合任务语义。无法构造有效 counterfactual 时使用
+`ConditionGainProbe.excluded(..., reason)`，不能静默丢样本。
+
+`condition_gain()` 按 key 聚合 total/text/audio 的精确 loss sum/count：
+
+```text
+matched_loss        = sum(matched loss) / sum(target tokens)
+counterfactual_loss = sum(counterfactual loss) / sum(target tokens)
+gain                = counterfactual_loss - matched_loss
+```
+
+正 gain 表示模型利用了被干预条件；负 gain 需要保留并调查，不能截断为 0。区间使用 probe-level paired
+bootstrap，并使用私有 `torch.Generator`，不推进训练 RNG。结果同时记录 eligible/excluded count 和
+coverage。日志 tag 包含显式 `probe_set_id`；probe 资产、manifest、hash 和版本 provenance 仍由下游管理。
+
+`ConditionGainCallback` 在 step 0 和配置 cadence 上运行固定 probe。它直接调用
+`trainer.strategy.model(input, targets)`，因此所有 scorer-capable Lightning root 必须让 `forward` 满足
+`TokenScorer`。所有 rank 执行相同 forward，只有 global zero 写 scalar；这既避免 rank-zero-only 的
+distributed collective 死锁，也保证调用经过 DDP/FSDP root wrapper。callback 进入 Lightning precision
+forward context，并在结束后精确恢复每个子模块原有 train/eval flag 与默认 Torch RNG。
+
+probe 通过 `.to(pl_module.device)` 搬运，不调用 Lightning `convert_input()`：当前 token batch 是 frozen
+dataclass，而 true-precision plugin 的通用 collection conversion 不能安全重建它。离散 token 路径和
+mixed precision 依赖 forward context；使用 `EmbeddedAudioCondition` + true precision 时，下游 builder 或
+scorer 必须显式提供模型所需 dtype。callback 只保证单进程单设备的默认 Torch RNG；显式 Generator、
+Python/NumPy RNG 或自定义 `train()` 副作用不属于公共恢复契约。
 
 ## 日志契约
 
@@ -242,6 +313,10 @@ DDP 要求各 rank 在相同训练 step 产生 `StepReport`，否则 callback �
 throughput、MFU、optimizer、OOM、parameter/gradient observation 继续由 AnyTrain 通用 callback 负责，
 S2S 不创建别名。
 
+condition gain 使用 `condition_gain/<probe_set_id>/<task>/<trace>/<intervention>/<target>` 前缀，记录
+matched/counterfactual loss、gain、target token 数、paired bootstrap bounds 和 coverage。它不复用普通
+train loss window，因为固定 probe 的 paired lineage 与训练 batch aggregate 不是同一统计对象。
+
 ## 验证
 
 contract tests 使用三个不加载权重的 fake provider：
@@ -250,6 +325,10 @@ contract tests 使用三个不加载权重的 fake provider：
 - S2S、UniSS 参数化执行同一条 optional token-step/scoring path；
 - Qwen-Omni 明确不实现 token-only capability；
 - 覆盖 data shape/device/alignment、loss sum/count、混合 route 归因和 logger capability；
+- condition gain 覆盖变长 prompt、target stream/lineage、精确 token weighting、正负 gain、私有 RNG 和
+  source-to-CoT/CoT-to-final 分组；
+- callback 覆盖 strategy-wrapped forward、all-rank scoring/global-zero logging、precision context、
+  nested module mode 恢复和 cadence state；
 - package-root test 验证 `anytrain` 仍为空命名空间且 `anytrain.s2s` 导出可解析。
 
 上线前仍需在目标 CUDA/Torch/Liger 组合上用真实 S2S/UniSS scorer 做数值和吞吐 smoke；该验证属于

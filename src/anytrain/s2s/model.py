@@ -395,9 +395,9 @@ class TokenLossStats:
 
 @runtime_checkable
 class TokenScorer(Protocol):
-    """Teacher-forced scoring capability; concrete providers call Liger directly."""
+    """Teacher-forced forward capability; concrete providers call Liger directly."""
 
-    def score_tokens(
+    def __call__(
         self,
         input: TokenInput,
         targets: TokenTargets,
@@ -407,9 +407,9 @@ class TokenScorer(Protocol):
 def score_tokens(provider: TokenScorer, batch: TokenBatch) -> TokenLossStats:
     if not isinstance(batch, TokenBatch):
         raise TypeError("score_tokens batch must be TokenBatch.")
-    stats = provider.score_tokens(batch.input, batch.targets)
+    stats = provider(batch.input, batch.targets)
     if not isinstance(stats, TokenLossStats):
-        raise TypeError("TokenScorer.score_tokens() must return TokenLossStats.")
+        raise TypeError("TokenScorer forward must return TokenLossStats.")
     if stats.modalities != batch.targets.modalities:
         raise ValueError("token loss modalities must exactly match batch target modalities.")
     if stats.total.count.device.type == "cpu" and bool(stats.total.count <= 0):

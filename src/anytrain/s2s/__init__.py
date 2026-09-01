@@ -1,3 +1,12 @@
+from .condition import (
+    ConditionGainCallback,
+    ConditionGainKey,
+    ConditionGainProbe,
+    ConditionGainResult,
+    ConditionGainStat,
+    condition_gain,
+    condition_gain_metrics,
+)
 from .data import (
     IGNORE_INDEX,
     Audio,
@@ -49,6 +58,11 @@ __all__ = [
     "Audio",
     "AudioCondition",
     "BatchUnits",
+    "ConditionGainCallback",
+    "ConditionGainKey",
+    "ConditionGainProbe",
+    "ConditionGainResult",
+    "ConditionGainStat",
     "Content",
     "EmbeddedAudioCondition",
     "GenerationError",
@@ -77,6 +91,8 @@ __all__ = [
     "TokenStepper",
     "TokenTargets",
     "TrainingOutput",
+    "condition_gain",
+    "condition_gain_metrics",
     "generate",
     "generation_metrics",
     "score_tokens",

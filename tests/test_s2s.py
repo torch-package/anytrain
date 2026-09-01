@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 import torch
 from lightning import LightningModule, Trainer
+from torch import nn
 
 from anytrain.s2s import (
     Audio,
     BatchUnits,
+    ConditionGainCallback,
+    ConditionGainKey,
+    ConditionGainProbe,
     Content,
     EmbeddedAudioCondition,
     GenerationError,
@@ -35,6 +40,8 @@ from anytrain.s2s import (
     TokenStepOutput,
     TokenStepper,
     TokenTargets,
+    condition_gain,
+    condition_gain_metrics,
     generate,
     generation_metrics,
     step_report,
@@ -82,7 +89,7 @@ class _TokenScorer:
         self.value = torch.tensor(value, requires_grad=True)
         self.calls: list[tuple[TokenInput, TokenTargets]] = []
 
-    def score_tokens(self, input: TokenInput, targets: TokenTargets) -> TokenLossStats:
+    def __call__(self, input: TokenInput, targets: TokenTargets) -> TokenLossStats:
         self.calls.append((input, targets))
         text_count = _count(targets.text_mask)
         audio_count = _count(targets.audio_mask)
@@ -101,6 +108,75 @@ class S2STokenScorer(_TokenScorer):
 
 class UniSSTokenScorer(_TokenScorer):
     pass
+
+
+class _ScriptedScorer:
+    def __init__(
+        self,
+        means: Sequence[float],
+        *,
+        count_offset: int = 0,
+        events: list[str] | None = None,
+        advance_rng: bool = False,
+    ) -> None:
+        self.means = tuple(means)
+        self.count_offset = count_offset
+        self.events = events
+        self.advance_rng = advance_rng
+        self.calls: list[tuple[TokenInput, TokenTargets]] = []
+
+    def __call__(self, input: TokenInput, targets: TokenTargets) -> TokenLossStats:
+        index = len(self.calls)
+        if index >= len(self.means):
+            raise RuntimeError("scripted scorer has no value for this call.")
+        self.calls.append((input, targets))
+        if self.events is not None:
+            self.events.append("score")
+        if self.advance_rng:
+            torch.rand(())
+        values: dict[Modality, LossStat] = {}
+        for modality in targets.modalities:
+            mask = targets.mask(modality)
+            if mask is None:
+                raise RuntimeError("scripted scorer target mask is unavailable.")
+            target_count = mask.sum(dtype=torch.int64)
+            loss_sum = torch.tensor(
+                self.means[index],
+                dtype=torch.float32,
+                device=mask.device,
+            ) * target_count.to(dtype=torch.float32)
+            values[modality] = LossStat(loss_sum, target_count + self.count_offset)
+        return TokenLossStats(
+            text=values.get(Modality.TEXT),
+            audio=values.get(Modality.AUDIO),
+        )
+
+
+class _GainModule(LightningModule):
+    def __init__(self, scorer: TokenScorer) -> None:
+        super().__init__()
+        self.scorer = scorer
+        self.active = nn.Dropout()
+        self.inactive = nn.Sequential(nn.Dropout())
+        self.inactive.eval()
+
+    def forward(self, input: TokenInput, targets: TokenTargets) -> TokenLossStats:
+        return self.scorer(input, targets)
+
+
+class _Precision:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.events = events
+
+    @contextmanager
+    def forward_context(self) -> Iterator[None]:
+        if self.events is not None:
+            self.events.append("enter")
+        try:
+            yield
+        finally:
+            if self.events is not None:
+                self.events.append("exit")
 
 
 class _TokenStepper:
@@ -447,6 +523,299 @@ def test_loss_and_unit_counts_require_int64() -> None:
     assert int((units + units).input_tokens) == 2**32
 
 
+def test_condition_gain_accepts_moved_targets_with_the_same_ordered_stream() -> None:
+    route = Route("s2st", "full_cot")
+    key = ConditionGainKey(route, "source_audio", "source_cot")
+    probe = ConditionGainProbe(
+        "sample_0_source_to_cot",
+        key,
+        _gain_batch(route=route),
+        _gain_batch(
+            route=route,
+            target_positions=(4, 5),
+            sequence_length=6,
+            prompt_length=4,
+        ),
+    )
+
+    result = condition_gain(
+        _ScriptedScorer((1.0, 2.0)),
+        (probe,),
+        bootstrap_samples=0,
+    )[0]
+
+    assert result.total is not None
+    assert result.total.matched_loss == 1.0
+    assert result.total.counterfactual_loss == 2.0
+    assert result.total.gain == 1.0
+
+
+@pytest.mark.parametrize("target_tokens", ((51, 99), (52, 51)))
+def test_condition_gain_rejects_changed_target_values_or_order(
+    target_tokens: tuple[int, ...],
+) -> None:
+    route = Route("s2st", "full_cot")
+    key = ConditionGainKey(route, "source_audio", "source_cot")
+
+    with pytest.raises(ValueError, match="ordered teacher-forced"):
+        ConditionGainProbe(
+            "changed_target",
+            key,
+            _gain_batch(route=route),
+            _gain_batch(route=route, target_tokens=target_tokens),
+        )
+
+
+def test_condition_gain_rejects_changed_target_modality() -> None:
+    route = Route("s2st", "full_cot")
+    key = ConditionGainKey(route, "source_audio", "source_cot")
+
+    with pytest.raises(ValueError, match="same modalities"):
+        ConditionGainProbe(
+            "changed_modality",
+            key,
+            _gain_batch(route=route),
+            _gain_batch(
+                route=route,
+                target_modalities=(Modality.AUDIO, Modality.AUDIO),
+            ),
+        )
+
+
+def test_condition_gain_rejects_changed_route() -> None:
+    route = Route("s2st", "full_cot")
+    key = ConditionGainKey(route, "source_audio", "source_cot")
+
+    with pytest.raises(ValueError, match="route must match"):
+        ConditionGainProbe(
+            "changed_route",
+            key,
+            _gain_batch(route=route),
+            _gain_batch(route=Route("asr")),
+        )
+
+
+def test_condition_gain_rejects_changed_sample_lineage() -> None:
+    route = Route("s2st", "full_cot")
+    key = ConditionGainKey(route, "source_audio", "source_cot")
+
+    with pytest.raises(ValueError, match="sample_ids lineage"):
+        ConditionGainProbe(
+            "changed_sample",
+            key,
+            _gain_batch(route=route, sample_id="sample_0"),
+            _gain_batch(route=route, sample_id="sample_1"),
+        )
+
+
+def test_condition_gain_rejects_changed_cross_modality_target_order() -> None:
+    route = Route("s2st")
+    key = ConditionGainKey(route, "source_audio", "final")
+
+    with pytest.raises(ValueError, match="ordered teacher-forced"):
+        ConditionGainProbe(
+            "changed_joint_order",
+            key,
+            _gain_batch(
+                route=route,
+                target_tokens=(51, 52),
+                target_modalities=(Modality.TEXT, Modality.AUDIO),
+            ),
+            _gain_batch(
+                route=route,
+                target_tokens=(52, 51),
+                target_modalities=(Modality.AUDIO, Modality.TEXT),
+            ),
+        )
+
+
+def test_condition_gain_rejects_changed_teacher_forced_target_history() -> None:
+    route = Route("s2st", "full_cot")
+    key = ConditionGainKey(route, "target_cot", "final")
+
+    with pytest.raises(ValueError, match="ordered teacher-forced"):
+        ConditionGainProbe(
+            "changed_target_history",
+            key,
+            _gain_batch(route=route),
+            _gain_batch(route=route, target_input_tokens=(91, 92)),
+        )
+
+
+def test_condition_gain_rejects_scorer_counts_that_do_not_match_target_masks() -> None:
+    probe = _gain_probe()
+
+    with pytest.raises(ValueError, match="scorer counts must exactly match target masks"):
+        condition_gain(
+            _ScriptedScorer((1.0, 2.0), count_offset=1),
+            (probe,),
+            bootstrap_samples=0,
+        )
+
+
+@pytest.mark.parametrize("loss", (float("nan"), float("inf")))
+def test_condition_gain_rejects_non_finite_loss_sums(loss: float) -> None:
+    with pytest.raises(ValueError, match="loss sums must be finite"):
+        condition_gain(
+            _ScriptedScorer((loss, loss)),
+            (_gain_probe(),),
+            bootstrap_samples=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("means", "expected_matched", "expected_counterfactual", "expected_gain"),
+    (
+        ((1.0, 5.0, 3.0, 4.0), 2.5, 4.25, 1.75),
+        ((5.0, 1.0, 4.0, 2.0), 4.25, 1.75, -2.5),
+    ),
+)
+def test_condition_gain_is_exactly_token_weighted(
+    means: tuple[float, ...],
+    expected_matched: float,
+    expected_counterfactual: float,
+    expected_gain: float,
+) -> None:
+    key = ConditionGainKey(Route("tts"), "source_text", "final")
+    probes = (
+        _gain_probe(
+            name="short",
+            key=key,
+            target_positions=(2,),
+            target_tokens=(51,),
+            sequence_length=3,
+        ),
+        _gain_probe(
+            name="long",
+            key=key,
+            target_positions=(2, 3, 4),
+            target_tokens=(51, 52, 53),
+            sequence_length=5,
+        ),
+    )
+
+    stat = condition_gain(
+        _ScriptedScorer(means),
+        probes,
+        bootstrap_samples=0,
+    )[0].total
+
+    assert stat is not None
+    assert stat.matched_loss == pytest.approx(expected_matched)
+    assert stat.counterfactual_loss == pytest.approx(expected_counterfactual)
+    assert stat.gain == pytest.approx(expected_gain)
+    assert stat.target_count == 4
+
+
+def test_condition_gain_bootstrap_uses_a_private_rng() -> None:
+    key = ConditionGainKey(Route("asr"), "source_audio", "final")
+    probes = (
+        _gain_probe(name="first", key=key),
+        _gain_probe(name="second", key=key),
+    )
+    torch.manual_seed(91)
+    before = torch.random.get_rng_state()
+
+    result = condition_gain(
+        _ScriptedScorer((1.0, 2.0, 3.0, 5.0)),
+        probes,
+        bootstrap_samples=32,
+        bootstrap_seed=7,
+    )[0]
+
+    assert torch.equal(before, torch.random.get_rng_state())
+    assert result.total is not None
+    assert result.total.bootstrap_low is not None
+    assert result.total.bootstrap_high is not None
+
+
+def test_condition_gain_keeps_source_to_cot_and_cot_to_final_separate() -> None:
+    route = Route("s2st", "full_cot")
+    source_to_cot = ConditionGainKey(route, "source_audio", "source_cot")
+    cot_to_final = ConditionGainKey(route, "target_cot", "final")
+    probes = (
+        _gain_probe(name="source_to_cot", key=source_to_cot),
+        _gain_probe(
+            name="cot_to_final",
+            key=cot_to_final,
+            target_positions=(3,),
+            target_tokens=(71,),
+            sequence_length=4,
+            prompt_length=3,
+        ),
+    )
+
+    results = {
+        result.key: result
+        for result in condition_gain(
+            _ScriptedScorer((1.0, 3.0, 2.0, 6.0)),
+            probes,
+            bootstrap_samples=0,
+        )
+    }
+
+    assert set(results) == {source_to_cot, cot_to_final}
+    source_stat = results[source_to_cot].total
+    final_stat = results[cot_to_final].total
+    assert source_stat is not None
+    assert final_stat is not None
+    assert source_stat.target_count == 2
+    assert final_stat.target_count == 1
+    assert source_stat.gain == 2.0
+    assert final_stat.gain == 4.0
+
+
+@pytest.mark.parametrize("scorer_type", (S2STokenScorer, UniSSTokenScorer))
+def test_condition_gain_uses_one_scorer_path_without_model_dispatch(scorer_type) -> None:
+    scorer = scorer_type()
+
+    result = condition_gain(
+        scorer,
+        (
+            _gain_probe(
+                target_modalities=(Modality.TEXT, Modality.AUDIO),
+            ),
+        ),
+        bootstrap_samples=0,
+    )[0]
+
+    assert len(scorer.calls) == 2
+    assert result.total is not None
+    assert result.total.gain == 0.0
+
+
+def test_condition_gain_metrics_include_explicit_probe_set_identity() -> None:
+    result = condition_gain(
+        _ScriptedScorer((1.0, 2.0)),
+        (_gain_probe(),),
+        bootstrap_samples=0,
+    )[0]
+
+    metrics = condition_gain_metrics(result, probe_set_id="core_v1")
+
+    assert "condition_gain/core_v1/tts/direct/source_text/final/gain" in metrics
+
+
+def test_condition_gain_reports_explicit_exclusions_as_coverage() -> None:
+    eligible = _gain_probe(name="eligible")
+    excluded = ConditionGainProbe.excluded(
+        "excluded",
+        eligible.key,
+        "missing_aligned_donor",
+    )
+
+    result = condition_gain(
+        _ScriptedScorer((1.0, 2.0)),
+        (eligible, excluded),
+        bootstrap_samples=0,
+    )[0]
+    metrics = condition_gain_metrics(result)
+
+    assert result.eligible_count == 1
+    assert result.excluded_count == 1
+    assert metrics["condition_gain/tts/direct/source_text/final/coverage"] == 0.5
+
+
 def test_step_report_rejects_loss_modalities_missing_from_targets() -> None:
     batch = _batch()
     text = LossStat(torch.tensor(1.0), torch.tensor(1, dtype=torch.int64))
@@ -526,6 +895,198 @@ def test_metrics_callback_drops_prior_route_loss_after_a_mixed_batch() -> None:
 
     assert "loss/train" in writer.values
     assert "loss/train/s2st/direct" not in writer.values
+
+
+def test_condition_gain_callback_scores_on_every_rank_and_logs_only_global_zero() -> None:
+    calls: list[int] = []
+    writer = _Writer()
+    for is_global_zero in (False, True):
+        scorer = _ScriptedScorer((1.0, 2.0))
+        module = _GainModule(scorer)
+        callback = ConditionGainCallback(
+            (_gain_probe(),),
+            probe_set_id="core_v1",
+            every_n_steps=1,
+            bootstrap_samples=0,
+        )
+        callback.on_train_batch_end(
+            _trainer(
+                writer if is_global_zero else None,
+                step=1,
+                world_size=2,
+                is_global_zero=is_global_zero,
+                strategy_model=module,
+            ),
+            module,
+            None,
+            None,
+            0,
+        )
+        calls.append(len(scorer.calls))
+
+    assert calls == [2, 2]
+    assert writer.values[
+        "condition_gain/core_v1/tts/direct/source_text/final/gain"
+    ] == pytest.approx(1.0)
+
+
+def test_condition_gain_callback_requires_a_scalar_logger_on_global_zero() -> None:
+    scorer = _ScriptedScorer((1.0, 2.0))
+    module = _GainModule(scorer)
+    callback = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=1,
+        bootstrap_samples=0,
+    )
+
+    with pytest.raises(RuntimeError, match="add_scalar"):
+        callback.on_train_batch_end(
+            _trainer(None, step=1, strategy_model=module),
+            module,
+            None,
+            None,
+            0,
+        )
+
+    assert len(scorer.calls) == 2
+
+
+def test_condition_gain_callback_requires_a_strategy_model() -> None:
+    module = _GainModule(_ScriptedScorer((1.0, 2.0)))
+    callback = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=1,
+    )
+
+    with pytest.raises(RuntimeError, match="trainer.strategy.model"):
+        callback.on_train_batch_end(
+            _trainer(_Writer(), step=1, strategy_model=object()),
+            module,
+            None,
+            None,
+            0,
+        )
+
+
+def test_condition_gain_callback_rejects_an_invalid_forward_result() -> None:
+    invalid = cast(TokenScorer, lambda _input, _targets: object())
+    module = _GainModule(invalid)
+    callback = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=1,
+        bootstrap_samples=0,
+    )
+
+    with pytest.raises(TypeError, match="forward must return TokenLossStats"):
+        callback.on_train_batch_end(
+            _trainer(_Writer(), step=1, strategy_model=module),
+            module,
+            None,
+            None,
+            0,
+        )
+
+
+def test_condition_gain_callback_restores_cadence_state() -> None:
+    first_scorer = _ScriptedScorer((1.0, 2.0))
+    first_module = _GainModule(first_scorer)
+    first = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=2,
+        bootstrap_samples=0,
+    )
+    first.on_train_batch_end(
+        _trainer(_Writer(), step=2, strategy_model=first_module),
+        first_module,
+        None,
+        None,
+        0,
+    )
+
+    second_scorer = _ScriptedScorer((3.0, 5.0))
+    second = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=2,
+        bootstrap_samples=0,
+    )
+    second.load_state_dict(first.state_dict())
+    module = _GainModule(second_scorer)
+    for step in (2, 3, 4):
+        second.on_train_batch_end(
+            _trainer(_Writer(), step=step, strategy_model=module),
+            module,
+            None,
+            None,
+            0,
+        )
+
+    assert len(first_scorer.calls) == 2
+    assert len(second_scorer.calls) == 2
+
+
+def test_condition_gain_callback_preserves_modes_rng_and_precision_context() -> None:
+    events: list[str] = []
+    precision = _Precision(events)
+    scorer = _ScriptedScorer(
+        (1.0, 2.0),
+        events=events,
+        advance_rng=True,
+    )
+    module = _GainModule(scorer)
+    modes = tuple(child.training for child in module.modules())
+    callback = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=1,
+        bootstrap_samples=0,
+    )
+    torch.manual_seed(29)
+    rng_state = torch.random.get_rng_state()
+
+    callback.on_train_batch_end(
+        _trainer(
+            _Writer(),
+            step=1,
+            precision_plugin=precision,
+            strategy_model=module,
+        ),
+        module,
+        None,
+        None,
+        0,
+    )
+
+    assert tuple(child.training for child in module.modules()) == modes
+    assert torch.equal(torch.random.get_rng_state(), rng_state)
+    assert events == ["enter", "score", "score", "exit"]
+
+
+def test_condition_gain_callback_calls_the_strategy_wrapped_model() -> None:
+    wrapped_scorer = _ScriptedScorer((1.0, 2.0))
+    wrapped = _GainModule(wrapped_scorer)
+    pure_scorer = _ScriptedScorer(())
+    pure = _GainModule(pure_scorer)
+    callback = ConditionGainCallback(
+        (_gain_probe(),),
+        probe_set_id="core_v1",
+        every_n_steps=1,
+        bootstrap_samples=0,
+    )
+    callback.on_train_batch_end(
+        _trainer(_Writer(), step=1, strategy_model=wrapped),
+        pure,
+        None,
+        None,
+        0,
+    )
+
+    assert len(wrapped_scorer.calls) == 2
+    assert pure_scorer.calls == []
 
 
 def test_generation_metrics_use_named_stages_without_fixed_architecture_fields() -> None:
@@ -610,6 +1171,84 @@ def _batch(
     )
 
 
+def _gain_batch(
+    *,
+    route: Route | None = None,
+    sample_id: str | None = "sample_0",
+    target_positions: tuple[int, ...] = (2, 3),
+    target_tokens: tuple[int, ...] = (51, 52),
+    target_input_tokens: tuple[int, ...] | None = None,
+    target_modalities: tuple[Modality, ...] | None = None,
+    sequence_length: int = 4,
+    prompt_length: int = 2,
+    condition_token: int = 11,
+) -> TokenBatch:
+    input_tokens = target_tokens if target_input_tokens is None else target_input_tokens
+    modalities = (
+        (Modality.TEXT,) * len(target_tokens) if target_modalities is None else target_modalities
+    )
+    if not (len(target_positions) == len(target_tokens) == len(input_tokens) == len(modalities)):
+        raise ValueError("gain test target fields must align.")
+    input_ids = torch.arange(10, 10 + sequence_length, dtype=torch.int64).unsqueeze(0)
+    input_ids[0, 0] = condition_token
+    labels = torch.full_like(input_ids, -100)
+    text_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+    audio_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+    for position, input_token, target_token, modality in zip(
+        target_positions,
+        input_tokens,
+        target_tokens,
+        modalities,
+        strict=True,
+    ):
+        input_ids[0, position] = input_token
+        labels[0, position] = target_token
+        target_mask = text_mask if modality is Modality.TEXT else audio_mask
+        target_mask[0, position] = True
+    return TokenBatch(
+        input=TokenInput(input_ids, torch.ones_like(input_ids, dtype=torch.bool)),
+        targets=TokenTargets(
+            labels,
+            text_mask=text_mask if bool(text_mask.any()) else None,
+            audio_mask=audio_mask if bool(audio_mask.any()) else None,
+        ),
+        prompt_lengths=torch.tensor([prompt_length]),
+        routes=(Route("tts") if route is None else route,),
+        sample_ids=None if sample_id is None else (sample_id,),
+    )
+
+
+def _gain_probe(
+    *,
+    name: str = "sample_0",
+    key: ConditionGainKey | None = None,
+    target_positions: tuple[int, ...] = (2, 3),
+    target_tokens: tuple[int, ...] = (51, 52),
+    target_modalities: tuple[Modality, ...] | None = None,
+    sequence_length: int = 4,
+    prompt_length: int = 2,
+) -> ConditionGainProbe:
+    resolved_key = (
+        ConditionGainKey(Route("tts"), "source_text", "final")
+        if key is None
+        else key
+    )
+    common = {
+        "route": resolved_key.route,
+        "target_positions": target_positions,
+        "target_tokens": target_tokens,
+        "target_modalities": target_modalities,
+        "sequence_length": sequence_length,
+        "prompt_length": prompt_length,
+    }
+    return ConditionGainProbe(
+        name,
+        resolved_key,
+        _gain_batch(**common, condition_token=11),
+        _gain_batch(**common, condition_token=19),
+    )
+
+
 def _count(mask: torch.Tensor | None) -> torch.Tensor:
     if mask is None:
         return torch.zeros((), dtype=torch.float32)
@@ -625,16 +1264,28 @@ class _Writer:
         self.values[tag] = value
 
 
-def _trainer(writer: _Writer | None, *, step: int) -> Trainer:
+def _trainer(
+    writer: _Writer | None,
+    *,
+    step: int,
+    world_size: int = 1,
+    is_global_zero: bool = True,
+    precision_plugin: _Precision | None = None,
+    strategy_model: object | None = None,
+) -> Trainer:
     logger = None if writer is None else SimpleNamespace(experiment=writer)
     return cast(
         Trainer,
         SimpleNamespace(
             global_step=step,
-            world_size=1,
-            is_global_zero=True,
+            world_size=world_size,
+            is_global_zero=is_global_zero,
             logger=logger,
             loggers=(),
+            precision_plugin=(
+                _Precision() if precision_plugin is None else precision_plugin
+            ),
+            strategy=SimpleNamespace(model=strategy_model),
         ),
     )
 
