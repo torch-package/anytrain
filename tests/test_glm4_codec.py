@@ -457,18 +457,35 @@ def test_glm4_weights_revision_remains_fixed(tmp_path: Path) -> None:
     _assert_runtime_guidance(str(error.value))
 
 
-def test_glm4_runtime_rejects_unvalidated_transformers_version(tmp_path: Path) -> None:
-    transformers = SimpleNamespace(__version__="4.57.6")
+def test_glm4_runtime_warns_and_continues_with_newer_transformers(
+    tmp_path: Path,
+) -> None:
+    _write_source_tree(tmp_path)
+    modeling_path = tmp_path / "speech_tokenizer" / "modeling_whisper.py"
+    runtime_model = type("RuntimeModel", (nn.Module,), {"from_pretrained": Mock()})
+    transformers = SimpleNamespace(
+        __version__="4.57.6",
+        WhisperFeatureExtractor=SimpleNamespace(from_pretrained=Mock()),
+    )
+    modeling = SimpleNamespace(
+        __file__=str(modeling_path),
+        WhisperVQEncoder=runtime_model,
+    )
+
+    def _import(name: str):
+        return transformers if name == "transformers" else modeling
 
     with (
-        patch("anytrain.audio.codec.glm4.codec.import_module", return_value=transformers),
-        pytest.raises(
-            RuntimeError,
-            match="only been validated with Transformers 4.44.1",
-        ) as error,
+        patch("anytrain.audio.codec.glm4.codec.import_module", side_effect=_import),
+        pytest.warns(
+            RuntimeWarning,
+            match="only been validated with Transformers 4.44.1.*observed '4.57.6'",
+        ),
     ):
-        _load_runtime(tmp_path)
-    _assert_runtime_guidance(str(error.value))
+        model_cls, feature_extractor_cls = _load_runtime(tmp_path)
+
+    assert model_cls is runtime_model
+    assert feature_extractor_cls is transformers.WhisperFeatureExtractor
 
 
 def test_glm4_runtime_rejects_source_imported_outside_configured_root(

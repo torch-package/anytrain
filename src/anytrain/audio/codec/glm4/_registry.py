@@ -48,11 +48,12 @@ GLM4_RUNTIME_GUIDANCE = (
     "that provides speech_tokenizer (or pass source_root directly to "
     "GLM4Tokenizer.from_pretrained). The source Git commit is not pinned; "
     "required files, import origin, APIs, and model/preprocess contracts are "
-    "validated instead. The validated runtime requires "
-    "transformers==4.44.1, which conflicts with transformers>=4.46 in the "
-    "BiCodec extra and transformers>=4.51.0 in the module extra; use an "
-    "independent GLM producer unless a joint environment has passed exact "
-    "token-ID parity."
+    "validated instead. The reference runtime is transformers==4.44.1; other "
+    "versions are allowed with a RuntimeWarning. This may conflict with the "
+    "transformers>=4.46 BiCodec extra and transformers>=4.51.0 module extra. "
+    "The GLM source/API and model/preprocess contracts are still checked, so "
+    "use an independent GLM producer unless a joint environment has passed "
+    "exact token-ID parity."
 )
 
 

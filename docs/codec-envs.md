@@ -30,9 +30,10 @@
   `WhisperVQEncoder.from_pretrained()` API，随后用实际模型和 feature extractor 校验数值契约；
 - weights：`zai-org/glm-4-voice-tokenizer` commit
   `a5f2404e63c84e92f5238908e1706316324ebafa`；
-- runtime：严格 `transformers==4.44.1`，官方
+- runtime：参考验证版本为 `transformers==4.44.1`，使用官方
   `speech_tokenizer.modeling_whisper.WhisperVQEncoder` 加
-  `transformers.WhisperFeatureExtractor`；
+  `transformers.WhisperFeatureExtractor`。更高或不同版本不会被 loader 拒绝，
+  但会发出 `RuntimeWarning`，仍需用真实音频完成 exact token-ID parity 验证；
 - contract：16 kHz mono waveform，CPU float32 fbank、禁用 TF32、STFT 200-sample guard、
   1280-sample padding multiple，输出 `torch.long [batch, frame, 1]`，ID 范围 `[0, 16384)`；
 - batch：wrapper 对一个采样率分组执行一次 padded feature extraction 和一次 model
@@ -48,11 +49,11 @@
   必须包含该 identity，不得与旧 GLM-4 store 混合 resume。
 
 默认 `anytrain` py312 环境当前使用 Transformers 4.57.6，且 BiCodec extra 要求
-`transformers>=4.46`、module extra 要求 `transformers>=4.51.0`。因此不要为 GLM-4 增加一个会让
-resolver 产生冲突的组合 extra，也不要把 fake 单测当作新版本兼容性证据。推荐部署是独立
-Transformers 4.44.1 GLM producer 持续生成/publish raw GLM codes，主训练环境同时消费这些 codes
-并运行 BiCodec target。若需要训练进程内 fallback，必须先在候选联合环境用固定真实音频完成
-prepared/online exact ID parity、batch-single parity 和吞吐/显存 gate。
+`transformers>=4.46`、module extra 要求 `transformers>=4.51.0`。GLM-4 loader 会对偏离参考
+版本的运行时发出警告，但不会仅因版本更高而失败；不要把 fake 单测当作新版本兼容性证据。
+推荐部署仍是独立 Transformers 4.44.1 GLM producer 持续生成/publish raw GLM codes，主训练环境
+同时消费这些 codes 并运行 BiCodec target。若需要训练进程内 fallback，必须先在候选联合环境用
+固定真实音频完成 prepared/online exact ID parity、batch-single parity 和吞吐/显存 gate。
 
 ## Fudan smoke 2026-07-11
 
@@ -97,8 +98,8 @@ prepared/online exact ID parity、batch-single parity 和吞吐/显存 gate。
 - Stable Codec wrapper 保持 optional；在上游包和 FlashAttention 形成 Python 3.12 可安装组合前，
   不作为受支持 backend。
 - GLM-4 wrapper 保持 tokenizer-only；允许 source fork，但必须满足已验证 API/数值契约；HF 权重
-  revision 和 Transformers 版本继续固定。与主环境依赖冲突时使用独立 producer，不为方便安装
-  静默放宽版本约束。
+  revision 继续固定，Transformers 4.44.1 作为参考验证版本，偏离时发出运行时警告。与主训练
+  环境依赖冲突时优先使用独立 producer，不把警告视为新版本兼容性证据。
 
 ## UniCodec smoke 2026-07-13
 

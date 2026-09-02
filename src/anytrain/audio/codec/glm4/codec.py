@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from importlib import import_module
@@ -315,11 +316,13 @@ def _load_runtime(source_root: Path) -> tuple[Any, Any]:
         ) from exc
     version = getattr(transformers, "__version__", None)
     if version != GLM4_TRANSFORMERS_VERSION:
-        raise RuntimeError(
+        warnings.warn(
             _with_guidance(
                 "GLM-4 online tokenization has only been validated with Transformers "
-                f"{GLM4_TRANSFORMERS_VERSION}; observed {version!r}."
-            )
+                f"{GLM4_TRANSFORMERS_VERSION}; observed {version!r}. Proceeding anyway."
+            ),
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     source_text = str(source_root)
