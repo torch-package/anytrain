@@ -137,8 +137,11 @@ class _CurveState:
         self.pending_count.add_(1)
 
     def finalize(self, trainer: pl.Trainer, *, sync_distributed: bool) -> None:
-        self.last_sum = _sum(trainer, self.pending_sum, sync_distributed)
-        self.last_count = _sum(trainer, self.pending_count, sync_distributed)
+        self.last_sum, self.last_count = _sum_many(
+            trainer,
+            (self.pending_sum, self.pending_count),
+            sync_distributed,
+        )
         self.pending_sum.zero_()
         self.pending_count.zero_()
 
@@ -289,7 +292,7 @@ class _HistogramState:
             self.pending_sum_squares,
             self.pending_invalid,
         )
-        reduced = tuple(_sum(trainer, value, sync_distributed) for value in values)
+        reduced = _sum_many(trainer, values, sync_distributed)
         (
             self.last_mass,
             self.last_observations,
@@ -503,7 +506,7 @@ class _ProfileState:
             self.pending_total,
             self.pending_invalid,
         )
-        reduced = tuple(_sum(trainer, value, sync_distributed) for value in values)
+        reduced = _sum_many(trainer, values, sync_distributed)
         (
             self.last_counts,
             self.last_sums,
@@ -2425,17 +2428,68 @@ def _sum(trainer: pl.Trainer, value: Tensor, enabled: bool) -> Tensor:
     )
 
 
+def _sum_many(
+    trainer: pl.Trainer,
+    values: tuple[Tensor, ...],
+    enabled: bool,
+) -> tuple[Tensor, ...]:
+    """Reduce a collection of tensors with as few collectives as possible.
+
+    Observation histogram/profile state keeps several dense accumulators whose
+    shapes differ (for example, a ``(groups, bins)`` mass tensor and scalar
+    invalid count).  Concatenating their flattened values lets one collective
+    reduce the complete state, after which the original shapes are restored.
+    Tensors with different dtype/device are reduced in separate groups so this
+    helper never silently promotes or moves an accumulator.
+    """
+    if not values:
+        return ()
+    if not enabled or not _capability.is_distributed(trainer):
+        # Match _sum's rank-local behavior exactly: detached, independent
+        # tensors are returned even when distributed synchronization is off.
+        return tuple(value.detach().clone() for value in values)
+
+    # torch.cat requires a common dtype and device.  Grouping by both keeps
+    # mixed accumulator states correct while still reducing the usual
+    # homogeneous histogram/profile state in a single collective.
+    groups: dict[tuple[torch.device, torch.dtype], list[tuple[int, Tensor]]] = {}
+    for index, value in enumerate(values):
+        groups.setdefault((value.device, value.dtype), []).append((index, value))
+
+    reduced_values: list[Tensor | None] = [None] * len(values)
+    for grouped in groups.values():
+        packed_parts = tuple(value.detach().reshape(-1) for _index, value in grouped)
+        packed_size = sum(part.numel() for part in packed_parts)
+        packed = torch.cat(packed_parts, dim=0)
+        reduced = _sum(trainer, packed, enabled=True)
+        if not isinstance(reduced, Tensor):
+            raise TypeError("trainer.strategy.reduce must return a Tensor.")
+        if reduced.numel() != packed_size:
+            raise RuntimeError(
+                "trainer.strategy.reduce returned a tensor with an incompatible "
+                "number of elements for batched observation reduction."
+            )
+        reduced_flat = reduced.reshape(-1)
+        offset = 0
+        for index, value in grouped:
+            size = value.numel()
+            reduced_values[index] = reduced_flat.narrow(0, offset, size).reshape(value.shape)
+            offset += size
+
+    # Every input contributes one output, but keep a defensive check here so a
+    # future grouping change cannot leak ``None`` into state finalization.
+    if any(value is None for value in reduced_values):
+        raise RuntimeError("batched observation reduction did not restore all tensors.")
+    return tuple(cast(Tensor, value) for value in reduced_values)
+
+
 def _all_gather(
     trainer: pl.Trainer,
     value: Tensor,
     *,
     error: str,
 ) -> Tensor:
-    strategy = getattr(trainer, "strategy", None)
-    all_gather = getattr(strategy, "all_gather", None)
-    if not callable(all_gather):
-        raise RuntimeError(error)
-    result = all_gather(value)
+    result = _capability.strategy_all_gather(trainer, value, error=error)
     if not isinstance(result, Tensor):
         raise TypeError("trainer.strategy.all_gather must return a Tensor.")
     return result

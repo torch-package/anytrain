@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, Protocol, TypedDict, TypeVar, cast
 
 from lightning import pytorch as pl
 
@@ -11,7 +11,15 @@ class _ReduceStrategy(Protocol):
 
 
 class _BarrierStrategy(Protocol):
-    def barrier(self) -> object: ...
+    def barrier(self, name: str | None = None) -> object: ...
+
+
+class _AllGatherStrategy(Protocol):
+    def all_gather(self, tensor: object) -> object: ...
+
+
+class _BroadcastStrategy(Protocol):
+    def broadcast(self, value: object, *, src: int) -> object: ...
 
 
 class _HyperparameterLogger(Protocol):
@@ -19,6 +27,17 @@ class _HyperparameterLogger(Protocol):
 
 
 _T = TypeVar("_T")
+
+
+class _CollectiveFields(TypedDict, total=False):
+    rank: int
+    world_size: int
+    global_step: int
+    strategy: str
+    value_type: str
+    tensor_dtype: object
+    tensor_device: object
+    tensor_shape: object
 
 
 def global_step(trainer: pl.Trainer) -> int:
@@ -77,7 +96,20 @@ def strategy_reduce(
             if error is not None
             else "Distributed operation requires trainer.strategy.reduce."
         )
-    return cast(_T, cast(_ReduceStrategy, strategy).reduce(tensor, reduce_op=reduce_op))
+    from .audit import audit_collective
+
+    return cast(
+        _T,
+        audit_collective(
+            "strategy.reduce",
+            lambda: cast(_ReduceStrategy, strategy).reduce(
+                tensor,
+                reduce_op=reduce_op,
+            ),
+            **_collective_fields(trainer, tensor),
+            reduce_op=reduce_op,
+        ),
+    )
 
 
 def strategy_reduce_or_none(
@@ -90,12 +122,13 @@ def strategy_reduce_or_none(
     reduce = getattr(strategy, "reduce", None)
     if not callable(reduce):
         return None
-    return cast(_T, cast(_ReduceStrategy, strategy).reduce(tensor, reduce_op=reduce_op))
+    return strategy_reduce(trainer, tensor, reduce_op=reduce_op)
 
 
 def strategy_barrier(
     trainer: pl.Trainer,
     *,
+    name: str | None = None,
     error: str | None = None,
 ) -> None:
     strategy = getattr(trainer, "strategy", None)
@@ -106,7 +139,95 @@ def strategy_barrier(
             if error is not None
             else "Distributed operation requires trainer.strategy.barrier."
         )
-    cast(_BarrierStrategy, strategy).barrier()
+    from .audit import audit_collective
+
+    audit_collective(
+        "strategy.barrier",
+        lambda: (
+            cast(_BarrierStrategy, strategy).barrier()
+            if name is None
+            else cast(_BarrierStrategy, strategy).barrier(name)
+        ),
+        **_collective_fields(trainer),
+        barrier_name=name,
+    )
+
+
+def strategy_all_gather(
+    trainer: pl.Trainer,
+    tensor: _T,
+    *,
+    error: str | None = None,
+) -> _T:
+    strategy = getattr(trainer, "strategy", None)
+    all_gather = getattr(strategy, "all_gather", None)
+    if not callable(all_gather):
+        raise RuntimeError(
+            error
+            if error is not None
+            else "Distributed operation requires trainer.strategy.all_gather."
+        )
+    from .audit import audit_collective
+
+    return cast(
+        _T,
+        audit_collective(
+            "strategy.all_gather",
+            lambda: cast(_AllGatherStrategy, strategy).all_gather(tensor),
+            **_collective_fields(trainer, tensor),
+        ),
+    )
+
+
+def strategy_broadcast(
+    trainer: pl.Trainer,
+    value: _T,
+    *,
+    src: int,
+    error: str | None = None,
+) -> _T:
+    strategy = getattr(trainer, "strategy", None)
+    broadcast = getattr(strategy, "broadcast", None)
+    if not callable(broadcast):
+        raise RuntimeError(
+            error
+            if error is not None
+            else "Distributed operation requires trainer.strategy.broadcast."
+        )
+    from .audit import audit_collective
+
+    return cast(
+        _T,
+        audit_collective(
+            "strategy.broadcast",
+            lambda: cast(_BroadcastStrategy, strategy).broadcast(value, src=src),
+            **_collective_fields(trainer, value),
+            source_rank=src,
+        ),
+    )
+
+
+def _collective_fields(
+    trainer: pl.Trainer, value: object | None = None
+) -> _CollectiveFields:
+    fields: _CollectiveFields = {
+        "rank": global_rank(trainer),
+        "world_size": world_size(trainer),
+        "global_step": global_step(trainer),
+        "strategy": strategy_name(trainer),
+    }
+    if value is None:
+        return fields
+    fields["value_type"] = type(value).__name__
+    for field, attribute in (
+        ("tensor_dtype", "dtype"),
+        ("tensor_device", "device"),
+        ("tensor_shape", "shape"),
+    ):
+        resolved = getattr(value, attribute, None)
+        if resolved is not None:
+            fields[field] = resolved
+    return fields
 
 
 def log_hyperparams(trainer: pl.Trainer, params: object) -> None:
@@ -125,6 +246,8 @@ __all__ = [
     "log_hyperparams",
     "loggers",
     "strategy_barrier",
+    "strategy_all_gather",
+    "strategy_broadcast",
     "strategy_name",
     "strategy_reduce",
     "strategy_reduce_or_none",

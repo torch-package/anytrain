@@ -1022,6 +1022,7 @@ class LightningTest(unittest.TestCase):
                 "max_pending_async_saves",
                 "unit_schedule",
                 "every_n_unit_epochs",
+                "audit_sink",
             ],
         )
         self.assertEqual(custom.parameters["async_save"].default, True)

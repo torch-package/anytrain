@@ -4,6 +4,10 @@
 
 ## Lightning
 
+- 在 speech-to-speech 的 8-rank 长跑中验证通用 stall audit：同一 run 关联
+  anytrain/anydataset 记录，确认 S2TT cost planning 冷窗、callback、checkpoint 和
+  collective arrival skew 能由 bounded JSONL 直接区分；任务字段继续由下游通过
+  `batch_report` 提供，不进入 core。
 - 设计真正只读的 module backward observation 契约。当前 `BackwardObservation` 只作为占位声明，
   `ObservationCallback` 会 warning 后跳过；需要观察 loss 对参数的梯度时先使用
   `GradientProbeLoggerCallback`。未来方案不能替换 module output、插入 autograd view，或让各 rank

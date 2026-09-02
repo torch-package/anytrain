@@ -15,6 +15,8 @@ from lightning.pytorch.callbacks import Callback
 
 from anytrain._compat import StrEnum
 
+from . import _capability
+
 _RESULT_POLL_SECONDS = 0.1
 _RESULT_FINAL_WAIT_SECONDS = 1.0
 _MAX_ERROR_MESSAGE_CHARS = 16_384
@@ -314,7 +316,11 @@ class MaterializationCallback(Callback):
             raise failure
 
         try:
-            trainer.strategy.barrier(self.barrier_name)
+            _capability.strategy_barrier(
+                trainer,
+                name=self.barrier_name,
+                error="Materialization synchronization requires trainer.strategy.barrier.",
+            )
         except Exception:
             _close_materialization(controller)
             self._active = None
@@ -418,7 +424,12 @@ def _broadcast_error(
     error: Exception | None,
 ) -> tuple[str, str] | None:
     payload = None if error is None else (type(error).__name__, str(error))
-    received = trainer.strategy.broadcast(payload, src=0)
+    received = _capability.strategy_broadcast(
+        trainer,
+        payload,
+        src=0,
+        error="Materialization error synchronization requires trainer.strategy.broadcast.",
+    )
     if received is None:
         return None
     if (
@@ -443,7 +454,12 @@ def _sync_rank_errors(
     failures: list[tuple[int, str, str]] = []
     for source in range(world_size):
         value = payload if source == rank else None
-        received = trainer.strategy.broadcast(value, src=source)
+        received = _capability.strategy_broadcast(
+            trainer,
+            value,
+            src=source,
+            error="Materialization rank synchronization requires trainer.strategy.broadcast.",
+        )
         if received is None:
             continue
         if (
@@ -465,7 +481,12 @@ def _sync_active_state(trainer: Trainer, active: bool, label: str) -> bool:
         return active
     states: list[bool] = []
     for source in range(world_size):
-        received = trainer.strategy.broadcast(active if source == rank else None, src=source)
+        received = _capability.strategy_broadcast(
+            trainer,
+            active if source == rank else None,
+            src=source,
+            error="Materialization active-state synchronization requires trainer.strategy.broadcast.",
+        )
         if not isinstance(received, bool):
             raise TypeError("materialization active-state broadcast was invalid.")
         states.append(received)

@@ -4,8 +4,12 @@ import os
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable, Iterable
+import time
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -19,11 +23,67 @@ from lightning.pytorch.callbacks import ModelCheckpoint as LightningModelCheckpo
 from lightning_utilities.core.rank_zero import rank_zero_info
 
 from .. import _capability
+from ..audit import (
+    AuditSink,
+    JsonlAuditSink,
+    _release_audit_sink,
+    _retain_audit_sink,
+    _use_audit_context,
+    _use_audit_sink,
+    audit_event,
+    audit_flush,
+)
 from ..schedule import (
     UnitScheduleCallback,
     UnitScheduleUpdate,
     register_unit_schedule_consumer,
 )
+
+
+@dataclass
+class _CheckpointAudit:
+    operation_id: str
+    fields: dict[str, object]
+    started_ns: int
+    submit_started_ns: int | None = None
+    phase: str = "start"
+    serialize_latency_ms: float = 0.0
+    copy_latency_ms: float = 0.0
+    publication_latency_ms: float = 0.0
+    backpressure_wait_ms: float = 0.0
+    checkpoint_bytes: int | None = None
+    copy_finished_ns: int | None = None
+    completion_wait_ms: float = 0.0
+    publication_recorded: bool = False
+    submit_terminal_emitted: bool = False
+    terminal_emitted: bool = False
+
+
+@dataclass(frozen=True)
+class _CheckpointFutureAudit:
+    audit: _CheckpointAudit
+    finalizes_checkpoint: bool = True
+    record_publication: bool = True
+    record_callback: bool = True
+
+
+_checkpoint_audit_context: ContextVar[_CheckpointAudit | None] = ContextVar(
+    "anytrain_checkpoint_audit_context",
+    default=None,
+)
+_checkpoint_trigger_context: ContextVar[str] = ContextVar(
+    "anytrain_checkpoint_trigger_context",
+    default="lightning",
+)
+
+
+@contextmanager
+def _use_checkpoint_audit(audit: _CheckpointAudit | None) -> Iterator[None]:
+    token = _checkpoint_audit_context.set(audit)
+    try:
+        yield
+    finally:
+        _checkpoint_audit_context.reset(token)
 
 
 class ModelCheckpoint(LightningModelCheckpoint):
@@ -49,6 +109,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         max_pending_async_saves: int = 1,
         unit_schedule: UnitScheduleCallback | None = None,
         every_n_unit_epochs: int | None = None,
+        audit_sink: AuditSink | None = None,
     ) -> None:
         unit_epoch_trigger = every_n_unit_epochs is not None
         if unit_epoch_trigger:
@@ -114,12 +175,20 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self.max_pending_async_saves = max_pending_async_saves
         self.unit_schedule = unit_schedule
         self.every_n_unit_epochs = every_n_unit_epochs
+        # The sink is owned by the caller (typically a shared
+        # TrainingAuditCallback or an anydataset loader).  Keep it as a
+        # runtime dependency so checkpoint worker threads can emit into the
+        # same stream without relying on a ContextVar copied at submission.
+        self.audit_sink = audit_sink
+        self._audit_sink_released = False
+        _retain_audit_sink(self.audit_sink)
         self._async_executor: ThreadPoolExecutor | None = None
         self._async_tmp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._async_futures: list[Future[None]] = []
         self._async_copy_futures: list[Future[None]] = []
         self._async_callbacks: dict[Future[None], tuple[Callable[[], None], ...]] = {}
         self._async_publications: dict[Future[None], tuple[str, str, Path]] = {}
+        self._async_audits: dict[Future[None], _CheckpointFutureAudit] = {}
         self._async_sources: dict[Path, Path] = {}
         self._async_source_futures: dict[Path, Future[None]] = {}
         self._last_persistent_checkpoint: Path | None = None
@@ -130,6 +199,18 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._reused_last_save: tuple[str, str, Path, Path, Future[None] | None] | None = None
         self._restored_last_checkpoint: Path | None = None
         self._async_lock = threading.Lock()
+
+    def __del__(self) -> None:
+        """Release an audit sink lease when a callback is discarded early."""
+
+        try:
+            if not getattr(self, "_audit_sink_released", True):
+                _release_audit_sink(getattr(self, "audit_sink", None))
+                self._audit_sink_released = True
+        except BaseException:
+            # Destructors also run during interpreter shutdown; cleanup must
+            # never turn object finalization into an application exception.
+            pass
 
     @property
     def state_key(self) -> str:
@@ -153,6 +234,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         state["_async_copy_futures"] = []
         state["_async_callbacks"] = {}
         state["_async_publications"] = {}
+        state["_async_audits"] = {}
         state["_async_sources"] = {}
         state["_async_source_futures"] = {}
         state["_latest_publication_future"] = None
@@ -161,6 +243,12 @@ class ModelCheckpoint(LightningModelCheckpoint):
         state["_prepared_last_paths"] = None
         state["_reused_last_save"] = None
         state["_async_lock"] = None
+        # Generic sinks may contain locks/threads and are process-local runtime
+        # resources. JsonlAuditSink has an explicit pickle contract, so retain
+        # its directory/configuration for spawn-based DDP workers.
+        if not isinstance(state.get("audit_sink"), JsonlAuditSink):
+            state["audit_sink"] = None
+        state["_audit_sink_released"] = False
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -169,13 +257,18 @@ class ModelCheckpoint(LightningModelCheckpoint):
         state.setdefault("every_n_unit_epochs", None)
         state.setdefault("_last_persistent_checkpoint", None)
         state.setdefault("_restored_last_checkpoint", None)
+        state.setdefault("audit_sink", None)
+        state.setdefault("_audit_sink_released", False)
         self.__dict__.update(state)
+        self._audit_sink_released = False
+        _retain_audit_sink(self.audit_sink)
         self._async_executor = None
         self._async_tmp_dir = None
         self._async_futures = []
         self._async_copy_futures = []
         self._async_callbacks = {}
         self._async_publications = {}
+        self._async_audits = {}
         self._async_sources = {}
         self._async_source_futures = {}
         self._latest_publication_future = None
@@ -234,13 +327,14 @@ class ModelCheckpoint(LightningModelCheckpoint):
         schedule = self.unit_schedule
         every_n_epochs = self.every_n_unit_epochs
         if schedule is None or every_n_epochs is None:
-            super().on_train_batch_end(
-                trainer,
-                pl_module,
-                outputs,
-                batch,
-                batch_idx,
-            )
+            with self._checkpoint_trigger("train_batch_end"):
+                super().on_train_batch_end(
+                    trainer,
+                    pl_module,
+                    outputs,
+                    batch,
+                    batch_idx,
+                )
             return
         # Unit-triggered saves are dispatched by UnitScheduleCallback after it
         # has produced the corresponding unit-clock update.
@@ -268,8 +362,25 @@ class ModelCheckpoint(LightningModelCheckpoint):
         ):
             self._defer_save_until_validation = True
             return
-        self._save_topk_checkpoint(trainer, monitor_candidates)
-        self._save_last_checkpoint(trainer, monitor_candidates)
+        with self._checkpoint_trigger("unit_schedule"):
+            self._save_topk_checkpoint(trainer, monitor_candidates)
+            self._save_last_checkpoint(trainer, monitor_candidates)
+
+    def on_validation_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        with self._checkpoint_trigger("validation_end"):
+            super().on_validation_end(trainer, pl_module)
+
+    def on_train_epoch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        with self._checkpoint_trigger("train_epoch_end"):
+            super().on_train_epoch_end(trainer, pl_module)
 
     def on_train_end(
         self,
@@ -292,7 +403,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
                         f"checkpoint {restored!s} and ran no training batches."
                     )
                 return
-        super().on_train_end(trainer, pl_module)
+        with self._checkpoint_trigger("train_end"):
+            super().on_train_end(trainer, pl_module)
 
     def wait_async_saves(self) -> None:
         if not self.async_save:
@@ -327,12 +439,233 @@ class ModelCheckpoint(LightningModelCheckpoint):
         prepared = self._prepare_exception_last_save(trainer)
         hook_error: BaseException | None = None
         try:
-            super().on_exception(trainer, pl_module, exception)
+            with self._checkpoint_trigger("exception"):
+                super().on_exception(trainer, pl_module, exception)
         except BaseException as error:
             hook_error = error
         finally:
             self._restore_unused_last_save(prepared)
         self._drain_and_close_async_storage(trainer, hook_error)
+
+    @contextmanager
+    def _checkpoint_trigger(self, trigger: str) -> Iterator[None]:
+        token = _checkpoint_trigger_context.set(trigger)
+        try:
+            yield
+        finally:
+            _checkpoint_trigger_context.reset(token)
+
+    def _begin_checkpoint_audit(
+        self,
+        trainer: pl.Trainer,
+        filepath: str,
+        *,
+        checkpoint_kind: str | None = None,
+        reason: str | None = None,
+    ) -> _CheckpointAudit:
+        operation_id = uuid4().hex
+        path = os.fspath(filepath)
+        trigger = _checkpoint_trigger_context.get()
+        kind = self._checkpoint_kind(path) if checkpoint_kind is None else checkpoint_kind
+        fields: dict[str, object] = {
+            "operation_id": operation_id,
+            "checkpoint_id": operation_id,
+            "checkpoint_key": (
+                f"{_capability.global_step(trainer)}:{trigger}:"
+                f"{kind}:{path}"
+            ),
+            "path": path,
+            "target": path,
+            "trigger": trigger,
+            "reason": self._checkpoint_reason(trigger) if reason is None else reason,
+            "checkpoint_kind": kind,
+            "async_save": self.async_save,
+            "rank": _capability.global_rank(trainer),
+            "world_size": _capability.world_size(trainer),
+            "global_step": _capability.global_step(trainer),
+        }
+        root_device = getattr(getattr(trainer, "strategy", None), "root_device", None)
+        if root_device is not None:
+            fields["device"] = str(root_device)
+        audit = _CheckpointAudit(
+            operation_id=operation_id,
+            fields=fields,
+            started_ns=time.perf_counter_ns(),
+        )
+        self._emit_checkpoint_phase(
+            "checkpoint_start",
+            audit,
+            execution_scope="mixed" if self.async_save else "foreground",
+            blocks_train_loop=not self.async_save,
+            **self._async_queue_fields(),
+        )
+        if self.async_save:
+            audit.submit_started_ns = time.perf_counter_ns()
+            self._emit_checkpoint_phase(
+                "checkpoint_submit_start",
+                audit,
+                phase="submit",
+                **self._async_queue_fields(),
+            )
+        return audit
+
+    def _finish_checkpoint_submit(
+        self,
+        audit: _CheckpointAudit,
+        *,
+        success: bool,
+        publication_pending: bool = False,
+        error: BaseException | None = None,
+    ) -> None:
+        if audit.submit_terminal_emitted:
+            return
+        fields: dict[str, object] = {
+            "phase": "submit",
+            "latency_ms": (
+                time.perf_counter_ns()
+                - (audit.submit_started_ns or audit.started_ns)
+            )
+            / 1_000_000.0,
+            "serialize_latency_ms": audit.serialize_latency_ms,
+            "backpressure_wait_ms": audit.backpressure_wait_ms,
+            "publication_pending": publication_pending,
+            **self._async_queue_fields(),
+        }
+        if error is not None:
+            fields.update(
+                error_type=type(error).__name__,
+                error=str(error)[:1000],
+            )
+        self._emit_checkpoint_phase(
+            "checkpoint_submit_done" if success else "checkpoint_submit_error",
+            audit,
+            **fields,
+        )
+        audit.submit_terminal_emitted = True
+
+    def _checkpoint_reason(self, trigger: str) -> str:
+        if trigger == "unit_schedule":
+            return "unit_epoch_interval"
+        if trigger == "exception":
+            return "exception"
+        if trigger == "train_batch_end":
+            if self._every_n_train_steps:
+                return "train_step_interval"
+            if self._train_time_interval is not None:
+                return "train_time_interval"
+            return "train_batch_end"
+        if trigger == "train_epoch_end":
+            return "train_epoch_interval"
+        if trigger == "validation_end":
+            return "validation_metric" if self.monitor is not None else "validation_end"
+        if trigger == "train_end":
+            return "train_end"
+        return "lightning_callback"
+
+    def _checkpoint_kind(self, filepath: str) -> str:
+        if filepath == self.last_model_path or Path(filepath).stem.startswith(
+            self.CHECKPOINT_NAME_LAST
+        ):
+            return "last"
+        return "top_k" if self.monitor is not None else "periodic"
+
+    def _emit_checkpoint_phase(
+        self,
+        event: str,
+        audit: _CheckpointAudit,
+        **fields: object,
+    ) -> None:
+        payload = {
+            **audit.fields,
+            "phase": audit.phase,
+            "execution_scope": "foreground",
+            "blocks_train_loop": True,
+            **fields,
+        }
+        trusted_context = {
+            name: payload[name]
+            for name in ("rank", "world_size", "device")
+            if payload.get(name) is not None
+        }
+        with _use_audit_sink(self.audit_sink), _use_audit_context(trusted_context):
+            audit_event(event, sink=self.audit_sink, **payload)
+
+    def _finish_checkpoint_audit(
+        self,
+        audit: _CheckpointAudit,
+        *,
+        success: bool,
+        error: BaseException | None = None,
+    ) -> None:
+        if audit.terminal_emitted:
+            return
+        finished_ns = time.perf_counter_ns()
+        total_latency_ms = (finished_ns - audit.started_ns) / 1_000_000.0
+        if not audit.fields["async_save"] and audit.serialize_latency_ms == 0.0:
+            audit.serialize_latency_ms = total_latency_ms
+            audit.checkpoint_bytes = self._checkpoint_size(
+                str(audit.fields["target"])
+            )
+            self._emit_checkpoint_phase(
+                "checkpoint_serialize_done" if success else "checkpoint_serialize_error",
+                audit,
+                latency_ms=audit.serialize_latency_ms,
+                checkpoint_bytes=audit.checkpoint_bytes,
+                error_type=None if error is None else type(error).__name__,
+                error=None if error is None else str(error)[:1000],
+            )
+        durable_latency_ms = (
+            total_latency_ms
+            if audit.copy_finished_ns is None
+            else (audit.copy_finished_ns - audit.started_ns) / 1_000_000.0
+        )
+        common = {
+            "latency_ms": total_latency_ms,
+            "durable_latency_ms": durable_latency_ms,
+            "serialize_latency_ms": audit.serialize_latency_ms,
+            "copy_latency_ms": audit.copy_latency_ms,
+            "publication_latency_ms": audit.publication_latency_ms,
+            "backpressure_wait_ms": audit.backpressure_wait_ms,
+            "completion_wait_ms": audit.completion_wait_ms,
+            "checkpoint_bytes": audit.checkpoint_bytes,
+            **self._async_queue_fields(),
+            "execution_scope": (
+                "mixed" if audit.fields["async_save"] else "foreground"
+            ),
+            "blocks_train_loop": not bool(audit.fields["async_save"]),
+        }
+        audit.terminal_emitted = True
+        if success:
+            audit.phase = "done"
+            self._emit_checkpoint_phase("checkpoint_done", audit, **common)
+            return
+        self._emit_checkpoint_phase(
+            "checkpoint_error",
+            audit,
+            **common,
+            error_type="RuntimeError" if error is None else type(error).__name__,
+            error="checkpoint failed" if error is None else str(error)[:1000],
+        )
+        audit_flush(sink=self.audit_sink)
+
+    def _async_queue_fields(self) -> dict[str, object]:
+        with self._async_lock:
+            return self._async_queue_fields_unlocked()
+
+    def _async_queue_fields_unlocked(self) -> dict[str, object]:
+        return {
+            "queue_depth": len(self._async_copy_futures),
+            "pending_async_operations": len(self._async_futures),
+            "queue_capacity": self.max_pending_async_saves,
+        }
+
+    @staticmethod
+    def _checkpoint_size(path: str | Path) -> int | None:
+        try:
+            candidate = Path(path)
+            return candidate.stat().st_size if candidate.is_file() else None
+        except (OSError, ValueError):
+            return None
 
     def _save_topk_checkpoint(
         self,
@@ -350,24 +683,118 @@ class ModelCheckpoint(LightningModelCheckpoint):
             self._restore_unused_last_save(prepared)
 
     def _save_checkpoint(self, trainer: pl.Trainer, filepath: str) -> None:
+        audit = self._begin_checkpoint_audit(trainer, filepath)
         if not self.async_save:
-            super()._save_checkpoint(trainer, filepath)
+            audit.phase = "serialize"
+            self._emit_checkpoint_phase("checkpoint_serialize_start", audit)
+            serialize_started = time.perf_counter_ns()
+            try:
+                trainer.save_checkpoint(filepath, self.save_weights_only)
+            except BaseException as error:
+                audit.serialize_latency_ms = (
+                    time.perf_counter_ns() - serialize_started
+                ) / 1_000_000.0
+                self._emit_checkpoint_phase(
+                    "checkpoint_serialize_error",
+                    audit,
+                    latency_ms=audit.serialize_latency_ms,
+                    error_type=type(error).__name__,
+                    error=str(error)[:1000],
+                )
+                self._finish_checkpoint_audit(audit, success=False, error=error)
+                raise
+            audit.serialize_latency_ms = (
+                time.perf_counter_ns() - serialize_started
+            ) / 1_000_000.0
+            audit.checkpoint_bytes = self._checkpoint_size(filepath)
+            self._emit_checkpoint_phase(
+                "checkpoint_serialize_done",
+                audit,
+                latency_ms=audit.serialize_latency_ms,
+                checkpoint_bytes=audit.checkpoint_bytes,
+            )
+
+            self._last_global_step_saved = _capability.global_step(trainer)
+            self._last_checkpoint_saved = filepath
+            if _capability.is_global_zero(trainer):
+                audit.phase = "callback"
+                callback_started = time.perf_counter_ns()
+                self._emit_checkpoint_phase("checkpoint_callback_start", audit)
+                try:
+                    for callback in self._checkpoint_callbacks(trainer, filepath):
+                        callback()
+                except BaseException as error:
+                    self._emit_checkpoint_phase(
+                        "checkpoint_callback_error",
+                        audit,
+                        latency_ms=(time.perf_counter_ns() - callback_started)
+                        / 1_000_000.0,
+                        error_type=type(error).__name__,
+                        error=str(error)[:1000],
+                    )
+                    self._finish_checkpoint_audit(
+                        audit,
+                        success=False,
+                        error=error,
+                    )
+                    raise
+                self._emit_checkpoint_phase(
+                    "checkpoint_callback_done",
+                    audit,
+                    latency_ms=(time.perf_counter_ns() - callback_started)
+                    / 1_000_000.0,
+                )
+            self._finish_checkpoint_audit(audit, success=True)
             return
 
         prepared = self._prepared_last_paths
         self._prepared_last_paths = None
         previous_checkpoint_saved = self._last_checkpoint_saved
+        future: Future[None] | None = None
         try:
             self._validate_async_strategy(trainer)
             target = self._target_path(filepath)
+            audit.fields["path"] = str(target)
+            audit.fields["target"] = str(target)
+            audit.fields["checkpoint_key"] = (
+                f"{audit.fields['global_step']}:{audit.fields['trigger']}:"
+                f"{audit.fields['checkpoint_kind']}:{target!s}"
+            )
             is_global_zero = _capability.is_global_zero(trainer)
-            local = self._prepare_async_save(trainer, target)
+            local = self._prepare_async_save(trainer, target, audit=audit)
 
             # DDP/strategy collectives may require every rank to enter save_checkpoint,
             # but only global zero typically materializes a regular file.
-            trainer.save_checkpoint(str(local), self.save_weights_only)
+            audit.phase = "serialize"
+            self._emit_checkpoint_phase("checkpoint_serialize_start", audit)
+            serialize_started = time.perf_counter_ns()
+            try:
+                trainer.save_checkpoint(str(local), self.save_weights_only)
+            except BaseException as error:
+                audit.serialize_latency_ms = (
+                    time.perf_counter_ns() - serialize_started
+                ) / 1_000_000.0
+                self._emit_checkpoint_phase(
+                    "checkpoint_serialize_error",
+                    audit,
+                    latency_ms=audit.serialize_latency_ms,
+                    error_type=type(error).__name__,
+                    error=str(error)[:1000],
+                )
+                raise
+            audit.serialize_latency_ms = (
+                time.perf_counter_ns() - serialize_started
+            ) / 1_000_000.0
+            audit.checkpoint_bytes = (
+                local.stat().st_size if local.is_file() else None
+            )
+            self._emit_checkpoint_phase(
+                "checkpoint_serialize_done",
+                audit,
+                latency_ms=audit.serialize_latency_ms,
+                checkpoint_bytes=audit.checkpoint_bytes,
+            )
             self._last_global_step_saved = _capability.global_step(trainer)
-            future: Future[None] | None = None
             local_error: BaseException | None = None
             if is_global_zero:
                 try:
@@ -393,6 +820,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
                         target,
                         callbacks=callbacks,
                         publication=publication,
+                        defer_audit_completion=prepared is not None,
+                        audit=audit,
                     )
                 except BaseException as error:
                     local_error = error
@@ -406,10 +835,20 @@ class ModelCheckpoint(LightningModelCheckpoint):
                     self._forget_async_source(local)
                 self._last_checkpoint_saved = previous_checkpoint_saved
                 raise synchronized
+            self._finish_checkpoint_submit(
+                audit,
+                success=True,
+                publication_pending=future is not None,
+            )
+            if future is None:
+                self._finish_checkpoint_audit(audit, success=True)
             if prepared is not None:
                 previous, last = prepared
                 self._reused_last_save = (previous, last, local, target, future)
-        except BaseException:
+        except BaseException as error:
+            self._finish_checkpoint_submit(audit, success=False, error=error)
+            if not audit.terminal_emitted:
+                self._finish_checkpoint_audit(audit, success=False, error=error)
             if prepared is not None:
                 previous, _ = prepared
                 self.last_model_path = previous
@@ -423,17 +862,33 @@ class ModelCheckpoint(LightningModelCheckpoint):
 
         defer_remove = self.save_last == "link" and self._reused_last_save is not None
         local_error: BaseException | None = None
+        audit: _CheckpointAudit | None = None
         if _capability.is_global_zero(trainer):
             local_error = self._collect_done_async_error()
             if local_error is None and not defer_remove:
                 try:
                     target = self._target_path(filepath)
-                    self._submit_async_remove(target)
+                    audit = self._begin_checkpoint_audit(
+                        trainer,
+                        str(target),
+                        checkpoint_kind="remove",
+                        reason="retention_cleanup",
+                    )
+                    self._submit_async_remove(target, audit=audit)
                 except BaseException as error:
                     local_error = error
         error = self._synchronize_async_error(trainer, local_error)
         if error is not None:
+            if audit is not None:
+                self._finish_checkpoint_submit(audit, success=False, error=error)
+                self._finish_checkpoint_audit(audit, success=False, error=error)
             raise error
+        if audit is not None:
+            self._finish_checkpoint_submit(
+                audit,
+                success=True,
+                publication_pending=False,
+            )
         if defer_remove:
             self._deferred_async_removes.append(filepath)
 
@@ -475,10 +930,18 @@ class ModelCheckpoint(LightningModelCheckpoint):
             previous, last = self._last_save_paths(trainer, monitor_candidates)
             self.last_model_path = last
             local_error = None
+            audit: _CheckpointAudit | None = None
+            future: Future[None] | None = None
             if _capability.is_global_zero(trainer):
                 assert persistent is not None
                 try:
-                    self._submit_async_last_update(
+                    audit = self._begin_checkpoint_audit(
+                        trainer,
+                        last,
+                        checkpoint_kind="last",
+                        reason="last_publication",
+                    )
+                    future = self._submit_async_last_update(
                         prerequisite,
                         persistent,
                         Path(last),
@@ -488,13 +951,31 @@ class ModelCheckpoint(LightningModelCheckpoint):
                             str(persistent),
                             persistent,
                         ),
+                        audit=audit,
                     )
                 except BaseException as error:
                     local_error = error
             error = self._synchronize_async_error(trainer, local_error)
             if error is not None:
                 self.last_model_path = previous
+                if audit is not None:
+                    self._finish_checkpoint_submit(
+                        audit,
+                        success=False,
+                        error=error,
+                    )
+                    self._finish_checkpoint_audit(
+                        audit,
+                        success=False,
+                        error=error,
+                    )
                 raise error
+            if audit is not None:
+                self._finish_checkpoint_submit(
+                    audit,
+                    success=True,
+                    publication_pending=future is not None,
+                )
             if previous and self._should_remove_checkpoint(trainer, previous, last):
                 self._remove_checkpoint(trainer, previous)
             return
@@ -504,8 +985,19 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self._deferred_async_removes = []
         previous, last, _local, persistent, prerequisite = reused
         local_error = None
+        audit = None
+        created_audit = False
         if _capability.is_global_zero(trainer):
             try:
+                audit = self._checkpoint_audit_for_future(prerequisite)
+                if audit is None:
+                    audit = self._begin_checkpoint_audit(
+                        trainer,
+                        last,
+                        checkpoint_kind="last",
+                        reason="last_publication",
+                    )
+                    created_audit = True
                 final_path = str(persistent) if self.save_last == "link" else last
                 callbacks = self._checkpoint_callbacks(trainer, final_path)
                 self._submit_async_last_update(
@@ -519,6 +1011,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
                         final_path,
                         persistent if self.save_last == "link" else Path(last),
                     ),
+                    audit=audit,
                 )
             except BaseException as error:
                 local_error = error
@@ -527,7 +1020,21 @@ class ModelCheckpoint(LightningModelCheckpoint):
         error = self._synchronize_async_error(trainer, local_error)
         if error is not None:
             self.last_model_path = previous
+            if audit is not None:
+                if created_audit:
+                    self._finish_checkpoint_submit(
+                        audit,
+                        success=False,
+                        error=error,
+                    )
+                self._finish_checkpoint_audit(audit, success=False, error=error)
             raise error
+        if audit is not None and created_audit:
+            self._finish_checkpoint_submit(
+                audit,
+                success=True,
+                publication_pending=True,
+            )
         for deferred in deferred_removes:
             self._remove_checkpoint(trainer, deferred)
         if previous and self._should_remove_checkpoint(trainer, previous, last):
@@ -597,6 +1104,29 @@ class ModelCheckpoint(LightningModelCheckpoint):
             for logger in _capability.loggers(trainer)
         )
 
+    def _checkpoint_audit_for_future(
+        self,
+        future: Future[None] | None,
+    ) -> _CheckpointAudit | None:
+        if future is None:
+            return None
+        with self._async_lock:
+            binding = self._async_audits.get(future)
+        if binding is None or binding.audit.terminal_emitted:
+            return None
+        return binding.audit
+
+    def _has_other_checkpoint_audit(
+        self,
+        future: Future[None],
+        audit: _CheckpointAudit,
+    ) -> bool:
+        with self._async_lock:
+            return any(
+                candidate is not future and binding.audit is audit
+                for candidate, binding in self._async_audits.items()
+            )
+
     def _submit_async_copy(
         self,
         source: Path,
@@ -604,12 +1134,16 @@ class ModelCheckpoint(LightningModelCheckpoint):
         *,
         callbacks: Iterable[Callable[[], None]] = (),
         publication: tuple[str, str, Path] | None = None,
+        defer_audit_completion: bool = False,
+        audit: _CheckpointAudit | None = None,
     ) -> Future[None]:
-        self._wait_for_async_capacity()
+        with _use_checkpoint_audit(audit):
+            self._wait_for_async_capacity()
         future = self._async_executor_or_create().submit(
             self._copy_local_checkpoint,
             source,
             target,
+            audit,
         )
 
         def remove_source() -> None:
@@ -620,6 +1154,10 @@ class ModelCheckpoint(LightningModelCheckpoint):
             future,
             callbacks=(*callbacks, remove_source),
             is_copy=True,
+            audit=audit,
+            finalizes_checkpoint=not defer_audit_completion,
+            record_publication=not defer_audit_completion,
+            record_callback=not defer_audit_completion,
         )
         with self._async_lock:
             self._async_source_futures[source] = future
@@ -636,37 +1174,100 @@ class ModelCheckpoint(LightningModelCheckpoint):
         link: bool,
         callbacks: Iterable[Callable[[], None]] = (),
         publication: tuple[str, str, Path] | None = None,
+        audit: _CheckpointAudit | None = None,
     ) -> Future[None]:
+        if audit is None:
+            audit = self._checkpoint_audit_for_future(prerequisite)
         future = self._async_executor_or_create().submit(
             self._update_last_checkpoint,
             prerequisite,
             persistent,
             last,
             link,
+            audit,
         )
-        self._track_async_future(future, callbacks=callbacks)
+        self._track_async_future(
+            future,
+            callbacks=callbacks,
+            audit=audit,
+            audit_predecessor=prerequisite,
+        )
         if publication is not None:
             self._track_async_publication(future, publication)
         return future
 
-    def _submit_async_remove(self, target: Path) -> Future[None]:
+    def _submit_async_remove(
+        self,
+        target: Path,
+        *,
+        audit: _CheckpointAudit | None = None,
+    ) -> Future[None]:
         with self._async_lock:
             prerequisites = tuple(self._async_futures)
         future = self._async_executor_or_create().submit(
             self._remove_target_after,
             prerequisites,
             target,
+            audit,
         )
-        self._track_async_future(future)
+        self._track_async_future(
+            future,
+            audit=audit,
+            record_publication=False,
+            record_callback=False,
+        )
         return future
 
-    def _copy_local_checkpoint(self, source: Path, target: Path) -> None:
+    def _copy_local_checkpoint(
+        self,
+        source: Path,
+        target: Path,
+        audit: _CheckpointAudit | None = None,
+    ) -> None:
+        started = time.perf_counter_ns()
+        if audit is not None:
+            audit.phase = "copy"
+            self._emit_checkpoint_phase(
+                "checkpoint_copy_start",
+                audit,
+                source_path=str(source),
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
         try:
             self._copy_to_target(source, target)
-        except BaseException:
+        except BaseException as error:
+            if audit is not None:
+                audit.copy_latency_ms = (
+                    time.perf_counter_ns() - started
+                ) / 1_000_000.0
+                self._emit_checkpoint_phase(
+                    "checkpoint_copy_error",
+                    audit,
+                    source_path=str(source),
+                    latency_ms=audit.copy_latency_ms,
+                    execution_scope="background",
+                    blocks_train_loop=False,
+                    error_type=type(error).__name__,
+                    error=str(error)[:1000],
+                )
             source.unlink(missing_ok=True)
             self._forget_async_source(source)
             raise
+        if audit is not None:
+            audit.copy_finished_ns = time.perf_counter_ns()
+            audit.copy_latency_ms = (
+                audit.copy_finished_ns - started
+            ) / 1_000_000.0
+            self._emit_checkpoint_phase(
+                "checkpoint_copy_done",
+                audit,
+                source_path=str(source),
+                latency_ms=audit.copy_latency_ms,
+                checkpoint_bytes=audit.checkpoint_bytes,
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
 
     def _copy_to_target(self, source: Path, target: Path) -> None:
         self._copy_to_target_static(source, target)
@@ -682,6 +1283,65 @@ class ModelCheckpoint(LightningModelCheckpoint):
             target_tmp.unlink(missing_ok=True)
 
     def _update_last_checkpoint(
+        self,
+        prerequisite: Future[None] | None,
+        persistent: Path,
+        last: Path,
+        link: bool,
+        audit: _CheckpointAudit | None = None,
+    ) -> None:
+        started = time.perf_counter_ns()
+        if audit is not None:
+            audit.phase = "publication"
+            self._emit_checkpoint_phase(
+                "checkpoint_publication_start",
+                audit,
+                publication_path=str(last),
+                publication_mode="link" if link else "copy",
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
+        try:
+            self._update_last_checkpoint_impl(
+                prerequisite,
+                persistent,
+                last,
+                link,
+            )
+        except BaseException as error:
+            if audit is not None:
+                audit.publication_latency_ms = (
+                    time.perf_counter_ns() - started
+                ) / 1_000_000.0
+                audit.publication_recorded = True
+                self._emit_checkpoint_phase(
+                    "checkpoint_publication_error",
+                    audit,
+                    publication_path=str(last),
+                    publication_mode="link" if link else "copy",
+                    latency_ms=audit.publication_latency_ms,
+                    execution_scope="background",
+                    blocks_train_loop=False,
+                    error_type=type(error).__name__,
+                    error=str(error)[:1000],
+                )
+            raise
+        if audit is not None:
+            audit.publication_latency_ms = (
+                time.perf_counter_ns() - started
+            ) / 1_000_000.0
+            audit.publication_recorded = True
+            self._emit_checkpoint_phase(
+                "checkpoint_publication_done",
+                audit,
+                publication_path=str(last),
+                publication_mode="link" if link else "copy",
+                latency_ms=audit.publication_latency_ms,
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
+
+    def _update_last_checkpoint_impl(
         self,
         prerequisite: Future[None] | None,
         persistent: Path,
@@ -725,10 +1385,41 @@ class ModelCheckpoint(LightningModelCheckpoint):
         self,
         prerequisites: tuple[Future[None], ...],
         target: Path,
+        audit: _CheckpointAudit | None = None,
     ) -> None:
-        for prerequisite in prerequisites:
-            prerequisite.result()
-        self._remove_target(target)
+        started = time.perf_counter_ns()
+        if audit is not None:
+            audit.phase = "remove"
+            self._emit_checkpoint_phase(
+                "checkpoint_remove_start",
+                audit,
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
+        try:
+            for prerequisite in prerequisites:
+                prerequisite.result()
+            self._remove_target(target)
+        except BaseException as error:
+            if audit is not None:
+                self._emit_checkpoint_phase(
+                    "checkpoint_remove_error",
+                    audit,
+                    latency_ms=(time.perf_counter_ns() - started) / 1_000_000.0,
+                    execution_scope="background",
+                    blocks_train_loop=False,
+                    error_type=type(error).__name__,
+                    error=str(error)[:1000],
+                )
+            raise
+        if audit is not None:
+            self._emit_checkpoint_phase(
+                "checkpoint_remove_done",
+                audit,
+                latency_ms=(time.perf_counter_ns() - started) / 1_000_000.0,
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
 
     def _remove_target(self, target: Path) -> None:
         if target.is_symlink() or target.is_file():
@@ -752,7 +1443,13 @@ class ModelCheckpoint(LightningModelCheckpoint):
             return _storage_error(first_error)
         return None
 
-    def _prepare_async_save(self, trainer: pl.Trainer, target: Path) -> Path:
+    def _prepare_async_save(
+        self,
+        trainer: pl.Trainer,
+        target: Path,
+        *,
+        audit: _CheckpointAudit | None = None,
+    ) -> Path:
         local = target
         local_error: BaseException | None = None
         if _capability.is_global_zero(trainer):
@@ -760,7 +1457,8 @@ class ModelCheckpoint(LightningModelCheckpoint):
             if local_error is None:
                 try:
                     # Apply backpressure before materializing another complete local file.
-                    self._wait_for_async_capacity()
+                    with _use_checkpoint_audit(audit):
+                        self._wait_for_async_capacity()
                 except BaseException as error:
                     local_error = error
             if local_error is None:
@@ -797,6 +1495,9 @@ class ModelCheckpoint(LightningModelCheckpoint):
                 first_error = error
         finally:
             self._close_async_storage()
+            if not self._audit_sink_released:
+                _release_audit_sink(self.audit_sink)
+                self._audit_sink_released = True
         if first_error is not None:
             raise first_error
 
@@ -816,7 +1517,15 @@ class ModelCheckpoint(LightningModelCheckpoint):
                 if _capability.is_global_zero(trainer) and local_error is not None
                 else None
             )
-            synchronized = broadcast(message, src=0)
+            synchronized = _capability.strategy_broadcast(
+                trainer,
+                message,
+                src=0,
+                error=(
+                    "Distributed asynchronous checkpoint error propagation requires "
+                    "trainer.strategy.broadcast() or reduce()."
+                ),
+            )
             if synchronized is None:
                 return None
             if local_error is not None:
@@ -845,31 +1554,174 @@ class ModelCheckpoint(LightningModelCheckpoint):
         return RuntimeError("Asynchronous checkpoint storage failed on global rank zero.")
 
     def _wait_for_async_capacity(self) -> None:
+        audit = _checkpoint_audit_context.get()
+        wait_started: int | None = None
         while True:
             with self._async_lock:
                 if len(self._async_copy_futures) < self.max_pending_async_saves:
+                    if wait_started is not None and audit is not None:
+                        latency_ms = (
+                            time.perf_counter_ns() - wait_started
+                        ) / 1_000_000.0
+                        audit.backpressure_wait_ms += latency_ms
+                        self._emit_checkpoint_phase(
+                            "checkpoint_backpressure_done",
+                            audit,
+                            phase="backpressure",
+                            latency_ms=latency_ms,
+                            **self._async_queue_fields_unlocked(),
+                        )
                     return
+                if wait_started is None:
+                    wait_started = time.perf_counter_ns()
+                    if audit is not None:
+                        audit.phase = "backpressure"
+                        self._emit_checkpoint_phase(
+                            "checkpoint_backpressure_start",
+                            audit,
+                            **self._async_queue_fields_unlocked(),
+                        )
                 future = self._async_copy_futures[0]
                 self._async_futures.remove(future)
             error = self._finish_async_future(future)
             if error is not None:
+                if wait_started is not None and audit is not None:
+                    latency_ms = (
+                        time.perf_counter_ns() - wait_started
+                    ) / 1_000_000.0
+                    audit.backpressure_wait_ms += latency_ms
+                    self._emit_checkpoint_phase(
+                        "checkpoint_backpressure_error",
+                        audit,
+                        phase="backpressure",
+                        latency_ms=latency_ms,
+                        error_type=type(error).__name__,
+                        error=str(error)[:1000],
+                    )
                 raise RuntimeError("Asynchronous checkpoint storage failed.") from error
 
     def _finish_async_future(self, future: Future[None]) -> BaseException | None:
+        with self._async_lock:
+            binding = self._async_audits.get(future)
+        audit = None if binding is None else binding.audit
+        waited = audit is not None and not future.done()
+        wait_started = time.perf_counter_ns()
+        if waited and audit is not None:
+            self._emit_checkpoint_phase(
+                "checkpoint_wait_start",
+                audit,
+                phase="completion_wait",
+            )
         try:
             future.result()
         except BaseException as error:
+            if waited and audit is not None:
+                wait_latency_ms = (
+                    time.perf_counter_ns() - wait_started
+                ) / 1_000_000.0
+                audit.completion_wait_ms += wait_latency_ms
+                self._emit_checkpoint_phase(
+                    "checkpoint_wait_done",
+                    audit,
+                    phase="completion_wait",
+                    latency_ms=wait_latency_ms,
+                )
             self._finish_async_publication(future, success=False)
             self._discard_async_callbacks(future)
             self._forget_async_copy_future(future)
+            self._forget_async_audit(future)
+            if audit is not None:
+                self._finish_checkpoint_audit(audit, success=False, error=error)
             return error
+        if waited and audit is not None:
+            wait_latency_ms = (
+                time.perf_counter_ns() - wait_started
+            ) / 1_000_000.0
+            audit.completion_wait_ms += wait_latency_ms
+            self._emit_checkpoint_phase(
+                "checkpoint_wait_done",
+                audit,
+                phase="completion_wait",
+                latency_ms=wait_latency_ms,
+            )
+        with self._async_lock:
+            has_publication = future in self._async_publications
+        publication_started = time.perf_counter_ns()
+        publication_pending = (
+            audit is not None
+            and binding is not None
+            and binding.record_publication
+            and has_publication
+            and not audit.publication_recorded
+        )
+        if publication_pending and audit is not None:
+            audit.phase = "publication"
+            self._emit_checkpoint_phase(
+                "checkpoint_publication_start",
+                audit,
+                # The target copy has already completed in the executor.  This
+                # event only records publication bookkeeping while the future
+                # is reaped; it does not block the training loop.
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
         self._finish_async_publication(future, success=True)
+        if publication_pending and audit is not None:
+            audit.publication_latency_ms = (
+                time.perf_counter_ns() - publication_started
+            ) / 1_000_000.0
+            audit.publication_recorded = True
+            self._emit_checkpoint_phase(
+                "checkpoint_publication_done",
+                audit,
+                latency_ms=audit.publication_latency_ms,
+                execution_scope="background",
+                blocks_train_loop=False,
+            )
+        callback_started = time.perf_counter_ns()
+        if audit is not None and binding is not None and binding.record_callback:
+            self._emit_checkpoint_phase(
+                "checkpoint_callback_start",
+                audit,
+                phase="callback",
+            )
         try:
             self._run_async_callbacks(future)
         except BaseException as error:
+            if audit is not None and binding is not None and binding.record_callback:
+                self._emit_checkpoint_phase(
+                    "checkpoint_callback_error",
+                    audit,
+                    phase="callback",
+                    latency_ms=(time.perf_counter_ns() - callback_started)
+                    / 1_000_000.0,
+                    error_type=type(error).__name__,
+                    error=str(error)[:1000],
+                )
+            if audit is not None:
+                self._finish_checkpoint_audit(audit, success=False, error=error)
+            self._forget_async_audit(future)
             return error
         finally:
             self._forget_async_copy_future(future)
+        if audit is not None and binding is not None and binding.record_callback:
+            self._emit_checkpoint_phase(
+                "checkpoint_callback_done",
+                audit,
+                phase="callback",
+                latency_ms=(time.perf_counter_ns() - callback_started) / 1_000_000.0,
+            )
+        if audit is not None and binding is not None and binding.finalizes_checkpoint:
+            self._finish_checkpoint_audit(audit, success=True)
+        retain_for_successor = (
+            audit is not None
+            and binding is not None
+            and not binding.finalizes_checkpoint
+            and not audit.terminal_emitted
+            and not self._has_other_checkpoint_audit(future, audit)
+        )
+        if not retain_for_successor:
+            self._forget_async_audit(future)
         return None
 
     def _async_executor_or_create(self) -> ThreadPoolExecutor:
@@ -898,6 +1750,7 @@ class ModelCheckpoint(LightningModelCheckpoint):
         with self._async_lock:
             self._async_copy_futures = []
             self._async_publications = {}
+            self._async_audits = {}
             self._async_sources = {}
             self._async_source_futures = {}
             self._latest_publication_future = None
@@ -910,12 +1763,35 @@ class ModelCheckpoint(LightningModelCheckpoint):
         *,
         callbacks: Iterable[Callable[[], None]] = (),
         is_copy: bool = False,
+        audit: _CheckpointAudit | None = None,
+        audit_predecessor: Future[None] | None = None,
+        finalizes_checkpoint: bool = True,
+        record_publication: bool = True,
+        record_callback: bool = True,
     ) -> None:
         with self._async_lock:
             self._async_futures.append(future)
             if is_copy:
                 self._async_copy_futures.append(future)
             self._async_callbacks[future] = tuple(callbacks)
+            if audit is not None:
+                self._async_audits[future] = _CheckpointFutureAudit(
+                    audit=audit,
+                    finalizes_checkpoint=finalizes_checkpoint,
+                    record_publication=record_publication,
+                    record_callback=record_callback,
+                )
+            if (
+                audit_predecessor is not None
+                and (
+                    predecessor := self._async_audits.get(audit_predecessor)
+                )
+                is not None
+                and predecessor.audit is audit
+                and audit is not None
+                and audit_predecessor not in self._async_futures
+            ):
+                self._async_audits.pop(audit_predecessor, None)
 
     def _pop_async_futures(self) -> list[Future[None]]:
         with self._async_lock:
@@ -959,6 +1835,10 @@ class ModelCheckpoint(LightningModelCheckpoint):
             ]
             for source in sources:
                 self._async_source_futures.pop(source, None)
+
+    def _forget_async_audit(self, future: Future[None]) -> None:
+        with self._async_lock:
+            self._async_audits.pop(future, None)
 
     def _forget_async_source(self, source: Path) -> None:
         with self._async_lock:
@@ -1019,9 +1899,14 @@ class ModelCheckpoint(LightningModelCheckpoint):
         strategy = getattr(trainer, "strategy", None)
         broadcast = getattr(strategy, "broadcast", None)
         if callable(broadcast):
-            synchronized = broadcast(
+            synchronized = _capability.strategy_broadcast(
+                trainer,
                 value if _capability.is_global_zero(trainer) else None,
                 src=0,
+                error=(
+                    "Distributed asynchronous checkpoint state propagation requires "
+                    "trainer.strategy.broadcast() or reduce()."
+                ),
             )
             return bool(synchronized)
 

@@ -106,7 +106,16 @@ class TextComparisonEvaluator(EvaluatorABC):
         local = (tuple(self._predictions), tuple(self._targets))
         gathered: list[tuple[tuple[str, ...], tuple[str, ...]] | None]
         gathered = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered, local)
+        from anytrain.lightning.audit import audit_collective
+
+        audit_collective(
+            "torch.distributed.all_gather_object",
+            lambda: dist.all_gather_object(gathered, local),
+            source="TextComparisonEvaluator._corpus",
+            object_type=type(local).__name__,
+            local_item_count=len(local[0]),
+            world_size=dist.get_world_size(),
+        )
 
         predictions: list[str] = []
         targets: list[str] = []

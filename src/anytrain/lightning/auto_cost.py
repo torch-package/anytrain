@@ -308,7 +308,19 @@ def _synchronized_measurement(
         local_oom.fill_(1)
         torch.cuda.empty_cache()
     if sync_distributed and torch.distributed.is_available() and torch.distributed.is_initialized():
-        torch.distributed.all_reduce(local_oom, op=torch.distributed.ReduceOp.MAX)
+        from .audit import audit_collective
+
+        audit_collective(
+            "torch.distributed.all_reduce",
+            lambda: torch.distributed.all_reduce(
+                local_oom, op=torch.distributed.ReduceOp.MAX
+            ),
+            reduce_op="max",
+            source="auto_cost.local_oom",
+            tensor_shape=tuple(local_oom.shape),
+            tensor_dtype=str(local_oom.dtype),
+            tensor_device=str(local_oom.device),
+        )
     if int(local_oom.item()):
         hooks.clear_gradients(pl_module, model)
         torch.cuda.empty_cache()
@@ -316,8 +328,20 @@ def _synchronized_measurement(
     if result is None:
         raise RuntimeError("automatic cost measurement failed without an OOM status.")
     if sync_distributed and torch.distributed.is_available() and torch.distributed.is_initialized():
+        from .audit import audit_collective
+
         peak = torch.tensor(result.peak_bytes, dtype=torch.int64, device=device)
-        torch.distributed.all_reduce(peak, op=torch.distributed.ReduceOp.MAX)
+        audit_collective(
+            "torch.distributed.all_reduce",
+            lambda: torch.distributed.all_reduce(
+                peak, op=torch.distributed.ReduceOp.MAX
+            ),
+            reduce_op="max",
+            source="auto_cost.peak_bytes",
+            tensor_shape=tuple(peak.shape),
+            tensor_dtype=str(peak.dtype),
+            tensor_device=str(peak.device),
+        )
         result = AutoCostMeasurement(
             target_cost=result.target_cost,
             actual_cost=result.actual_cost,

@@ -13,6 +13,7 @@ import lightning.pytorch as pl
 import torch
 
 from .. import _capability
+from ..audit import audit_operation
 from ._data import UnitBatch, padding_ratio, units_per_second
 from ._spec import LRSchedule, UnitClock
 
@@ -67,10 +68,6 @@ class UnitScheduleConsumer(Protocol):
         pl_module: pl.LightningModule,
         update: UnitScheduleUpdate,
     ) -> None: ...
-
-
-class _AllGatherStrategy(Protocol):
-    def all_gather(self, tensor: torch.Tensor) -> torch.Tensor: ...
 
 
 @dataclass
@@ -293,8 +290,26 @@ class UnitScheduleCallback(pl.Callback):
             advanced_unit_epochs=self.unit_epochs_advanced,
             validation_due=validation_due,
         )
-        for consumer in tuple(self._unit_schedule_consumers):
-            consumer.on_unit_schedule_update(trainer, pl_module, update)
+        for consumer_index, consumer in enumerate(tuple(self._unit_schedule_consumers)):
+            audit_operation(
+                "unit_schedule_consumer",
+                lambda consumer=consumer: consumer.on_unit_schedule_update(
+                    trainer,
+                    pl_module,
+                    update,
+                ),
+                consumer=f"{type(consumer).__module__}.{type(consumer).__qualname__}",
+                consumer_index=consumer_index,
+                rank=_capability.global_rank(trainer),
+                world_size=_capability.world_size(trainer),
+                global_step=update.global_step,
+                batch_index=update.batch_index,
+                completed_unit_epochs=update.completed_unit_epochs,
+                advanced_unit_epochs=update.advanced_unit_epochs,
+                validation_due=update.validation_due,
+                execution_scope="foreground",
+                blocks_train_loop=True,
+            )
 
     def on_train_epoch_end(
         self,
@@ -626,13 +641,11 @@ def _strategy_all_gather(
     trainer: pl.Trainer,
     tensor: torch.Tensor,
 ) -> torch.Tensor:
-    strategy = getattr(trainer, "strategy", None)
-    all_gather = getattr(strategy, "all_gather", None)
-    if not callable(all_gather):
-        raise RuntimeError(
-            "Distributed unit scheduling requires trainer.strategy.all_gather."
-        )
-    return cast(_AllGatherStrategy, strategy).all_gather(tensor)
+    return _capability.strategy_all_gather(
+        trainer,
+        tensor,
+        error="Distributed unit scheduling requires trainer.strategy.all_gather.",
+    )
 
 
 def _optimizers(trainer: pl.Trainer) -> list[torch.optim.Optimizer]:

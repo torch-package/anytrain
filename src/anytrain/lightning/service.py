@@ -285,7 +285,12 @@ def _broadcast_owner_error(
     label: str,
 ) -> tuple[str, str] | None:
     payload = None if error is None else (type(error).__name__, str(error))
-    received = trainer.strategy.broadcast(payload, src=0)
+    received = _capability.strategy_broadcast(
+        trainer,
+        payload,
+        src=0,
+        error=f"{label} owner error requires trainer.strategy.broadcast.",
+    )
     if received is None:
         return None
     if (
@@ -310,7 +315,12 @@ def _sync_rank_errors(
     failures: list[tuple[int, str, str]] = []
     for source in range(world_size):
         value = payload if source == rank else None
-        received = trainer.strategy.broadcast(value, src=source)
+        received = _capability.strategy_broadcast(
+            trainer,
+            value,
+            src=source,
+            error="managed service rank error requires trainer.strategy.broadcast.",
+        )
         if received is None:
             continue
         if (
@@ -332,7 +342,12 @@ def _sync_active_state(trainer: Trainer, active: bool, label: str) -> bool:
         return active
     states: list[bool] = []
     for source in range(world_size):
-        received = trainer.strategy.broadcast(active if source == rank else None, src=source)
+        received = _capability.strategy_broadcast(
+            trainer,
+            active if source == rank else None,
+            src=source,
+            error="managed service active-state requires trainer.strategy.broadcast.",
+        )
         if not isinstance(received, bool):
             raise TypeError("managed service active-state broadcast was invalid.")
         states.append(received)
