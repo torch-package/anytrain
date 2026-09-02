@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from numbers import Real
+from typing import Any, cast
 from warnings import warn
 
 from . import _fallback
@@ -68,6 +69,19 @@ def word_error_rate(predictions: Sequence[str], targets: Sequence[str]) -> float
     return float(wer(reference=list(targets), hypothesis=list(predictions)))
 
 
+def character_error_rate(predictions: Sequence[str], targets: Sequence[str]) -> float:
+    """Return corpus character error rate (CER) using jiwer when available."""
+    _validate_paired_corpus(predictions, targets)
+
+    try:
+        from jiwer import cer
+    except ImportError as exc:
+        _warn_fallback("CER", "jiwer", exc)
+        return _fallback.character_error_rate(predictions, targets)
+
+    return float(cer(reference=list(targets), hypothesis=list(predictions)))
+
+
 def corpus_chrf_score(
     predictions: Sequence[str],
     targets: Sequence[str],
@@ -98,7 +112,7 @@ def corpus_chrf_score(
             )
         )
 
-    scorer = CHRF(char_order=max_order, beta=beta)
+    scorer = CHRF(char_order=max_order, beta=cast(Any, beta))
     return _clip_percent(float(scorer.corpus_score(list(predictions), [list(targets)]).score))
 
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 DEFAULT_WHISPER_MODEL = "large-v3"
 OPENAI_WHISPER_VERSION = "20250625"
 WHISPER_DECODER_PROTOCOL = "anytrain-openai-whisper-decoder-v1"
-WHISPER_METRIC_PROTOCOL = "anytrain-speech-text-metrics-v1"
+WHISPER_METRIC_PROTOCOL = "anytrain-speech-text-metrics-v2"
 
 WHISPER_MODEL_SHA256 = {
     "tiny.en": "d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03",

@@ -107,8 +107,8 @@ metrics = evaluator(prediction, target)
   `NotImplementedError`，具体 evaluator 按指标定义实现正确状态。
 - `EvaluatorGroup` 逐个代理状态生命周期，不跳过无状态子 evaluator。
 
-`anytrain.evaluator.text.TextComparisonEvaluator` 保存规范化文本并按完整 corpus 计算 BLEU、WER
-和 chrF；分布式初始化后会在 `compute()` 聚合所有 rank 的文本。core 不对 batch scalar 做通用
+`anytrain.evaluator.text.TextComparisonEvaluator` 保存规范化文本并按完整 corpus 计算 BLEU、WER、
+chrF 和 CER；分布式初始化后会在 `compute()` 聚合所有 rank 的文本。core 不对 batch scalar 做通用
 平均，也暂不提供通用 stateful MAE/MSE/accuracy。
 
 optional evaluator：

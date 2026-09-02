@@ -1,12 +1,16 @@
 import sys
 import types
 import unittest
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 from anytrain.evaluator import EvaluatorABC, EvaluatorGroup, MetricDict
 from anytrain.evaluator.text import TextComparisonEvaluator, TextNormalizationConfig
-from anytrain.evaluator.text.scores import corpus_chrf_score, word_error_rate
+from anytrain.evaluator.text.scores import (
+    character_error_rate,
+    corpus_chrf_score,
+    word_error_rate,
+)
 
 
 class TextComparisonEvaluatorTest(unittest.TestCase):
@@ -18,23 +22,24 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
             "lowercase",
         ):
             with self.subTest(name=name), self.assertRaisesRegex(TypeError, "boolean"):
-                TextNormalizationConfig(**{name: 1})
+                cast(Any, TextNormalizationConfig)(**{name: 1})
 
         with self.assertRaisesRegex(TypeError, "boolean"):
-            TextComparisonEvaluator(bleu_smoothing=1)
+            TextComparisonEvaluator(bleu_smoothing=cast(Any, 1))
 
     def test_text_evaluator_inherits_evaluator_abc(self):
         self.assertIsInstance(TextComparisonEvaluator(), EvaluatorABC)
 
-    def test_single_string_returns_bleu_wer_chrf_metrics(self):
+    def test_single_string_returns_bleu_wer_chrf_cer_metrics(self):
         evaluator = TextComparisonEvaluator()
 
         metrics = evaluator("the quick brown fox", "the quick brown fox")
 
-        self.assertEqual(set(metrics), {"bleu", "wer", "chrf"})
+        self.assertEqual(set(metrics), {"bleu", "wer", "chrf", "cer"})
         self.assertEqual(metrics["bleu"], 100.0)
         self.assertEqual(metrics["wer"], 0.0)
         self.assertEqual(metrics["chrf"], 100.0)
+        self.assertEqual(metrics["cer"], 0.0)
 
     def test_batch_scores_are_corpus_scores(self):
         evaluator = TextComparisonEvaluator()
@@ -49,6 +54,8 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["wer"], 1.0 / 6.0)
         self.assertGreater(metrics["chrf"], 50.0)
         self.assertLess(metrics["chrf"], 100.0)
+        self.assertGreater(metrics["cer"], 0.0)
+        self.assertLess(metrics["cer"], 1.0)
 
     def test_running_scores_match_direct_corpus_across_uneven_batches(self):
         correct_predictions = ["the quick brown fox"] * 10
@@ -293,16 +300,18 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
         self.assertEqual(empty_metrics["wer"], 0.0)
         self.assertEqual(empty_metrics["bleu"], 100.0)
         self.assertEqual(empty_metrics["chrf"], 100.0)
+        self.assertEqual(empty_metrics["cer"], 0.0)
         self.assertEqual(non_empty_prediction_metrics["wer"], 1.0)
         self.assertEqual(non_empty_prediction_metrics["bleu"], 0.0)
         self.assertEqual(non_empty_prediction_metrics["chrf"], 0.0)
+        self.assertEqual(non_empty_prediction_metrics["cer"], 5.0)
 
     def test_metric_keys_are_stable(self):
         evaluator = TextComparisonEvaluator()
 
         metrics = evaluator("a b c d", "a b c d")
 
-        self.assertEqual(list(metrics), ["bleu", "wer", "chrf"])
+        self.assertEqual(list(metrics), ["bleu", "wer", "chrf", "cer"])
 
     def test_empty_batch_raises(self):
         evaluator = TextComparisonEvaluator()
@@ -325,6 +334,32 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
             score = word_error_rate(["hello world"], ["hello there"])
 
         self.assertEqual(score, 0.5)
+
+    def test_cer_uses_corpus_reference_character_denominator(self):
+        predictions = ["ab", "x"]
+        targets = ["ac", ""]
+
+        # One substitution plus one insertion over two reference characters.
+        self.assertEqual(character_error_rate(predictions, targets), 1.0)
+
+    def test_cer_warns_and_uses_fallback_when_jiwer_is_missing(self):
+        predictions = ["ab", "x"]
+        targets = ["ac", ""]
+        expected = character_error_rate(predictions, targets)
+        real_import = __import__
+
+        def fail_jiwer_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "jiwer":
+                raise ImportError("missing jiwer")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with (
+            patch("builtins.__import__", side_effect=fail_jiwer_import),
+            self.assertWarnsRegex(RuntimeWarning, "fallback"),
+        ):
+            fallback = character_error_rate(predictions, targets)
+
+        self.assertEqual(fallback, expected)
 
     def test_chrf_fallback_matches_sacrebleu_for_corpus_examples(self):
         examples = [
@@ -363,7 +398,7 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
                 return types.SimpleNamespace(score=37.0)
 
         fake_chrf = types.ModuleType("sacrebleu.metrics.chrf")
-        fake_chrf.CHRF = FakeCHRF
+        cast(Any, fake_chrf).CHRF = FakeCHRF
         with patch.dict(
             sys.modules,
             {

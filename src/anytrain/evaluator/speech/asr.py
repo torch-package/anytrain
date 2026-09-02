@@ -29,7 +29,7 @@ class _ASRTranscriber(Protocol):
 
 
 class WhisperASREvaluator(EvaluatorABC):
-    required_metric_keys = ("bleu", "wer", "chrf")
+    required_metric_keys = ("bleu", "wer", "chrf", "cer")
     default_model_name = DEFAULT_MODEL_NAME
     supported_model_names = SUPPORTED_MODEL_NAMES
 
@@ -182,7 +182,7 @@ class WhisperASREvaluator(EvaluatorABC):
         if missing:
             missing_names = ", ".join(missing)
             raise ValueError(
-                "text_evaluator.evaluate(...) must return bleu, wer, and chrf metrics; "
+                "text_evaluator.evaluate(...) must return bleu, wer, chrf, and cer metrics; "
                 f"missing: {missing_names}."
             )
 

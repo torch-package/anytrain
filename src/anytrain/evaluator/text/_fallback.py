@@ -84,6 +84,22 @@ def word_error_rate(predictions: Sequence[str], targets: Sequence[str]) -> float
     return float((total_distance + total_empty_reference_errors) / total_reference_tokens)
 
 
+def character_error_rate(predictions: Sequence[str], targets: Sequence[str]) -> float:
+    """Return corpus CER with jiwer-compatible character and empty-reference policy."""
+    total_distance = 0
+    total_reference_chars = 0
+    for prediction, target in strict_zip(predictions, targets):
+        prediction_chars = tuple(prediction.strip())
+        target_chars = tuple(target.strip())
+        total_distance += _levenshtein_distance(prediction_chars, target_chars)
+        total_reference_chars += len(target_chars)
+
+    if total_reference_chars == 0:
+        # jiwer reports the total number of insertions when every reference is empty.
+        return float(total_distance)
+    return float(total_distance / total_reference_chars)
+
+
 def corpus_chrf_score(
     predictions: Sequence[str],
     targets: Sequence[str],

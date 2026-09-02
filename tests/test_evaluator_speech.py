@@ -293,6 +293,10 @@ class SpeechEvaluatorTest(unittest.TestCase):
             whisper.artifact_sha256,
         )
 
+    def test_legacy_whisper_metric_protocol_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unsupported speech metric protocol"):
+            WhisperSemanticConfig(metric_protocol="anytrain-speech-text-metrics-v1")
+
     def test_custom_utmos_backend_has_no_implicit_semantic_identity(self):
         evaluator = UTMOSEvaluator(backend=FakeUTMOSBackend(4.0))
 
@@ -301,7 +305,9 @@ class SpeechEvaluatorTest(unittest.TestCase):
 
     def test_speech_evaluator_returns_asr_text_and_utmos_metrics(self):
         audio = torch.zeros(2, 16000)
-        asr = FakeWhisperASREvaluator({"bleu": 99.0, "wer": 0.25, "chrf": 88.0})
+        asr = FakeWhisperASREvaluator(
+            {"bleu": 99.0, "wer": 0.25, "chrf": 88.0, "cer": 0.12}
+        )
         utmos = UTMOSEvaluator(backend=FakeUTMOSBackend([4.0, 5.0]))
         evaluator = SpeechEvaluator(asr=asr, utmos=utmos)
 
@@ -312,7 +318,10 @@ class SpeechEvaluatorTest(unittest.TestCase):
             temperature=0.0,
         )
 
-        self.assertEqual(metrics, {"bleu": 99.0, "wer": 0.25, "chrf": 88.0, "utmos": 4.5})
+        self.assertEqual(
+            metrics,
+            {"bleu": 99.0, "wer": 0.25, "chrf": 88.0, "cer": 0.12, "utmos": 4.5},
+        )
         self.assertEqual(
             asr.calls,
             [
@@ -332,10 +341,14 @@ class SpeechEvaluatorTest(unittest.TestCase):
             SpeechEvaluator(asr=cast(Any, UTMOSEvaluator(backend=FakeUTMOSBackend(4.0))))
         with self.assertRaisesRegex(TypeError, "utmos"):
             SpeechEvaluator(
-                asr=FakeWhisperASREvaluator({"bleu": 99.0, "wer": 0.0, "chrf": 99.0}),
+                asr=FakeWhisperASREvaluator(
+                    {"bleu": 99.0, "wer": 0.0, "chrf": 99.0, "cer": 0.0}
+                ),
                 utmos=cast(
                     Any,
-                    FakeWhisperASREvaluator({"bleu": 99.0, "wer": 0.0, "chrf": 99.0}),
+                    FakeWhisperASREvaluator(
+                        {"bleu": 99.0, "wer": 0.0, "chrf": 99.0, "cer": 0.0}
+                    ),
                 ),
             )
 
@@ -366,10 +379,11 @@ class SpeechEvaluatorTest(unittest.TestCase):
                 temperature=0.0,
             )
 
-        self.assertEqual(set(metrics), {"bleu", "wer", "chrf"})
+        self.assertEqual(set(metrics), {"bleu", "wer", "chrf", "cer"})
         self.assertEqual(metrics["bleu"], 100.0)
         self.assertEqual(metrics["wer"], 0.0)
         self.assertEqual(metrics["chrf"], 100.0)
+        self.assertEqual(metrics["cer"], 0.0)
         self.assertEqual(
             whisper.calls,
             [
@@ -593,8 +607,8 @@ class SpeechEvaluatorTest(unittest.TestCase):
                 for item in metrics
             ],
             [
-                {"bleu": 100.0, "wer": 0.0, "chrf": 100.0},
-                {"bleu": 100.0, "wer": 0.0, "chrf": 100.0},
+                {"bleu": 100.0, "wer": 0.0, "chrf": 100.0, "cer": 0.0},
+                {"bleu": 100.0, "wer": 0.0, "chrf": 100.0, "cer": 0.0},
             ],
         )
         torch.testing.assert_close(

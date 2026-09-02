@@ -7,14 +7,14 @@ import torch.distributed as dist
 from ..abc import EvaluatorABC
 from ..types import MetricDict
 from .normalization import TextNormalizationConfig, normalize_text_batch
-from .scores import corpus_bleu_score, corpus_chrf_score, word_error_rate
+from .scores import character_error_rate, corpus_bleu_score, corpus_chrf_score, word_error_rate
 
 
 class TextComparisonEvaluator(EvaluatorABC):
     """Lightweight text comparison evaluator.
 
-    BLEU and chrF are backed by sacreBLEU, and WER is backed by jiwer. A small
-    private fallback keeps the evaluator usable in minimal environments.
+    BLEU and chrF are backed by sacreBLEU, and WER/CER are backed by jiwer. A
+    small private fallback keeps the evaluator usable in minimal environments.
     """
 
     def __init__(
@@ -97,6 +97,7 @@ class TextComparisonEvaluator(EvaluatorABC):
             "bleu": corpus_bleu_score(predictions, targets, smooth=self.bleu_smoothing),
             "wer": word_error_rate(predictions, targets),
             "chrf": corpus_chrf_score(predictions, targets),
+            "cer": character_error_rate(predictions, targets),
         }
 
     def _corpus(self) -> tuple[list[str], list[str]]:

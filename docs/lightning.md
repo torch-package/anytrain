@@ -220,7 +220,7 @@ def on_validation_epoch_end(self):
 ```
 
 `TextComparisonEvaluator.compute()` 在 distributed 已初始化时自行聚合所有 rank 的文本，不能
-再把逐 batch BLEU/WER/chrF 交给 Lightning 求均值。只实现 `evaluate()` 的无状态 evaluator
+再把逐 batch BLEU/WER/chrF/CER 交给 Lightning 求均值。只实现 `evaluate()` 的无状态 evaluator
 调用 `update/compute/reset` 时会明确抛出 `NotImplementedError`。
 
 如果下游使用领域组件，也还是挂在 `pl_module` 里：

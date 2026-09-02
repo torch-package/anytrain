@@ -124,7 +124,7 @@ class BatchMAE(EvaluatorABC):
 `EvaluatorABC` 默认不假设 metric 能按 batch scalar 合并。`update()`、`compute()`、`reset()`
 是 stateful evaluator 的扩展点；没有实现状态的子类调用这些方法时会明确抛出
 `NotImplementedError`。需要状态的子类必须自己实现完整生命周期，并按指标定义保存充分状态。
-例如 corpus BLEU、WER 和 chrF 不能通过等权平均 batch scalar 得到。
+例如 corpus BLEU、WER、chrF 和 CER 不能通过等权平均 batch scalar 得到。
 
 即时调用的返回值校验规则：
 
@@ -154,7 +154,7 @@ evaluator.reset()
 ```
 
 它在 `update()` 时保存规范化后的 Python 文本，不保存 batch metric 或 GPU tensor；`compute()`
-对所有已保存文本一次计算 corpus BLEU、WER 和 chrF，因此结果不受 batch 大小或切分方式影响。
+对所有已保存文本一次计算 corpus BLEU、WER、chrF 和 CER，因此结果不受 batch 大小或切分方式影响。
 如果 `torch.distributed` 已初始化，所有 rank 必须共同调用 `compute()`；实现会通过
 `all_gather_object` 汇总各 rank 的文本 corpus，使每个 rank 得到相同的全局指标。`reset()` 只清空
 当前 rank 的本地文本状态。某个 rank 可以没有本地样本，只要聚合后的全局 corpus 非空；所有
@@ -192,6 +192,10 @@ metric schema 不反向依赖这些 optional 实现。
 - `bleu`：0-100 区间 sacreBLEU smoothed effective-order BLEU。
 - `wer`：jiwer word error rate。
 - `chrf`：0-100 区间 sacreBLEU chrF。
+- `cer`：jiwer character error rate（以 reference character 数为 corpus 分母）。
+
+当整个 corpus 的 reference 都为空时，CER 沿用 jiwer 的定义返回插入字符数；prediction 和
+reference 都为空时返回 `0.0`。因此该边界结果不应被解释为比例。
 
 默认文本归一化会 strip、collapse whitespace、remove punctuation，并把中文繁体归一到简体；
 `lowercase` 仍需显式打开。
@@ -201,8 +205,8 @@ metric schema 不反向依赖这些 optional 实现。
 
 `anytrain.evaluator.speech` 提供：
 
-- `SpeechEvaluator`：组合 `WhisperASREvaluator` 和 `UTMOSEvaluator`，一次返回 `bleu`、`wer`、`chrf`、`utmos`。
-- `WhisperASREvaluator`：默认用 `openai-whisper` 的 `large-v3` 转写 audio；通过 allowlisted `model_name`、`device`、`download_root`、`load_options` 选择官方 Whisper 配置，不接受本地 checkpoint path，也不开放任意 ASR backend/model 注入；再复用 text evaluator 输出 `bleu`、`wer`、`chrf`。
+- `SpeechEvaluator`：组合 `WhisperASREvaluator` 和 `UTMOSEvaluator`，一次返回 `bleu`、`wer`、`chrf`、`cer`、`utmos`。
+- `WhisperASREvaluator`：默认用 `openai-whisper` 的 `large-v3` 转写 audio；通过 allowlisted `model_name`、`device`、`download_root`、`load_options` 选择官方 Whisper 配置，不接受本地 checkpoint path，也不开放任意 ASR backend/model 注入；再复用 text evaluator 输出 `bleu`、`wer`、`chrf`、`cer`。
   短音频 batch 会在兼容选项下使用 Whisper 的 batched 30 秒 mel decode；长音频或需要完整 transcribe 调度的选项会回退到逐条 `model.transcribe()`。
 - `UTMOSEvaluator`：可用 `torch.hub` 加载 `tarepan/SpeechMOS` 的 `utmos22_strong`，也可显式注入 UTMOS backend；输出 `utmos`。远端 TorchHub 代码加载需要显式传入 `allow_remote_code=True`。
 
