@@ -37,6 +37,7 @@
 - [`docs/architecture.md`](../architecture.md)：总体分层、运行链路和包边界。
 - [`docs/components.md`](../components.md)：训练组件的 core/optional 分层。
 - [`docs/lightning.md`](../lightning.md)：Lightning 层的更完整设计。
+- [`docs/audit.md`](../audit.md)：跨 anytrain / anydataset 的训练阻塞 JSONL 审计与汇总方法。
 - [`docs/flow-matching-design.md`](../flow-matching-design.md)：Facebook flow matching 的可组合再封装设计。
 - [`docs/gan-framework-design.md`](../gan-framework-design.md)：参考 `deepaudio` 的 GAN framework 迁移设计。
 - [`docs/quantization-migration.md`](../quantization-migration.md)：从 `deepaudio` 迁入量化组件的设计计划。

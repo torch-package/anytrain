@@ -18,8 +18,14 @@ from .expert import (
     ConvTranspose1dExpert,
     Expert,
     ExpertFamily,
+    LinearExpert,
 )
 from .routing import ExpertRouting, validate_expert_routing, validate_num_experts
+
+# Route-wise parameter gathers are intentionally bounded.  The accelerator
+# fast path materializes one expert weight per route before its batched GEMM;
+# large route sets should use the grouped fallback instead of risking an OOM.
+_LINEAR_ROUTE_WEIGHT_BUDGET_BYTES = 64 * 1024 * 1024
 
 
 class ParamExpertBank(nn.Module):
@@ -216,55 +222,163 @@ class ParamExpertBank(nn.Module):
             if active_indices is not None:
                 y = _restore_active_tokens(y, active_indices, token_count)
         else:
-            route_tokens, route_weights, token_counts = self._grouped_topk_routes(routing)
-            y = None
-            start = 0
-            for expert_index, token_count in enumerate(token_counts):
-                if token_count == 0:
-                    continue
-                end = start + token_count
-                token_indices = route_tokens[start:end]
-                expert_input = flat.index_select(0, token_indices)
-                expert_y = self.expert(
-                    expert_input,
-                    self.weight[expert_index],
-                    None,
+            if (
+                type(self.expert) is LinearExpert
+                and flat.device.type == "cuda"
+                and self.weight.device == flat.device
+                and self.weight.layout == torch.strided
+                and (self.bias is None or self.bias.layout == torch.strided)
+                and (self.bias is None or self.bias.device == flat.device)
+                and (self.bias is None or self.bias.dtype == self.weight.dtype)
+                and _linear_route_memory_fits(
+                    routing.indices.numel() if routing.indices is not None else 0,
+                    self.weight[0],
                 )
-                combine_dtype = torch.promote_types(
-                    expert_y.dtype,
-                    route_weights.dtype,
-                )
-                if y is None:
-                    y = expert_y.new_zeros(
-                        flat.size(0),
-                        expert_y.size(-1),
-                        dtype=combine_dtype,
+            ):
+                # A linear expert is pure and has no per-module state, so all
+                # selected routes can share one batched matrix multiplication.
+                # This avoids host count materialization and one accelerator
+                # launch per non-empty expert in the old grouped path. CPU
+                # keeps the grouped GEMM path, which is faster for route-wise
+                # small matrix products on common BLAS backends.
+                y = self._forward_linear_topk_batched(flat, routing)
+            else:
+                route_tokens, route_weights, token_counts = self._grouped_topk_routes(routing)
+                y = None
+                start = 0
+                for expert_index, token_count in enumerate(token_counts):
+                    if token_count == 0:
+                        continue
+                    end = start + token_count
+                    token_indices = route_tokens[start:end]
+                    expert_input = flat.index_select(0, token_indices)
+                    expert_y = self.expert(
+                        expert_input,
+                        self.weight[expert_index],
+                        None,
                     )
-                else:
-                    accumulator_dtype = torch.promote_types(y.dtype, combine_dtype)
-                    if accumulator_dtype != y.dtype:
-                        y = y.to(dtype=accumulator_dtype)
-                combine_weight = route_weights[start:end].to(dtype=y.dtype)
-                y.index_add_(
-                    0,
-                    token_indices,
-                    expert_y.to(dtype=y.dtype) * combine_weight.unsqueeze(-1),
-                )
-                start = end
-            if y is None:
-                probe = self.expert(flat[:0], self.weight[0], None)
-                _validate_generic_expert_output(
-                    probe,
-                    token_count=0,
-                    expert_index=0,
-                )
-                y = _empty_bank_output(
-                    probe,
-                    token_count=flat.size(0),
-                    route_weights=route_weights,
-                    graph_inputs=(flat, self.weight),
-                )
+                    combine_dtype = torch.promote_types(
+                        expert_y.dtype,
+                        route_weights.dtype,
+                    )
+                    if y is None:
+                        y = expert_y.new_zeros(
+                            flat.size(0),
+                            expert_y.size(-1),
+                            dtype=combine_dtype,
+                        )
+                    else:
+                        accumulator_dtype = torch.promote_types(y.dtype, combine_dtype)
+                        if accumulator_dtype != y.dtype:
+                            y = y.to(dtype=accumulator_dtype)
+                    combine_weight = route_weights[start:end].to(dtype=y.dtype)
+                    y.index_add_(
+                        0,
+                        token_indices,
+                        expert_y.to(dtype=y.dtype) * combine_weight.unsqueeze(-1),
+                    )
+                    start = end
+                if y is None:
+                    probe = self.expert(flat[:0], self.weight[0], None)
+                    _validate_generic_expert_output(
+                        probe,
+                        token_count=0,
+                        expert_index=0,
+                    )
+                    y = _empty_bank_output(
+                        probe,
+                        token_count=flat.size(0),
+                        route_weights=route_weights,
+                        graph_inputs=(flat, self.weight),
+                    )
         return y.reshape(*leading_shape, y.size(-1))
+
+    def _forward_linear_topk_batched(
+        self,
+        flat: Tensor,
+        routing: ExpertRouting,
+    ) -> Tensor:
+        """Execute all active linear routes with one batched matmul.
+
+        ``LinearExpert`` has no observable per-expert state, so grouping routes
+        by expert is unnecessary.  Gathering the expert weights by route and
+        using ``bmm`` preserves the sparse computation (``N * top_k`` linear
+        products) while avoiding a device-to-host count conversion and a
+        separate launch for each expert.  Zero-weight routes intentionally stay
+        in the batch: their output is zero, but their expert output remains in
+        the autograd graph so gradients with respect to routing weights match
+        the reference implementation.
+        """
+
+        indices, selected_weights, top_k = routing.require_topk()
+        flat_indices = indices.reshape(-1, top_k)
+        flat_weights = selected_weights.reshape(-1, top_k)
+        route_tokens = torch.arange(
+            flat.size(0),
+            device=flat.device,
+        ).unsqueeze(-1).expand_as(flat_indices).reshape(-1)
+        route_experts = flat_indices.reshape(-1)
+        route_weights = flat_weights.reshape(-1)
+        original_route_weights = route_weights
+
+        if routing.mask is not None:
+            active_routes = (
+                routing.flat_active_mask()
+                .unsqueeze(-1)
+                .expand_as(flat_indices)
+                .reshape(-1)
+            )
+            active_indices = active_routes.nonzero(as_tuple=False).flatten()
+            route_tokens = route_tokens.index_select(0, active_indices)
+            route_experts = route_experts.index_select(0, active_indices)
+            route_weights = route_weights.index_select(0, active_indices)
+
+        if route_tokens.numel() == 0:
+            # Probe an empty input to retain the exact output shape/dtype and a
+            # zero-gradient edge to inputs, parameters, and route weights.  The
+            # empty slice also guarantees masked NaN/Inf values are never read.
+            probe = self.expert(flat[:0], self.weight[0], None)
+            _validate_generic_expert_output(
+                probe,
+                token_count=0,
+                expert_index=0,
+            )
+            return _empty_bank_output(
+                probe,
+                token_count=flat.size(0),
+                route_weights=route_weights,
+                graph_inputs=(flat, self.weight, original_route_weights),
+            )
+
+        route_input = flat.index_select(0, route_tokens)
+        route_weight = self.weight.index_select(0, route_experts)
+        # ``LinearExpert`` is F.linear(input, weight, bias=None).  Batched
+        # matmul has the same accumulation/dtype behavior under autocast while
+        # exposing a single operation to the backend.
+        expert_output = torch.bmm(
+            route_input.unsqueeze(1),
+            route_weight.transpose(1, 2),
+        ).squeeze(1)
+        combine_dtype = torch.promote_types(
+            expert_output.dtype,
+            route_weights.dtype,
+        )
+        weighted_output = expert_output.to(dtype=combine_dtype) * route_weights.to(
+            dtype=combine_dtype
+        ).unsqueeze(-1)
+        output = weighted_output.new_zeros(
+            flat.size(0),
+            expert_output.size(-1),
+        )
+        output.index_add_(0, route_tokens, weighted_output)
+        if routing.mask is not None:
+            # Masked route weights are intentionally not gathered above. Keep
+            # the reference API's zero-gradient edge for them without ever
+            # reading their (possibly non-finite) values.
+            output = output + original_route_weights.unsqueeze(0)[:0].sum().to(
+                dtype=output.dtype
+            )
+        return output
 
     def _forward_conv1d(self, cells: Tensor, routing: ExpertRouting) -> Tensor:
         expert = self.expert
@@ -540,7 +654,8 @@ class ParamExpertBank(nn.Module):
         counts = torch.bincount(group_keys, minlength=self.num_experts + 1)
         # Calling distinct expert parameters needs segment sizes on the host.
         # This is one synchronization per bank call, independent of route count.
-        token_counts = counts[: self.num_experts].tolist()
+        # Stock LinearExpert bypasses this fallback entirely.
+        token_counts = _host_int_list(counts[: self.num_experts])
         return route_tokens, route_weights, token_counts
 
 
@@ -639,6 +754,50 @@ def _empty_bank_output(
             dtype=output_dtype
         )
     return output + graph_zero
+
+
+def _host_int_list(values: Tensor) -> list[int]:
+    """Materialize a short device count vector for a Python dispatch loop.
+
+    Generic experts have arbitrary Python ``forward`` methods, so their
+    variable-length segments still require concrete host bounds.  Keep the
+    unavoidable accelerator synchronization to one explicit transfer, while
+    making the transfer boundary explicit. CPU values stay on-device and
+    incur only ordinary scalar conversion.
+    """
+
+    if values.device.type == "cpu":
+        # Convert the short vector in one native call.  Scalar-tensor
+        # iteration is noticeably slower for larger expert banks and does not
+        # avoid any CPU synchronization.
+        return values.tolist()
+    host_values = values.detach().to(device="cpu")
+    return host_values.tolist()
+
+
+def _linear_route_memory_fits(
+    route_count: int,
+    weight: Tensor,
+    bias: Tensor | None = None,
+    *,
+    stacked_expert_count: int = 0,
+    budget_bytes: int = _LINEAR_ROUTE_WEIGHT_BUDGET_BYTES,
+) -> bool:
+    """Return whether route-parameter temporaries fit the fast-path budget.
+
+    The count comes from tensor shape metadata, so this check does not read a
+    CUDA scalar or introduce a synchronization.  Bank execution gathers only
+    weights and therefore leaves ``stacked_expert_count`` at zero; ``bias`` is
+    accepted for parity with the sparse dispatcher and keeps the helper useful
+    for callers that gather both tensors.
+    """
+
+    parameter_bytes = weight.numel() * weight.element_size()
+    bytes_required = (route_count + stacked_expert_count) * parameter_bytes
+    if bias is not None:
+        bias_bytes = bias.numel() * bias.element_size()
+        bytes_required += (route_count + stacked_expert_count) * bias_bytes
+    return bytes_required <= budget_bytes
 
 
 def _apply_1d_bias(

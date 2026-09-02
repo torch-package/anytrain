@@ -4,7 +4,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import torch
@@ -12,6 +12,7 @@ import torch
 import anytrain.module.quantization as quantization_api
 from anytrain._compat import strict_zip
 from anytrain.module.quantization import (
+    EmbeddingVectorQuantizer,
     ResidualQuantizerProtocol,
     ResidualVectorQuantizer,
     RVQConfig,
@@ -168,6 +169,64 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(round_trip, indices))
 
+    def test_indices_decode_preserves_subclass_stage_override(self):
+        class CustomEmbeddingVectorQuantizer(EmbeddingVectorQuantizer):
+            def __init__(self, config: VQConfig) -> None:
+                super().__init__(config)
+                self.decode_calls = 0
+
+            def indices_to_codebook_vectors(self, indices: torch.Tensor) -> torch.Tensor:
+                self.decode_calls += 1
+                return super().indices_to_codebook_vectors(indices)
+
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
+        )
+        custom_stage = CustomEmbeddingVectorQuantizer(quantizer.config.vq_configs[0])
+        quantizer.quantizers[0] = custom_stage
+
+        quantizer.indices_to_codebook_vectors(torch.tensor([[0, 1], [2, 3]]))
+
+        self.assertEqual(custom_stage.decode_calls, 1)
+
+    def test_indices_decode_preserves_instance_stage_override(self):
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
+        )
+        stage = quantizer.quantizers[0]
+
+        with mock.patch.object(
+            stage,
+            "indices_to_codebook_vectors",
+            wraps=stage.indices_to_codebook_vectors,
+        ) as decode:
+            quantizer.indices_to_codebook_vectors(torch.tensor([[0, 1], [2, 3]]))
+
+        decode.assert_called_once()
+
+    def test_indices_decode_preserves_class_stage_override(self):
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
+        )
+        original = EmbeddingVectorQuantizer.indices_to_codebook_vectors
+        calls: list[torch.Tensor] = []
+
+        def patched(
+            instance: EmbeddingVectorQuantizer,
+            indices: torch.Tensor,
+        ) -> torch.Tensor:
+            calls.append(indices)
+            return original(instance, indices)
+
+        with mock.patch.object(
+            EmbeddingVectorQuantizer,
+            "indices_to_codebook_vectors",
+            patched,
+        ):
+            quantizer.indices_to_codebook_vectors(torch.tensor([[0, 1], [2, 3]]))
+
+        self.assertEqual(len(calls), 2)
+
     def test_project_codebook_vectors_sums_projected_books(self):
         quantizer = ResidualVectorQuantizer(
             _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
@@ -208,6 +267,72 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
 
         self.assertTrue((output.indices == -1).any())
         self.assertFalse(output.active_codebook_mask.all())
+
+    def test_dropout_empty_stages_keep_outputs_finite_and_gradients(self):
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(input_dim=4, num_codebooks=3, codebook_size=8, dropout=1.0)
+        )
+        active_mask = torch.tensor(
+            [
+                [True, False, False],
+                [True, True, False],
+                [False, False, False],
+                [True, True, True],
+            ],
+            dtype=torch.bool,
+        )
+        latents = torch.randn(4, 4, requires_grad=True)
+
+        with (
+            mock.patch.object(quantizer, "_sample_active_mask", return_value=active_mask),
+            mock.patch.object(torch.Tensor, "item", side_effect=AssertionError("item")),
+        ):
+            output = quantizer(latents)
+
+        self.assertTrue(torch.equal(output.active_codebook_mask, active_mask))
+        self.assertTrue(torch.isfinite(output.quantized_latents).all())
+        self.assertTrue(torch.isfinite(output.indices.float()).all())
+        self.assertTrue((output.indices[2] == -1).all())
+        self.assertTrue((output.codebook_vectors[2] == 0).all())
+        self.assertTrue((output.latents[2] == 0).all())
+        assert output.loss is not None
+        (output.quantized_latents.sum() + output.loss.total).backward()
+        self.assertIsNotNone(latents.grad)
+        assert latents.grad is not None
+        self.assertTrue(torch.isfinite(latents.grad).all())
+
+    def test_dropout_all_inactive_mask_returns_zeros_without_loss(self):
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(input_dim=4, num_codebooks=3, codebook_size=8, dropout=1.0)
+        )
+        active_mask = torch.zeros(2, 3, dtype=torch.bool)
+
+        with (
+            mock.patch.object(quantizer, "_sample_active_mask", return_value=active_mask),
+            mock.patch.object(torch.Tensor, "item", side_effect=AssertionError("item")),
+        ):
+            output = quantizer(torch.randn(2, 4))
+
+        self.assertTrue(torch.equal(output.active_codebook_mask, active_mask))
+        self.assertTrue((output.quantized_latents == 0).all())
+        self.assertTrue((output.indices == -1).all())
+        self.assertTrue((output.codebook_vectors == 0).all())
+        self.assertTrue((output.latents == 0).all())
+        self.assertIsNone(output.loss)
+
+    def test_indices_decode_masks_inactive_entries(self):
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(input_dim=4, num_codebooks=2, codebook_size=8)
+        )
+        indices = torch.tensor([[-1, -1], [0, -1], [2, 3]])
+
+        vectors = quantizer.indices_to_codebook_vectors(indices)
+        books = cast(tuple[EmbeddingVectorQuantizer, ...], tuple(quantizer.quantizers))
+
+        self.assertTrue(torch.equal(vectors[0], torch.zeros_like(vectors[0])))
+        self.assertTrue(torch.equal(vectors[1, 1], torch.zeros_like(vectors[1, 1])))
+        self.assertTrue(torch.equal(vectors[2, 0], books[0].codebook.weight[2]))
+        self.assertTrue(torch.equal(vectors[2, 1], books[1].codebook.weight[3]))
 
     @unittest.skipUnless(
         torch.distributed.is_available() and torch.distributed.is_gloo_available(),

@@ -124,7 +124,17 @@ class FiniteScalarQuantizer(nn.Module):
         _checks.input_latents(latents, self.input_dim)
         projected_latents = self._project_input(latents)
         codebook_vectors = self._quantize_projected_latents(projected_latents)
-        indices = self.codebook_vectors_to_indices(codebook_vectors)
+        if _uses_builtin_index_conversion(self):
+            # The built-in quantizer just produced an in-range, integer grid.
+            # Avoid re-running public level validation here: on CUDA that
+            # validation would reduce a device tensor to Python scalars and
+            # synchronize every forward. Public conversion helpers continue
+            # to validate strictly, and subclasses retain their override
+            # dispatch semantics.
+            levels = self.codebook_vectors_to_levels(codebook_vectors)
+            indices = self._levels_to_indices_unchecked(levels)
+        else:
+            indices = self.codebook_vectors_to_indices(codebook_vectors)
         quantized_latents = self.project_codebook_vectors(codebook_vectors)
         return QuantizeOutput(
             quantized_latents=quantized_latents,
@@ -183,6 +193,11 @@ class FiniteScalarQuantizer(nn.Module):
 
     def levels_to_indices(self, levels: Tensor) -> Tensor:
         self._validate_levels(levels)
+        return self._levels_to_indices_unchecked(levels)
+
+    def _levels_to_indices_unchecked(self, levels: Tensor) -> Tensor:
+        """Convert validated integer levels without a host-side bounds check."""
+
         return (levels * self._basis).sum(dim=-1)
 
     def indices_to_level_probs(self, indices: Tensor, tau: float = 1.0) -> Tensor:
@@ -250,6 +265,46 @@ class FiniteScalarQuantizer(nn.Module):
         for index, level in enumerate(levels):
             mask[index, :level] = True
         return mask
+
+
+_ORIGINAL_QUANTIZE_PROJECTED_LATENTS = (
+    FiniteScalarQuantizer._quantize_projected_latents
+)
+_ORIGINAL_CODEBOOK_VECTORS_TO_LEVELS = (
+    FiniteScalarQuantizer.codebook_vectors_to_levels
+)
+_ORIGINAL_CODEBOOK_VECTORS_TO_INDICES = (
+    FiniteScalarQuantizer.codebook_vectors_to_indices
+)
+_ORIGINAL_LEVELS_TO_INDICES = FiniteScalarQuantizer.levels_to_indices
+_ORIGINAL_LEVELS_TO_INDICES_UNCHECKED = (
+    FiniteScalarQuantizer._levels_to_indices_unchecked
+)
+
+
+def _uses_builtin_index_conversion(quantizer: FiniteScalarQuantizer) -> bool:
+    """Whether forward may bypass public validation and conversion hooks."""
+
+    method_names = (
+        "_quantize_projected_latents",
+        "codebook_vectors_to_levels",
+        "codebook_vectors_to_indices",
+        "levels_to_indices",
+        "_levels_to_indices_unchecked",
+    )
+    return (
+        type(quantizer) is FiniteScalarQuantizer
+        and not any(name in quantizer.__dict__ for name in method_names)
+        and FiniteScalarQuantizer._quantize_projected_latents
+        is _ORIGINAL_QUANTIZE_PROJECTED_LATENTS
+        and FiniteScalarQuantizer.codebook_vectors_to_levels
+        is _ORIGINAL_CODEBOOK_VECTORS_TO_LEVELS
+        and FiniteScalarQuantizer.codebook_vectors_to_indices
+        is _ORIGINAL_CODEBOOK_VECTORS_TO_INDICES
+        and FiniteScalarQuantizer.levels_to_indices is _ORIGINAL_LEVELS_TO_INDICES
+        and FiniteScalarQuantizer._levels_to_indices_unchecked
+        is _ORIGINAL_LEVELS_TO_INDICES_UNCHECKED
+    )
 
 
 def default_fsq_levels(power: Literal[8, 9, 10, 12, 14, 16]) -> tuple[int, ...]:

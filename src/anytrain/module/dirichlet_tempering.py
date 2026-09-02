@@ -576,7 +576,19 @@ class AdaptiveDirichletTempering(nn.Module):
             return sums, square_sums, log_sums, count
 
         synced = torch.cat([sums, square_sums, log_sums, count.reshape(1)])
-        torch.distributed.all_reduce(synced, op=torch.distributed.ReduceOp.SUM)
+        from anytrain.lightning.audit import audit_collective
+
+        audit_collective(
+            "torch.distributed.all_reduce",
+            lambda: torch.distributed.all_reduce(
+                synced, op=torch.distributed.ReduceOp.SUM
+            ),
+            reduce_op="sum",
+            source="AdaptiveDirichletTempering._sync_stat_sums",
+            tensor_shape=tuple(synced.shape),
+            tensor_dtype=str(synced.dtype),
+            tensor_device=str(synced.device),
+        )
         num_experts = self.config.num_experts
         sums = synced[:num_experts]
         square_sums = synced[num_experts : 2 * num_experts]

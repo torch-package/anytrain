@@ -805,6 +805,261 @@ class MoETest(unittest.TestCase):
                 for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
                     torch.testing.assert_close(actual_grad, expected_grad)
 
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_topk_linear_bank_batches_routes_without_host_count_conversion(self):
+        torch.manual_seed(11)
+        hidden = torch.randn(2, 3, 4, dtype=torch.double, requires_grad=True)
+        expert_weight = nn.Parameter(torch.randn(4, 5, 4, dtype=torch.double))
+        indices = torch.tensor(
+            [
+                [[0, 1], [1, 0], [2, 3]],
+                [[3, 2], [0, 3], [1, 2]],
+            ]
+        )
+        selected_weights = torch.tensor(
+            [
+                [[0.8, 0.2], [0.0, 1.0], [0.4, 0.6]],
+                [[0.3, 0.7], [1.0, 0.0], [0.2, 0.8]],
+            ],
+            dtype=torch.double,
+            requires_grad=True,
+        )
+        routing = ExpertRouting(
+            logits=torch.zeros(2, 3, 4, dtype=torch.double),
+            probabilities=torch.full((2, 3, 4), 0.25, dtype=torch.double),
+            indices=indices,
+            weights=selected_weights,
+        )
+        moe = MoE(
+            num_experts=4,
+            router=LinearRouter(4, 4).double(),
+            expert=linear,
+            weight=expert_weight,
+            top_k=2,
+        )
+
+        with patch.object(
+            torch.Tensor,
+            "tolist",
+            side_effect=AssertionError("linear top-k path converted route counts to host"),
+        ):
+            actual = moe.forward_manually(hidden, routing).hidden_states
+
+        selected_weight = expert_weight[indices]
+        expert_output = torch.einsum(
+            "...i,...koi->...ko",
+            hidden,
+            selected_weight,
+        )
+        expected = torch.einsum(
+            "...k,...ko->...o",
+            selected_weights,
+            expert_output,
+        )
+        actual_grads = torch.autograd.grad(
+            actual.square().sum(),
+            (hidden, expert_weight, selected_weights),
+            retain_graph=True,
+        )
+        expected_grads = torch.autograd.grad(
+            expected.square().sum(),
+            (hidden, expert_weight, selected_weights),
+        )
+        torch.testing.assert_close(actual, expected)
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_sparse_linear_fast_path_batches_routes_without_host_count_conversion(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        torch.manual_seed(12)
+        hidden = torch.randn(4, 3, dtype=torch.double, requires_grad=True)
+        experts: Any = nn.ModuleList(
+            nn.Linear(3, 2, dtype=torch.double) for _ in range(3)
+        )
+        indices = torch.tensor([[0, 1], [2, 0], [1, 2], [0, 2]])
+        selected_weights = torch.tensor(
+            [[0.75, 0.25], [1.0, 0.0], [0.4, 0.6], [0.2, 0.8]],
+            dtype=torch.double,
+            requires_grad=True,
+        )
+        routing = ExpertRouting(
+            logits=torch.zeros(4, 3, dtype=torch.double),
+            probabilities=torch.full((4, 3), 1 / 3, dtype=torch.double),
+            indices=indices,
+            weights=selected_weights,
+        )
+
+        with patch.object(
+            torch.Tensor,
+            "tolist",
+            side_effect=AssertionError("linear sparse path converted route counts to host"),
+        ):
+            actual, counts = sparse_dispatch(hidden, routing, experts)
+
+        route_tokens = torch.arange(hidden.size(0)).unsqueeze(-1).expand_as(indices).reshape(-1)
+        route_experts = indices.reshape(-1)
+        route_outputs = torch.stack(
+            [
+                torch.nn.functional.linear(
+                    hidden[token],
+                    experts[int(expert_index)].weight,
+                    experts[int(expert_index)].bias,
+                )
+                for token, expert_index in zip(route_tokens, route_experts, strict=False)
+            ]
+        )
+        expected = torch.zeros_like(actual).reshape(-1, actual.size(-1)).index_add(
+            0,
+            route_tokens,
+            route_outputs * selected_weights.reshape(-1, 1),
+        )
+        expected = expected.reshape_as(actual)
+        expected_counts = torch.tensor([2, 2, 3])
+
+        actual_grads = torch.autograd.grad(
+            actual.square().sum(),
+            (hidden, selected_weights, *experts.parameters()),
+            retain_graph=True,
+        )
+        expected_grads = torch.autograd.grad(
+            expected.square().sum(),
+            (hidden, selected_weights, *experts.parameters()),
+        )
+        torch.testing.assert_close(actual, expected)
+        self.assertTrue(torch.equal(counts.cpu(), expected_counts))
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=False):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    def test_topk_linear_bank_uses_grouped_gemm_on_cpu(self):
+        hidden = torch.randn(4, 3)
+        routing = ExpertRouting(
+            logits=torch.zeros(4, 2),
+            probabilities=torch.full((4, 2), 0.5),
+            indices=torch.tensor([[0], [1], [0], [1]]),
+            weights=torch.ones(4, 1),
+        )
+        moe = MoE(
+            num_experts=2,
+            router=LinearRouter(3, 2),
+            expert=linear,
+            weight=nn.Parameter(torch.randn(2, 4, 3)),
+            top_k=1,
+        )
+
+        with patch.object(
+            moe.expert_bank,
+            "_forward_linear_topk_batched",
+            side_effect=AssertionError("CPU should use grouped GEMM"),
+        ):
+            output = moe.forward_manually(hidden, routing).hidden_states
+
+        self.assertEqual(output.shape, (4, 4))
+
+    def test_sparse_linear_dispatch_preserves_global_module_hooks(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        hidden = torch.randn(3, 2)
+        routing = ExpertRouting(
+            logits=torch.zeros(3, 2),
+            probabilities=torch.full((3, 2), 0.5),
+            indices=torch.tensor([[0], [1], [0]]),
+            weights=torch.ones(3, 1),
+        )
+        experts: Any = nn.ModuleList(nn.Linear(2, 2) for _ in range(2))
+        calls: list[nn.Module] = []
+
+        def hook(module: nn.Module, _inputs: Any, _output: Any) -> None:
+            calls.append(module)
+
+        handle = nn.modules.module.register_module_forward_hook(hook)
+        try:
+            output, _counts = sparse_dispatch(hidden, routing, experts)
+        finally:
+            handle.remove()
+
+        self.assertEqual(len(calls), len(experts))
+        self.assertEqual(output.shape, (3, 2))
+
+    def test_sparse_linear_fast_path_guard_preserves_autograd_and_observers(self):
+        from anytrain.module.moe.sparse import (
+            _can_batch_linear_experts,
+            _linear_fast_path_preserves_unused_gradients,
+        )
+
+        experts: Any = nn.ModuleList(nn.Linear(2, 2) for _ in range(2))
+
+        # The structural guard accepts plain Linear modules; the route-aware
+        # guard below selects grouped dispatch when an expert is absent.
+        self.assertTrue(_can_batch_linear_experts(experts))
+        route_ids = torch.tensor([0, 0, 0], dtype=torch.long)
+        self.assertFalse(
+            _linear_fast_path_preserves_unused_gradients(
+                route_ids,
+                active_routes=None,
+                num_experts=2,
+                experts=experts,
+            )
+        )
+        self.assertTrue(
+            _linear_fast_path_preserves_unused_gradients(
+                torch.tensor([0, 1], dtype=torch.long),
+                active_routes=None,
+                num_experts=2,
+                experts=experts,
+            )
+        )
+        with torch.no_grad():
+            self.assertTrue(_can_batch_linear_experts(experts))
+
+        with torch.no_grad():
+            handle = experts[0].register_forward_hook(
+                lambda _module, _inputs, _output: None
+            )
+            try:
+                self.assertFalse(_can_batch_linear_experts(experts))
+            finally:
+                handle.remove()
+
+        with torch.no_grad():
+            handle = experts[0].weight.register_hook(lambda grad: grad)
+            try:
+                self.assertFalse(_can_batch_linear_experts(experts))
+            finally:
+                handle.remove()
+
+        with (
+            torch.no_grad(),
+            patch.object(
+                experts[0],
+                "_compiled_call_impl",
+                lambda *_args, **_kwargs: None,
+            ),
+        ):
+            self.assertFalse(_can_batch_linear_experts(experts))
+
+    def test_sparse_dispatch_unused_expert_gradients_stay_none(self):
+        from anytrain.module.moe.sparse import sparse_dispatch
+
+        hidden = torch.randn(3, 2, requires_grad=True)
+        selected_weights = torch.ones(3, 1, requires_grad=True)
+        routing = ExpertRouting(
+            logits=torch.zeros(3, 2),
+            probabilities=torch.full((3, 2), 0.5),
+            indices=torch.zeros(3, 1, dtype=torch.long),
+            weights=selected_weights,
+        )
+        experts: Any = nn.ModuleList(nn.Linear(2, 2) for _ in range(2))
+
+        output, _counts = sparse_dispatch(hidden, routing, experts)
+        output.sum().backward()
+
+        self.assertIsNotNone(experts[0].weight.grad)
+        self.assertIsNotNone(experts[0].bias.grad)
+        self.assertIsNone(experts[1].weight.grad)
+        self.assertIsNone(experts[1].bias.grad)
+
     @unittest.skipUnless(
         torch.amp.autocast_mode.is_autocast_available("cpu"),
         "requires CPU autocast",

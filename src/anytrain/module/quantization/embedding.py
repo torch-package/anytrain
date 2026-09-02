@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -140,11 +141,59 @@ class EmbeddingVectorQuantizer(nn.Module):
                     self._ema_counts.fill_(1)
                     self._ema_initialized = True
 
-    def forward(self, latents: Tensor) -> QuantizeOutput:
-        return self.quantize(latents)
+    def forward(
+        self,
+        latents: Tensor,
+        *,
+        _allow_empty: bool = False,
+        _on_inactive: Callable[[nn.Module], None] | None = None,
+    ) -> QuantizeOutput:
+        # Keep the long-standing ``forward -> quantize(latents)`` delegation
+        # for subclasses that override the public one-argument method.  The
+        # private empty-stage knobs are only used by callers that explicitly
+        # opt into that extension; passing them on the ordinary path would
+        # turn a backwards-compatible override into a TypeError.
+        if not _allow_empty and _on_inactive is None:
+            return self.quantize(latents)
+        return self.quantize(
+            latents,
+            _allow_empty=_allow_empty,
+            _on_inactive=_on_inactive,
+        )
 
-    def quantize(self, latents: Tensor) -> QuantizeOutput:
-        _checks.input_latents(latents, self.input_dim)
+    def quantize(
+        self,
+        latents: Tensor,
+        *,
+        _allow_empty: bool = False,
+        _on_inactive: Callable[[nn.Module], None] | None = None,
+    ) -> QuantizeOutput:
+        _checks.input_latents(
+            latents,
+            self.input_dim,
+            require_non_empty=not _allow_empty,
+        )
+        if _allow_empty and latents.numel() == 0:
+            # Residual dropout uses empty batches for stages that have no local
+            # assignments.  Keep the public (non-empty) input contract while
+            # still allowing those stages to participate in distributed EMA
+            # collectives without constructing NaN losses from empty tensors.
+            if _on_inactive is not None:
+                _on_inactive(self)
+            elif self.training and self.use_ema:
+                self._update_ema_without_assignments()
+            leading_shape = latents.shape[:-1]
+            return QuantizeOutput(
+                quantized_latents=latents.new_empty(*leading_shape, self.input_dim),
+                indices=torch.empty(
+                    leading_shape,
+                    dtype=torch.long,
+                    device=latents.device,
+                ),
+                codebook_vectors=latents.new_empty(*leading_shape, self.codebook_dim),
+                latents=latents.new_empty(*leading_shape, self.codebook_dim),
+                loss=None,
+            )
         projected_latents = self.project_in(latents)
         if self.training and self.use_ema:
             self._prepare_ema(projected_latents)
@@ -187,6 +236,11 @@ class EmbeddingVectorQuantizer(nn.Module):
 
     def indices_to_codebook_vectors(self, indices: Tensor) -> Tensor:
         _checks.indices(indices, self.codebook_size)
+        return self._indices_to_codebook_vectors_unchecked(indices)
+
+    def _indices_to_codebook_vectors_unchecked(self, indices: Tensor) -> Tensor:
+        """Lookup already-validated indices without repeating range checks."""
+
         return self.codebook(indices)
 
     def project_codebook_vectors(self, codebook_vectors: Tensor) -> Tensor:
@@ -223,7 +277,12 @@ class EmbeddingVectorQuantizer(nn.Module):
         )
         sums.index_add_(0, flat_indices, flat_latents)
         self._sync_ema_stats(counts, sums)
-        self._apply_ema_stats(counts, sums)
+        # A public quantize call always supplies at least one latent, so this
+        # path is guaranteed to have a non-zero global count after the
+        # collective.  Keep the normal EMA update on the in-place hot path;
+        # only the explicitly empty-stage helper needs the predicate-based
+        # no-op handling below.
+        self._apply_ema_stats(counts, sums, assume_non_empty=True)
 
     @torch.no_grad()
     def _update_ema_without_assignments(self) -> None:
@@ -237,8 +296,6 @@ class EmbeddingVectorQuantizer(nn.Module):
         counts = torch.zeros_like(self._ema_counts)
         sums = torch.zeros_like(self._ema_sums)
         self._sync_ema_stats(counts, sums)
-        if not bool(counts.any().item()):
-            return
         self._apply_ema_stats(counts, sums)
 
     @torch.no_grad()
@@ -315,7 +372,19 @@ class EmbeddingVectorQuantizer(nn.Module):
         rank = torch.distributed.get_rank()
         available = torch.zeros(world_size, dtype=torch.long, device=flat_latents.device)
         available[rank] = int(flat_latents.shape[0] > 0)
-        torch.distributed.all_reduce(available, op=torch.distributed.ReduceOp.SUM)
+        from anytrain.lightning.audit import audit_collective
+
+        audit_collective(
+            "torch.distributed.all_reduce",
+            lambda: torch.distributed.all_reduce(
+                available, op=torch.distributed.ReduceOp.SUM
+            ),
+            reduce_op="sum",
+            source="EmbeddingVectorQuantizer._distributed_sample_vectors.available",
+            tensor_shape=tuple(available.shape),
+            tensor_dtype=str(available.dtype),
+            tensor_device=str(available.device),
+        )
         active_ranks = torch.where(available > 0)[0]
         if active_ranks.numel() == 0:
             return None
@@ -330,7 +399,17 @@ class EmbeddingVectorQuantizer(nn.Module):
                 flat_latents,
                 int(local_positions.numel()),
             )
-        torch.distributed.all_reduce(sampled, op=torch.distributed.ReduceOp.SUM)
+        audit_collective(
+            "torch.distributed.all_reduce",
+            lambda: torch.distributed.all_reduce(
+                sampled, op=torch.distributed.ReduceOp.SUM
+            ),
+            reduce_op="sum",
+            source="EmbeddingVectorQuantizer._distributed_sample_vectors.sampled",
+            tensor_shape=tuple(sampled.shape),
+            tensor_dtype=str(sampled.dtype),
+            tensor_device=str(sampled.device),
+        )
         return sampled
 
     def _codebook_stats(self, flat_latents: Tensor, codebook: Tensor) -> tuple[Tensor, Tensor]:
@@ -350,25 +429,101 @@ class EmbeddingVectorQuantizer(nn.Module):
         sums.index_add_(0, indices, flat_latents)
         return counts, sums
 
-    def _apply_ema_stats(self, counts: Tensor, sums: Tensor) -> None:
-        self._ema_counts.mul_(self.config.decay).add_(counts, alpha=1 - self.config.decay)
-        self._ema_sums.mul_(self.config.decay).add_(sums, alpha=1 - self.config.decay)
+    def _apply_ema_stats(
+        self,
+        counts: Tensor,
+        sums: Tensor,
+        *,
+        assume_non_empty: bool = False,
+    ) -> None:
+        if assume_non_empty:
+            # This is the regular quantization path.  Preserve the original
+            # in-place operation order both for throughput and bitwise EMA
+            # compatibility; ``counts`` is guaranteed non-zero there.
+            self._ema_counts.mul_(self.config.decay).add_(
+                counts,
+                alpha=1 - self.config.decay,
+            )
+            self._ema_sums.mul_(self.config.decay).add_(
+                sums,
+                alpha=1 - self.config.decay,
+            )
+            total_count = self._ema_counts.sum()
+            smoothed_counts = (
+                (self._ema_counts + self.config.eps)
+                / (total_count + self.codebook_size * self.config.eps)
+                * total_count
+            )
+            self.codebook.weight.copy_(
+                self._ema_sums / smoothed_counts.clamp_min(self.config.eps)[:, None]
+            )
+            return
 
-        total_count = self._ema_counts.sum()
+        # Empty residual stages must still participate in DDP collectives.
+        # Keep the all-zero (globally inactive) path entirely on device.  A
+        # Python scalar check here would synchronize every inactive stage;
+        # selecting the old buffers with a tensor predicate preserves exact
+        # no-op EMA semantics when every rank is empty.
+        # Counts are normally non-negative bincount results.  ``ne(0)`` is
+        # deliberately used instead of ``gt(0)`` so malformed NaN/negative
+        # stats retain the legacy propagation behavior; only an exact global
+        # zero is treated as the inactive no-op case.
+        has_assignments = counts.sum().ne(0)
+        # Keep the legacy in-place update order (and its rounding behavior)
+        # while computing into temporaries so the no-op branch can select the
+        # original buffers below.  This also avoids materializing separate
+        # multiply results for both operands.
+        updated_counts = self._ema_counts.clone()
+        updated_counts.mul_(self.config.decay).add_(
+            counts,
+            alpha=1 - self.config.decay,
+        )
+        updated_sums = self._ema_sums.clone()
+        updated_sums.mul_(self.config.decay).add_(
+            sums,
+            alpha=1 - self.config.decay,
+        )
+
+        total_count = updated_counts.sum()
         smoothed_counts = (
-            (self._ema_counts + self.config.eps)
+            (updated_counts + self.config.eps)
             / (total_count + self.codebook_size * self.config.eps)
             * total_count
         )
+        updated_weight = updated_sums / smoothed_counts.clamp_min(self.config.eps)[:, None]
+
+        self._ema_counts.copy_(
+            torch.where(has_assignments, updated_counts, self._ema_counts)
+        )
+        self._ema_sums.copy_(torch.where(has_assignments, updated_sums, self._ema_sums))
         self.codebook.weight.copy_(
-            self._ema_sums / smoothed_counts.clamp_min(self.config.eps)[:, None]
+            torch.where(
+                has_assignments,
+                updated_weight.to(dtype=self.codebook.weight.dtype),
+                self.codebook.weight,
+            )
         )
 
     def _sync_ema_stats(self, counts: Tensor, sums: Tensor) -> None:
         if not self._distributed_ready():
             return
-        torch.distributed.all_reduce(counts, op=torch.distributed.ReduceOp.SUM)
-        torch.distributed.all_reduce(sums, op=torch.distributed.ReduceOp.SUM)
+        from anytrain.lightning.audit import audit_collective
+
+        for tensor, source in (
+            (counts, "EmbeddingVectorQuantizer._sync_ema_stats.counts"),
+            (sums, "EmbeddingVectorQuantizer._sync_ema_stats.sums"),
+        ):
+            audit_collective(
+                "torch.distributed.all_reduce",
+                lambda tensor=tensor: torch.distributed.all_reduce(
+                    tensor, op=torch.distributed.ReduceOp.SUM
+                ),
+                reduce_op="sum",
+                source=source,
+                tensor_shape=tuple(tensor.shape),
+                tensor_dtype=str(tensor.dtype),
+                tensor_device=str(tensor.device),
+            )
 
     def _distributed_ready(self) -> bool:
         return torch.distributed.is_available() and torch.distributed.is_initialized()

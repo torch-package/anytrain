@@ -1,6 +1,7 @@
 import unittest
 import warnings
 from dataclasses import fields
+from unittest import mock
 
 import torch
 
@@ -53,6 +54,55 @@ class FiniteScalarQuantizerTest(unittest.TestCase):
         self.assertTrue((output.indices >= 0).all())
         self.assertTrue((output.indices < quantizer.codebook_size).all())
         self.assertTrue(torch.isfinite(output.quantized_latents).all())
+
+    def test_forward_preserves_subclass_conversion_override(self):
+        class CustomFiniteScalarQuantizer(FiniteScalarQuantizer):
+            def __init__(self, config: FSQConfig) -> None:
+                super().__init__(config)
+                self.conversion_calls = 0
+
+            def codebook_vectors_to_indices(self, codebook_vectors: torch.Tensor) -> torch.Tensor:
+                self.conversion_calls += 1
+                return super().codebook_vectors_to_indices(codebook_vectors)
+
+        quantizer = CustomFiniteScalarQuantizer(FSQConfig(input_dim=4, levels=(3, 5)))
+
+        quantizer(torch.randn(2, 4))
+
+        self.assertEqual(quantizer.conversion_calls, 1)
+
+    def test_forward_preserves_instance_conversion_override(self):
+        quantizer = FiniteScalarQuantizer(FSQConfig(input_dim=4, levels=(3, 5)))
+
+        with mock.patch.object(
+            quantizer,
+            "codebook_vectors_to_indices",
+            wraps=quantizer.codebook_vectors_to_indices,
+        ) as conversion:
+            quantizer(torch.randn(2, 4))
+
+        conversion.assert_called_once()
+
+    def test_forward_preserves_class_conversion_override(self):
+        quantizer = FiniteScalarQuantizer(FSQConfig(input_dim=4, levels=(3, 5)))
+        original = FiniteScalarQuantizer.codebook_vectors_to_indices
+        calls: list[torch.Tensor] = []
+
+        def patched(
+            instance: FiniteScalarQuantizer,
+            codebook_vectors: torch.Tensor,
+        ) -> torch.Tensor:
+            calls.append(codebook_vectors)
+            return original(instance, codebook_vectors)
+
+        with mock.patch.object(
+            FiniteScalarQuantizer,
+            "codebook_vectors_to_indices",
+            patched,
+        ):
+            quantizer(torch.randn(2, 4))
+
+        self.assertEqual(len(calls), 1)
 
     def test_identity_projection_when_dimensions_match(self):
         quantizer = FiniteScalarQuantizer(FSQConfig(input_dim=2, levels=(3, 5)))

@@ -11,6 +11,7 @@ from anytrain.module.quantization import (
     AutoGroupResidualVectorQuantizer,
     QuantizationLoss,
 )
+from anytrain.module.quantization.auto_group_residual import _AutoGroupVectorQuantizer
 
 
 class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
@@ -188,6 +189,149 @@ class AutoGroupResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((output.indices[:, 1:] == -1).all())
         self.assertTrue((output.codebook_vectors[:, 1:] == 0).all())
         self.assertTrue((output.latents[:, 1:] == 0).all())
+
+    def test_dropout_empty_stages_keep_outputs_finite_and_gradients(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=3, group_size=3, dropout=1.0)
+        )
+        active_mask = torch.tensor(
+            [
+                [True, False, False],
+                [True, True, False],
+                [False, False, False],
+                [True, True, True],
+            ],
+            dtype=torch.bool,
+        )
+        latents = torch.randn(4, 4, requires_grad=True)
+
+        with (
+            mock.patch.object(quantizer, "_sample_active_mask", return_value=active_mask),
+            mock.patch.object(torch.Tensor, "item", side_effect=AssertionError("item")),
+        ):
+            output = quantizer(latents)
+
+        self.assertTrue(torch.equal(output.active_codebook_mask, active_mask))
+        self.assertTrue(torch.isfinite(output.quantized_latents).all())
+        self.assertTrue(torch.isfinite(output.indices.float()).all())
+        self.assertTrue((output.indices[2] == -1).all())
+        self.assertTrue((output.codebook_vectors[2] == 0).all())
+        self.assertTrue((output.latents[2] == 0).all())
+        assert output.loss is not None
+        (output.quantized_latents.sum() + output.loss.total).backward()
+        self.assertIsNotNone(latents.grad)
+        assert latents.grad is not None
+        self.assertTrue(torch.isfinite(latents.grad).all())
+
+    def test_dropout_all_inactive_mask_returns_zeros_without_loss(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=3, group_size=3, dropout=1.0)
+        )
+        active_mask = torch.zeros(2, 3, dtype=torch.bool)
+
+        with (
+            mock.patch.object(quantizer, "_sample_active_mask", return_value=active_mask),
+            mock.patch.object(torch.Tensor, "item", side_effect=AssertionError("item")),
+        ):
+            output = quantizer(torch.randn(2, 4))
+
+        self.assertTrue(torch.equal(output.active_codebook_mask, active_mask))
+        self.assertTrue((output.quantized_latents == 0).all())
+        self.assertTrue((output.indices == -1).all())
+        self.assertTrue((output.codebook_vectors == 0).all())
+        self.assertTrue((output.latents == 0).all())
+        self.assertIsNone(output.loss)
+
+    def test_indices_decode_masks_inactive_entries(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3)
+        )
+        indices = torch.tensor([[-1, -1], [0, -1], [2, 3]])
+
+        vectors = quantizer.indices_to_codebook_vectors(indices)
+        books = cast(tuple[_AutoGroupVectorQuantizer, ...], tuple(quantizer.quantizers))
+
+        self.assertTrue(torch.equal(vectors[0], torch.zeros_like(vectors[0])))
+        self.assertTrue(torch.equal(vectors[1, 1], torch.zeros_like(vectors[1, 1])))
+        self.assertTrue(
+            torch.equal(
+                vectors[2, 0],
+                books[0].indices_to_codebook_vectors(indices[2, 0:1])[0],
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                vectors[2, 1],
+                books[1].indices_to_codebook_vectors(indices[2, 1:2])[0],
+            )
+        )
+
+    def test_indices_decode_preserves_instance_stage_override(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3)
+        )
+        stage = cast(_AutoGroupVectorQuantizer, quantizer.quantizers[0])
+
+        with mock.patch.object(
+            stage,
+            "indices_to_codebook_vectors",
+            wraps=stage.indices_to_codebook_vectors,
+        ) as decode:
+            quantizer.indices_to_codebook_vectors(torch.tensor([[0, 1], [2, 3]]))
+
+        decode.assert_called_once()
+
+    def test_indices_decode_preserves_subclass_stage_override(self):
+        class CustomAutoGroupVectorQuantizer(_AutoGroupVectorQuantizer):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                self.decode_calls = 0
+
+            def indices_to_codebook_vectors(self, indices: torch.Tensor) -> torch.Tensor:
+                self.decode_calls += 1
+                return super().indices_to_codebook_vectors(indices)
+
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3)
+        )
+        base = cast(_AutoGroupVectorQuantizer, quantizer.quantizers[0])
+        custom_stage = CustomAutoGroupVectorQuantizer(
+            input_dim=base.input_dim,
+            group_size=base.group_size,
+            codebook_dim=base.group_codebook_dim,
+            num_groups=base.num_groups,
+            normalize_latents=base.normalize_latents,
+            projection_bias=True,
+            weight_norm=False,
+        )
+        quantizer.quantizers[0] = custom_stage
+
+        quantizer.indices_to_codebook_vectors(torch.tensor([[0, 1], [2, 3]]))
+
+        self.assertEqual(custom_stage.decode_calls, 1)
+
+    def test_indices_decode_preserves_class_stage_override(self):
+        quantizer = AutoGroupResidualVectorQuantizer(
+            AGRVQConfig(input_dim=4, num_codebooks=2, group_size=3)
+        )
+        original = _AutoGroupVectorQuantizer.indices_to_codebook_vectors
+        calls: list[torch.Tensor] = []
+
+        def patched(
+            instance: _AutoGroupVectorQuantizer,
+            indices: torch.Tensor,
+        ) -> torch.Tensor:
+            calls.append(indices)
+            return original(instance, indices)
+
+        with mock.patch.object(
+            _AutoGroupVectorQuantizer,
+            "indices_to_codebook_vectors",
+            patched,
+        ):
+            quantizer.indices_to_codebook_vectors(torch.tensor([[0, 1], [2, 3]]))
+
+        self.assertEqual(len(calls), 2)
 
     def test_sample_active_mask_dropout_boundaries(self):
         quantizer = AutoGroupResidualVectorQuantizer(

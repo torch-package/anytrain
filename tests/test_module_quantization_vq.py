@@ -14,6 +14,7 @@ from anytrain.module.quantization import (
     VQConfig,
 )
 from anytrain.module.quantization.lookup import nearest_codebook_indices
+from anytrain.module.quantization.output import QuantizeOutput
 
 
 def _distributed_kmeans_worker(rank: int, world_size: int, init_method: str) -> None:
@@ -67,6 +68,19 @@ def _distributed_kmeans_worker(rank: int, world_size: int, init_method: str) -> 
 
 
 class EmbeddingVectorQuantizerTest(unittest.TestCase):
+    def test_forward_preserves_legacy_one_argument_quantize_override(self):
+        class LegacyQuantizer(EmbeddingVectorQuantizer):
+            def quantize(  # pyright: ignore[reportIncompatibleMethodOverride]
+                self,
+                latents: torch.Tensor,
+            ) -> QuantizeOutput:
+                return super().quantize(latents)
+
+        quantizer = LegacyQuantizer(VQConfig(input_dim=2, codebook_size=4))
+        output = quantizer(torch.randn(3, 2))
+
+        self.assertEqual(output.indices.shape, (3,))
+
     def test_config_is_plain_data(self):
         config = VQConfig(input_dim=8, codebook_size=16, codebook_dim=4)
 

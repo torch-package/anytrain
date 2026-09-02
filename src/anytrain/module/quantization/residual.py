@@ -14,6 +14,13 @@ from ._residual_runner import run_residual_quantization, sample_active_mask
 from .embedding import EmbeddingVectorQuantizer, VQConfig
 from .output import QuantizeOutput
 
+_ORIGINAL_EMBEDDING_INDICES_TO_VECTORS = (
+    EmbeddingVectorQuantizer.indices_to_codebook_vectors
+)
+_ORIGINAL_EMBEDDING_INDICES_TO_VECTORS_UNCHECKED = (
+    EmbeddingVectorQuantizer._indices_to_codebook_vectors_unchecked
+)
+
 
 @dataclass
 class RVQConfig:
@@ -137,7 +144,7 @@ class ResidualVectorQuantizer(nn.Module):
         return torch.stack(indices, dim=-1)
 
     def indices_to_codebook_vectors(self, indices: Tensor) -> Tensor:
-        _checks.active_indices(
+        has_inactive = _checks.active_indices_has_inactive(
             indices,
             codebook_size=self.codebook_size,
             num_codebooks=self.num_codebooks,
@@ -151,15 +158,36 @@ class ResidualVectorQuantizer(nn.Module):
             )
         ):
             indices_i = indices[..., index]
+            use_unchecked_decoder = _uses_builtin_embedding_decoder(quantizer)
+            if not has_inactive and use_unchecked_decoder:
+                # ``active_indices`` already reduced the tensor to validate
+                # its bounds.  Reuse that result for the common dense decode
+                # path and avoid an unnecessary nonzero/index_put pair.
+                vectors.append(quantizer._indices_to_codebook_vectors_unchecked(indices_i))
+                continue
             mask = indices_i >= 0
+            # Boolean indexing is device-side and is well-defined for an empty
+            # selection, so no scalar ``mask.any().item()`` check is needed.
+            # Unlike a clamp-and-lookup approach this fetches only active rows
+            # from the embedding, which matters when dropout leaves most
+            # codebook entries inactive.
             vectors_i = torch.zeros(
                 *indices_i.shape,
-                self.codebook_dim,
+                quantizer.codebook_dim,
                 dtype=quantizer.codebook.weight.dtype,
                 device=indices.device,
             )
-            if bool(mask.any().item()):
-                vectors_i[mask] = quantizer.indices_to_codebook_vectors(indices_i[mask])
+            active_indices = indices_i[mask]
+            if active_indices.numel() > 0:
+                if use_unchecked_decoder:
+                    vectors_i[mask] = quantizer._indices_to_codebook_vectors_unchecked(
+                        active_indices
+                    )
+                else:
+                    # Preserve the extension point for custom residual
+                    # stages; their public decoder may intentionally apply a
+                    # transform or validation beyond the base lookup.
+                    vectors_i[mask] = quantizer.indices_to_codebook_vectors(active_indices)
             vectors.append(vectors_i)
         return torch.stack(vectors, dim=-2)
 
@@ -215,3 +243,19 @@ class ResidualVectorQuantizer(nn.Module):
                 f"got {num_active_codebooks}, num_codebooks={self.num_codebooks}."
             )
         return num_active_codebooks
+
+
+def _uses_builtin_embedding_decoder(
+    quantizer: EmbeddingVectorQuantizer,
+) -> bool:
+    """Whether residual decode may bypass a stage's public conversion hook."""
+
+    return (
+        type(quantizer) is EmbeddingVectorQuantizer
+        and "indices_to_codebook_vectors" not in quantizer.__dict__
+        and "_indices_to_codebook_vectors_unchecked" not in quantizer.__dict__
+        and EmbeddingVectorQuantizer.indices_to_codebook_vectors
+        is _ORIGINAL_EMBEDDING_INDICES_TO_VECTORS
+        and EmbeddingVectorQuantizer._indices_to_codebook_vectors_unchecked
+        is _ORIGINAL_EMBEDDING_INDICES_TO_VECTORS_UNCHECKED
+    )

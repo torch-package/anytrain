@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -191,7 +192,7 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
         return torch.stack(indices, dim=-1)
 
     def indices_to_codebook_vectors(self, indices: Tensor) -> Tensor:
-        _checks.active_indices(
+        has_inactive = _checks.active_indices_has_inactive(
             indices,
             codebook_size=self.codebook_size,
             num_codebooks=self.num_codebooks,
@@ -204,15 +205,31 @@ class AutoGroupResidualVectorQuantizer(nn.Module):
             ]
         ):
             indices_i = indices[..., index]
+            use_unchecked_decoder = _uses_builtin_auto_group_decoder(quantizer)
+            if not has_inactive and use_unchecked_decoder:
+                # ``active_indices`` already reduced the tensor to validate
+                # its bounds.  Reuse that result for the common dense decode
+                # path and avoid an unnecessary nonzero/index_put pair.
+                vectors.append(quantizer._indices_to_codebook_vectors_unchecked(indices_i))
+                continue
             mask = indices_i >= 0
+            # Empty boolean selections are valid on every supported device;
+            # indexing directly avoids a host-side ``mask.any().item()`` and
+            # avoids fetching an embedding vector for each inactive entry.
             vectors_i = torch.zeros(
                 *indices_i.shape,
-                self.codebook_dim,
+                quantizer.codebook_dim,
                 dtype=_typed_module_list(quantizer.codebooks, nn.Embedding)[0].weight.dtype,
                 device=indices.device,
             )
-            if bool(mask.any().item()):
-                vectors_i[mask] = quantizer.indices_to_codebook_vectors(indices_i[mask])
+            active_indices = indices_i[mask]
+            if active_indices.numel() > 0:
+                if use_unchecked_decoder:
+                    vectors_i[mask] = quantizer._indices_to_codebook_vectors_unchecked(
+                        active_indices
+                    )
+                else:
+                    vectors_i[mask] = quantizer.indices_to_codebook_vectors(active_indices)
             vectors.append(vectors_i)
         return torch.stack(vectors, dim=-2)
 
@@ -356,7 +373,36 @@ class _AutoGroupVectorQuantizer(nn.Module):
             for codebook in _typed_module_list(self.codebooks, nn.Embedding):
                 nn.init.normal_(codebook.weight, mean=0.0, std=1.0)
 
-    def forward(self, latents: Tensor) -> QuantizeOutput:
+    def forward(
+        self,
+        latents: Tensor,
+        *,
+        _allow_empty: bool = False,
+        _on_inactive: Callable[[nn.Module], None] | None = None,
+    ) -> QuantizeOutput:
+        _checks.input_latents(
+            latents,
+            self.input_dim,
+            require_non_empty=not _allow_empty,
+        )
+        if _allow_empty and latents.numel() == 0:
+            # Residual dropout sends an empty local batch to stages with no
+            # assignments.  Avoid the empty F.mse_loss path (which is NaN)
+            # while retaining the normal non-empty input contract.
+            if _on_inactive is not None:
+                _on_inactive(self)
+            leading_shape = latents.shape[:-1]
+            return QuantizeOutput(
+                quantized_latents=latents.new_empty(*leading_shape, self.input_dim),
+                indices=torch.empty(
+                    leading_shape,
+                    dtype=torch.long,
+                    device=latents.device,
+                ),
+                codebook_vectors=latents.new_empty(*leading_shape, self.codebook_dim),
+                latents=latents.new_empty(*leading_shape, self.codebook_dim),
+                loss=None,
+            )
         projected = [project(latents) for project in self.in_projs]
         nearest = [
             self._nearest_codebook_vectors(projected_i, codebook)
@@ -420,6 +466,11 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
     def indices_to_codebook_vectors(self, indices: Tensor) -> Tensor:
         _checks.indices(indices, self.codebook_size)
+        return self._indices_to_codebook_vectors_unchecked(indices)
+
+    def _indices_to_codebook_vectors_unchecked(self, indices: Tensor) -> Tensor:
+        """Lookup already-validated flat indices without repeated range checks."""
+
         group_indices = self._indices_to_group_indices(indices)
         return torch.cat(
             [
@@ -464,6 +515,30 @@ class _AutoGroupVectorQuantizer(nn.Module):
 
     def _group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
         return _group_indices_to_indices(group_indices, index_basis=self._index_basis)
+
+
+_ORIGINAL_AUTO_GROUP_INDICES_TO_VECTORS = (
+    _AutoGroupVectorQuantizer.indices_to_codebook_vectors
+)
+_ORIGINAL_AUTO_GROUP_INDICES_TO_VECTORS_UNCHECKED = (
+    _AutoGroupVectorQuantizer._indices_to_codebook_vectors_unchecked
+)
+
+
+def _uses_builtin_auto_group_decoder(
+    quantizer: _AutoGroupVectorQuantizer,
+) -> bool:
+    """Whether residual decode may bypass a stage's public conversion hook."""
+
+    return (
+        type(quantizer) is _AutoGroupVectorQuantizer
+        and "indices_to_codebook_vectors" not in quantizer.__dict__
+        and "_indices_to_codebook_vectors_unchecked" not in quantizer.__dict__
+        and _AutoGroupVectorQuantizer.indices_to_codebook_vectors
+        is _ORIGINAL_AUTO_GROUP_INDICES_TO_VECTORS
+        and _AutoGroupVectorQuantizer._indices_to_codebook_vectors_unchecked
+        is _ORIGINAL_AUTO_GROUP_INDICES_TO_VECTORS_UNCHECKED
+    )
 
 
 def _typed_module_list[ModuleT: nn.Module](

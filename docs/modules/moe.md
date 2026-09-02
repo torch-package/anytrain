@@ -246,16 +246,18 @@ softmax over the selected logits — controlled by `top_k`, not by the gate.
 
 Dense (`top_k=None`) linear execution runs the full activation batch once per
 expert and accumulates weighted outputs; convolution families mix parameters
-before their grouped op. Sparse (`top_k=K`) groups routed activations by expert,
-runs one batch per used expert, then combines outputs with the top-k softmax
-weights. Neither linear path materializes complete expert weights per routed
-token. Dense execution keeps only one `[tokens, output]` accumulator in the
-forward loop; autograd may still retain each expert output while router-weight
-gradients are required, for `O(experts * tokens * output)` saved tensors. Portable
-sparse dispatch reads the expert segment counts from the device once per bank
-call; it does not synchronize or invoke an expert per token-route pair. Cell
-execution is weight-only for `additive_channel`; mixed bias is applied additively
-after restore.
+before their grouped op. Sparse (`top_k=K`) normally groups routed activations
+by expert, runs one batch per used expert, then combines outputs with the top-k
+softmax weights. On CUDA, homogeneous stock linear modules may instead use a
+route-batched kernel: it gathers route-specific parameter slices and performs a
+batched GEMM, subject to a bounded temporary-memory budget; oversized routes
+fall back to grouped dispatch. Dense execution keeps only one `[tokens,
+output]` accumulator in the forward loop; autograd may still retain each expert
+output while router-weight gradients are required, for `O(experts * tokens *
+output)` saved tensors. Portable sparse dispatch reads the expert segment counts
+from the device once per bank call; it does not synchronize or invoke an expert
+per token-route pair. Cell execution is weight-only for `additive_channel`;
+mixed bias is applied additively after restore.
 
 The routing mask is enforced at the expert-bank output boundary. Masked cells
 have zero mixed expert weight and zero additive bias, so they cannot contribute

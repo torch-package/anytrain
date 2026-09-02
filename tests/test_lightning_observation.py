@@ -1015,15 +1015,20 @@ class ObservationCallbackTest(unittest.TestCase):
             values["observation/module/observed/stats/codes/book_0/step/observations"].item(),
             4.0,
         )
-        self.assertIn(((1, 2), "sum"), strategy.shapes)
+        # All six histogram accumulators are reduced by one collective.
+        self.assertEqual(len(strategy.shapes), 1)
+        self.assertEqual(strategy.shapes[0][1], "sum")
 
     def test_distributed_profile_reduces_counts_and_moments(self):
         class Strategy:
+            def __init__(self):
+                self.shapes = []
+
             def all_gather(self, tensor):
                 return torch.stack((tensor, tensor))
 
             def reduce(self, tensor, *, reduce_op):
-                self.last_reduce_op = reduce_op
+                self.shapes.append((tuple(tensor.shape), reduce_op))
                 return tensor * 2
 
         strategy = Strategy()
@@ -1041,6 +1046,79 @@ class ObservationCallbackTest(unittest.TestCase):
         self.assertEqual(values[f"{prefix}/bin_0/mean"].item(), 1.0)
         self.assertEqual(values[f"{prefix}/bin_1/mean"].item(), 3.0)
         self.assertEqual(values[f"{prefix}/bin_0/std"].item(), 0.0)
+        # All five profile accumulators are reduced by one collective.
+        self.assertEqual(len(strategy.shapes), 1)
+        self.assertEqual(strategy.shapes[0][1], "sum")
+
+    def test_batched_observation_reduce_preserves_shape_dtype_and_device(self):
+        class Strategy:
+            def __init__(self):
+                self.reduce_calls = 0
+
+            def reduce(self, tensor, *, reduce_op):
+                self.reduce_calls += 1
+                self.reduce_op = reduce_op
+                return tensor * 2
+
+        strategy = Strategy()
+        trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
+        values = (
+            torch.tensor([[1.0, 2.0]], dtype=torch.float64),
+            torch.tensor(3.0, dtype=torch.float64),
+        )
+        reduced = observation_callback._sum_many(trainer, values, enabled=True)
+
+        self.assertEqual(strategy.reduce_calls, 1)
+        self.assertEqual(strategy.reduce_op, "sum")
+        self.assertEqual(reduced[0].shape, values[0].shape)
+        self.assertEqual(reduced[1].shape, values[1].shape)
+        self.assertEqual(reduced[0].dtype, values[0].dtype)
+        self.assertEqual(reduced[1].dtype, values[1].dtype)
+        self.assertEqual(reduced[0].device, values[0].device)
+        self.assertEqual(reduced[1].device, values[1].device)
+        torch.testing.assert_close(reduced[0], values[0] * 2)
+        torch.testing.assert_close(reduced[1], values[1] * 2)
+
+    def test_rank_local_batched_observation_reduce_returns_detached_clones(self):
+        value = torch.tensor([1.0], requires_grad=True)
+        reduced = observation_callback._sum_many(
+            _trainer(_Writer()),
+            (value,),
+            enabled=True,
+        )
+
+        self.assertIsNot(reduced[0], value)
+        self.assertFalse(reduced[0].requires_grad)
+        with torch.no_grad():
+            value.fill_(4.0)
+        self.assertEqual(reduced[0].item(), 1.0)
+
+    def test_batched_observation_reduce_groups_mixed_dtypes_without_promotion(self):
+        class Strategy:
+            def __init__(self):
+                self.reduce_dtypes = []
+
+            def reduce(self, tensor, *, reduce_op):
+                del reduce_op
+                self.reduce_dtypes.append(tensor.dtype)
+                return tensor * 2
+
+        strategy = Strategy()
+        values = (
+            torch.tensor([1, 2], dtype=torch.int64),
+            torch.tensor([3.0], dtype=torch.float32),
+        )
+        reduced = observation_callback._sum_many(
+            _trainer(_Writer(), world_size=2, strategy=strategy),
+            values,
+            enabled=True,
+        )
+
+        self.assertEqual(strategy.reduce_dtypes, [torch.int64, torch.float32])
+        self.assertEqual(reduced[0].dtype, torch.int64)
+        self.assertEqual(reduced[1].dtype, torch.float32)
+        torch.testing.assert_close(reduced[0], values[0] * 2)
+        torch.testing.assert_close(reduced[1], values[1] * 2)
 
     def test_distributed_profile_schema_mismatch_fails_before_reduce(self):
         class Strategy:
@@ -1282,8 +1360,11 @@ class ObservationCallbackTest(unittest.TestCase):
             def reduce(self, tensor, *, reduce_op):
                 del reduce_op
                 self.reduce_calls += 1
-                remote = 5.0 if self.reduce_calls == 1 else 1.0
-                return tensor + tensor.new_tensor(remote)
+                # Curve finalization packs sum and count into one collective.
+                # Simulate a remote rank whose last value is 5.0 and whose
+                # count is 1.0 while preserving the packed shape.
+                remote = tensor.new_tensor((5.0, 1.0))
+                return tensor + remote
 
         strategy = Strategy()
         trainer = _trainer(_Writer(), world_size=2, strategy=strategy)
@@ -1300,7 +1381,8 @@ class ObservationCallbackTest(unittest.TestCase):
 
         values, _kwargs = module.log_dict_calls[-1]
         self.assertEqual(values["observation/module/observed/curve/value"].item(), 4.0)
-        self.assertEqual(strategy.reduce_calls, 2)
+        # The callback flushes once here; sum and count share one collective.
+        self.assertEqual(strategy.reduce_calls, 1)
 
     def test_distributed_schema_includes_curve_reduction(self):
         class LastCurve(nn.Module):

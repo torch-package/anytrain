@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import fields
+from unittest import mock
 
 import torch
 
@@ -35,6 +36,76 @@ class GroupedVectorQuantizerTest(unittest.TestCase):
         self.assertIsInstance(output.loss, QuantizationLoss)
         self.assertTrue((output.indices >= 0).all())
         self.assertTrue((output.indices < 8100).all())
+
+    def test_builtin_forward_and_vector_encoding_do_not_synchronize_for_validation(self):
+        quantizer = GroupedVectorQuantizer(
+            GVQConfig(input_dim=4, group_sizes=(3, 5), group_dims=(2, 2))
+        )
+        latents = torch.randn(3, 4)
+
+        with mock.patch.object(
+            torch.Tensor,
+            "item",
+            side_effect=AssertionError("internal group indices must not be read on the host"),
+        ):
+            output = quantizer(latents)
+            indices = quantizer.codebook_vectors_to_indices(output.codebook_vectors)
+
+        self.assertTrue(torch.equal(indices, output.indices))
+
+    def test_indices_decode_does_not_repeat_group_validation(self):
+        quantizer = GroupedVectorQuantizer(
+            GVQConfig(input_dim=4, group_sizes=(3, 5), group_dims=(2, 2))
+        )
+
+        with mock.patch.object(
+            quantizer,
+            "_validate_group_indices",
+            side_effect=AssertionError("flat indices were already validated"),
+        ):
+            vectors = quantizer.indices_to_codebook_vectors(torch.tensor([0, 7, 14]))
+
+        self.assertEqual(vectors.shape, (3, 4))
+
+    def test_public_group_index_conversion_remains_strict(self):
+        quantizer = GroupedVectorQuantizer(
+            GVQConfig(input_dim=4, group_sizes=(3, 5), group_dims=(2, 2))
+        )
+
+        with self.assertRaisesRegex(ValueError, r"group_indices\[\.\.\., 1\]"):
+            quantizer.group_indices_to_indices(torch.tensor([[0, 5]]))
+
+    def test_forward_preserves_group_index_conversion_override(self):
+        class CustomGroupedVectorQuantizer(GroupedVectorQuantizer):
+            def __init__(self, config: GVQConfig) -> None:
+                super().__init__(config)
+                self.encode_calls = 0
+
+            def group_indices_to_indices(self, group_indices: torch.Tensor) -> torch.Tensor:
+                self.encode_calls += 1
+                return super().group_indices_to_indices(group_indices)
+
+        quantizer = CustomGroupedVectorQuantizer(
+            GVQConfig(input_dim=4, group_sizes=(3, 5), group_dims=(2, 2))
+        )
+
+        quantizer(torch.randn(3, 4))
+
+        self.assertEqual(quantizer.encode_calls, 1)
+
+    def test_forward_preserves_instance_group_index_conversion_override(self):
+        quantizer = GroupedVectorQuantizer(
+            GVQConfig(input_dim=4, group_sizes=(3, 5), group_dims=(2, 2))
+        )
+
+        with mock.patch.object(
+            quantizer,
+            "group_indices_to_indices",
+            wraps=quantizer.group_indices_to_indices,
+        ) as encode:
+            quantizer(torch.randn(3, 4))
+
+        encode.assert_called_once()
 
     def test_group_indices_round_trip(self):
         quantizer = GroupedVectorQuantizer(

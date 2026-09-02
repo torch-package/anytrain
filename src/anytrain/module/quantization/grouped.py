@@ -147,7 +147,15 @@ class GroupedVectorQuantizer(nn.Module):
         _checks.input_latents(latents, self.input_dim)
         projected_latents = self.project_in(latents)
         codebook_vectors, group_indices = self._nearest_group_vectors(projected_latents)
-        indices = self.group_indices_to_indices(group_indices)
+        encode = self.group_indices_to_indices
+        if _is_builtin_method(
+            self,
+            encode,
+            GroupedVectorQuantizer.group_indices_to_indices,
+        ):
+            indices = self._group_indices_to_indices_unchecked(group_indices)
+        else:
+            indices = encode(group_indices)
         loss = None
         if self.training:
             loss = QuantizationLoss(
@@ -173,11 +181,30 @@ class GroupedVectorQuantizer(nn.Module):
     def codebook_vectors_to_indices(self, codebook_vectors: Tensor) -> Tensor:
         _checks.codebook_vectors(codebook_vectors, self.codebook_dim)
         _, group_indices = self._nearest_group_vectors(codebook_vectors)
-        return self.group_indices_to_indices(group_indices)
+        encode = self.group_indices_to_indices
+        if _is_builtin_method(
+            self,
+            encode,
+            GroupedVectorQuantizer.group_indices_to_indices,
+        ):
+            return self._group_indices_to_indices_unchecked(group_indices)
+        return encode(group_indices)
 
     def indices_to_codebook_vectors(self, indices: Tensor) -> Tensor:
-        group_indices = self.indices_to_group_indices(indices)
-        return self.group_indices_to_codebook_vectors(group_indices)
+        decode = self.indices_to_group_indices
+        group_indices = decode(indices)
+        lookup = self.group_indices_to_codebook_vectors
+        if _is_builtin_method(
+            self,
+            decode,
+            GroupedVectorQuantizer.indices_to_group_indices,
+        ) and _is_builtin_method(
+            self,
+            lookup,
+            GroupedVectorQuantizer.group_indices_to_codebook_vectors,
+        ):
+            return self._group_indices_to_codebook_vectors_unchecked(group_indices)
+        return lookup(group_indices)
 
     def project_codebook_vectors(self, codebook_vectors: Tensor) -> Tensor:
         _checks.codebook_vectors(codebook_vectors, self.codebook_dim)
@@ -193,10 +220,16 @@ class GroupedVectorQuantizer(nn.Module):
 
     def group_indices_to_indices(self, group_indices: Tensor) -> Tensor:
         self._validate_group_indices(group_indices)
-        return _group_indices_to_indices(group_indices, index_basis=self._basis)
+        return self._group_indices_to_indices_unchecked(group_indices)
 
     def group_indices_to_codebook_vectors(self, group_indices: Tensor) -> Tensor:
         self._validate_group_indices(group_indices)
+        return self._group_indices_to_codebook_vectors_unchecked(group_indices)
+
+    def _group_indices_to_indices_unchecked(self, group_indices: Tensor) -> Tensor:
+        return _group_indices_to_indices(group_indices, index_basis=self._basis)
+
+    def _group_indices_to_codebook_vectors_unchecked(self, group_indices: Tensor) -> Tensor:
         vectors = []
         for group_index, codebook in enumerate(self.codebooks):
             vectors.append(codebook[group_indices[..., group_index]])
@@ -245,6 +278,18 @@ class GroupedVectorQuantizer(nn.Module):
                     f"group_indices[..., {group_index}] must be in [0, {group_size - 1}], "
                     f"got min={min_value}, max={max_value}."
                 )
+
+
+def _is_builtin_method(
+    quantizer: GroupedVectorQuantizer,
+    bound_method: object,
+    implementation: object,
+) -> bool:
+    """Return whether an exact built-in instance still uses a public method."""
+    return (
+        type(quantizer) is GroupedVectorQuantizer
+        and getattr(bound_method, "__func__", None) is implementation
+    )
 
 
 def _balanced_group_dims(codebook_dim: int, num_groups: int) -> tuple[int, ...]:

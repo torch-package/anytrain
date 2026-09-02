@@ -45,6 +45,12 @@ def run_residual_quantization(
     sample_mask: Callable[[int, int, torch.device], Tensor],
     on_inactive: Callable[[nn.Module], None] | None = None,
 ) -> QuantizeOutput:
+    """Run residual stages while keeping dropout control flow device-local.
+
+    ``on_inactive`` is invoked for a stage with no local assignments.  This
+    preserves distributed EMA participation without reducing a CUDA mask to a
+    Python integer.
+    """
     dropout_enabled = training and dropout is not None and dropout > 0 and active_count > 1
     if not dropout_enabled:
         return _run_all_active(
@@ -68,60 +74,80 @@ def run_residual_quantization(
     loss_weight_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
     has_loss = False
 
-    # The mask is a prefix per vector. Compute its maximum depth once so a
-    # distributed rank with no assignments still follows the EMA callback path.
-    active_depth = 0 if active_mask.numel() == 0 else int(active_mask.sum(dim=1).max().item())
+    # CPU scalar conversion is synchronous only with respect to host memory,
+    # and retaining the old active-depth shortcut avoids launching/probing an
+    # empty quantizer for every trailing stage.  Accelerator paths deliberately
+    # leave this ``None``: reducing a CUDA mask to a Python integer would add a
+    # host/device synchronization to every residual forward.
+    cpu_active_depth: int | None = None
+    if flat_latents.device.type == "cpu":
+        active_columns = torch.where(active_mask.any(dim=0))[0]
+        cpu_active_depth = 0 if active_columns.numel() == 0 else int(active_columns[-1]) + 1
 
     for index, quantizer in enumerate(quantizers[:active_count]):
         mask = active_mask[:, index]
-        if index < active_depth:
-            output = quantizer(residual[mask])
-            selected_quantized = output.quantized_latents
-            residual[mask] = residual[mask] - selected_quantized
-            quantized_sum[mask] = quantized_sum[mask] + selected_quantized
-
-            indices_i = torch.full(
-                (flat_size,),
-                -1,
-                dtype=output.indices.dtype,
-                device=flat_latents.device,
-            )
-            indices_i[mask] = output.indices
-
-            vectors_i = torch.zeros(
-                flat_size,
-                codebook_dim,
-                dtype=flat_latents.dtype,
-                device=flat_latents.device,
-            )
-            latents_i = torch.zeros_like(vectors_i)
-            if output.codebook_vectors is not None:
-                vectors_i[mask] = output.codebook_vectors
-            if output.latents is not None:
-                latents_i[mask] = output.latents
-
-            if output.loss is not None:
-                loss_weight = mask.sum().to(dtype=flat_latents.dtype)
-                commitment_loss_sum = commitment_loss_sum + output.loss.commitment * loss_weight
-                codebook_loss_sum = codebook_loss_sum + output.loss.codebook * loss_weight
-                loss_weight_sum = loss_weight_sum + loss_weight
-                has_loss = True
-        else:
+        stage_is_empty = cpu_active_depth is not None and index >= cpu_active_depth
+        if stage_is_empty:
+            # No local position reaches this trailing stage.  Invoke the
+            # callback directly for DDP EMA participation, then synthesize the
+            # known empty shape; this also keeps custom stage modules from
+            # needing private kwargs.
+            selected_residual = residual[:0]
             if on_inactive is not None:
                 on_inactive(quantizer)
-            indices_i = torch.full(
-                (flat_size,),
-                -1,
-                dtype=torch.long,
-                device=flat_latents.device,
+            output = _empty_stage_output(
+                selected_residual,
+                input_dim=input_dim,
+                codebook_dim=codebook_dim,
             )
-            vectors_i = torch.zeros(
-                flat_size,
-                codebook_dim,
-                dtype=flat_latents.dtype,
-                device=flat_latents.device,
-            )
-            latents_i = torch.zeros_like(vectors_i)
+        else:
+            selected_residual = residual[mask]
+            if selected_residual.numel() == 0:
+                # Non-prefix masks (or accelerator masks whose stage happens
+                # to be empty) use the same callback/synthetic path without a
+                # scalar ``any().item()`` check.
+                if on_inactive is not None:
+                    on_inactive(quantizer)
+                output = _empty_stage_output(
+                    selected_residual,
+                    input_dim=input_dim,
+                    codebook_dim=codebook_dim,
+                )
+            else:
+                # Keep the ordinary public call for active batches.  Besides
+                # avoiding needless private-kwarg plumbing, this preserves the
+                # residual runner's compatibility with custom quantizer stages.
+                output = quantizer(selected_residual)
+        selected_quantized = output.quantized_latents
+        residual[mask] = selected_residual - selected_quantized
+        quantized_sum[mask] = quantized_sum[mask] + selected_quantized
+
+        indices_i = torch.full(
+            (flat_size,),
+            -1,
+            dtype=output.indices.dtype,
+            device=flat_latents.device,
+        )
+        indices_i[mask] = output.indices
+
+        vectors_i = torch.zeros(
+            flat_size,
+            codebook_dim,
+            dtype=flat_latents.dtype,
+            device=flat_latents.device,
+        )
+        latents_i = torch.zeros_like(vectors_i)
+        if output.codebook_vectors is not None:
+            vectors_i[mask] = output.codebook_vectors
+        if output.latents is not None:
+            latents_i[mask] = output.latents
+
+        if output.loss is not None:
+            loss_weight = mask.sum().to(dtype=flat_latents.dtype)
+            commitment_loss_sum = commitment_loss_sum + output.loss.commitment * loss_weight
+            codebook_loss_sum = codebook_loss_sum + output.loss.codebook * loss_weight
+            loss_weight_sum = loss_weight_sum + loss_weight
+            has_loss = True
 
         indices_list.append(indices_i)
         vector_list.append(vectors_i)
@@ -219,3 +245,20 @@ def _require_output_tensor(value: Tensor | None, name: str) -> Tensor:
     if value is None:
         raise RuntimeError(f"Residual quantizer output unexpectedly omitted {name}.")
     return value
+
+
+def _empty_stage_output(
+    selected_residual: Tensor,
+    *,
+    input_dim: int,
+    codebook_dim: int,
+) -> QuantizeOutput:
+    """Build the shape-only result for a stage with no local assignments."""
+
+    return QuantizeOutput(
+        quantized_latents=selected_residual.new_empty(0, input_dim),
+        indices=torch.empty(0, dtype=torch.long, device=selected_residual.device),
+        codebook_vectors=selected_residual.new_empty(0, codebook_dim),
+        latents=selected_residual.new_empty(0, codebook_dim),
+        loss=None,
+    )
