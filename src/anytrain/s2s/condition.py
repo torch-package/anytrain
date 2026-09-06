@@ -377,6 +377,13 @@ class ConditionGainCallback(Callback):
         )
 
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        # Lightning restores callback state before on_fit_start, but loop progress
+        # (global_step) is restored only when the fit loop runs. On auto_resume the
+        # interval can already point past the not-yet-restored global_step; the
+        # fit-start baseline is meaningless for a resumed run, so skip it.
+        last = self.interval.last_step
+        if last is not None and _capability.global_step(trainer) < last:
+            return
         self._run_if_due(trainer, pl_module)
 
     def on_train_batch_end(

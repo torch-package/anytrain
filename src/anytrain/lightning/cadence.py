@@ -26,6 +26,10 @@ class StepInterval:
         self._last_step = step
         return step % self.every_n_steps == 0
 
+    @property
+    def last_step(self) -> int | None:
+        return self._last_step
+
     def state_dict(self) -> dict[str, int | None]:
         return {"last_step": self._last_step}
 
