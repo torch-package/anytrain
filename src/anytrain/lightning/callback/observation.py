@@ -855,7 +855,10 @@ class ObservationCallback(pl.Callback):
             return
         step = _capability.global_step(trainer)
         restored = self._restored_last_global_step
-        if restored is not None and restored != step:
+        # A checkpoint dumped by an earlier-ordered callback (e.g. checkpointing)
+        # captures this callback's state before its on_train_batch_end ran for the
+        # saved step, so the stored step legitimately lags by one.
+        if restored is not None and restored not in (step, step - 1):
             raise ValueError(
                 "ObservationCallback checkpoint global step does not match Trainer: "
                 f"got {restored} and {step}."
