@@ -173,6 +173,7 @@ core evaluator 只依赖默认依赖，提供通用 ABC 和轻量组合器。
 
 - `anytrain.evaluator.text`：文本生成 evaluator。
 - `anytrain.evaluator.speech`：ASR、UTMOS 和 speech-to-text reference metric evaluator。
+- `anytrain.evaluator.translation`：reference-based COMET 翻译质量 evaluator。
 
 规划中的 optional 子模块：
 
@@ -209,6 +210,36 @@ reference 都为空时返回 `0.0`。因此该边界结果不应被解释为比�
 - `WhisperASREvaluator`：默认用 `openai-whisper` 的 `large-v3` 转写 audio；通过 allowlisted `model_name`、`device`、`download_root`、`load_options` 选择官方 Whisper 配置，不接受本地 checkpoint path，也不开放任意 ASR backend/model 注入；再复用 text evaluator 输出 `bleu`、`wer`、`chrf`、`cer`。
   短音频 batch 会在兼容选项下使用 Whisper 的 batched 30 秒 mel decode；长音频或需要完整 transcribe 调度的选项会回退到逐条 `model.transcribe()`。
 - `UTMOSEvaluator`：可用 `torch.hub` 加载 `tarepan/SpeechMOS` 的 `utmos22_strong`，也可显式注入 UTMOS backend；输出 `utmos`。远端 TorchHub 代码加载需要显式传入 `allow_remote_code=True`。
+
+`anytrain.evaluator.translation` 提供 `CometEvaluator`，使用 `source`、模型 `hypothesis` 和人工
+`reference` 三元组计算 reference-based COMET。它同时支持即时 `evaluate()`、逐 segment 的
+`score()` 以及跨 batch 的 `update()/compute()/reset()`；`compute()` 在 distributed 已初始化时先
+汇总完整三元组 corpus，再进行一次 system-level aggregation，不能平均各 batch 的 system score。
+COMET 是重量级 optional backend：安装 `anytrain[translation-eval]`，并通过
+`CometSemanticConfig` 固定 checkpoint model/revision/weights SHA-256、backend version、文本
+normalization 和 batch size。构造 evaluator 不会加载模型；真实 checkpoint 只在首次评分时校验摘要并加载。
+
+```python
+from anytrain.evaluator.translation import (
+    CometLoadOptions,
+    CometSemanticConfig,
+)
+
+config = CometSemanticConfig(
+    model="Unbabel/wmt22-comet-da",
+    revision="<40-character-model-commit>",
+    weights_sha256="<64-character-checkpoint-sha256>",
+    backend_version="<installed-unbabel-comet-version>",
+)
+evaluator = config.evaluator(
+    CometLoadOptions(checkpoint="/models/wmt22-comet-da.ckpt", gpus=1),
+)
+score = evaluator("source", "system output", "human translation")
+```
+
+COMET checkpoint 和版本不能使用 `latest` 或未固定的 model alias；不同 scorer identity 的绝对分数
+不得直接放入同一排名。缺少人工 source transcript 时，上层 benchmark 应将该 case 标记为 ineligible，
+不能用 source audio 的 ASR 派生文本静默替代。
 
 用于持久化 filter/评测 lineage 时，不应从运行对象的 cache/device 参数手写 identity。共享层提供三组
 frozen semantic config：
