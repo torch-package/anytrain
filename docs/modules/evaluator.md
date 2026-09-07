@@ -154,7 +154,7 @@ evaluator.reset()
 ```
 
 它在 `update()` 时保存规范化后的 Python 文本，不保存 batch metric 或 GPU tensor；`compute()`
-对所有已保存文本一次计算 corpus BLEU、WER、chrF 和 CER，因此结果不受 batch 大小或切分方式影响。
+对所有已保存文本一次计算 corpus BLEU、WER、chrF/chrF++ 和 CER，因此结果不受 batch 大小或切分方式影响。
 如果 `torch.distributed` 已初始化，所有 rank 必须共同调用 `compute()`；实现会通过
 `all_gather_object` 汇总各 rank 的文本 corpus，使每个 rank 得到相同的全局指标。`reset()` 只清空
 当前 rank 的本地文本状态。某个 rank 可以没有本地样本，只要聚合后的全局 corpus 非空；所有
@@ -190,9 +190,12 @@ metric schema 不反向依赖这些 optional 实现。
 
 `anytrain.evaluator.text` 提供 `TextComparisonEvaluator`，比较 prediction/reference text，并返回：
 
-- `bleu`：0-100 区间 sacreBLEU smoothed effective-order BLEU。
+- `bleu`：0-100 区间 sacreBLEU smoothed effective-order BLEU；为兼容已有调用，`bleu_tokenize`
+  默认 `none`。翻译评测应显式选择 tokenizer：中文目标使用 `zh`，其他标准空格语言通常使用 `13a`；
+  `none` 仅用于已经按空格预分词的文本。
 - `wer`：jiwer word error rate。
-- `chrf`：0-100 区间 sacreBLEU chrF。
+- `chrf`：0-100 区间 sacreBLEU chrF；为兼容已有调用，默认 character order 6、word order 0、
+  beta 2。翻译评测使用 chrF++ 时显式设置 `chrf_word_order=2`。
 - `cer`：jiwer character error rate（以 reference character 数为 corpus 分母）。
 
 当整个 corpus 的 reference 都为空时，CER 沿用 jiwer 的定义返回插入字符数；prediction 和
@@ -200,6 +203,8 @@ reference 都为空时返回 `0.0`。因此该边界结果不应被解释为比�
 
 默认文本归一化会 strip、collapse whitespace、remove punctuation，并把中文繁体归一到简体；
 `lowercase` 仍需显式打开。
+`metric_signatures()` 返回当前 backend 的 one-reference sacreBLEU BLEU/chrF signature，发布结果时应和
+`bleu_tokenize`、chrF beta 等 profile 参数一起持久化。不同 tokenizer/profile 的分数不得横向比较。
 安装 `jiwer` 和 `sacrebleu`（`python -m pip install jiwer sacrebleu`）可使用 sacreBLEU/jiwer backend。缺少
 `sacrebleu` 或 `jiwer` 时仍可构造 text evaluator，但会显式 warning 并使用
 `text._fallback` 的轻量实现。

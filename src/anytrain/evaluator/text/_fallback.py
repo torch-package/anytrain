@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Sequence
 from math import exp, log
@@ -14,6 +15,7 @@ def corpus_bleu_score(
     max_order: int,
     smooth: bool,
     smooth_value: float,
+    tokenize: str,
 ) -> float:
     prediction_length = 0
     target_length = 0
@@ -21,8 +23,8 @@ def corpus_bleu_score(
     possible_matches_by_order = [0] * max_order
 
     for prediction, target in strict_zip(predictions, targets):
-        prediction_tokens = prediction.split()
-        target_tokens = target.split()
+        prediction_tokens = _bleu_tokens(prediction, tokenize)
+        target_tokens = _bleu_tokens(target, tokenize)
         prediction_length += len(prediction_tokens)
         target_length += len(target_tokens)
 
@@ -105,12 +107,23 @@ def corpus_chrf_score(
     targets: Sequence[str],
     *,
     max_order: int,
+    word_order: int,
     beta: float,
 ) -> float:
-    stats = [0] * (3 * max_order)
+    stats = [0] * (3 * (max_order + word_order))
     for prediction, target in strict_zip(predictions, targets):
         prediction_ngrams = _all_char_ngram_counts(prediction, max_order)
         target_ngrams = _all_char_ngram_counts(target, max_order)
+        prediction_words = _chrf_words(prediction)
+        target_words = _chrf_words(target)
+        prediction_ngrams.extend(
+            _word_ngram_counts(prediction_words, order)
+            for order in range(1, word_order + 1)
+        )
+        target_ngrams.extend(
+            _word_ngram_counts(target_words, order)
+            for order in range(1, word_order + 1)
+        )
         for index, (prediction_order, target_order) in enumerate(
             strict_zip(prediction_ngrams, target_ngrams)
         ):
@@ -153,6 +166,56 @@ def _chrf_score_from_stats(stats: Sequence[int], *, beta: float) -> float:
 
 def _ngram_counts(tokens: Sequence[str], order: int) -> Counter[tuple[str, ...]]:
     return Counter(tuple(tokens[index : index + order]) for index in range(len(tokens) - order + 1))
+
+
+def _word_ngram_counts(tokens: Sequence[str], order: int) -> Counter[str]:
+    return Counter(
+        " ".join(tokens[index : index + order])
+        for index in range(len(tokens) - order + 1)
+    )
+
+
+def _chrf_words(text: str) -> list[str]:
+    tokens: list[str] = []
+    for word in text.split():
+        if len(word) == 1:
+            tokens.append(word)
+        elif word[-1] in _CHRF_PUNCTUATION:
+            tokens.extend((word[:-1], word[-1]))
+        elif word[0] in _CHRF_PUNCTUATION:
+            tokens.extend((word[0], word[1:]))
+        else:
+            tokens.append(word)
+    return tokens
+
+
+def _bleu_tokens(text: str, tokenize: str) -> list[str]:
+    if tokenize == "none":
+        return text.split()
+    if tokenize == "zh":
+        text = "".join(f" {char} " if _is_chinese_char(char) else char for char in text)
+    # This lightweight 13a-compatible path covers the punctuation boundaries
+    # used after TextComparisonEvaluator normalization.
+    text = re.sub(r"([^\w\s])", r" \1 ", text, flags=re.UNICODE)
+    return text.split()
+
+
+def _is_chinese_char(char: str) -> bool:
+    codepoint = ord(char)
+    return any(start <= codepoint <= end for start, end in _CHINESE_RANGES)
+
+
+_CHINESE_RANGES = (
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0x20000, 0x2A6DF),
+    (0x2A700, 0x2B73F),
+    (0x2B740, 0x2B81F),
+    (0x2B820, 0x2CEAF),
+    (0xF900, 0xFAFF),
+    (0x2F800, 0x2FA1F),
+)
+_CHRF_PUNCTUATION = frozenset('|*])[<#+{?$\\^/!"-}]=>~;\'`(>,:&%.,@_')
 
 
 def _all_char_ngram_counts(text: str, max_order: int) -> list[Counter[str]]:

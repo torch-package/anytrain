@@ -7,13 +7,20 @@ import torch.distributed as dist
 from ..abc import EvaluatorABC
 from ..types import MetricDict
 from .normalization import TextNormalizationConfig, normalize_text_batch
-from .scores import character_error_rate, corpus_bleu_score, corpus_chrf_score, word_error_rate
+from .scores import (
+    bleu_signature,
+    character_error_rate,
+    chrf_signature,
+    corpus_bleu_score,
+    corpus_chrf_score,
+    word_error_rate,
+)
 
 
 class TextComparisonEvaluator(EvaluatorABC):
     """Lightweight text comparison evaluator.
 
-    BLEU and chrF are backed by sacreBLEU, and WER/CER are backed by jiwer. A
+    BLEU and chrF/chrF++ are backed by sacreBLEU, and WER/CER are backed by jiwer. A
     small private fallback keeps the evaluator usable in minimal environments.
     """
 
@@ -26,6 +33,8 @@ class TextComparisonEvaluator(EvaluatorABC):
         lowercase: bool = False,
         chinese: str | None = "simplified",
         bleu_smoothing: bool = True,
+        bleu_tokenize: str = "none",
+        chrf_word_order: int = 0,
     ) -> None:
         super().__init__()
         self.normalization = TextNormalizationConfig(
@@ -37,7 +46,13 @@ class TextComparisonEvaluator(EvaluatorABC):
         )
         if not isinstance(bleu_smoothing, bool):
             raise TypeError("bleu_smoothing must be a boolean.")
+        # Reuse the score helpers as the single validation owner for metric
+        # profile options without importing optional backends here.
+        bleu_signature(tokenize=bleu_tokenize, smooth=bleu_smoothing)
+        chrf_signature(word_order=chrf_word_order)
         self.bleu_smoothing = bleu_smoothing
+        self.bleu_tokenize = bleu_tokenize
+        self.chrf_word_order = chrf_word_order
         self._predictions: list[str] = []
         self._targets: list[str] = []
 
@@ -68,6 +83,16 @@ class TextComparisonEvaluator(EvaluatorABC):
         self._predictions.clear()
         self._targets.clear()
 
+    def metric_signatures(self) -> dict[str, str]:
+        """Return reproducible one-reference BLEU and chrF profile signatures."""
+        return {
+            "bleu": bleu_signature(
+                tokenize=self.bleu_tokenize,
+                smooth=self.bleu_smoothing,
+            ),
+            "chrf": chrf_signature(word_order=self.chrf_word_order),
+        }
+
     def _normalize_pair(
         self,
         prediction_text: str | Sequence[str],
@@ -94,9 +119,18 @@ class TextComparisonEvaluator(EvaluatorABC):
 
     def _scores(self, predictions: Sequence[str], targets: Sequence[str]) -> MetricDict:
         return {
-            "bleu": corpus_bleu_score(predictions, targets, smooth=self.bleu_smoothing),
+            "bleu": corpus_bleu_score(
+                predictions,
+                targets,
+                smooth=self.bleu_smoothing,
+                tokenize=self.bleu_tokenize,
+            ),
             "wer": word_error_rate(predictions, targets),
-            "chrf": corpus_chrf_score(predictions, targets),
+            "chrf": corpus_chrf_score(
+                predictions,
+                targets,
+                word_order=self.chrf_word_order,
+            ),
             "cer": character_error_rate(predictions, targets),
         }
 

@@ -81,8 +81,8 @@ extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，�
 - `anytrain.audio.codec` wrapper：DAC、LongCat、BiCodec 分别使用 `dac`、`longcat`、`bicodec`
   backend extra；`audio` extra 只提供 torchcodec/torchaudio，不会安装 codec 模型。UniCodec
   和 Stable Codec wrapper 保留边界，但当前上游依赖链未形成 Python 3.12 的受支持组合。
-- text evaluator：安装 `text` extra 使用 sacreBLEU/jiwer backend；无 extra 时有显式 warning
-  的轻量 fallback。
+- text evaluator：安装 `text` extra 使用 sacreBLEU/jiwer backend；BLEU tokenizer 与 chrF++ profile
+  显式可配并可输出 signature，无 extra 时有显式 warning 的轻量 fallback。
 - translation evaluator：安装 `translation-eval` extra 使用 pinned unbabel-comet backend；模型
   checkpoint 和 revision/weights digest 由 semantic config 固定，缺少 extra 时只在首次评分时报错。
 - speech evaluator：安装 `speech` extra 使用 Whisper、UTMOS 和 speech text metrics。
