@@ -8,6 +8,7 @@ from anytrain.evaluator import EvaluatorABC, EvaluatorGroup, MetricDict
 from anytrain.evaluator.text import TextComparisonEvaluator, TextNormalizationConfig
 from anytrain.evaluator.text.scores import (
     character_error_rate,
+    corpus_bleu_score,
     corpus_chrf_score,
     word_error_rate,
 )
@@ -235,6 +236,39 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
 
         self.assertEqual(metrics["bleu"], 0.0)
 
+    def test_chinese_bleu_requires_the_explicit_zh_tokenizer(self):
+        predictions = ["今天天气不错我们去公园"]
+        targets = ["今天天气很好我们去公园"]
+
+        untokenized = TextComparisonEvaluator(bleu_tokenize="none")(
+            predictions,
+            targets,
+        )
+        chinese = TextComparisonEvaluator(bleu_tokenize="zh")(
+            predictions,
+            targets,
+        )
+
+        self.assertEqual(untokenized["bleu"], 0.0)
+        self.assertGreater(chinese["bleu"], 0.0)
+        self.assertLess(chinese["bleu"], 100.0)
+
+    def test_metric_signatures_record_bleu_tokenizer_and_chrfpp_profile(self):
+        signatures = TextComparisonEvaluator(
+            bleu_tokenize="zh",
+            chrf_word_order=2,
+        ).metric_signatures()
+
+        self.assertIn("tok:zh", signatures["bleu"])
+        self.assertIn("nc:6", signatures["chrf"])
+        self.assertIn("nw:2", signatures["chrf"])
+
+    def test_metric_profile_options_are_validated(self):
+        with self.assertRaisesRegex(ValueError, "tokenize"):
+            TextComparisonEvaluator(bleu_tokenize="auto")
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            TextComparisonEvaluator(chrf_word_order=-1)
+
     def test_normalization_lowercase_is_explicit(self):
         evaluator = TextComparisonEvaluator(lowercase=True)
 
@@ -390,8 +424,9 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
         observed: list[float] = []
 
         class FakeCHRF:
-            def __init__(self, *, char_order: int, beta: float):
+            def __init__(self, *, char_order: int, word_order: int, beta: float):
                 self.char_order = char_order
+                self.word_order = word_order
                 observed.append(beta)
 
             def corpus_score(self, _predictions, _targets):
@@ -415,6 +450,25 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
                 ValueError, "finite|positive"
             ):
                 corpus_chrf_score(predictions, targets, beta=value)
+
+    def test_zh_bleu_fallback_matches_sacrebleu(self):
+        predictions = ["今天天气不错我们去公园", "机器翻译质量很好"]
+        targets = ["今天天气很好我们去公园", "机器翻译质量不错"]
+        expected = corpus_bleu_score(predictions, targets, tokenize="zh")
+        real_import = __import__
+
+        def fail_sacrebleu_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name.startswith("sacrebleu"):
+                raise ImportError("missing sacrebleu")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with (
+            patch("builtins.__import__", side_effect=fail_sacrebleu_import),
+            self.assertWarnsRegex(RuntimeWarning, "fallback"),
+        ):
+            fallback = corpus_bleu_score(predictions, targets, tokenize="zh")
+
+        self.assertAlmostEqual(fallback, expected)
 
 
 if __name__ == "__main__":
