@@ -229,7 +229,11 @@ def fit_memory_calibration(
         raise ValueError("memory calibration produced a non-positive memory slope.")
     return AutoCostMemoryCalibration(
         mib_per_cost=slope_bytes / _MIB,
-        intercept_mib=intercept_bytes / _MIB,
+        # Peak-memory noise can place the unconstrained least-squares intercept
+        # slightly below zero. A zero floor matches the resolver contract and
+        # retains the fitted slope, making every positive-cost estimate no less
+        # conservative than the unconstrained line.
+        intercept_mib=max(0.0, intercept_bytes / _MIB),
         points=normalized,
     )
 

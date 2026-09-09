@@ -10,7 +10,9 @@ forward/backward operation. The engine records successful actual-cost and
 peak-memory points plus probe targets skipped after synchronized OOM.
 
 fit_memory_calibration converts successful points into a linear slope and
-intercept. resolve_auto_cost applies free CUDA memory, headroom, and minimum
+intercept. A negative least-squares intercept caused by measurement noise is
+floored at zero; retaining the slope makes the resulting positive-cost estimate
+conservative. resolve_auto_cost applies free CUDA memory, headroom, and minimum
 cost policy. Dataloader sample capacity and planning-window policy stay in the
 project because they depend on the project planner.
 

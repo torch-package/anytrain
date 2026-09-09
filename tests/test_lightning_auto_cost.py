@@ -73,6 +73,17 @@ class AutoCostTest(unittest.TestCase):
         self.assertAlmostEqual(calibration.mib_per_cost, 4.0)
         self.assertAlmostEqual(calibration.intercept_mib, 2.0)
 
+    def test_fit_floors_a_negative_intercept_for_conservative_resolution(self) -> None:
+        calibration = fit_memory_calibration(
+            [
+                (2, 10 * 1024**2),
+                (4, 22 * 1024**2),
+            ]
+        )
+
+        self.assertAlmostEqual(calibration.mib_per_cost, 6.0)
+        self.assertEqual(calibration.intercept_mib, 0.0)
+
     def test_probe_rejects_non_positive_target(self) -> None:
         with self.assertRaisesRegex(ValueError, "target_cost"):
             CostProbe(batch=None, target_cost=0)
