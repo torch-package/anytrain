@@ -94,13 +94,13 @@ extra。原生 Muon 通过 `muon` extra 将 PyTorch 约束提升到 `>=2.9`，�
 当前提供的 optional framework：
 
 - flow matching。
-- GAN adversarial objective、feature matching、WGAN-GP 和 DAC discriminator preset。
+- GAN adversarial objective、feature matching、WGAN-GP、DAC discriminator preset 和
+  manual optimization helper。
 - DPO、token GRPO、continuous Flow-GRPO 与 neighbor GRPO tensor objective。
 
 只有跨项目复用需求明确后再考虑：
 
 - masked autoencoder。
-- GAN manual optimization helper。
 - 其他跨项目复用的训练范式。
 
 这些不进入 core，避免 `anytrain` 的默认依赖和默认心智负担膨胀。
@@ -155,11 +155,15 @@ class MyPLModule(pl.LightningModule):
 
 ### `loss`
 
-提供训练 step 中可直接使用的 loss 组件。core 里保留通用组合器；audio/text/speech 等领域 loss 通过 optional 子模块提供。GAN adversarial training 属于 `framework.gan`，不放在 `loss` 下。
+提供训练 step 中可直接使用的 loss 组件。core 里保留通用组合器；当前还提供 temporal/spectral/codec
+scalar loss。text/speech 等任务语义更强的领域 loss 只有明确复用需求后再进入 optional 子模块。GAN
+adversarial training 属于 `framework.gan`，不放在 `loss` 下。
 
 ### `evaluator`
 
-提供 validation/test/training step 中可直接使用的 metric/evaluator 组件。core 里保留接口和组合器；codec/text/speech 等领域 evaluator 通过 optional 子模块提供。
+提供 validation/test/training step 中可直接使用的 metric/evaluator 组件。core 里保留接口和组合器；当前
+optional 子模块提供 text、speech 和 reference-based translation evaluator。torchmetrics 通用
+metrics 与 codec/audio quality evaluator 仍是规划项。
 
 ### `optim`
 
@@ -240,5 +244,5 @@ src/anytrain/
 - 替用户规定 batch schema。
 - 把 optimizer/scheduler 作为顶层硬配置自动注入。
 - 把模型 zoo 或预训练下载逻辑放进 core。
-- 把所有 audio/text/speech/chat/framework 依赖放进默认安装。
+- 把所有 audio/text/speech/translation/chat/framework 依赖放进默认安装。
 - 静默兼容缺失依赖；optional 子模块应明确说明实际缺失的包，并给出可直接执行的安装命令。

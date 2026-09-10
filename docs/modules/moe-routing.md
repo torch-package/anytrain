@@ -17,7 +17,9 @@ same `ExpertRouting` record.
 - `ExpertRouting`: density-neutral routing record
 - `materialize_routing()` / `expert_routing_from_weights()`
 - `validate_num_experts()` / `validate_top_k()` / `validate_expert_routing()`
-- `broadcast_routing_mask()` / `flat_active_mask()`
+- `broadcast_routing_mask()` / `flat_active_mask()` / `flatten_active_mask()`
+- `dense_expert_weight_tensor()` / `expand_dense_expert_weights()`
+- `validate_dense_expert_weights()` / `validate_sparse_expert_routing()`
 - `DenseExpertWeights` for probability-tensor helpers
 
 ## ExpertRouting Contract

@@ -2,7 +2,8 @@
 
 ## 定位
 
-`anytrain.framework` 是 optional/experimental 研究框架层，用于沉淀跨项目复用的训练范式组件，例如 flow matching、masked autoencoder 或 GAN helper。
+`anytrain.framework` 是 optional/experimental 研究框架层，用于沉淀跨项目复用的训练范式组件。当前已有
+flow matching、GAN 和 RL helper；masked autoencoder 等新范式只有明确跨项目复用需求后再迁入。
 
 它不是 core 层，也不替下游项目生成完整 LightningModule。不要把这里的 `framework` 和训练工程入口混在一起：入口由下游项目自己维护，`anytrain.framework` 是可选训练范式积木。
 

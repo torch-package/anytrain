@@ -1,5 +1,11 @@
 # Deepaudio Example Package Migration Design
 
+## 当前状态
+
+迁移已落地：`anytrain.example` 顶层导出 `color_your_night()` 和 `vctk()`，资源路径与 lazy
+decoder helper 放在 `anytrain.example.resources` / `anytrain.example.audio`，speech FLAC 与
+music MP3 都已进入 package data。下文的实施顺序保留为设计记录，不表示这些阶段仍未完成。
+
 ## 目标
 
 把 `deepaudio/src/deepaudio/example` 迁到 `anytrain/src/anytrain/example`，提供随包分发的小音频 assets 和直接可 import 的读取 helper，用于 examples、单元测试和下游 smoke test。

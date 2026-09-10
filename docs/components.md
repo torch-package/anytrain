@@ -88,8 +88,10 @@ loss module 在内部完成 mask、加权和 reduction，固定返回可用于 `
 
 optional loss：
 
-- spectral / temporal audio loss。
-- text/speech 领域 loss。
+- temporal / spectral / codec scalar loss。
+
+规划中的领域 loss 仍按 `todo.md` 准入：只有明确下游复用需求时，才新增 text/speech
+子模块，不提前把任务语义放进 core。
 
 ## Evaluator
 
@@ -112,11 +114,21 @@ chrF/chrF++ 和 CER；BLEU tokenizer 与 chrF word order 显式可配，分布�
 rank 的文本。core 不对 batch scalar 做通用
 平均，也暂不提供通用 stateful MAE/MSE/accuracy。
 
+`anytrain.evaluator.translation.CometEvaluator` 使用 source / hypothesis / reference
+三元组计算 reference-based COMET；模型 checkpoint、revision、weights digest 和 backend version
+由 semantic config 固定。`anytrain.evaluator.speech` 组合 Whisper ASR、UTMOS 和 text metric，
+具体模型只在首次转写或评分时延迟加载。
+
 optional evaluator：
 
-- audio/codec/speech evaluator。
 - text evaluator。
-- torchmetrics-backed 通用 evaluator。
+- speech evaluator。
+- translation evaluator。
+
+规划中的 evaluator：
+
+- torchmetrics-backed 通用分类/回归 evaluator。
+- codec / audio quality evaluator。
 
 ## Optim
 
@@ -196,11 +208,17 @@ identity 与质量过滤由下游拥有。
 
 framework 是 optional/experimental 组件。这里的 framework 指研究训练范式组件，不是默认训练 app 层。
 
-适合放入：
+当前提供：
 
 - flow matching。
+- GAN adversarial objective、feature matching、WGAN-GP、DAC discriminator preset 和
+  manual optimization helper。
+- DPO、token GRPO、continuous Flow-GRPO 和 neighbor GRPO tensor objective。
+
+只有跨项目复用需求明确后再考虑：
+
 - masked autoencoder。
-- GAN 训练辅助。
+- 其他跨项目复用的训练范式。
 
 不适合放入 core，因为这些是训练范式，不是每个 LightningModule 都需要的基础能力。
 

@@ -54,8 +54,8 @@ python -m pip install 'anytrain[tts-vllm-omni]'
 ```
 
 The extra installs matching `vllm` and `vllm-omni` 0.26 release lines plus
-`transformers>=5.5.3`. vLLM-Omni does not declare the core vLLM wheel itself,
-and their request and pipeline contracts evolve together.
+`transformers>=5.5.3`; it declares both the core `vllm` wheel and `vllm-omni`,
+whose request and pipeline contracts evolve together.
 
 Qwen3-TTS's PyTorch wrapper is a different environment contract. The pinned
 upstream package requires `transformers==4.57.3`, so install it in its own

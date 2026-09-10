@@ -23,7 +23,8 @@ assert anytrain.__all__ == []
 - `anytrain.<package>`：按职责显式导入，例如 `anytrain.lightning`、`anytrain.loss`、
   `anytrain.translation` 和 `anytrain.framework.rl`。
 - `anytrain.stats` / `anytrain.env` / `anytrain.utils`：没有必要扩成目录的小型公开 primitive，
-  分别拥有 tensor statistics、optional backend cache root 和 tensor utility 契约。
+  分别拥有 tensor statistics、optional backend cache root 和 tensor utility 契约；`utils.py`
+  公开 `is_signed_integer_dtype()` 与 `top_p_filter()`。
 - `_audio.py` / `_buffer.py` / `_compat.py` / `_semantic.py`：跨模块私有基础设施，不从根包导出。
 
 `examples/` 是可直接运行的训练示例；`anytrain.example` 只拥有随 wheel 打包的短音频资源与

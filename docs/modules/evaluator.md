@@ -32,6 +32,9 @@ src/anytrain/evaluator/
     evaluator.py
     normalization.py
     scores.py
+  translation/
+    __init__.py
+    comet.py
 ```
 
 当前公开导出：
@@ -60,6 +63,13 @@ optional 子模块导出：
 - `anytrain.evaluator.speech.UTMOSEvaluator`
 - `anytrain.evaluator.speech.UTMOSSemanticConfig`
 - `anytrain.evaluator.speech.UTMOSLoadOptions`
+- `anytrain.evaluator.translation.COMET_PROTOCOL`
+- `anytrain.evaluator.translation.CometBackend`
+- `anytrain.evaluator.translation.CometEvaluator`
+- `anytrain.evaluator.translation.CometLoadOptions`
+- `anytrain.evaluator.translation.CometResult`
+- `anytrain.evaluator.translation.CometSample`
+- `anytrain.evaluator.translation.CometSemanticConfig`
 
 ## 接口
 
@@ -327,14 +337,17 @@ UTMOS backend 细节从 `anytrain.evaluator.speech.utmos` 显式导入。
 
 - text evaluator 的单条、batch、normalization、空 reference、长度不一致和 metric key。
 - speech evaluator 的默认 backend 延迟构造、ASR 配置项、ASR reference 校验、text metric 透传、UTMOS batch mean 和真实 backend 输出规范化。
+- translation evaluator 的 semantic config、custom backend、batch/corpus aggregation、distributed corpus 汇总和 optional dependency lazy load。
 
 模块验收命令：
 
 ```bash
 python -m ruff check src/anytrain/evaluator tests/test_evaluator.py \
-  tests/test_evaluator_text.py tests/test_evaluator_speech.py
+  tests/test_evaluator_text.py tests/test_evaluator_speech.py \
+  tests/test_evaluator_translation.py
 basedpyright --pythonpath /path/to/python src/anytrain/evaluator \
-  tests/test_evaluator.py tests/test_evaluator_text.py tests/test_evaluator_speech.py
+  tests/test_evaluator.py tests/test_evaluator_text.py tests/test_evaluator_speech.py \
+  tests/test_evaluator_translation.py
 python -m pytest -q tests/test_evaluator.py tests/test_evaluator_text.py \
-  tests/test_evaluator_speech.py
+  tests/test_evaluator_speech.py tests/test_evaluator_translation.py
 ```

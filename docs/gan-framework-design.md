@@ -344,15 +344,10 @@ loss、commitment loss、adversarial loss 如何组合，应由下游 task modul
 或 microbatch 的有效 count 不同时，事后平均多个已归约 scalar 不能恢复精确结果；调用方
 必须提供完整 domain，或在 loss 内实现所需的全局 normalizer。
 
-如果多个项目需要更复杂的 manual optimization 编排，可以继续扩展：
-
-```text
-src/anytrain/framework/gan/
-  manual.py
-```
-
-它只提供 optimizer step helper、freeze context、D/G update frequency 和日志 key
-组装，不拥有 batch schema 或模型 forward。
+`manual.py` 已经落地，当前只提供 optimizer step helper、freeze context 和 lazy GP
+cadence helper，不拥有 batch schema 或模型 forward。判别器更新频率、warmup、EMA、混合
+精度和日志 key 编排仍由下游训练循环负责；如果多个项目形成稳定的复用需求，再扩展这个
+helper 的职责。
 
 ## 音频判别器迁移策略
 
@@ -392,5 +387,5 @@ discriminator = DACDiscriminator(in_channels=1)
 
 ## 后续
 
-- 根据真实下游需求决定是否新增 `manual.py`。
+- 根据真实下游需求决定是否扩展 `manual.py` 的训练编排能力。
 - 根据跨项目复用情况决定是否扩展更多 audio discriminator preset。

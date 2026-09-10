@@ -46,7 +46,7 @@ observation 不能改变 forward 输出、autograd graph 或各 rank 的 kernel 
 - `anytrain.module.moe.conv`：`ConvRouter1d` / `ConvRouter2d`（只产 logits）、partitioner / shape helpers、`MultiScalePool1d`。
 - `anytrain.module.moe`：统一入口 `MoE(num_experts=..., expert=Expert, weight=(E,...), bias=..., grid=...)`；Expert 对象负责 `__call__` / `bias_kind` / `bind(grid,...)`；`Grid1d` 表达 1D segment intent，`NativeGrid` 表示不切分的 native-resolution 路径；`expand_param` 做 E 轴扩维；`expand_expert` 仅便利 stock `Linear/Conv*`，不是通用 Module→Expert 推断。另有 `CallableExpert`、`linear` / `Conv*Expert`、`LinearRouter`、`NativeGrid`、`MoEOutput`、`ExpertRouting`、MoE aux-loss / metrics helpers。
 - `anytrain.module.quantization`：`DEFAULT_FSQ_LEVELS`、`default_fsq_levels`、`FSQConfig`、`FiniteScalarQuantizer`、`RFSQConfig`、`ResidualFiniteScalarQuantizer`、`VQConfig`、`EmbeddingVectorQuantizer`、`GVQConfig`、`GroupedVectorQuantizer`、`RVQConfig`、`ResidualVectorQuantizer`、`AGRVQConfig`、`AutoGroupResidualVectorQuantizer`、`QuantizerProtocol`、`ResidualQuantizerProtocol`、`QuantizerType`、`QuantizeOutput`、`QuantizationLoss`、`QuantizationUsage`、`quantization_usage`、`quantization_usage_metrics`、`codebook_usage`、`valid_indices_by_codebook` 和 `quantization_loss_metrics`。
-- `anytrain.module.qwen`：Qwen3 builder、resolver、experimental `QwenMTPCodebookPredictor` 和 `top_p_filter`。
+- `anytrain.module.qwen`：Qwen3 builder、resolver 和 experimental `QwenMTPCodebookPredictor`。
 - `anytrain.module.token_space`：`Layout`。
 - `anytrain.module.embedding`：`EmbeddingBank` 和 `EmbeddingView`。
 
@@ -122,8 +122,8 @@ transformer block，也不要求下游维护一份庞大的项目级 config：
   codebook；MTP Qwen 再在同一 frame 内依次预测剩余 codebook。
 - `forward()` 返回每个 codebook 一个 teacher-forced logits tensor；`generate()` 提供同一
   预测顺序的自回归采样。
-- `top_p_filter()` 从 `anytrain.module.qwen` 导出，供下游 generator 复用同一 nucleus sampling
-  语义；它不进入 `anytrain.module` 顶层。
+- `generate()` 内部复用 `anytrain.utils.top_p_filter()` 实现 nucleus sampling；该 helper 的公共
+  owner 是 `anytrain.utils`，不从 `anytrain.module.qwen` 或 `anytrain.module` 重导出。
 
 `anytrain.module.dit` 提供通用 `DiT` sequence backbone。它只负责把 noisy sequence、
 flow time 和单一外部条件模式组合成输出 sequence，不接管 flow matching、batch schema 或

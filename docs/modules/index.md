@@ -40,6 +40,6 @@
 - [`docs/audit.md`](../audit.md)：跨 anytrain / anydataset 的训练阻塞 JSONL 审计与汇总方法。
 - [`docs/flow-matching-design.md`](../flow-matching-design.md)：Facebook flow matching 的可组合再封装设计。
 - [`docs/gan-framework-design.md`](../gan-framework-design.md)：参考 `deepaudio` 的 GAN framework 迁移设计。
-- [`docs/quantization-migration.md`](../quantization-migration.md)：从 `deepaudio` 迁入量化组件的设计计划。
+- [`docs/quantization-migration.md`](../quantization-migration.md)：从 `deepaudio` 迁入量化组件的设计与历史验收记录。
 - [`docs/codec-envs.md`](../codec-envs.md)：codec optional 依赖环境和 Fudan smoke 记录。
 - [`docs/codec.md`](../codec.md)：codec 统一离散张量接口与各 wrapper 的边界。

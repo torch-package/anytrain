@@ -118,12 +118,12 @@ PYTHONPATH=src python examples/tiny_regression.py
 | `anytrain.lightning.perf` | 参数量、FLOPs、硬件峰值算力和 MFU 计算 helper。 |
 | `anytrain.stats` | 纯 tensor 统计 helper，例如按 time bucket 聚合 loss。 |
 | `anytrain.loss` | 通用 loss 接口、loss 组合器和 loss balancer。 |
-| `anytrain.evaluator` | 通用 evaluator 接口、组合器，以及 text/speech evaluator 子模块。 |
+| `anytrain.evaluator` | 通用 evaluator 接口、组合器，以及 text/speech/translation evaluator 子模块。 |
 | `anytrain.optim` | AdamW/Muon/LoRA-Muon 参数分组、scheduler helper 和 LLM optimizer helper。 |
 | `anytrain.optim.peft` | 依赖 `peft` extra，从 Hugging Face PEFT Linear adapter 构造 LoRA-Muon。 |
 | `anytrain.module` | 少量稳定的 task-agnostic `torch.nn.Module` 积木，例如 ADT 和 DiT。 |
 | `anytrain.module.moe.conv` | 动态卷积和 router 组件。 |
-| `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/AGRVQ quantizer。 |
+| `anytrain.module.quantization` | FSQ/VQ/GVQ/RVQ/RFSQ/AGRVQ quantizer。 |
 | `anytrain.module.qwen` | Qwen3 复用 helper 和 experimental MTP codebook predictor。 |
 | `anytrain.module.token_space` | 多块 local/global token id 映射。 |
 | `anytrain.module.embedding` | 共享 embedding owner 与 directional view。 |

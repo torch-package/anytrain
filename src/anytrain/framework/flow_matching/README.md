@@ -7,7 +7,8 @@
 python -m pip install flow_matching
 ```
 
-当前公开提供 source、time sampler、continuous/discrete runtime、objective 和 sampler；详细
+当前公开提供 source、time sampler、continuous/discrete runtime、objective、sampler 和
+Flow-GRPO stochastic transition/log-prob helper；详细
 设计与调用示例见
 [`docs/flow-matching-design.md`](../../../../docs/flow-matching-design.md)。该模块不接管
 下游 `LightningModule`、batch schema 或任务级 reduction。

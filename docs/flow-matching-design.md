@@ -53,32 +53,37 @@
 - 默认参数不要直接使用 `CondOTProbPath()` 这类对象实例，避免共享可变状态；构造函数用 `None` 后内部创建。
 - `SoundFlow` 里的 codec/text 逻辑属于下游任务，不迁入。
 
-## 目标包结构
+## 当前包结构
 
-推荐第一版放在：
+第一版已经落地，实际包位于：
 
 ```text
 src/anytrain/framework/flow_matching/
   __init__.py
   _deps.py
   types.py
+  _runtime.py
   source.py
   time.py
   objective.py
   sampler.py
   continuous.py
   discrete.py
+  stochastic.py
 ```
 
 职责：
 
 - `_deps.py`：集中导入 Facebook `flow_matching`，缺依赖时抛清晰错误。
 - `types.py`：轻量 protocol、dataclass 和 enum。
+- `_runtime.py`：共享 batch 和 paired-state 输入校验。
 - `source.py`：source distribution 采样组件。
 - `time.py`：训练和采样的时间网格组件。
 - `objective.py`：连续 velocity matching、离散 generalized KL 等训练目标。
 - `sampler.py`：对 Facebook solver 的薄封装，统一返回 final/intermediates。
 - `continuous.py` / `discrete.py`：连续和离散 runtime，统一持有训练路径与推理配置。
+- `stochastic.py`：Flow-GRPO 风格 rectified-flow SDE transition、Gaussian log-prob/KL
+  helper。
 
 公开导入第一版只从 `anytrain.framework.flow_matching` 导出稳定对象；`anytrain.framework.__init__` 不默认导入该子模块。
 
@@ -256,7 +261,7 @@ log-prob 和等方差 Gaussian KL 的可复用张量计算。
 
 ## 依赖策略
 
-`flow_matching` 作为 optional framework 依赖，不进入默认安装。建议在 `pyproject.toml` 增加：
+`flow_matching` 作为 optional framework 依赖，不进入默认安装。`pyproject.toml` 已包含：
 
 ```toml
 [project.optional-dependencies]
@@ -270,21 +275,33 @@ flow = ["flow_matching"]
 - `import anytrain.framework.flow_matching` 如果缺依赖，抛出带安装提示的 `ImportError`。
 - 单测要覆盖缺依赖错误路径，但不影响 core 测试。
 
-## 第一版 API 草案
+## 当前 API
 
 ```python
 from anytrain.framework.flow_matching import (
     ContinuousFlowRuntime,
+    ContinuousTrainingSample,
     ContinuousVelocityObjective,
+    DEFAULT_TIME_EPS,
+    FlowLossFn,
     DiscreteFlowRuntime,
     DiscreteGeneralizedKLObjective,
     FlowSampleOutput,
     GaussianSource,
+    LogProbReduction,
     LogitNormalTimeSampler,
     MaskTokenSource,
+    ModelCaller,
+    ModelExtras,
     ODESampler,
+    RectifiedFlowSDETransition,
     UniformTimeSampler,
     UniformTokenSource,
+    default_call_model,
+    gaussian_kl_from_means,
+    gaussian_log_prob,
+    masked_mse_velocity_loss,
+    mse_velocity_loss,
 )
 ```
 

@@ -247,8 +247,10 @@ PyTorch forward hook 只覆盖普通 `module(...)` 调用，因此直接调用 `
 graph。observation 不提供 `enabled()` 分支；如果 flash/SDPA 路径不产生 attention map，必须由所有 rank
 一致的显式模型配置决定是否改用会物化权重的实现，callback 不能隐式切换 attention kernel。
 
-当前 optimizer-step 提交使用 train batch end 的 `global_step` delta，支持自动优化与梯度累积；一个
-train batch 内多个 manual optimizer step 无法无歧义拆分 pending state，会明确报错。非法
+当前 optimizer-step 提交使用 train batch end 的 `global_step` delta，支持自动优化与梯度累积。
+automatic optimization 在一个 train batch 内出现多个 optimizer step 时会明确报错；
+`automatic_optimization=False` 的 manual optimization 则允许多个 step，并在 batch end 合并
+pending state 后提交。非法
 Distribution/Profile/Bins 数值在完成同一步的 distributed reduce 后立即报错，不受 render cadence 影响。
 
 ## 验收

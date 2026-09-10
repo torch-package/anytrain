@@ -36,9 +36,12 @@
 
 - core：`observation`、`lightning`、`lightning.schedule`、`lightning.perf`、通用
   loss/evaluator/optim/module 接口、`module.token_space` 和 `module.embedding`。
-- optional general：通用 torchmetrics evaluator、第三方 logger backend。
-- optional domain：audio/text/speech 等领域 loss、evaluator。
-- optional framework：flow matching、MAE、GAN adversarial training 等研究框架。
+- optional general：Muon/PEFT optimizer helper、chat、translation 和第三方 logger backend；通用
+  torchmetrics evaluator 仍是规划项。
+- optional domain：temporal/spectral/codec loss、text/speech/translation evaluator，以及
+  audio/tts/codec wrapper。
+- optional framework：flow matching、GAN（含 manual optimization helper）和 RL；masked
+  autoencoder 只有明确复用需求后再迁入。
 
 core import 只依赖默认依赖；optional 子模块可以要求额外依赖，但错误信息应明确提示安装对应 extra。
 

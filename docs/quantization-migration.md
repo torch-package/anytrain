@@ -1,6 +1,16 @@
 # Quantization Migration Design
 
-## 目标
+## 当前状态
+
+量化迁移已经落地。稳定入口是 `anytrain.module.quantization`，当前公开提供 FSQ、VQ、
+GVQ、RVQ、RFSQ 和 AGRVQ，以及统一输出对象、protocol 和 quantization usage/loss stats
+helper。它们都保持 task-agnostic，不接管 batch schema 或训练 step。
+
+下文保留最初的设计约束、源代码盘点和 P0-P4 验收记录，作为迁移决策的历史记录；这些
+阶段不表示当前仍待实现。当前公开入口以源码 package root 和
+[`docs/modules/module.md`](modules/module.md) 为准。
+
+## 原始目标
 
 把 `deepaudio` 中不绑定音频任务的量化组件迁入 `anytrain.module`，作为下游 LightningModule 可显式组合的 `torch.nn.Module` 积木。
 
@@ -49,41 +59,35 @@
 
 `torch` 和 `einops` 已经是 `anytrain` 默认依赖。`Projector` 依赖链偏大，第一版不整体迁移，只在 quantizer 内提供 `nn.Identity` / `nn.Linear` 级别的投影。
 
-## 目标位置
+## 当前包结构
 
-推荐放在：
+实际包位于：
 
 ```text
 src/anytrain/module/quantization/
   __init__.py
-  output.py
-  protocol.py
-  types.py
-  projection.py
   finite_scalar.py
   embedding.py
+  grouped.py
   residual.py
+  residual_finite_scalar.py
+  auto_group_residual.py
+  output.py
+  protocol.py
+  projection.py
+  stats.py
+  types.py
+  _*.py                 # private lookup, validation and runtime helpers
 ```
 
-公开导入：
+公开导入保持在 `anytrain.module.quantization`，包括 `FSQConfig` / `FiniteScalarQuantizer`、
+`RFSQConfig` / `ResidualFiniteScalarQuantizer`、`VQConfig` / `EmbeddingVectorQuantizer`、
+`GVQConfig` / `GroupedVectorQuantizer`、`RVQConfig` / `ResidualVectorQuantizer`、
+`AGRVQConfig` / `AutoGroupResidualVectorQuantizer`，以及 `QuantizeOutput`、
+`QuantizationLoss`、两个 protocol、`QuantizerType` 和 usage/loss stats helper。
 
-```python
-from anytrain.module.quantization import (
-    FSQConfig,
-    EmbeddingVectorQuantizer,
-    FiniteScalarQuantizer,
-    GVQConfig,
-    GroupedVectorQuantizer,
-    QuantizationLoss,
-    QuantizeOutput,
-    QuantizerType,
-    RVQConfig,
-    ResidualVectorQuantizer,
-    VQConfig,
-)
-```
-
-`anytrain.module.__init__` 可以在实现稳定后导出常用类，但 `import anytrain` 不应导入量化组件。
+当前不从 `anytrain.module.__init__` 重导出量化类；量化保持显式子包入口，避免扩大
+`anytrain.module` 顶层导出和 import 负担。`import anytrain` 也不应导入量化组件。
 
 ## 统一接口
 
@@ -251,7 +255,7 @@ FSQ 的 basis、levels、half levels、offsets，VQ EMA 的 counter/sum 都通�
 `anytrain._buffer.register_buffer` 注册。PyTorch 2.5 及以上使用 `nn.Buffer`，旧版本回退到
 `Module.register_buffer`，两条路径保持 `persistent`、设备迁移和 state dict 语义一致。
 
-## 分阶段计划
+## 历史分阶段计划（已完成）
 
 ### P0: 固定设计和验收标准
 
