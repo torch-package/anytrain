@@ -139,6 +139,10 @@ d_loss = discriminator_step(
 要保持期望 regularization 权重，应在执行 step 使用 `gradient_penalty_scale=interval`。没有正的
 `gp_weight` 时不会凭空启用 GP。
 
+WGAN-GP 会对 discriminator score 关于插值样本的梯度继续求导，以把 penalty 反传到
+discriminator 参数。因此内部 `autograd.grad` 必须使用 `create_graph=True`；这是 GP 数学所需的
+autograd 图，不应作为性能优化关闭。降低计算频率应使用上述 lazy GP 接口。
+
 两个入口都返回 0-D Tensor。`Loss.forward(..., objective=...)` 是它们共享的 scalar
 内核，兼容方法仍保留，因而已有 manual optimization 接线只需删除 tuple 解包。
 
@@ -147,6 +151,11 @@ DAC preset：
 ```python
 loss_fn = Loss.from_preset(Preset.DAC, feature_weight=1.0, in_channels=1)
 ```
+
+默认 `sample_rates=()`，因此 `DACDiscriminator` 只创建 MPD + MRD；仅当
+`sample_rates` 非空时创建 MSD。默认维度为 `msd_dim=16`、`mpd_dim=32`、
+`mrd_dim=32`。`in_channels` 默认 `2` 且可以配置，所以这是 DAC 风格结构 preset，
+不是固定的官方 mono preset。
 
 判别器 forward 需要直接返回 `Sequence[Sequence[Tensor]]`。每个 branch 的最后一个
 tensor 是 logits，前面 tensor 是 feature maps；简单判别器返回 `[[logits]]`。
@@ -160,7 +169,7 @@ tensor 是 logits，前面 tensor 是 feature maps；简单判别器返回 `[[lo
 - `GAN.WGAN` 默认启用 `gp_weight=10.0` 的 gradient penalty；其他 GAN 默认不启用。显式 `gp_weight=0.0` 可以关闭。
 - WGAN-GP 要求 discriminator 不包含 BatchNorm 或其他跨样本耦合层，否则一次 `autograd.grad` 不能得到独立的 per-sample gradient norm。
 - `reduction` 公开入口支持 `Reduction` enum 或 torch 风格字符串；内部统一使用 `Reduction`，默认 `Reduction.Mean`。
-- DAC preset 只提供判别器和 loss 计算，不接管 codec 模型、batch schema 或重建 loss 组合；其默认 periods、FFT、bands 和 channel dimensions 保持第三方实现原值。
+- DAC preset 只提供判别器和 loss 计算，不接管 codec 模型、batch schema 或重建 loss 组合；构造参数直接遵循 `DACDiscriminator` 当前签名。
 
 `GAN Loss`、`DPOLoss`、`GRPOLoss`、`ContinuousGRPOLoss` 和 `NeighborGRPOLoss` 都在
 具体 module 定义旁注册推荐 observation。总 loss 从 scalar forward output 采集；本次 forward

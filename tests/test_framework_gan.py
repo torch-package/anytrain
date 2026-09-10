@@ -19,6 +19,7 @@ from anytrain.framework.gan import (
     should_apply_gradient_penalty,
 )
 from anytrain.framework.gan.feature import _FeatureMatching
+from anytrain.framework.gan.penalty import _GradientPenalty
 
 
 def _run_with_observations(call):
@@ -71,6 +72,15 @@ class TensorDiscriminator(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return [[self.linear(x).squeeze(-1)]]
+
+
+class QuadraticDiscriminator(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(2.0))
+
+    def forward(self, x: torch.Tensor):
+        return [[self.scale * x.square()]]
 
 
 class BatchNormDiscriminator(nn.Module):
@@ -463,6 +473,19 @@ class LossTest(unittest.TestCase):
         expected_delta = 30.0 * base_diagnostics["gp"]
         torch.testing.assert_close(scaled - base, expected_delta)
         torch.testing.assert_close(scaled_diagnostics["gp"], base_diagnostics["gp"])
+
+    def test_gradient_penalty_alone_backpropagates_through_input_gradient(self):
+        discriminator = QuadraticDiscriminator()
+        penalty = _GradientPenalty()
+        fake = torch.zeros(3, 4)
+        real = torch.ones(3, 4)
+
+        torch.manual_seed(0)
+        penalty(discriminator, fake, real).backward()
+
+        self.assertIsNotNone(discriminator.scale.grad)
+        assert discriminator.scale.grad is not None
+        self.assertGreater(discriminator.scale.grad.abs().item(), 0.0)
 
     def test_generator_loss_keeps_fake_grad(self):
         discriminator = TensorDiscriminator()

@@ -215,6 +215,11 @@ framework 是 optional/experimental 组件。这里的 framework 指研究训练
   manual optimization helper。
 - DPO、token GRPO、continuous Flow-GRPO 和 neighbor GRPO tensor objective。
 
+DAC discriminator preset 默认创建 MPD + MRD；只有 `sample_rates` 非空时才启用 MSD。
+默认维度是 `msd_dim=16`、`mpd_dim=32`、`mrd_dim=32`，`in_channels` 可配置，
+因此它表示 DAC 风格结构而不是固定的官方 mono preset。WGAN-GP 的输入梯度必须保留
+`create_graph=True` 才能把 penalty 反传到 discriminator 参数；性能控制使用 lazy GP cadence。
+
 只有跨项目复用需求明确后再考虑：
 
 - masked autoencoder。

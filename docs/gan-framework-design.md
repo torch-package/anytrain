@@ -56,6 +56,11 @@ BatchNorm 等运行统计层，可传 `eval_discriminator=True`，临时冻结�
 WGAN-GP 的 per-sample gradient 假设 discriminator 不包含 BatchNorm 或其他跨样本耦合操作；
 这类 discriminator 不应直接启用 GP。
 
+GP 先求 discriminator score 对插值样本的梯度，再让 penalty 沿这条输入梯度反传到
+discriminator 参数。因此 `torch.autograd.grad(..., create_graph=True)` 是正确性要求，不是可关闭的
+性能选项；关闭后 penalty 自身会与 discriminator 参数断开。需要降低开销时使用 lazy GP，而不是
+破坏这条二阶 autograd 路径。
+
 返回约定沿用 scalar-only loss 层：
 
 - 每个入口固定返回一个 0-D `torch.Tensor`。
@@ -351,11 +356,14 @@ helper 的职责。
 
 ## 音频判别器迁移策略
 
-`Loss.from_preset(Preset.DAC)` 内置了一个 DAC 风格 MPD / MSD / MRD 判别器：
+`Loss.from_preset(Preset.DAC)` 内置了一个 DAC 风格判别器。默认配置是 MPD + MRD；
+`sample_rates=()` 不创建 MSD branch，只有显式传入非空 `sample_rates` 时才启用 MSD：
 
 - waveform 输入形状为 `(batch, channels, time)`。
 - forward 返回 `Sequence[Sequence[Tensor]]`，天然符合 `Loss` 的判别器契约。
-- MPD 使用 period 分支；MSD 只有传 `sample_rates` 时才启用；MRD 使用多 STFT resolution。
+- 默认 channel dimensions 为 `msd_dim=16`、`mpd_dim=32`、`mrd_dim=32`。
+- `in_channels` 默认 `2` 且可配置；这里承诺的是 DAC 风格结构，不是固定的官方 mono preset。
+- MPD 使用 period 分支；可选 MSD 使用 `sample_rates` 分支；MRD 使用多 STFT resolution。
 - Conv stack 直接用 `nn.Conv1d/2d + weight_norm + LeakyReLU` 实现，不依赖 deepaudio 私有 `ConvBlock` / `ActType`。
 - `torchaudio.functional.resample` 只在启用 MSD 且需要重采样时 lazy import。
 
@@ -382,6 +390,7 @@ discriminator = DACDiscriminator(in_channels=1)
 - feature matching 对 real features detach，fake features 保留梯度。
 - feature matching 缺少 `real`、没有 feature maps 或结构不匹配时抛错。
 - WGAN 默认启用 GP，非 WGAN 默认不启用 GP。
+- penalty-only 非线性 discriminator 能通过输入梯度把 GP 反传到 discriminator 参数。
 - D/G objective 固定返回 0-D Tensor，component diagnostics 通过 registry event 发出。
 - `Loss.from_preset(Preset.DAC)` 的最小 forward / D loss / G loss smoke。
 
