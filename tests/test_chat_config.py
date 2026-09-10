@@ -8,7 +8,7 @@ from _chat_fakes import chat_model as _chat_model
 from _chat_fakes import models_requests as _models_requests
 
 import anytrain.chat as chat_api
-from anytrain.chat._openrouter import resolve_models
+from anytrain.chat._openrouter import clear_model_catalog_cache, resolve_models
 from anytrain.chat.config import (
     DEEPSEEK_API_KEY_ENV,
     DEEPSEEK_BASE_URL_ENV,
@@ -20,12 +20,17 @@ from anytrain.chat.config import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_BASE_URL_ENV,
     OPENROUTER_CANDIDATE_LIMIT_ENV,
+    OPENROUTER_CATALOG_TTL_ENV,
     OPENROUTER_DEFAULT_BASE_URL,
+    OPENROUTER_MODE_ENV,
     OPENROUTER_MODELS_ENV,
 )
 
 
 class ChatConfigTest(unittest.TestCase):
+    def setUp(self):
+        clear_model_catalog_cache()
+
     def test_config_validates_credentials_and_model_inventory(self):
         base = {
             "base_url": "https://example.test/v1",
@@ -98,6 +103,31 @@ class ChatConfigTest(unittest.TestCase):
         )
         self.assertEqual(config.candidate_limit, 3)
         self.assertNotIn("secret", repr(config))
+
+    def test_config_from_env_supports_static_openrouter_mode(self):
+        env = {
+            OPENROUTER_API_KEY_ENV: "secret",
+            OPENROUTER_MODE_ENV: "static",
+            OPENROUTER_MODELS_ENV: "model/first,model/second",
+            OPENROUTER_CATALOG_TTL_ENV: "0",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = chat_api.config_from_env("openrouter")
+
+        self.assertEqual(config.mode, "static")
+        self.assertEqual(config.allowlist, ("model/first", "model/second"))
+        self.assertEqual(config.catalog_ttl, 0.0)
+
+    def test_static_openrouter_mode_requires_models(self):
+        env = {
+            OPENROUTER_API_KEY_ENV: "secret",
+            OPENROUTER_MODE_ENV: "static",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(ValueError, OPENROUTER_MODELS_ENV),
+        ):
+            chat_api.config_from_env("openrouter")
 
     def test_openrouter_models_reject_empty_entries(self):
         env = {
@@ -191,6 +221,39 @@ class ChatConfigTest(unittest.TestCase):
         self.assertTrue(
             any("openrouter selected candidates=" in message for message in logs.output)
         )
+
+    def test_static_openrouter_resolution_does_not_load_requests(self):
+        config = chat_api.ChatConfig(
+            base_url=OPENROUTER_DEFAULT_BASE_URL,
+            model="",
+            api_key="secret",
+            models=(),
+            allowlist=("first/model", "second/model"),
+            candidate_limit=1,
+            mode="static",
+        )
+        with patch.dict(sys.modules, {"requests": None}):
+            resolved = resolve_models(config)
+
+        self.assertEqual(resolved.models, ("first/model",))
+        self.assertEqual(resolved.model, "first/model")
+
+    def test_live_openrouter_catalog_is_cached_and_refreshable(self):
+        catalog = [_chat_model("valid/free", prompt=0, completion=0)]
+        fake_requests = _models_requests(catalog)
+        config = chat_api.ChatConfig(
+            base_url=OPENROUTER_DEFAULT_BASE_URL,
+            model="",
+            api_key="secret",
+            models=(),
+            candidate_limit=1,
+        )
+        with patch.dict(sys.modules, {"requests": fake_requests}):
+            resolve_models(config)
+            resolve_models(config)
+            resolve_models(config, refresh=True)
+
+        self.assertEqual(len(fake_requests.calls), 2)
 
     def test_openrouter_resolve_models_ranks_allowlist_from_live_catalog(self):
         catalog = [

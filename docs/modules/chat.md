@@ -73,7 +73,9 @@ response = await client.acall("compare it with the previous answer")
 - `OPENROUTER_API_KEY`（必填）
 - `OPENROUTER_BASE_URL`（可选，默认 `https://openrouter.ai/api/v1`）
 - `OPENROUTER_ALLOW_CUSTOM_BASE_URL`（可选；自定义 OpenRouter host 时必须显式设为 `1`）
-- `OPENROUTER_MODELS`（可选白名单；未设置时从直播 catalog 自动选）
+- `OPENROUTER_MODE`（可选，`live` 或 `static`，默认 `live`）
+- `OPENROUTER_MODELS`（live 模式下为可选白名单；static 模式下为必填的候选列表）
+- `OPENROUTER_CATALOG_TTL`（可选，默认 `300` 秒；设为 `0` 禁用 live catalog 缓存）
 - `OPENROUTER_CANDIDATE_LIMIT`（可选，默认 `4`；主模型 + 最多 3 个 OpenRouter fallback）
 
 DeepSeek / GLM 变量缺失或为空时，`Chat(...)` 会直接抛出 `ValueError`。OpenRouter 在 `OPENROUTER_API_KEY` 缺失、白名单为空串、或候选 limit 非法时同样直接抛错。
@@ -87,7 +89,11 @@ DeepSeek / GLM 变量缺失或为空时，`Chat(...)` 会直接抛出 `ValueErro
 3. 同价时优先 `openrouter/free`
 4. 取前 `OPENROUTER_CANDIDATE_LIMIT` 个作为候选；请求时主模型用第一个，其余最多 3 个放入 `extra_body.models`
 
-若设置了 `OPENROUTER_MODELS`，只在该白名单内做上述实时排序；白名单中不存在于 catalog 的 id 会直接报错。选型结果与每次成功响应使用的 `model` 都会通过 `logging.getLogger("anytrain.chat")` 打 INFO。
+若设置了 `OPENROUTER_MODELS`，live 模式只在该白名单内做上述实时排序；白名单中不存在于 catalog 的 id 会直接报错。
+static 模式按 `OPENROUTER_MODELS` 的配置顺序生成候选，不请求 `/models`，因此适合离线启动和对启动延迟敏感的服务；调用
+`refresh_models()` 仍不会让 static 模式联网。live catalog 在进程内按 endpoint 和 API key 摘要缓存，并通过 per-key single-flight
+避免并发实例重复请求；`refresh_models()` 会强制重新拉取 catalog。选型结果与每次成功响应使用的 `model` 都会通过
+`logging.getLogger("anytrain.chat")` 打 INFO。
 
 文本请求会通过 `logging.getLogger("anytrain.chat")` 记录请求生命周期：
 
@@ -128,7 +134,7 @@ GLM 调用使用：
 
 OpenRouter 调用使用：
 
-- 构造时用 `requests` 拉取 `/models` 并完成实时选型
+- live 模式构造时用 `requests` 拉取 `/models` 并完成实时选型；static 模式不导入 `requests`，直接使用配置的候选列表
 - `from openai import OpenAI`
 - `OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)`
 - 无强制 system prompt

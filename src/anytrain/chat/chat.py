@@ -75,6 +75,16 @@ class Chat:
         with self._lock:
             self._messages = initial_messages(self.model_type)
 
+    def refresh_models(self) -> None:
+        """Refresh OpenRouter live catalog selection without changing messages."""
+        if self.model_type != ModelType.OPENROUTER:
+            return
+        with self._lock:
+            self._config = resolve_models(self._config, refresh=True)
+
+    async def async_refresh_models(self) -> None:
+        await asyncio.to_thread(self.refresh_models)
+
     def __call__(
         self,
         prompt: str,

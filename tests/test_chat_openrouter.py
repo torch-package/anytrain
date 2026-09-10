@@ -9,6 +9,7 @@ from _chat_fakes import chat_model as _chat_model
 from _chat_fakes import models_requests as _models_requests
 
 from anytrain.chat import Chat
+from anytrain.chat._openrouter import clear_model_catalog_cache
 from anytrain.chat.config import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_BASE_URL_ENV,
@@ -18,6 +19,9 @@ from anytrain.chat.config import (
 
 
 class OpenRouterChatTest(unittest.TestCase):
+    def setUp(self):
+        clear_model_catalog_cache()
+
     def test_openrouter_backend_uses_openai_client_without_extra_body_for_single_model(self):
         calls = []
         catalog = [_chat_model("openai/gpt-4o-mini", prompt=0.00000015, completion=0.0000006)]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from typing import NamedTuple
 from urllib.parse import urlparse
@@ -17,13 +18,25 @@ OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV = "OPENROUTER_ALLOW_CUSTOM_BASE_URL"
 OPENROUTER_MODELS_ENV = "OPENROUTER_MODELS"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_CANDIDATE_LIMIT_ENV = "OPENROUTER_CANDIDATE_LIMIT"
+OPENROUTER_MODE_ENV = "OPENROUTER_MODE"
+OPENROUTER_CATALOG_TTL_ENV = "OPENROUTER_CATALOG_TTL"
 OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DEFAULT_CANDIDATE_LIMIT = 4
+OPENROUTER_DEFAULT_CATALOG_TTL = 300.0
 OPENROUTER_MAX_FALLBACK_MODELS = 3
 
 
 class ChatConfig:
-    __slots__ = ("allowlist", "api_key", "base_url", "candidate_limit", "model", "models")
+    __slots__ = (
+        "allowlist",
+        "api_key",
+        "base_url",
+        "candidate_limit",
+        "catalog_ttl",
+        "mode",
+        "model",
+        "models",
+    )
 
     def __init__(
         self,
@@ -33,10 +46,14 @@ class ChatConfig:
         models: tuple[str, ...] | None = None,
         allowlist: tuple[str, ...] | None = None,
         candidate_limit: int = OPENROUTER_DEFAULT_CANDIDATE_LIMIT,
+        mode: str = "live",
+        catalog_ttl: float = OPENROUTER_DEFAULT_CATALOG_TTL,
     ) -> None:
         self.base_url = _non_empty_string(base_url, "base_url")
         self.model = _string(model, "model")
         self.api_key = _non_empty_string(api_key, "api_key")
+        self.mode = _mode(mode)
+        self.catalog_ttl = _catalog_ttl(catalog_ttl)
         resolved_models = (model,) if models is None else models
         self.models = _string_tuple(resolved_models, "models", allow_empty=True)
         if self.model:
@@ -61,7 +78,8 @@ class ChatConfig:
         return (
             f"ChatConfig(base_url={self.base_url!r}, model={self.model!r}, "
             f"models={self.models!r}, allowlist={self.allowlist!r}, "
-            f"candidate_limit={self.candidate_limit!r}, api_key=<hidden>)"
+            f"candidate_limit={self.candidate_limit!r}, mode={self.mode!r}, "
+            f"catalog_ttl={self.catalog_ttl!r}, api_key=<hidden>)"
         )
 
 
@@ -102,13 +120,21 @@ def config_from_env(model_type: ModelType | str) -> ChatConfig:
 
 
 def _openrouter_config_from_env() -> ChatConfig:
+    mode = _openrouter_mode()
+    allowlist = _openrouter_allowlist()
+    if mode == "static" and allowlist is None:
+        raise ValueError(
+            f"{OPENROUTER_MODE_ENV}=static requires {OPENROUTER_MODELS_ENV}."
+        )
     return ChatConfig(
         base_url=_openrouter_base_url(),
         model="",
         api_key=_required_env(OPENROUTER_API_KEY_ENV),
         models=(),
-        allowlist=_openrouter_allowlist(),
+        allowlist=allowlist,
         candidate_limit=_openrouter_candidate_limit(),
+        mode=mode,
+        catalog_ttl=_openrouter_catalog_ttl(),
     )
 
 
@@ -175,6 +201,32 @@ def _openrouter_candidate_limit() -> int:
     return limit
 
 
+def _openrouter_mode() -> str:
+    value = os.environ.get(OPENROUTER_MODE_ENV, "live")
+    if value not in {"live", "static"}:
+        raise ValueError(f"{OPENROUTER_MODE_ENV} must be 'live' or 'static'.")
+    return value
+
+
+def _openrouter_catalog_ttl() -> float:
+    value = os.environ.get(OPENROUTER_CATALOG_TTL_ENV)
+    if value is None:
+        return OPENROUTER_DEFAULT_CATALOG_TTL
+    if value == "":
+        raise ValueError(f"{OPENROUTER_CATALOG_TTL_ENV} must not be empty.")
+    try:
+        ttl = float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{OPENROUTER_CATALOG_TTL_ENV} must be a finite non-negative number."
+        ) from exc
+    if not math.isfinite(ttl) or ttl < 0.0:
+        raise ValueError(
+            f"{OPENROUTER_CATALOG_TTL_ENV} must be a finite non-negative number."
+        )
+    return ttl
+
+
 def _openrouter_models(value: str) -> tuple[str, ...]:
     models: list[str] = []
     for part in value.split(","):
@@ -226,3 +278,20 @@ def _string_tuple(
     if len(set(resolved)) != len(resolved):
         raise ValueError(f"{name} must contain unique values.")
     return resolved
+
+
+def _mode(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("mode must be a string.")
+    if value not in {"live", "static"}:
+        raise ValueError("mode must be 'live' or 'static'.")
+    return value
+
+
+def _catalog_ttl(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise TypeError("catalog_ttl must be a finite non-negative number.")
+    ttl = float(value)
+    if not math.isfinite(ttl) or ttl < 0.0:
+        raise ValueError("catalog_ttl must be a finite non-negative number.")
+    return ttl

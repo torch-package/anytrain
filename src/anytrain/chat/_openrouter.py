@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Mapping, Sequence
+from threading import Lock
 from typing import Any
 
 from .config import ChatConfig
@@ -14,10 +16,15 @@ OPENROUTER_FREE_ROUTER_ID = "openrouter/free"
 INSTALL_HINT = (
     'Install chat dependencies with `python -m pip install "openai>=1.0" "requests>=2.31" "zai-sdk>=0.2.3"`.'
 )
+_CATALOG_CACHE: dict[tuple[str, str], tuple[float, tuple[dict[str, Any], ...]]] = {}
+_CATALOG_CACHE_LOCK = Lock()
+_CATALOG_KEY_LOCKS: dict[tuple[str, str], Lock] = {}
 
 
-def resolve_models(config: ChatConfig) -> ChatConfig:
-    catalog = _catalog(config)
+def resolve_models(config: ChatConfig, *, refresh: bool = False) -> ChatConfig:
+    if config.mode == "static":
+        return _resolve_static(config)
+    catalog = _catalog(config, refresh=refresh)
     ranked = _rank(catalog, allowlist=config.allowlist)
     if len(ranked) == 0:
         raise ValueError("OpenRouter model selection matched no chat models.")
@@ -37,10 +44,50 @@ def resolve_models(config: ChatConfig) -> ChatConfig:
         models=models,
         allowlist=config.allowlist,
         candidate_limit=config.candidate_limit,
+        mode=config.mode,
+        catalog_ttl=config.catalog_ttl,
     )
 
 
-def _catalog(config: ChatConfig) -> list[dict[str, Any]]:
+def _resolve_static(config: ChatConfig) -> ChatConfig:
+    if config.allowlist is None:
+        raise ValueError("OpenRouter static mode requires a non-empty model list.")
+    models = config.allowlist[: config.candidate_limit]
+    if not models:
+        raise ValueError("OpenRouter static mode requires at least one model.")
+    LOGGER.info("openrouter selected static candidates=%s", list(models))
+    return ChatConfig(
+        base_url=config.base_url,
+        model=models[0],
+        api_key=config.api_key,
+        models=models,
+        allowlist=config.allowlist,
+        candidate_limit=config.candidate_limit,
+        mode=config.mode,
+        catalog_ttl=config.catalog_ttl,
+    )
+
+
+def _catalog(config: ChatConfig, *, refresh: bool) -> list[dict[str, Any]]:
+    key = (config.base_url.rstrip("/"), _api_key_digest(config.api_key))
+    with _CATALOG_CACHE_LOCK:
+        key_lock = _CATALOG_KEY_LOCKS.setdefault(key, Lock())
+    with key_lock:
+        now = time.monotonic()
+        with _CATALOG_CACHE_LOCK:
+            cached = _CATALOG_CACHE.get(key)
+        if not refresh and cached is not None and now - cached[0] < config.catalog_ttl:
+            return [dict(item) for item in cached[1]]
+
+        # The per-key lock makes concurrent construction single-flight while
+        # allowing unrelated OpenRouter endpoints to fetch independently.
+        catalog = _fetch_catalog(config)
+        with _CATALOG_CACHE_LOCK:
+            _CATALOG_CACHE[key] = (now, tuple(dict(item) for item in catalog))
+        return catalog
+
+
+def _fetch_catalog(config: ChatConfig) -> list[dict[str, Any]]:
     requests = _load_requests()
     response = requests.get(
         url=f"{config.base_url.rstrip('/')}{MODELS_PATH}",
@@ -63,6 +110,17 @@ def _catalog(config: ChatConfig) -> list[dict[str, Any]]:
             raise TypeError("OpenRouter models response data items must be JSON objects.")
         models.append(dict(item))
     return models
+
+
+def _api_key_digest(api_key: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def clear_model_catalog_cache() -> None:
+    with _CATALOG_CACHE_LOCK:
+        _CATALOG_CACHE.clear()
 
 
 def _rank(
@@ -180,4 +238,4 @@ def _load_requests() -> Any:
     return requests
 
 
-__all__ = ["resolve_models"]
+__all__ = ["clear_model_catalog_cache", "resolve_models"]
