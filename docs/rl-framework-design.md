@@ -38,8 +38,10 @@ anytrain.framework.rl。
 `DPOLoss`、`GRPOLoss`、`ContinuousGRPOLoss` 和 `NeighborGRPOLoss` 的 forward 都默认
 `validate=True`：它们会检查 tensor 形状、device、dtype、mask 约束和有效位置的有限性。
 下游 datamodule / objective 已在进入 loss 前建立同一契约时，可显式传
-`validate=False`。该可信路径跳过这些重复检查，避免训练热路径把 GPU 标量带回主机；它
-不是容错模式，错误形状、非法 mask 或非有限值的结果未定义，必须由调用方负责拒绝。
+`validate=False`。该可信路径跳过显式输入校验，避免重复的 shape、mask 和 finite 检查；它
+不是容错模式，错误形状、非法 mask 或非有限值的结果未定义，必须由调用方负责拒绝。它不承诺
+所有后续 tensor 算子都没有 host synchronization，例如动态索引、归约或调用方自己的路径仍可能
+产生设备同步。
 
 ## Scalar 与 observation 契约
 

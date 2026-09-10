@@ -191,8 +191,9 @@ def _teacher_loss(
         .mean(dim=-1)
         .masked_fill(~mask, 0)
     )
-    cosine_loss, frame_count = _masked_mean(cosine_distance, mask)
-    smooth_l1, _frame_count = _masked_mean(smooth_l1_frames, mask)
+    frame_count = _checked_frame_count(mask).to(dtype=cosine_distance.dtype)
+    cosine_loss = cosine_distance.sum() / frame_count
+    smooth_l1 = smooth_l1_frames.sum() / frame_count
     return (
         cosine_loss + smooth_l1_weight * smooth_l1,
         1 - cosine_loss,
@@ -245,11 +246,16 @@ def _cosine_distance(prediction: Tensor, target: Tensor) -> Tensor:
 
 
 def _masked_mean(value: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
+    frame_count = _checked_frame_count(mask)
+    count = frame_count.to(dtype=value.dtype)
+    return value.sum() / count, count
+
+
+def _checked_frame_count(mask: Tensor) -> Tensor:
     frame_count = mask.sum()
     if frame_count.item() == 0:
         raise ValueError("loss mask must select at least one frame.")
-    count = frame_count.to(dtype=value.dtype)
-    return value.sum() / count, count
+    return frame_count
 
 
 def _validate_frame_tensors(

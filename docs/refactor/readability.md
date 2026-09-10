@@ -579,7 +579,8 @@
 - flow matching 的 optional dependency、source/path/runtime/objective/sampler 组合与数值行为。
 - GAN output normalization、feature matching、gradient penalty、observation event 和 DAC preset 架构。
 - DPO、token/continuous/neighbor GRPO 的公式、mask/reduction、policy-only 梯度与
-  `validate=False` 无 tensor host synchronization 快速路径。
+  `validate=False` 跳过显式输入校验的 trusted fast path；该选项不承诺所有后续 tensor 算子
+  都没有 host synchronization。
 
 验收：
 

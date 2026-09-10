@@ -1026,6 +1026,19 @@ class LossTest(unittest.TestCase):
             self.fail("prediction gradient is unavailable")
         self.assertTrue(torch.equal(gradient[:, 1], torch.zeros_like(gradient[:, 1])))
 
+    def test_teacher_loss_checks_the_shared_frame_count_once(self):
+        prediction = torch.ones(1, 2, 2)
+        target = torch.zeros_like(prediction)
+        mask = torch.ones(1, 2, dtype=torch.bool)
+
+        with patch(
+            "anytrain.loss.frame._checked_frame_count",
+            return_value=mask.sum(),
+        ) as checked_frame_count:
+            TeacherLoss()(prediction, target, mask)
+
+        checked_frame_count.assert_called_once_with(mask)
+
     def test_teacher_loss_rejects_nonfinite_options_from_function_and_module(self):
         prediction = torch.ones(1, 1, 2)
         target = torch.zeros_like(prediction)

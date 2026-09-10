@@ -43,8 +43,10 @@ class MaskedCodebookCrossEntropyLoss(LossABC):
 
     ``include_top1`` enables optional per-codebook top-1 observations.
     ``validate=False`` is intended for trusted batches in a training hot path
-    and skips input validation, but the reduction still rejects zero valid
-    frames because their mean is undefined.
+    and skips explicit input validation, but the reduction still rejects zero
+    valid frames because their mean is undefined. Unpacked inputs still compact
+    valid frames with ``nonzero()``; callers that also need to avoid dynamic
+    index materialization should provide ``PackedCodebookLogits`` directly.
     """
 
     def __init__(

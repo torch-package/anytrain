@@ -83,7 +83,8 @@ GAN loss 权重和 RL loss 超参数都在公开入口拒绝 bool、Tensor、字
 
 flow matching、GAN 和 RL 的训练生命周期、张量布局及数值目标不同，因此保持三个独立子模块；
 不抽取跨算法基类，也不按文件长度拆散 tensor math。RL 的 `validate=False` 仍是显式 trusted path，
-只跳过 batch tensor 的有限性与 mask 检查，不放宽公开控制项的类型。
+只跳过显式 batch tensor 的有限性、形状与 mask 检查，不放宽公开控制项的类型；它不承诺所有后续
+tensor 算子都没有 host synchronization。
 
 ## GAN
 
