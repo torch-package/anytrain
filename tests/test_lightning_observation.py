@@ -686,21 +686,165 @@ class ObservationCallbackTest(unittest.TestCase):
         trainer = _trainer(writer)
         module = _Module()
         module.automatic_optimization = False
-        callback = ObservationCallback(every_n_steps=2)
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([0]))
+        callback.on_before_optimizer_step(trainer, module, object())
+        trainer.global_step = 1
+        module.observed(torch.tensor([1]))
+        callback.on_before_optimizer_step(trainer, module, object())
+        trainer.global_step = 2
+        callback.on_train_batch_end(trainer, module, None, None, 0)
+
+        current = [
+            kwargs
+            for tag, kwargs in writer.histograms
+            if tag == "observation/module/observed/stats/codes/book_0/step"
+        ]
+        self.assertEqual(
+            [item["bucket_counts"] for item in current],
+            [[1.0, 0.0], [0.0, 1.0]],
+        )
+        self.assertEqual([item["global_step"] for item in current], [1, 2])
+
+    def test_batch_end_fallback_rejects_unpartitioned_manual_steps(self):
+        trainer = _trainer(_Writer())
+        module = _Module()
+        module.automatic_optimization = False
+        callback = ObservationCallback(every_n_steps=1)
         _start(callback, trainer, module)
 
         callback.on_train_batch_start(trainer, module, None, 0)
         module.observed(torch.tensor([0]))
         module.observed(torch.tensor([1]))
         trainer.global_step = 2
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "requires on_before_optimizer_step",
+        ):
+            callback.on_train_batch_end(trainer, module, None, None, 0)
+
+    def test_manual_optimizer_hook_polls_state_once_per_step(self):
+        class PolledManual(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.current = torch.tensor(0.0)
+
+            def forward(self, value):
+                self.current = value.float().mean()
+                return value
+
+        observation.registry.register(
+            PolledManual,
+            (
+                observation.StateObservation(
+                    "state",
+                    lambda module: observation.Curve(cast(Any, module).current),
+                ),
+            ),
+        )
+        trainer = _trainer(_Writer())
+        module = _Module(PolledManual())
+        module.automatic_optimization = False
+        callback = ObservationCallback(every_n_steps=1)
+        _start(callback, trainer, module)
+
+        callback.on_train_batch_start(trainer, module, None, 0)
+        module.observed(torch.tensor([2, 4]))
+        callback.on_before_optimizer_step(trainer, module, object())
+        trainer.global_step = 1
+        module.observed(torch.tensor([6, 8]))
+        callback.on_before_optimizer_step(trainer, module, object())
+        trainer.global_step = 2
         callback.on_train_batch_end(trainer, module, None, None, 0)
 
-        current = next(
-            kwargs
-            for tag, kwargs in writer.histograms
-            if tag == "observation/module/observed/stats/codes/book_0/step"
+        values = [
+            calls[0]["observation/module/observed/state/value"].item()
+            for calls in module.log_dict_calls
+        ]
+        self.assertEqual(values, [3.0, 7.0])
+
+    def test_real_lightning_manual_optimizer_steps_are_separate(self):
+        class ManualObserved(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.current = torch.tensor(0.0)
+
+            def forward(self, value):
+                self.current = value.float().mean()
+                return value
+
+        observation.registry.register(
+            ManualObserved,
+            (
+                observation.StateObservation(
+                    "state",
+                    lambda module: observation.Curve(cast(Any, module).current),
+                ),
+            ),
         )
-        self.assertEqual(current["bucket_counts"], [1.0, 1.0])
+
+        class ManualModule(pl.LightningModule):
+            automatic_optimization = False
+
+            def __init__(self):
+                super().__init__()
+                self.first = nn.Parameter(torch.tensor(1.0))
+                self.second = nn.Parameter(torch.tensor(1.0))
+                self.observed = ManualObserved()
+                self.observation_values = []
+
+            def training_step(self, batch, batch_idx):
+                del batch_idx
+                first_optimizer, second_optimizer = self.optimizers()
+                value = batch[0]
+                self.observed(value)
+                first_optimizer.zero_grad()
+                self.manual_backward((self.first * value).mean())
+                first_optimizer.step()
+                self.observed(value + 1)
+                second_optimizer.zero_grad()
+                self.manual_backward((self.second * (value + 1)).mean())
+                second_optimizer.step()
+
+            def configure_optimizers(self):
+                return [
+                    torch.optim.SGD([self.first], lr=0.1),
+                    torch.optim.SGD([self.second], lr=0.1),
+                ]
+
+            def log_dict(self, dictionary, *args, **kwargs):
+                del args, kwargs
+                self.observation_values.append(
+                    dictionary["observation/module/observed/state/value"]
+                    .detach()
+                    .cpu()
+                    .item()
+                )
+
+        module = ManualModule()
+        callback = ObservationCallback(every_n_steps=1)
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            devices=1,
+            max_epochs=1,
+            limit_train_batches=1,
+            logger=False,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            enable_progress_bar=False,
+            callbacks=[callback],
+        )
+        trainer.fit(
+            module,
+            DataLoader(TensorDataset(torch.tensor([[2.0]])), batch_size=1),
+        )
+
+        self.assertEqual(trainer.global_step, 2)
+        self.assertEqual(module.observation_values, [2.0, 3.0])
+        self.assertEqual(callback._last_global_step, 2)
 
     def test_observation_time_counts_gradient_accumulation_as_one_optimizer_step(self):
         trainer = _trainer(_Writer())

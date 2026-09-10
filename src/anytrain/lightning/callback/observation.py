@@ -782,6 +782,7 @@ class ObservationCallback(pl.Callback):
         self._observation_time_sum = 0.0
         self._observation_time_steps = 0
         self._last_global_step: int | None = None
+        self._train_optimizer_steps = 0
         self._validation_step = 0
         self._restored_last_global_step: int | None = None
         self._active_stage: Literal["train", "validation"] | None = None
@@ -894,19 +895,33 @@ class ObservationCallback(pl.Callback):
         self._active_stage = "train"
         self._forward_active = True
         step = _capability.global_step(trainer)
-        # Manual optimization (for example GAN discriminator/generator
-        # updates) can commit more than one optimizer step before batch end.
-        # The final step is not known yet, so keep render-only collectors
-        # active for the whole batch and decide whether to log at batch end.
-        manual_optimization = not bool(
-            getattr(pl_module, "automatic_optimization", True)
+        self._train_optimizer_steps = 0
+        self._render_active = self._should_render_step(step + 1)
+
+    def on_before_optimizer_step(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        optimizer: torch.optim.Optimizer,
+    ) -> None:
+        del optimizer
+        if not self._enabled or self._active_stage != "train":
+            return
+        if self._last_global_step is None:
+            self._last_global_step = _capability.global_step(trainer)
+        started_at = self._start_observation_timer()
+        step = self._last_global_step + 1
+        self._finalize_train_step(
+            trainer,
+            pl_module,
+            step=step,
+            started_at=started_at,
         )
-        self._render_active = (
-            manual_optimization and self.every_n_steps is not None
-        ) or (
-            self.every_n_steps is not None
-            and (step + 1) % self.every_n_steps == 0
-        )
+        self._train_optimizer_steps += 1
+        self._render_active = self._should_render_step(step + 1)
+
+    def _should_render_step(self, step: int) -> bool:
+        return self.every_n_steps is not None and step % self.every_n_steps == 0
 
     def on_train_batch_end(
         self,
@@ -919,9 +934,18 @@ class ObservationCallback(pl.Callback):
         del outputs, batch, batch_idx
         if not self._enabled:
             return
-        started_at = self._start_observation_timer()
         self._forward_active = False
         step = _capability.global_step(trainer)
+        if self._train_optimizer_steps:
+            if self._last_global_step != step:
+                raise RuntimeError(
+                    "ObservationCallback optimizer-step hook disagrees with "
+                    f"trainer.global_step: callback={self._last_global_step}, "
+                    f"trainer={step}."
+                )
+            self._discard_pending()
+            return
+        started_at = self._start_observation_timer()
         previous = self._last_global_step
         if previous is None:
             self._last_global_step = step
@@ -934,13 +958,27 @@ class ObservationCallback(pl.Callback):
             self._add_observation_time(started_at)
             self._active_stage = None
             return
-        if optimizer_steps != 1 and bool(
-            getattr(pl_module, "automatic_optimization", True)
-        ):
+        if optimizer_steps != 1:
             raise RuntimeError(
-                "ObservationCallback cannot partition one train batch across multiple "
-                "optimizer steps."
+                "ObservationCallback requires on_before_optimizer_step to partition "
+                "one train batch across multiple optimizer steps."
             )
+        self._finalize_train_step(
+            trainer,
+            pl_module,
+            step=step,
+            started_at=started_at,
+        )
+        self._active_stage = None
+
+    def _finalize_train_step(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *,
+        step: int,
+        started_at: float | None,
+    ) -> None:
         self._poll("train")
         self._validate_distributed_schema(trainer, pl_module)
         for key in sorted(self._stage_keys("train")):
@@ -956,10 +994,9 @@ class ObservationCallback(pl.Callback):
         self._last_global_step = step
         self._emitted_keys.clear()
         self._render_active = False
-        self._active_stage = None
         _validate_histograms(self._states, device=pl_module.device)
         _validate_profiles(self._states, device=pl_module.device)
-        if self.every_n_steps is None or step % self.every_n_steps != 0:
+        if not self._should_render_step(step):
             self._finish_observation_step(started_at)
             return
         self._log(
@@ -1933,6 +1970,7 @@ class ObservationCallback(pl.Callback):
         self._active_stage = None
         self._forward_active = False
         self._render_active = False
+        self._train_optimizer_steps = 0
         self._pending_observation_time = 0.0
         self._emitted_keys.clear()
         self._pending_observation_error = None
@@ -1947,6 +1985,7 @@ class ObservationCallback(pl.Callback):
         self._active_stage = None
         self._forward_active = False
         self._render_active = False
+        self._train_optimizer_steps = 0
         self._pending_observation_time = 0.0
         self._observation_time_sum = 0.0
         self._observation_time_steps = 0

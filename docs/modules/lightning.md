@@ -398,10 +398,11 @@ restore 顺序。callback `state_key` 只用稳定的 `tag` 区分实例；恢�
 `half_life_steps` / `sync_distributed`。
 `every_n_steps` 可在 resume 时改变；`max_dense_bins` 只要仍容纳 checkpoint schema 也可改变。
 
-提交边界通过 train batch end 的 `global_step` delta 判断，因此覆盖自动优化和梯度累积。自动优化若在同一
-train batch 内出现多个 optimizer step 会 fail-fast；`automatic_optimization=False` 的 manual
+正常提交边界使用 Lightning 的 `on_before_optimizer_step()`，因此每个 optimizer step 都能独立归因；
+gradient accumulation 的多个 microbatch 仍归入同一个 step。`automatic_optimization=False` 的 manual
 optimization 允许同一个 train batch 内执行多个 optimizer step（例如 GAN 的 discriminator/generator
-更新），这些 observation 会在 batch end 合并后提交。显式 `.forward()` 会绕过
+更新），这些 observation 会分别提交。若运行环境没有触发 optimizer hook，callback 才退回 train batch end
+的 `global_step` delta 兼容路径；该路径只能精确处理一个 step。显式 `.forward()` 会绕过
 `OutputObservation` hook，但 forward body 内的 `emit()` 和 step boundary 的 `StateObservation` 仍可工作。
 不再保留 ADT、quantization/codebook usage 或 MoE 专用 callback/monitor 作为兜底。
 量化 loss 是 quantizer forward output 的一部分，可以由其 registry collector 记录；`moe_loss()` 在

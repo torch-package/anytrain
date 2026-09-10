@@ -160,7 +160,7 @@ entropy、perplexity 和 active ratio；`Bins` 还输出 occupied/dead count 与
 
 当前 spec 包括：
 
-- `StateObservation`：在 optimizer step 完成时读取 module 已自然维护的状态。
+- `StateObservation`：在 optimizer-step hook 边界读取 module 已自然维护的状态。
 - `OutputObservation`：从普通 module forward 的 inputs/kwargs/output 提取 observation。
 - `ForwardEvent`：声明 forward 内显式发布的局部值。event name 必须匹配 exact concrete type 的 registry
   declaration；所有 rank 都应无条件执行同一 `emit()`，不能根据 observer 是否存在切换 forward 分支。
@@ -247,10 +247,11 @@ PyTorch forward hook 只覆盖普通 `module(...)` 调用，因此直接调用 `
 graph。observation 不提供 `enabled()` 分支；如果 flash/SDPA 路径不产生 attention map，必须由所有 rank
 一致的显式模型配置决定是否改用会物化权重的实现，callback 不能隐式切换 attention kernel。
 
-当前 optimizer-step 提交使用 train batch end 的 `global_step` delta，支持自动优化与梯度累积。
-automatic optimization 在一个 train batch 内出现多个 optimizer step 时会明确报错；
-`automatic_optimization=False` 的 manual optimization 则允许多个 step，并在 batch end 合并
-pending state 后提交。非法
+正常 Lightning 训练通过 `on_before_optimizer_step()` 在每个 optimizer step 边界提交 observation；
+gradient accumulation 的多个 microbatch 仍属于同一个 optimizer step。`automatic_optimization=False` 的
+manual optimization 也按每次 optimizer hook 独立提交，因此 discriminator/generator 等多个 step 不会合并。
+如果运行环境没有触发该 hook，callback 会退回到 train batch end 的 `global_step` delta 兼容路径；该路径只能
+精确处理一个 step，不能为同一 batch 中的多个 step 做归因。非法
 Distribution/Profile/Bins 数值在完成同一步的 distributed reduce 后立即报错，不受 render cadence 影响。
 
 ## 验收
