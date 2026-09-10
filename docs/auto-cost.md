@@ -16,6 +16,12 @@ conservative. resolve_auto_cost applies free CUDA memory, headroom, and minimum
 cost policy. Dataloader sample capacity and planning-window policy stay in the
 project because they depend on the project planner.
 
+Calibration clears the CUDA allocator once before each distinct probe.
+Repeated warmup and measurement steps for that probe reuse the allocator;
+synchronized baseline and peak-stat resets still isolate each measurement. An
+OOM still triggers cache cleanup before the next probe, so this optimization
+changes allocator overhead rather than the memory-fit semantics.
+
 For FSDP, invoke calibration after the strategy has sharded parameters and
 pass the wrapped strategy model. The same hooks and distributed OOM behavior
 apply; the project remains responsible for replacing its datamodule after the

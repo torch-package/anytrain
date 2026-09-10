@@ -158,6 +158,10 @@ def calibrate_auto_cost(
     measurements: list[AutoCostMeasurement] = []
     oom_targets: list[int] = []
     for probe in normalized:
+        # Cleanup is needed between distinct probe sizes, but not between
+        # repeated measurements of the same workload. Peak allocation is
+        # isolated by the synchronized baseline and peak-stat reset below.
+        torch.cuda.empty_cache()
         failed = False
         for _ in range(warmup_steps):
             if _synchronized_measurement(
@@ -189,7 +193,6 @@ def calibrate_auto_cost(
         if failed:
             oom_targets.append(probe.target_cost)
         hooks.clear_gradients(pl_module, model)
-        torch.cuda.empty_cache()
     return AutoCostCalibration(tuple(measurements), tuple(oom_targets))
 
 
@@ -366,7 +369,6 @@ def _measurement(
     measure: bool,
 ) -> AutoCostMeasurement:
     hooks.clear_gradients(pl_module, model)
-    torch.cuda.empty_cache()
     torch.cuda.synchronize(device)
     torch.cuda.reset_peak_memory_stats(device)
     baseline = torch.cuda.memory_allocated(device)

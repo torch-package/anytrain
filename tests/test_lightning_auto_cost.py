@@ -10,6 +10,7 @@ from torch import nn
 from anytrain.lightning import (
     AutoCostHooks,
     CostProbe,
+    calibrate_auto_cost,
     fit_memory_calibration,
     resolve_auto_cost,
 )
@@ -60,6 +61,41 @@ class AutoCostTest(unittest.TestCase):
                 run_forward_backward=lambda _module, _model, _batch: None,
                 actual_cost=cast(Any, 1),
             )
+
+    def test_calibration_clears_allocator_once_per_probe(self) -> None:
+        hooks = AutoCostHooks(
+            prepare=lambda _module, batch: batch,
+            move_to_device=lambda _module, batch, _device: batch,
+            run_forward_backward=lambda _module, _model, _batch: None,
+        )
+        probes = (
+            CostProbe(batch="small", target_cost=1, actual_cost=1),
+            CostProbe(batch="large", target_cost=2, actual_cost=2),
+        )
+        with (
+            patch(
+                "anytrain.lightning.auto_cost._cuda_device",
+                return_value=torch.device("cpu"),
+            ),
+            patch("torch.cuda.empty_cache") as empty_cache,
+            patch("torch.cuda.synchronize"),
+            patch("torch.cuda.reset_peak_memory_stats"),
+            patch("torch.cuda.memory_allocated", return_value=0),
+            patch("torch.cuda.max_memory_allocated", return_value=128),
+        ):
+            calibration = calibrate_auto_cost(
+                object(),
+                _TinyModel(),
+                probes,
+                hooks,
+                device="cuda",
+                steps=2,
+                warmup_steps=1,
+                sync_distributed=False,
+            )
+
+        self.assertEqual(len(calibration.measurements), 4)
+        self.assertEqual(empty_cache.call_count, len(probes))
 
     def test_fit_uses_arbitrary_cost_units(self) -> None:
         calibration = fit_memory_calibration(
