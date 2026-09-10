@@ -49,29 +49,20 @@ class BiCodecTokenizer(BackendTokenizer):
         if bool((lengths > audio.size(-1)).any()):
             raise ValueError("BiCodec padded waveform lengths exceed the waveform extent.")
 
-        codes = self.tokenize(audio, sample_rate)
-        semantic_lengths = self.codec.semantic_code_lengths(lengths, sample_rate)
-        for name, value in codes.items():
-            if name == "semantic":
-                valid_lengths = semantic_lengths
-            else:
-                valid_lengths = torch.full(
-                    (audio.size(0),),
-                    value.size(1),
-                    dtype=torch.long,
-                    device=lengths.device,
-                )
-            if bool((valid_lengths <= 0).any()) or bool(
-                (valid_lengths > value.size(1)).any()
-            ):
-                raise ValueError(
-                    f"BiCodec {name} valid lengths exceed the encoded stream extent."
-                )
-            semantic_lengths = semantic_lengths.to(device=lengths.device, dtype=torch.long)
+        semantic, global_codes, semantic_lengths = self.codec.encode_codes_padded(
+            audio,
+            sample_rate,
+            lengths,
+        )
+        codes = self._named(semantic[..., None], global_codes[..., None])
+        if bool((semantic_lengths <= 0).any()) or bool(
+            (semantic_lengths > codes["semantic"].size(1)).any()
+        ):
+            raise ValueError("BiCodec semantic valid lengths exceed the encoded stream extent.")
         return self._padded(
             codes=codes,
             lengths={
-                "semantic": semantic_lengths,
+                "semantic": semantic_lengths.to(device=lengths.device, dtype=torch.long),
                 "global": torch.full(
                     (audio.size(0),),
                     codes["global"].size(1),

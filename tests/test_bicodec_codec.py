@@ -187,6 +187,53 @@ class BiCodecCodecTest(unittest.TestCase):
         self.assertTrue(torch.equal(encoded.lengths["semantic"], torch.tensor([5, 3])))
         self.assertTrue(torch.equal(encoded.lengths["global"], torch.tensor([3, 3])))
 
+    def test_padded_tokenizer_batches_valid_waveforms_and_passes_attention_mask(self):
+        model = FakeBiCodecModel()
+        codec = _codec(model)
+        extractor: Any = codec.feature_extractor
+        extractor.config.conv_kernel = [1]
+        extractor.config.conv_stride = [1]
+        tokenizer = BiCodecTokenizer(
+            codec,
+            AudioCodeSpec(
+                sample_rate=16_000,
+                streams=(
+                    AudioCodeStreamSpec("semantic", 8192, frame_rate=50.0),
+                    AudioCodeStreamSpec("global", 4096, fixed_units=32),
+                ),
+            ),
+            AudioBackendIdentity("bicodec"),
+        )
+        audio = torch.tensor(
+            [
+                [[1.0, 2.0, 3.0, 4.0, 5.0]],
+                [[7.0, 8.0, 9.0, 99.0, 99.0]],
+            ]
+        )
+
+        tokenizer.tokenize_padded(audio, 16_000, torch.tensor([5, 3]))
+
+        self.assertEqual(codec.processor.waveform_lengths, (5, 3))
+        self.assertTrue(
+            torch.equal(
+                extractor.attention_masks[-1],
+                torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]]),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                model.batch["wav"][1],
+                torch.tensor([7.0, 8.0, 9.0, 0.0, 0.0]),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                model.batch["ref_wav"][1, :3],
+                torch.tensor([7.0, 8.0, 9.0]),
+            )
+        )
+        self.assertNotIn(99.0, model.batch["ref_wav"][1].tolist())
+
     def test_bicodec_exposes_directional_backend_methods(self):
         codec = _codec(FakeBiCodecModel())
 
@@ -335,6 +382,7 @@ class FakeProcessor:
 
     def __init__(self) -> None:
         self.sample_rate = None
+        self.waveform_lengths: tuple[int, ...] = ()
 
     @classmethod
     def from_pretrained(cls, path):
@@ -348,10 +396,23 @@ class FakeProcessor:
         sampling_rate: int,
         return_tensors: str,
         padding: bool,
+        return_attention_mask: bool,
         output_hidden_states: bool,
     ):
         self.sample_rate = sampling_rate
-        return SimpleNamespace(input_values=torch.stack([torch.as_tensor(item) for item in wav]))
+        del return_tensors, padding, output_hidden_states
+        rows = [torch.as_tensor(item) for item in wav]
+        self.waveform_lengths = tuple(int(row.numel()) for row in rows)
+        maximum = max(self.waveform_lengths)
+        input_values = torch.zeros((len(rows), maximum), dtype=rows[0].dtype)
+        attention_mask = torch.zeros((len(rows), maximum), dtype=torch.long)
+        for index, row in enumerate(rows):
+            input_values[index, : row.numel()] = row
+            attention_mask[index, : row.numel()] = 1
+        return SimpleNamespace(
+            input_values=input_values,
+            attention_mask=attention_mask if return_attention_mask else None,
+        )
 
 
 class FakeFeatureExtractor(nn.Module):
@@ -366,6 +427,7 @@ class FakeFeatureExtractor(nn.Module):
             conv_stride=[5, 2, 2, 2, 2, 2, 2],
         )
         self.eval_called = False
+        self.attention_masks: list[torch.Tensor | None] = []
         self.hidden_states: list[torch.Tensor] | None = [
             torch.full((2, 4, 3), float(index)) for index in range(17)
         ]
@@ -379,7 +441,8 @@ class FakeFeatureExtractor(nn.Module):
         self.eval_called = True
         return super().eval()
 
-    def forward(self, inputs):
+    def forward(self, inputs, *, attention_mask=None):
+        self.attention_masks.append(attention_mask)
         batch_size = inputs.size(0)
         hidden_states = self.hidden_states
         if hidden_states is not None:

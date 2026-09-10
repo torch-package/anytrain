@@ -37,6 +37,14 @@ reference clip 来提取说话人全局 token；如果目标音频和参考音�
 
     semantic, global_codes = codec.encode_codes(target_audio, target_sample_rate)
 
+变长音频组成 padded batch 时，使用 tokenizer 的 `tokenize_padded(audio, sample_rate, lengths)`。
+`audio` 是 `[batch, 1, padded_time]`，`lengths` 是每条 waveform 的未 padding 长度；wrapper
+会在重采样前清零 padding，并通过 Wav2Vec2 `attention_mask` 屏蔽 processor 的 batch padding。
+该入口对整个 batch 只执行一次 resample、feature extraction 和 BiCodec inference，不按样本
+回退；返回的 `semantic` 有效长度按 Wav2Vec2 convolution 边界计算，`global` 始终是固定的
+32 个 units。为保持 batch 形状，未配置固定 reference 时，较短 waveform 的 reference 会
+循环填充到 batch 内最长长度，这只影响 speaker reference，不会把 padding 送入模型。
+
 ## Token 契约
 
 Spark-TTS BiCodec 使用两个独立 named streams：

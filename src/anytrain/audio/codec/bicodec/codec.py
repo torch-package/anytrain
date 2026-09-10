@@ -225,6 +225,54 @@ class BiCodec(DeviceModule):
         ref_wav = self._reference(ref_wav)
         features = self.extract_features(wav)
 
+        return self._tokenize_codes(wav, ref_wav, features)
+
+    @torch.no_grad()
+    def encode_codes_padded(
+        self,
+        audio: Tensor,
+        sample_rate: int,
+        lengths: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Encode a padded waveform batch without running inference per sample.
+
+        Padding is zeroed before the single batched resample. The feature
+        processor then receives each valid waveform row and returns one
+        right-padded batch plus an attention mask for Wav2Vec2.
+        """
+
+        self._validate_padded_audio(audio, lengths)
+        source_lengths = lengths.to(device=audio.device, dtype=torch.long)
+        source_mask = torch.arange(audio.size(-1), device=audio.device).unsqueeze(0) < (
+            source_lengths.unsqueeze(1)
+        )
+        masked_audio = audio.masked_fill(~source_mask.unsqueeze(1), 0)
+        wav = self._audio(masked_audio, sample_rate)
+        waveform_lengths = _resampled_lengths(
+            source_lengths,
+            sample_rate=sample_rate,
+            target_sample_rate=self.sample_rate,
+        )
+        if bool((waveform_lengths > wav.size(-1)).any()):
+            raise RuntimeError(
+                "BiCodec resampling returned fewer samples than the valid waveform lengths."
+            )
+        ref_wav = self._reference_padded(wav, waveform_lengths)
+        features = self.extract_features(wav, lengths=waveform_lengths)
+        semantic_codes, global_codes = self._tokenize_codes(wav, ref_wav, features)
+        semantic_lengths = self.semantic_code_lengths(lengths, sample_rate)
+        if bool((semantic_lengths > semantic_codes.size(1)).any()):
+            raise RuntimeError(
+                "BiCodec semantic code lengths exceed the padded encoded stream extent."
+            )
+        return semantic_codes, global_codes, semantic_lengths
+
+    def _tokenize_codes(
+        self,
+        wav: Tensor,
+        ref_wav: Tensor,
+        features: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         tokenize = getattr(self.model, "tokenize", None)
         if not callable(tokenize):
             raise TypeError("BiCodec model must provide tokenize().")
@@ -249,19 +297,40 @@ class BiCodec(DeviceModule):
         return semantic_codes, global_codes[..., 0]
 
     @torch.no_grad()
-    def extract_features(self, wav: Tensor) -> Tensor:
+    def extract_features(self, wav: Tensor, *, lengths: Tensor | None = None) -> Tensor:
         if wav.dim() != 2:
             raise ValueError("wav must have shape [batch, time].")
 
-        waveforms = [item.detach().cpu().numpy() for item in wav]
+        if lengths is None:
+            waveforms = [item.detach().cpu().numpy() for item in wav]
+        else:
+            lengths = _padded_lengths(lengths, batch_size=wav.size(0), maximum=wav.size(1))
+            waveforms = [
+                wav[index, :length].detach().cpu().numpy()
+                for index, length in enumerate(lengths.detach().cpu().tolist())
+            ]
         inputs = self.processor(
             waveforms,
             sampling_rate=self.sample_rate,
             return_tensors="pt",
             padding=True,
+            return_attention_mask=True,
             output_hidden_states=True,
-        ).input_values
-        output = self.feature_extractor(self._to_device(inputs))
+        )
+        input_values = getattr(inputs, "input_values", None)
+        attention_mask = getattr(inputs, "attention_mask", None)
+        if not isinstance(input_values, Tensor):
+            raise RuntimeError("BiCodec feature processor must return input_values.")
+        if not isinstance(attention_mask, Tensor) or attention_mask.ndim != 2:
+            raise RuntimeError("BiCodec feature processor must return a 2D attention_mask.")
+        if attention_mask.shape[0] != input_values.shape[0]:
+            raise RuntimeError(
+                "BiCodec feature processor attention_mask must align with input_values."
+            )
+        output = self.feature_extractor(
+            self._to_device(input_values),
+            attention_mask=self._to_device(attention_mask),
+        )
         hidden_states = output.hidden_states
         if hidden_states is None:
             raise ValueError("BiCodec wav2vec2 feature extractor did not return hidden states.")
@@ -379,6 +448,23 @@ class BiCodec(DeviceModule):
             repeats = math.ceil(length / wav.size(-1))
             wav = wav.repeat(1, repeats)
         return wav[:, :length]
+
+    def _reference_padded(self, wav: Tensor, lengths: Tensor) -> Tensor:
+        target_length = self.ref_segment_length
+        if target_length is None:
+            target_length = int(lengths.max().item())
+        if target_length <= 0:
+            raise ValueError("BiCodec reference audio must contain at least one sample.")
+        offsets = torch.arange(target_length, device=wav.device).unsqueeze(0)
+        indexes = offsets.remainder(lengths.to(device=wav.device).unsqueeze(1))
+        return wav.gather(1, indexes)
+
+    def _validate_padded_audio(self, audio: Tensor, lengths: Tensor) -> None:
+        if audio.dim() != 3:
+            raise ValueError("BiCodec padded tokenization expects [batch, channel, time].")
+        if audio.size(1) != NUM_CHANNELS:
+            raise ValueError("BiCodec expects mono audio with shape [batch, 1, time].")
+        _padded_lengths(lengths, batch_size=audio.size(0), maximum=audio.size(-1))
 
     def _validate_global_codes(self, global_codes: Tensor) -> Tensor:
         codes = integer_tensor(global_codes, "global codes")
@@ -601,6 +687,38 @@ def _positive_int_tuple(value: Any, *, name: str) -> tuple[int, ...]:
     if any(isinstance(item, bool) or item <= 0 for item in result):
         raise ValueError(f"{name} must contain positive integers.")
     return result
+
+
+def _padded_lengths(lengths: Tensor, *, batch_size: int, maximum: int) -> Tensor:
+    if not isinstance(lengths, Tensor) or lengths.ndim != 1:
+        raise ValueError("BiCodec waveform lengths must have shape [batch].")
+    if lengths.dtype not in {
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    }:
+        raise TypeError("BiCodec waveform lengths must contain signed integers.")
+    if lengths.numel() != batch_size:
+        raise ValueError("BiCodec waveform lengths must align with the batch.")
+    if lengths.numel() == 0 or bool((lengths <= 0).any()):
+        raise ValueError("BiCodec waveform lengths must be positive.")
+    if bool((lengths > maximum).any()):
+        raise ValueError("BiCodec waveform lengths exceed the waveform extent.")
+    return lengths.to(dtype=torch.long)
+
+
+def _resampled_lengths(
+    lengths: Tensor,
+    *,
+    sample_rate: int,
+    target_sample_rate: int,
+) -> Tensor:
+    return torch.div(
+        lengths * target_sample_rate + sample_rate - 1,
+        sample_rate,
+        rounding_mode="floor",
+    ).to(dtype=torch.long)
 
 
 def _apply_encoder_downsampling(values: Tensor, encoder: Any) -> Tensor:
