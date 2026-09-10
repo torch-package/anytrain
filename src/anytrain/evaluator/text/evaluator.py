@@ -16,6 +16,9 @@ from .scores import (
     word_error_rate,
 )
 
+type _TextSemanticKey = tuple[TextNormalizationConfig, bool, str, int]
+type _TextCorpusPayload = tuple[_TextSemanticKey, tuple[str, ...], tuple[str, ...]]
+
 
 class TextComparisonEvaluator(EvaluatorABC):
     """Lightweight text comparison evaluator.
@@ -74,10 +77,10 @@ class TextComparisonEvaluator(EvaluatorABC):
         self._targets.extend(targets)
 
     def compute(self) -> MetricDict:
-        predictions, targets = self._corpus()
-        if not predictions:
-            raise ValueError("No text pairs have been recorded.")
-        return self._scores(predictions, targets)
+        local = self._local_corpus()
+        if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() <= 1:
+            return self._compute_corpus(*local)
+        return self._compute_distributed(local)
 
     def reset(self) -> None:
         self._predictions.clear()
@@ -134,32 +137,125 @@ class TextComparisonEvaluator(EvaluatorABC):
             "cer": character_error_rate(predictions, targets),
         }
 
-    def _corpus(self) -> tuple[list[str], list[str]]:
-        if not dist.is_available() or not dist.is_initialized():
-            return list(self._predictions), list(self._targets)
+    def _local_corpus(self) -> tuple[list[str], list[str]]:
+        return list(self._predictions), list(self._targets)
 
-        local = (tuple(self._predictions), tuple(self._targets))
-        gathered: list[tuple[tuple[str, ...], tuple[str, ...]] | None]
-        gathered = [None] * dist.get_world_size()
+    def _semantic_key(self) -> _TextSemanticKey:
+        return (
+            self.normalization,
+            self.bleu_smoothing,
+            self.bleu_tokenize,
+            self.chrf_word_order,
+        )
+
+    def _compute_corpus(
+        self,
+        predictions: Sequence[str],
+        targets: Sequence[str],
+    ) -> MetricDict:
+        if not predictions:
+            raise ValueError("No text pairs have been recorded.")
+        return self._scores(predictions, targets)
+
+    def _compute_distributed(
+        self,
+        local: tuple[list[str], list[str]],
+    ) -> MetricDict:
+        """Gather text to rank zero and broadcast one corpus result."""
+
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        payload: _TextCorpusPayload = (
+            self._semantic_key(),
+            tuple(local[0]),
+            tuple(local[1]),
+        )
+        gathered: list[_TextCorpusPayload | None] | None
+        gathered = [None] * world_size if rank == 0 else None
         from anytrain.lightning.audit import audit_collective
 
         audit_collective(
-            "torch.distributed.all_gather_object",
-            lambda: dist.all_gather_object(gathered, local),
-            source="TextComparisonEvaluator._corpus",
-            object_type=type(local).__name__,
+            "torch.distributed.gather_object",
+            lambda: dist.gather_object(payload, gathered, dst=0),
+            source="TextComparisonEvaluator._compute_distributed.gather",
+            object_type=type(payload).__name__,
             local_item_count=len(local[0]),
-            world_size=dist.get_world_size(),
+            world_size=world_size,
         )
 
-        predictions: list[str] = []
-        targets: list[str] = []
-        for corpus in gathered:
-            if corpus is None:
-                raise RuntimeError(
-                    "Distributed text corpus gathering returned no value for a rank."
+        envelope: list[object] = [None]
+        root_error: Exception | None = None
+        if rank == 0:
+            try:
+                if gathered is None:
+                    raise RuntimeError("Distributed text root did not allocate gather storage.")
+                predictions, targets = _merge_text_corpora(
+                    gathered,
+                    semantic_key=self._semantic_key(),
                 )
-            rank_predictions, rank_targets = corpus
-            predictions.extend(rank_predictions)
-            targets.extend(rank_targets)
-        return predictions, targets
+                envelope[0] = {
+                    "status": "ok",
+                    "metrics": self._compute_corpus(predictions, targets),
+                }
+            except Exception as error:
+                root_error = error
+                envelope[0] = {
+                    "status": "error",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+
+        audit_collective(
+            "torch.distributed.broadcast_object_list",
+            lambda: dist.broadcast_object_list(envelope, src=0),
+            source="TextComparisonEvaluator._compute_distributed.broadcast",
+            object_type="dict",
+            world_size=world_size,
+        )
+        result = envelope[0]
+        if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
+            raise RuntimeError("Distributed text compute returned an invalid result envelope.")
+        if result["status"] == "error":
+            error_type = result.get("error_type", "Exception")
+            error_message = result.get("error", "unknown root error")
+            failure = RuntimeError(
+                "Distributed text compute failed on rank zero: "
+                f"{error_type}: {error_message}"
+            )
+            if root_error is not None:
+                raise failure from root_error
+            raise failure
+
+        metrics = result.get("metrics")
+        if not isinstance(metrics, dict):
+            raise RuntimeError("Distributed text compute returned invalid metrics.")
+        return self._validate_metric_dict(metrics)
+
+
+def _merge_text_corpora(
+    gathered: Sequence[_TextCorpusPayload | None],
+    *,
+    semantic_key: _TextSemanticKey,
+) -> tuple[list[str], list[str]]:
+    predictions: list[str] = []
+    targets: list[str] = []
+    for rank, corpus in enumerate(gathered):
+        if corpus is None:
+            raise RuntimeError(
+                "Distributed text corpus gathering returned no value for rank "
+                f"{rank}."
+            )
+        if not isinstance(corpus, tuple) or len(corpus) != 3:
+            raise RuntimeError("Distributed text corpus payload has an invalid shape.")
+        rank_semantic_key, rank_predictions, rank_targets = corpus
+        if rank_semantic_key != semantic_key:
+            raise RuntimeError(
+                "Distributed text evaluators have different semantic configurations."
+            )
+        if not isinstance(rank_predictions, tuple) or not isinstance(rank_targets, tuple):
+            raise RuntimeError("Distributed text corpus payload has invalid text fields.")
+        if len(rank_predictions) != len(rank_targets):
+            raise RuntimeError("Distributed text corpus payloads are not aligned.")
+        predictions.extend(rank_predictions)
+        targets.extend(rank_targets)
+    return predictions, targets

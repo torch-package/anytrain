@@ -166,9 +166,11 @@ evaluator.reset()
 它在 `update()` 时保存规范化后的 Python 文本，不保存 batch metric 或 GPU tensor；`compute()`
 对所有已保存文本一次计算 corpus BLEU、WER、chrF/chrF++ 和 CER，因此结果不受 batch 大小或切分方式影响。
 如果 `torch.distributed` 已初始化，所有 rank 必须共同调用 `compute()`；实现会通过
-`all_gather_object` 汇总各 rank 的文本 corpus，使每个 rank 得到相同的全局指标。`reset()` 只清空
-当前 rank 的本地文本状态。某个 rank 可以没有本地样本，只要聚合后的全局 corpus 非空；所有
-rank 都为空时 `compute()` 会明确抛出 `ValueError`。
+`gather_object` 把各 rank 的文本 corpus 汇集到 rank 0，只由 rank 0 计算四个全局指标，再把统一
+metric dict 或统一错误广播给所有 rank。`evaluate()` 仍是 rank-local 的无状态调用，不参与该聚合；
+`reset()` 只清空当前 rank 的本地文本状态。某个 rank 可以没有本地样本，只要聚合后的全局 corpus
+非空；各 rank 的 normalization、BLEU 和 chrF 配置必须一致。所有 rank 都为空或配置不一致时，
+所有 rank 会收到包含原始错误类型和消息的统一 `RuntimeError`。
 
 `EvaluatorGroup` 接受任意 `nn.Module`，只要即时调用返回合法的 metric mapping；这允许下游
 直接接入结构兼容的第三方 metric module。plain callable 不会被接受，因为组合器需要通过

@@ -42,6 +42,19 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
         self.assertEqual(metrics["chrf"], 100.0)
         self.assertEqual(metrics["cer"], 0.0)
 
+    def test_evaluate_remains_rank_local_and_stateless(self):
+        evaluator = TextComparisonEvaluator()
+
+        with patch(
+            "anytrain.evaluator.text.evaluator.dist.is_available",
+            side_effect=AssertionError("evaluate must not inspect distributed state"),
+        ):
+            metrics = evaluator.evaluate("hello world", "hello world")
+
+        self.assertEqual(metrics["wer"], 0.0)
+        with self.assertRaisesRegex(ValueError, "No text pairs"):
+            evaluator.compute()
+
     def test_batch_scores_are_corpus_scores(self):
         evaluator = TextComparisonEvaluator()
 
@@ -124,74 +137,234 @@ class TextComparisonEvaluatorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No text pairs"):
             text.compute()
 
-    def test_compute_gathers_text_corpus_from_all_distributed_ranks(self):
+    def test_distributed_compute_scores_on_root_once_and_broadcasts_result(self):
         evaluator = TextComparisonEvaluator(lowercase=True)
         evaluator.update(" Local, TEXT! ", "local text")
-        remote = (("wrong words",), ("right words",))
+        semantic_key = evaluator._semantic_key()
+        remote = (semantic_key, ("wrong words",), ("right words",))
         expected = evaluator(
             ["local text", "wrong words"],
             ["local text", "right words"],
         )
 
-        def gather(corpora, local):
-            self.assertEqual(local, (("local text",), ("local text",)))
-            corpora[0] = local
-            corpora[1] = remote
+        def gather(payload, gathered, *, dst):
+            self.assertEqual(dst, 0)
+            self.assertEqual(
+                payload,
+                (semantic_key, ("local text",), ("local text",)),
+            )
+            self.assertIsNotNone(gathered)
+            assert gathered is not None
+            gathered[:] = [payload, remote]
+
+        def broadcast(envelope, *, src):
+            self.assertEqual(src, 0)
+            self.assertEqual(envelope[0], {"status": "ok", "metrics": expected})
 
         with (
             patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
             patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
             patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=0),
             patch(
-                "anytrain.evaluator.text.evaluator.dist.all_gather_object",
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
                 side_effect=gather,
-            ) as all_gather_object,
+            ) as gather_object,
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ) as broadcast_object_list,
+            patch.object(evaluator, "_scores", wraps=evaluator._scores) as scores,
         ):
             running = evaluator.compute()
 
-        all_gather_object.assert_called_once()
-        for name, value in expected.items():
-            self.assertAlmostEqual(running[name], value)
+        gather_object.assert_called_once()
+        broadcast_object_list.assert_called_once()
+        scores.assert_called_once_with(
+            ["local text", "wrong words"],
+            ["local text", "right words"],
+        )
+        self.assertEqual(running, expected)
 
-    def test_compute_accepts_empty_local_distributed_corpus(self):
+    def test_distributed_compute_non_root_uses_broadcast_without_scoring(self):
         evaluator = TextComparisonEvaluator()
-        remote = (("hello world",), ("hello world",))
-        expected = evaluator(*remote)
+        evaluator.update("local text", "local text")
+        semantic_key = evaluator._semantic_key()
+        expected = {"bleu": 75.0, "wer": 0.25, "chrf": 80.0, "cer": 0.1}
 
-        def gather(corpora, local):
-            self.assertEqual(local, ((), ()))
-            corpora[0] = local
-            corpora[1] = remote
+        def gather(payload, gathered, *, dst):
+            self.assertEqual(dst, 0)
+            self.assertEqual(
+                payload,
+                (semantic_key, ("local text",), ("local text",)),
+            )
+            self.assertIsNone(gathered)
+
+        def broadcast(envelope, *, src):
+            self.assertEqual(src, 0)
+            envelope[0] = {"status": "ok", "metrics": expected}
 
         with (
             patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
             patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
             patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=1),
             patch(
-                "anytrain.evaluator.text.evaluator.dist.all_gather_object",
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
                 side_effect=gather,
+            ),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ),
+            patch.object(
+                evaluator,
+                "_scores",
+                side_effect=AssertionError("non-root must not score the global corpus"),
             ),
         ):
             running = evaluator.compute()
 
         self.assertEqual(running, expected)
 
-    def test_compute_rejects_globally_empty_distributed_corpus(self):
+    def test_distributed_compute_accepts_empty_local_corpus_on_root(self):
         evaluator = TextComparisonEvaluator()
+        semantic_key = evaluator._semantic_key()
+        remote = (semantic_key, ("hello world",), ("hello world",))
+        expected = evaluator(remote[1], remote[2])
 
-        def gather(corpora, local):
-            corpora[0] = local
-            corpora[1] = local
+        def gather(payload, gathered, *, dst):
+            self.assertEqual(dst, 0)
+            self.assertEqual(payload, (semantic_key, (), ()))
+            assert gathered is not None
+            gathered[:] = [payload, remote]
 
         with (
             patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
             patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
             patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=0),
             patch(
-                "anytrain.evaluator.text.evaluator.dist.all_gather_object",
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
                 side_effect=gather,
             ),
-            self.assertRaisesRegex(ValueError, "No text pairs"),
+            patch("anytrain.evaluator.text.evaluator.dist.broadcast_object_list"),
+        ):
+            running = evaluator.compute()
+
+        self.assertEqual(running, expected)
+
+    def test_distributed_compute_broadcasts_root_scoring_error(self):
+        evaluator = TextComparisonEvaluator()
+        evaluator.update("hello world", "hello world")
+
+        def gather(payload, gathered, *, dst):
+            del dst
+            assert gathered is not None
+            gathered[:] = [payload, payload]
+
+        def broadcast(envelope, *, src):
+            self.assertEqual(src, 0)
+            self.assertEqual(envelope[0]["status"], "error")
+            self.assertEqual(envelope[0]["error_type"], "ValueError")
+            self.assertEqual(envelope[0]["error"], "scoring exploded")
+
+        with (
+            patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=0),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
+                side_effect=gather,
+            ),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ),
+            patch.object(evaluator, "_scores", side_effect=ValueError("scoring exploded")),
+            self.assertRaisesRegex(RuntimeError, "ValueError: scoring exploded") as raised,
+        ):
+            evaluator.compute()
+
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    def test_distributed_compute_rejects_mismatched_semantic_config(self):
+        evaluator = TextComparisonEvaluator()
+        evaluator.update("hello world", "hello world")
+        remote_key = TextComparisonEvaluator(lowercase=True)._semantic_key()
+
+        def gather(payload, gathered, *, dst):
+            del dst
+            assert gathered is not None
+            gathered[:] = [payload, (remote_key, ("hello",), ("hello",))]
+
+        with (
+            patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=0),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
+                side_effect=gather,
+            ),
+            patch("anytrain.evaluator.text.evaluator.dist.broadcast_object_list"),
+            self.assertRaisesRegex(RuntimeError, "different semantic configurations"),
+        ):
+            evaluator.compute()
+
+    def test_distributed_compute_non_root_raises_broadcast_root_error(self):
+        evaluator = TextComparisonEvaluator()
+
+        def gather(payload, gathered, *, dst):
+            del payload
+            self.assertEqual(dst, 0)
+            self.assertIsNone(gathered)
+
+        def broadcast(envelope, *, src):
+            self.assertEqual(src, 0)
+            envelope[0] = {
+                "status": "error",
+                "error_type": "ValueError",
+                "error": "No text pairs have been recorded.",
+            }
+
+        with (
+            patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=1),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
+                side_effect=gather,
+            ),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ),
+            self.assertRaisesRegex(RuntimeError, "ValueError: No text pairs"),
+        ):
+            evaluator.compute()
+
+    def test_distributed_compute_rejects_globally_empty_corpus(self):
+        evaluator = TextComparisonEvaluator()
+
+        def gather(payload, gathered, *, dst):
+            del dst
+            assert gathered is not None
+            gathered[:] = [payload, payload]
+
+        with (
+            patch("anytrain.evaluator.text.evaluator.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.text.evaluator.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.text.evaluator.dist.get_rank", return_value=0),
+            patch(
+                "anytrain.evaluator.text.evaluator.dist.gather_object",
+                side_effect=gather,
+            ),
+            patch("anytrain.evaluator.text.evaluator.dist.broadcast_object_list"),
+            self.assertRaisesRegex(RuntimeError, "ValueError: No text pairs"),
         ):
             evaluator.compute()
 
