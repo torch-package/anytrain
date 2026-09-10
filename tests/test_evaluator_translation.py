@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from anytrain.evaluator.translation import (
     CometEvaluator,
@@ -66,6 +67,118 @@ class CometEvaluatorTest(unittest.TestCase):
         self.assertEqual(len(backend.calls[0][0]), 3)
         evaluator.reset()
         with self.assertRaisesRegex(ValueError, "No translation triples"):
+            evaluator.compute()
+
+    def test_distributed_compute_scores_on_root_once_and_broadcasts_result(self) -> None:
+        backend = FakeBackend(0.8)
+        evaluator = CometEvaluator(_CONFIG, backend=backend)
+        evaluator.update("local source", "local output", "local reference")
+        remote = (
+            _CONFIG.semantic_id(),
+            ("remote source",),
+            ("remote output",),
+            ("remote reference",),
+        )
+
+        def gather(payload, gathered, *, dst):
+            self.assertEqual(dst, 0)
+            self.assertIsNotNone(gathered)
+            assert gathered is not None
+            gathered[:] = [
+                payload,
+                remote,
+            ]
+
+        def broadcast(envelope, *, src):
+            self.assertEqual(src, 0)
+            self.assertEqual(envelope[0], {"status": "ok", "system_score": 0.8})
+
+        with (
+            patch("anytrain.evaluator.translation.comet.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.translation.comet.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.translation.comet.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.translation.comet.dist.get_rank", return_value=0),
+            patch(
+                "anytrain.evaluator.translation.comet.dist.gather_object",
+                side_effect=gather,
+            ) as gather_object,
+            patch(
+                "anytrain.evaluator.translation.comet.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ) as broadcast_object_list,
+        ):
+            self.assertEqual(evaluator.compute(), {"comet": 0.8})
+
+        gather_object.assert_called_once()
+        broadcast_object_list.assert_called_once()
+        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(len(backend.calls[0][0]), 2)
+
+    def test_distributed_compute_non_root_uses_broadcast_without_backend_call(self) -> None:
+        backend = FakeBackend(0.8)
+        evaluator = CometEvaluator(_CONFIG, backend=backend)
+        evaluator.update("local source", "local output", "local reference")
+
+        def gather(payload, gathered, *, dst):
+            del payload, dst
+            self.assertIsNone(gathered)
+
+        def broadcast(envelope, *, src):
+            self.assertEqual(src, 0)
+            envelope[0] = {"status": "ok", "system_score": 0.65}
+
+        with (
+            patch("anytrain.evaluator.translation.comet.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.translation.comet.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.translation.comet.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.translation.comet.dist.get_rank", return_value=1),
+            patch(
+                "anytrain.evaluator.translation.comet.dist.gather_object",
+                side_effect=gather,
+            ),
+            patch(
+                "anytrain.evaluator.translation.comet.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ),
+        ):
+            self.assertEqual(evaluator.compute(), {"comet": 0.65})
+
+        self.assertEqual(backend.calls, [])
+
+    def test_distributed_compute_broadcasts_root_backend_error(self) -> None:
+        class FailingBackend(FakeBackend):
+            def predict(self, samples, *, batch_size: int) -> CometResult:
+                del samples, batch_size
+                raise RuntimeError("backend exploded")
+
+        evaluator = CometEvaluator(_CONFIG, backend=FailingBackend())
+
+        def gather(payload, gathered, *, dst):
+            del dst
+            assert gathered is not None
+            gathered[:] = [payload, payload]
+
+        def broadcast(envelope, *, src):
+            del src
+            self.assertEqual(envelope[0]["status"], "error")
+            self.assertIn("backend exploded", envelope[0]["error"])
+
+        with (
+            patch("anytrain.evaluator.translation.comet.dist.is_available", return_value=True),
+            patch("anytrain.evaluator.translation.comet.dist.is_initialized", return_value=True),
+            patch("anytrain.evaluator.translation.comet.dist.get_world_size", return_value=2),
+            patch("anytrain.evaluator.translation.comet.dist.get_rank", return_value=0),
+            patch(
+                "anytrain.evaluator.translation.comet.dist.gather_object",
+                side_effect=gather,
+            ),
+            patch(
+                "anytrain.evaluator.translation.comet.dist.broadcast_object_list",
+                side_effect=broadcast,
+            ),
+            self.assertRaisesRegex(RuntimeError, "backend exploded"),
+        ):
+            evaluator.update("source", "output", "reference")
             evaluator.compute()
 
     def test_rejects_misaligned_or_empty_inputs(self) -> None:

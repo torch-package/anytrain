@@ -194,6 +194,9 @@ class CometEvaluator(EvaluatorABC):
                 strict=True,
             )
         )
+        return self._score_samples(samples)
+
+    def _score_samples(self, samples: Sequence[CometSample]) -> CometResult:
         result = self._backend.predict(samples, batch_size=self._config.batch_size)
         if not isinstance(result, CometResult):
             raise TypeError("COMET backend must return a CometResult.")
@@ -228,10 +231,10 @@ class CometEvaluator(EvaluatorABC):
         self._references.extend(references)
 
     def compute(self) -> MetricDict:
-        sources, hypotheses, references = self._corpus()
-        if not sources:
-            raise ValueError("No translation triples have been recorded.")
-        return {"comet": self.score(sources, hypotheses, references).system_score}
+        local = self._local_corpus()
+        if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() <= 1:
+            return self._compute_corpus(*local)
+        return self._compute_distributed(local)
 
     def reset(self) -> None:
         self._sources.clear()
@@ -270,46 +273,134 @@ class CometEvaluator(EvaluatorABC):
                     raise ValueError(f"{name}[{index}] must not be empty after normalization.")
         return sources, hypotheses, references
 
-    def _corpus(self) -> tuple[list[str], list[str], list[str]]:
-        if not dist.is_available() or not dist.is_initialized():
-            return (
-                list(self._sources),
-                list(self._hypotheses),
-                list(self._references),
-            )
-
-        local = (
-            tuple(self._sources),
-            tuple(self._hypotheses),
-            tuple(self._references),
+    def _local_corpus(self) -> tuple[list[str], list[str], list[str]]:
+        return (
+            list(self._sources),
+            list(self._hypotheses),
+            list(self._references),
         )
-        gathered: list[
-            tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None
-        ] = [None] * dist.get_world_size()
+
+    def _compute_corpus(
+        self,
+        sources: Sequence[str],
+        hypotheses: Sequence[str],
+        references: Sequence[str],
+    ) -> MetricDict:
+        if not sources:
+            raise ValueError("No translation triples have been recorded.")
+        samples = tuple(
+            CometSample(source, hypothesis, reference)
+            for source, hypothesis, reference in zip(
+                sources,
+                hypotheses,
+                references,
+                strict=True,
+            )
+        )
+        return {"comet": self._score_samples(samples).system_score}
+
+    def _compute_distributed(
+        self,
+        local: tuple[list[str], list[str], list[str]],
+    ) -> MetricDict:
+        """Gather corpus data to rank zero and broadcast one COMET result."""
+
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        payload = (self.semantic_id(), tuple(local[0]), tuple(local[1]), tuple(local[2]))
+        gathered: list[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None] | None
+        gathered = [None] * world_size if rank == 0 else None
         from anytrain.lightning.audit import audit_collective
 
         audit_collective(
-            "torch.distributed.all_gather_object",
-            lambda: dist.all_gather_object(gathered, local),
-            source="CometEvaluator._corpus",
-            object_type=type(local).__name__,
+            "torch.distributed.gather_object",
+            lambda: dist.gather_object(payload, gathered, dst=0),
+            source="CometEvaluator._compute_distributed.gather",
+            object_type=type(payload).__name__,
             local_item_count=len(local[0]),
-            world_size=dist.get_world_size(),
+            world_size=world_size,
         )
 
-        sources: list[str] = []
-        hypotheses: list[str] = []
-        references: list[str] = []
-        for corpus in gathered:
-            if corpus is None:
-                raise RuntimeError(
-                    "Distributed COMET corpus gathering returned no value for a rank."
+        envelope: list[object] = [None]
+        root_error: Exception | None = None
+        if rank == 0:
+            try:
+                if gathered is None:
+                    raise RuntimeError("Distributed COMET root did not allocate gather storage.")
+                sources, hypotheses, references = _merge_comet_corpora(
+                    gathered,
+                    semantic_id=self.semantic_id(),
                 )
-            rank_sources, rank_hypotheses, rank_references = corpus
-            sources.extend(rank_sources)
-            hypotheses.extend(rank_hypotheses)
-            references.extend(rank_references)
-        return sources, hypotheses, references
+                metrics = self._compute_corpus(sources, hypotheses, references)
+                envelope[0] = {"status": "ok", "system_score": metrics["comet"]}
+            except Exception as error:
+                root_error = error
+                envelope[0] = {
+                    "status": "error",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+
+        audit_collective(
+            "torch.distributed.broadcast_object_list",
+            lambda: dist.broadcast_object_list(envelope, src=0),
+            source="CometEvaluator._compute_distributed.broadcast",
+            object_type="dict",
+            world_size=world_size,
+        )
+        result = envelope[0]
+        if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
+            raise RuntimeError("Distributed COMET returned an invalid result envelope.")
+        if result["status"] == "error":
+            error_type = result.get("error_type", "Exception")
+            error_message = result.get("error", "unknown root error")
+            failure = RuntimeError(
+                "Distributed COMET compute failed on rank zero: "
+                f"{error_type}: {error_message}"
+            )
+            if root_error is not None:
+                raise failure from root_error
+            raise failure
+        return {"comet": _score(result.get("system_score"), name="system_score")}
+
+
+def _merge_comet_corpora(
+    gathered: Sequence[
+        tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None
+    ],
+    *,
+    semantic_id: str,
+) -> tuple[list[str], list[str], list[str]]:
+    sources: list[str] = []
+    hypotheses: list[str] = []
+    references: list[str] = []
+    for rank, payload in enumerate(gathered):
+        if payload is None:
+            raise RuntimeError(
+                "Distributed COMET corpus gathering returned no value for rank "
+                f"{rank}."
+            )
+        if not isinstance(payload, tuple) or len(payload) != 4:
+            raise RuntimeError("Distributed COMET corpus payload has an invalid shape.")
+        rank_semantic_id, rank_sources, rank_hypotheses, rank_references = payload
+        if rank_semantic_id != semantic_id:
+            raise RuntimeError(
+                "Distributed COMET evaluators have different semantic configurations."
+            )
+        if not (
+            isinstance(rank_sources, tuple)
+            and isinstance(rank_hypotheses, tuple)
+            and isinstance(rank_references, tuple)
+        ):
+            raise RuntimeError("Distributed COMET corpus payload has invalid text fields.")
+        if not (
+            len(rank_sources) == len(rank_hypotheses) == len(rank_references)
+        ):
+            raise RuntimeError("Distributed COMET corpus payloads are not aligned.")
+        sources.extend(rank_sources)
+        hypotheses.extend(rank_hypotheses)
+        references.extend(rank_references)
+    return sources, hypotheses, references
 
 
 class _UnbabelCometBackend:

@@ -229,7 +229,10 @@ reference 都为空时返回 `0.0`。因此该边界结果不应被解释为比�
 `anytrain.evaluator.translation` 提供 `CometEvaluator`，使用 `source`、模型 `hypothesis` 和人工
 `reference` 三元组计算 reference-based COMET。它同时支持即时 `evaluate()`、逐 segment 的
 `score()` 以及跨 batch 的 `update()/compute()/reset()`；`compute()` 在 distributed 已初始化时先
-汇总完整三元组 corpus，再进行一次 system-level aggregation，不能平均各 batch 的 system score。
+把各 rank 的三元组 gather 到 rank 0，由 rank 0 执行一次完整 corpus 的 batched inference 和
+system-level aggregation，再把结果或统一错误广播给所有 rank；不能平均各 batch 的 system score。
+所有 rank 必须共同调用 `compute()`。`score()` 和 `evaluate()` 仍是 rank-local，调用各自 rank 的
+backend 一次，不参与该 distributed 聚合。
 COMET 是重量级 optional backend：安装 `anytrain[translation-eval]`，并通过
 `CometSemanticConfig` 固定 checkpoint model/revision/weights SHA-256、backend version、文本
 normalization 和 batch size。构造 evaluator 不会加载模型；真实 checkpoint 只在首次评分时校验摘要并加载。
@@ -337,7 +340,8 @@ UTMOS backend 细节从 `anytrain.evaluator.speech.utmos` 显式导入。
 
 - text evaluator 的单条、batch、normalization、空 reference、长度不一致和 metric key。
 - speech evaluator 的默认 backend 延迟构造、ASR 配置项、ASR reference 校验、text metric 透传、UTMOS batch mean 和真实 backend 输出规范化。
-- translation evaluator 的 semantic config、custom backend、batch/corpus aggregation、distributed corpus 汇总和 optional dependency lazy load。
+- translation evaluator 的 semantic config、custom backend、batch/corpus aggregation、root-only
+  distributed inference、结果/错误广播和 optional dependency lazy load。
 
 模块验收命令：
 
