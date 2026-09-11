@@ -1,5 +1,10 @@
 from .adamw import create_adamw_optimizer, split_adamw_decay_params
-from .compose import CompositeOptimizer, checkpoint_optimizers
+from .compose import (
+    CompositeOptimizer,
+    checkpoint_leaf_states,
+    checkpoint_optimizers,
+    restore_optimizer_states,
+)
 from .llm import create_optimizer as create_llm_optimizer
 from .lora_muon import LoRAFactorPair, LoRAMuon
 from .muon import (
@@ -23,12 +28,14 @@ __all__ = [
     "LRScaleRules",
     "LoRAFactorPair",
     "LoRAMuon",
+    "checkpoint_leaf_states",
     "checkpoint_optimizers",
     "create_adamw_optimizer",
     "create_llm_optimizer",
     "create_muon_adamw_optimizer",
     "create_scheduler",
     "muon_available",
+    "restore_optimizer_states",
     "split_adamw_decay_params",
     "split_muon_params",
 ]

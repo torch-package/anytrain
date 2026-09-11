@@ -9,6 +9,7 @@ import anytrain.optim as optim_api
 import anytrain.optim.scheduler as scheduler_api
 from anytrain.optim import (
     CompositeOptimizer,
+    checkpoint_leaf_states,
     checkpoint_optimizers,
     create_adamw_optimizer,
     create_llm_optimizer,
@@ -98,6 +99,53 @@ class CheckpointOptimizersTest(unittest.TestCase):
         self.assertEqual(set(state), {"state", "param_groups"})
         self.assertEqual(len(state["state"]), 2)
         self.assertEqual(len(state["param_groups"]), 2)
+
+    def test_checkpoint_leaf_states_splits_merged_state_per_optimizer(self):
+        model = nn.Linear(2, 2)
+        sgd = torch.optim.SGD([model.weight], lr=0.1, momentum=0.9)
+        adamw = torch.optim.AdamW([model.bias], lr=0.1)
+        optimizer = CompositeOptimizer({"sgd": sgd, "adamw": adamw})
+
+        model(torch.ones(1, 2)).sum().backward()
+        optimizer.step()
+        state = {
+            "state": {},
+            "param_groups": [{"params": []}, {"params": []}],
+        }
+        leaves = checkpoint_leaf_states((sgd, adamw), state)
+        self.assertEqual(len(leaves), 2)
+        for leaf, expected_groups in zip(leaves, (1, 1), strict=True):
+            self.assertEqual(len(leaf["param_groups"]), expected_groups)
+            self.assertEqual(leaf["state"], {})
+
+        from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict
+
+        merged = get_optimizer_state_dict(model, checkpoint_optimizers(optimizer))
+        leaves = checkpoint_leaf_states((sgd, adamw), merged)
+        self.assertEqual(len(leaves[0]["state"]), 1)
+        self.assertEqual(len(leaves[1]["state"]), 1)
+        self.assertEqual(leaves[0]["param_groups"][0]["params"], ["weight"])
+        self.assertEqual(leaves[1]["param_groups"][0]["params"], ["bias"])
+
+    def test_checkpoint_leaf_states_rejects_unowned_state(self):
+        optimizer = torch.optim.SGD([nn.Parameter(torch.tensor(1.0))], lr=1.0)
+        state = {
+            "state": {7: {"momentum_buffer": torch.zeros(1)}},
+            "param_groups": [{"params": [0]}],
+        }
+        with self.assertRaisesRegex(ValueError, "not owned by any parameter group"):
+            checkpoint_leaf_states((optimizer,), state)
+
+    def test_composite_refresh_param_groups_recollects_children(self):
+        first = torch.optim.SGD([nn.Parameter(torch.tensor(1.0))], lr=1.0)
+        second = torch.optim.AdamW([nn.Parameter(torch.tensor(2.0))], lr=1.0)
+        optimizer = CompositeOptimizer({"first": first, "second": second})
+
+        combined = CompositeOptimizer({"nested": optimizer})
+        expected = combined.param_groups
+        combined.param_groups = []
+        combined.refresh_param_groups()
+        self.assertEqual(combined.param_groups, expected)
 
 
 class TinyLLM(nn.Module):
