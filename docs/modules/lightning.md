@@ -308,8 +308,8 @@ global rank 0 广播统一决定。
 `PerformanceCallback` 记录参数量、optimizer step time、硬件峰值算力和 MFU。固定计算量使用
 `model_flops_per_step`；变长 batch 使用 `model_flops_per_batch: FlopsProvider`，callback 在
 梯度累积的 optimizer 边界汇总 microbatch FLOPs。动态输入、DDP 聚合和日志口径见
-[`lightning.perf` 设计](perf.md)。DDP 默认在 timer 前 barrier 对齐 rank；`sync_distributed=False` 可显式
-关闭该行为。
+[`lightning.perf` 设计](perf.md)。DDP 默认不对齐 rank；`sync_distributed=True` 可显式开启
+per-batch barrier，但只在各 rank 的 train batch 数严格相等时安全。
 
 callback 构造器严格校验 cadence/window 的整数边界、FLOPs 的有限正 host-real 契约、互斥 FLOPs
 来源及所有 boolean flags；项目配置层应把构造器作为这些字段的唯一运行时 owner。

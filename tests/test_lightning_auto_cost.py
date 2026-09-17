@@ -160,5 +160,40 @@ class AutoCostTest(unittest.TestCase):
             resolve_auto_cost(device=True, mib_per_cost=1.0)
 
 
+    def test_synchronized_measurement_joins_status_reduce_on_failure(self) -> None:
+        from anytrain.lightning import auto_cost
+
+        hooks = AutoCostHooks(
+            prepare=lambda _module, batch: batch,
+            move_to_device=lambda _module, batch, _device: batch,
+            run_forward_backward=lambda _module, _model, _batch: None,
+        )
+        reduced: list[torch.Tensor] = []
+
+        def fake_all_reduce(tensor: torch.Tensor, op: object = None) -> None:
+            reduced.append(tensor.detach().clone())
+
+        with (
+            patch.object(auto_cost, "_measurement", side_effect=ValueError("probe failed")),
+            patch("torch.distributed.is_available", return_value=True),
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.all_reduce", side_effect=fake_all_reduce),
+            patch("torch.cuda.empty_cache"),
+            self.assertRaisesRegex(ValueError, "probe failed"),
+        ):
+            auto_cost._synchronized_measurement(
+                object(),
+                _TinyModel(),
+                CostProbe(batch=None, target_cost=1, actual_cost=1),
+                hooks,
+                device=torch.device("cpu"),
+                measure=True,
+                sync_distributed=True,
+            )
+
+        self.assertEqual(len(reduced), 1)
+        self.assertEqual(reduced[0].tolist(), [0, 1])
+
+
 if __name__ == "__main__":
     unittest.main()

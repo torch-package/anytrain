@@ -300,8 +300,9 @@ def _synchronized_measurement(
     measure: bool,
     sync_distributed: bool,
 ) -> AutoCostMeasurement | None:
-    local_oom = torch.zeros((), dtype=torch.int32, device=device)
+    status = torch.zeros(2, dtype=torch.int32, device=device)
     result: AutoCostMeasurement | None = None
+    failure: BaseException | None = None
     try:
         result = _measurement(
             pl_module,
@@ -312,7 +313,14 @@ def _synchronized_measurement(
             measure=measure,
         )
     except torch.cuda.OutOfMemoryError:
-        local_oom.fill_(1)
+        status[0] = 1
+        torch.cuda.empty_cache()
+    except BaseException as error:
+        # A rank that leaves before the status reduction strands every other
+        # rank inside all_reduce. Record the failure, participate in the
+        # collective, and re-raise once all ranks observed the same status.
+        failure = error
+        status[1] = 1
         torch.cuda.empty_cache()
     if sync_distributed and torch.distributed.is_available() and torch.distributed.is_initialized():
         from .audit import audit_collective
@@ -320,15 +328,21 @@ def _synchronized_measurement(
         audit_collective(
             "torch.distributed.all_reduce",
             lambda: torch.distributed.all_reduce(
-                local_oom, op=torch.distributed.ReduceOp.MAX
+                status, op=torch.distributed.ReduceOp.MAX
             ),
             reduce_op="max",
-            source="auto_cost.local_oom",
-            tensor_shape=tuple(local_oom.shape),
-            tensor_dtype=str(local_oom.dtype),
-            tensor_device=str(local_oom.device),
+            source="auto_cost.status",
+            tensor_shape=tuple(status.shape),
+            tensor_dtype=str(status.dtype),
+            tensor_device=str(status.device),
         )
-    if int(local_oom.item()):
+    if int(status[1].item()):
+        if failure is not None:
+            raise failure
+        raise RuntimeError(
+            "automatic cost measurement failed on another rank; see its traceback."
+        )
+    if int(status[0].item()):
         hooks.clear_gradients(pl_module, model)
         torch.cuda.empty_cache()
         return None

@@ -475,7 +475,36 @@ class PerformanceCallbackTest(unittest.TestCase):
         self.assertEqual(metrics["perf/model_flops_per_step"], 200.0)
         self.assertAlmostEqual(metrics["perf/mfu"], 400.0 / 3.0 / 600.0)
         self.assertFalse(kwargs["sync_dist"])
-        self.assertEqual(trainer.strategy.barrier_count, 1)
+
+    def test_callback_distributed_barrier_is_opt_in(self):
+        from anytrain.lightning import PerformanceCallback
+
+        def start(callback: Any, strategy: _DistributedStrategy) -> None:
+            trainer = SimpleNamespace(global_step=0, world_size=2, strategy=strategy)
+            callback.on_train_batch_start(trainer, _module(), batch=None, batch_idx=0)
+
+        default_strategy = _DistributedStrategy()
+        start(PerformanceCallback(sync_cuda=False), default_strategy)
+        self.assertEqual(default_strategy.barrier_count, 0)
+
+        opted_in_strategy = _DistributedStrategy()
+        start(PerformanceCallback(sync_cuda=False, sync_distributed=True), opted_in_strategy)
+        self.assertEqual(opted_in_strategy.barrier_count, 1)
+
+    def test_callback_warns_when_distributed_barrier_is_enabled(self):
+        from anytrain.lightning import PerformanceCallback
+
+        trainer = SimpleNamespace(
+            precision="bf16-mixed",
+            loggers=[],
+            global_step=0,
+            world_size=2,
+            is_global_zero=True,
+            strategy=_DistributedStrategy(),
+        )
+        callback = PerformanceCallback(sync_cuda=False, sync_distributed=True)
+        with self.assertWarnsRegex(RuntimeWarning, "same number of train batches"):
+            callback.on_train_start(trainer, _module())
 
     def test_callback_sums_per_measurement_ddp_max_time(self):
         from anytrain.lightning import PerformanceCallback

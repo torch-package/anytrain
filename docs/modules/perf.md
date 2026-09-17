@@ -186,11 +186,20 @@ DDP window MFU = sum_step(sum_rank(FLOPs))
 直接求平均。窗口时间先逐 measurement 取最慢 rank，再求和；不能对每个 rank 的窗口总时间
 直接取最大值，因为窗口内的最慢 rank 可能随 optimizer update 改变。
 
-默认 `sync_distributed=True`：每个 train batch 的 timer 启动前调用 strategy barrier。这样上一
-batch 只在 rank zero 执行的 sample、媒体或 checkpoint callback 不会变成其他 rank 下一步的等待
-时间；barrier 发生在 timer 之外。当前 batch 是否包含其他 batch-end callback 的耗时取决于 callback
-顺序：要排除诊断，下游应把 `PerformanceCallback` 放在这些 callback 之前。当下游能保证 callback
-成本完全对称，或希望测量不含额外 barrier 的连续吞吐时，可显式设为 `False`。
+默认 `sync_distributed=False`：测量只使用 local rank 的 `sync_cuda` 边界，不插入任何跨 rank
+同步。显式开启后，每个 train batch 的 timer 启动前调用 strategy barrier：上一 batch 只在
+rank zero 执行的 sample、媒体或 checkpoint callback 不会变成其他 rank 下一步的等待时间，
+且 barrier 发生在 timer 之外。当前 batch 是否包含其他 batch-end callback 的耗时取决于 callback
+顺序：要排除诊断，下游应把 `PerformanceCallback` 放在这些 callback 之前。
+
+开启 `sync_distributed` 的前提是**所有 rank 在每个 epoch 内运行的 train batch 数严格相等**。
+它是一个没有超时的集合通信：只要某个 rank 先退出训练循环（数据集重采样、变长或不均衡
+loader、rank 局部提前结束），其余 rank 的 barrier 就永远等不到配对；NCCL 不报错，训练静默
+挂死。NCCL 后端上 strategy barrier 是当前流上的设备侧 1-element allreduce，挂住时栈会指向
+`PerformanceCallback.on_train_batch_start`。长跑应同时开启 `TORCH_NCCL_ASYNC_ERROR_HANDLING`
+和 heartbeat timeout，把这类挂死变成明确报错。显式开启时，`on_train_start` 会在 global rank 0
+打一次 `RuntimeWarning` 提醒该前提。复现记录见
+[`docs/perf-barrier-hang.md`](../perf-barrier-hang.md)。
 
 默认 `sync_cuda=True` 在每个 train batch 计时边界同步当前 `pl_module` 的 CUDA device，使计时包含
 此前提交的异步 CUDA work。CPU module 即使进程中存在其它可用 CUDA device 也不会触发同步；关闭

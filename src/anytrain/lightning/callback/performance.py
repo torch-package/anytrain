@@ -73,7 +73,7 @@ class PerformanceCallback(pl.Callback):
         warmup_steps: int = 20,
         measure_window_steps: int = 100,
         sync_cuda: bool = True,
-        sync_distributed: bool = True,
+        sync_distributed: bool = False,
         stop_after_measurement: bool = False,
     ) -> None:
         _require_positive_int(log_every_n_steps, "log_every_n_steps")
@@ -133,6 +133,19 @@ class PerformanceCallback(pl.Callback):
         self._report: PerformanceReport | None = None
 
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if (
+            self.sync_distributed
+            and _capability.is_distributed(trainer)
+            and _capability.is_global_zero(trainer)
+        ):
+            warnings.warn(
+                "PerformanceCallback.sync_distributed=True inserts a per-batch "
+                "strategy barrier with no timeout; every rank must run exactly the "
+                "same number of train batches or training hangs silently. Leave it "
+                "disabled unless that is guaranteed.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         self._reset(global_step=_capability.global_step(trainer))
         _reset_peak_memory(pl_module)
         self.hardware = _infer_hardware(
@@ -576,6 +589,11 @@ def _sync_cuda(sync_cuda: bool, pl_module: pl.LightningModule) -> None:
 def _sync_distributed(trainer: pl.Trainer, enabled: bool) -> None:
     if not enabled or not _capability.is_distributed(trainer):
         return
+    # Unpaired-collective hazard: every rank must reach this barrier in the same
+    # train batch. If one rank has fewer batches (dataset re-pinning, uneven
+    # loaders, rank-local early exit), it leaves the loop and the others block
+    # here forever; NCCL has no timeout. Opt in only when the batch count is
+    # provably identical across ranks.
     _capability.strategy_barrier(
         trainer,
         error="distributed performance measurement requires strategy.barrier.",
