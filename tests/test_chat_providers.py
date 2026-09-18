@@ -37,27 +37,22 @@ class ChatProviderTest(unittest.TestCase):
 
         async def run() -> None:
             task = asyncio.create_task(client.async_call("cancel"))
-            released = False
             try:
                 await asyncio.wait_for(asyncio.to_thread(lock.waiting.wait), timeout=1)
                 task.cancel()
                 await asyncio.sleep(0)
                 task.cancel()
-                lock.release()
-                released = True
-                await asyncio.wait_for(asyncio.to_thread(lock.acquired.wait), timeout=1)
                 with self.assertRaises(asyncio.CancelledError):
                     await task
+                # Cancellation must not acquire or release another caller's lock.
+                self.assertTrue(lock.locked())
+                self.assertFalse(lock.acquired.is_set())
             finally:
-                if not released:
-                    lock.release()
-                    await asyncio.wait_for(asyncio.to_thread(lock.acquired.wait), timeout=1)
+                lock.release()
                 if not task.done():
                     task.cancel()
                     with suppress(asyncio.CancelledError):
                         await task
-                if lock.locked():
-                    lock.release()
 
         asyncio.run(run())
         self.assertTrue(lock.acquire(blocking=False))
@@ -817,8 +812,7 @@ class _BlockingLock:
         self.acquired = threading.Event()
 
     def acquire(self, blocking: bool = True) -> bool:
-        if blocking:
-            self.waiting.set()
+        self.waiting.set()
         acquired = self._lock.acquire(blocking=blocking)
         if acquired:
             self.acquired.set()

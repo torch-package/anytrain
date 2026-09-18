@@ -86,6 +86,13 @@ flow matching、GAN 和 RL 的训练生命周期、张量布局及数值目标�
 只跳过显式 batch tensor 的有限性、形状与 mask 检查，不放宽公开控制项的类型；它不承诺所有后续
 tensor 算子都没有 host synchronization。
 
+GRPO、continuous GRPO 和 neighbor GRPO 接受实数浮点或整数 reward；整数、FP16/BF16
+reward 先提升到 FP32，FP64 保留精度。advantage 归一化和 policy ratio 至少以 FP32 计算，
+避免等奖励时 epsilon 下溢。token/step/neighbor 的 masked reduction 与 `sequence_logps`、
+`masked_mean` 使用整数计数和至少 FP32 的累积，返回累积 dtype，保留各自的分母语义。
+flow 的 `masked_mse_velocity_loss` 同样在减法、平方前提升 prediction/target 到共同的至少
+FP32 dtype，并按有效元素数（有效 mask 数乘 feature width）求均值；FP64 输入保持 FP64。
+
 ## GAN
 
 `framework.gan` 放 adversarial training 需要的通用组件和轻量 manual optimization helper，但不接管完整训练循环、batch schema 或 generator forward。

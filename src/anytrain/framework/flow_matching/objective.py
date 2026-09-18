@@ -41,14 +41,16 @@ def masked_mse_velocity_loss(
         raise ValueError("prediction and target must have the same shape.")
     if mask.ndim >= prediction.ndim or prediction.shape[: mask.ndim] != mask.shape:
         raise ValueError("mask must align with a leading prefix of prediction and target.")
-    weights = mask.to(device=prediction.device, dtype=prediction.dtype)
+    valid = mask.to(device=prediction.device)
     for _ in range(prediction.ndim - mask.ndim):
-        weights = weights.unsqueeze(-1)
+        valid = valid.unsqueeze(-1)
     unmasked_width = math.prod(prediction.shape[mask.ndim :])
-    denominator = weights.sum() * unmasked_width
+    denominator = valid.sum() * unmasked_width
     if not bool(denominator > 0):
         raise ValueError("mask must contain at least one valid item.")
-    valid = weights.bool()
+    dtype = torch.promote_types(torch.promote_types(prediction.dtype, target.dtype), torch.float32)
+    prediction = prediction.to(dtype=dtype)
+    target = target.to(dtype=dtype)
     prediction = prediction.masked_fill(~valid, 0)
     target = target.masked_fill(~valid, 0)
     return (prediction - target).square().sum() / denominator

@@ -63,6 +63,10 @@ response = await client.acall("compare it with the previous answer")
 GLM 使用同步 SDK 的线程回退；取消异步请求会等待该线程返回再释放会话锁。SDK cleanup 本身
 受到取消时也会先完成资源收尾，因此关闭等待时长取决于在途 SDK 调用的 timeout。
 
+尚未取得会话锁的异步请求可直接取消，不会接管或释放其他请求持有的锁。
+异步等锁使用非阻塞尝试，不创建后台 acquire 线程；事件循环关闭时取消等待者不会留下
+未完成的锁获取任务。同步与异步文本请求仍共享同一个锁。
+
 ## 当前实现
 
 当前模块实现稳定外部契约、实例内消息上下文、环境变量解析、DeepSeek OpenAI-compatible SDK 调用、GLM SDK 调用、OpenRouter OpenAI-compatible SDK 调用和 GLM 图片生成调用。缺少对应 optional 依赖时会明确抛出 `ImportError`，避免静默 fallback。

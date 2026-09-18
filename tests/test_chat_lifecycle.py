@@ -1,10 +1,39 @@
 import asyncio
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from anytrain.chat import Chat
+
+
+def test_event_loop_shutdown_cancels_lock_waiter_without_orphaning_lock() -> None:
+    code = '''
+import asyncio
+import threading
+from anytrain.chat import Chat
+
+chat = object.__new__(Chat)
+chat._lock = threading.Lock()
+chat._lock.acquire()
+started = threading.Event()
+async def waiter():
+    started.set()
+    async with chat._async_text_lock():
+        raise AssertionError("another caller still owns the lock")
+async def main():
+    asyncio.create_task(waiter())
+    while not started.is_set():
+        await asyncio.sleep(0)
+asyncio.run(main())
+assert chat._lock.locked()
+chat._lock.release()
+assert chat._lock.acquire(blocking=False)
+chat._lock.release()
+'''
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, timeout=10)
 
 
 def _chat(client: object) -> Chat:

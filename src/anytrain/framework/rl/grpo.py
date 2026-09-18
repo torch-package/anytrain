@@ -7,7 +7,7 @@ from torch import Tensor, nn
 
 from .._validation import non_negative_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
-from .advantage import group_relative_advantages
+from .advantage import _reward_values, group_relative_advantages
 from .types import TokenReduction
 
 
@@ -54,8 +54,13 @@ class GRPOLoss(nn.Module):
             _validate_rollout_tensors(policy_token_logps, old_token_logps, response_mask)
             if rewards.shape != policy_token_logps.shape[:2]:
                 raise ValueError("rewards must have shape [batch, group].")
-        old_token_logps = old_token_logps.detach()
-        rewards = rewards.detach()
+        policy_token_logps = policy_token_logps.to(
+            dtype=torch.promote_types(policy_token_logps.dtype, torch.float32)
+        )
+        old_token_logps = old_token_logps.detach().to(
+            dtype=torch.promote_types(old_token_logps.dtype, torch.float32)
+        )
+        rewards = _reward_values(rewards.detach())
         candidate_mask = _candidate_mask(response_mask, rewards, group_mask, validate=validate)
         selected_token_mask = response_mask & candidate_mask.unsqueeze(-1)
         if validate:
@@ -211,18 +216,19 @@ def _reduce_token_values(
     validate: bool,
 ) -> Tensor:
     resolved = cast(TokenReduction, reduction)
-    weights = selected_token_mask.to(device=value.device, dtype=value.dtype)
+    value = value.to(dtype=torch.promote_types(value.dtype, torch.float32))
+    value = value.masked_fill(~selected_token_mask, 0)
     if resolved == "token_mean":
-        token_count = weights.sum()
+        token_count = selected_token_mask.sum()
         if validate and bool(token_count <= 0):
             raise ValueError("response_mask must select at least one token.")
-        return (value * weights).sum() / token_count
+        return value.sum() / token_count
     if resolved == "sequence_mean":
-        token_counts = weights.sum(dim=-1)
+        token_counts = selected_token_mask.sum(dim=-1)
         if validate and bool((token_counts.masked_select(candidate_mask) <= 0).any()):
             raise ValueError("selected candidates must contain at least one token.")
-        sequence_loss = (value * weights).sum(dim=-1) / token_counts.clamp_min(1)
-        candidate_weights = candidate_mask.to(dtype=sequence_loss.dtype)
+        sequence_loss = value.sum(dim=-1) / token_counts.clamp_min(1)
+        candidate_weights = candidate_mask.to(dtype=torch.int64)
         if validate and bool(candidate_weights.sum() <= 0):
             raise ValueError("group_mask must select at least one candidate.")
         return (sequence_loss * candidate_weights).sum() / candidate_weights.sum().clamp_min(1)

@@ -5,7 +5,7 @@ from torch import Tensor, nn
 
 from .._validation import non_negative_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
-from .advantage import group_relative_advantages
+from .advantage import _reward_values, group_relative_advantages
 from .types import StepReduction
 
 
@@ -65,8 +65,13 @@ class ContinuousGRPOLoss(nn.Module):
             if rewards.shape != policy_step_logps.shape[:2]:
                 raise ValueError("rewards must have shape [batch, group].")
 
-        old_step_logps = old_step_logps.detach()
-        rewards = rewards.detach()
+        policy_step_logps = policy_step_logps.to(
+            dtype=torch.promote_types(policy_step_logps.dtype, torch.float32)
+        )
+        old_step_logps = old_step_logps.detach().to(
+            dtype=torch.promote_types(old_step_logps.dtype, torch.float32)
+        )
+        rewards = _reward_values(rewards.detach())
         candidate_mask = _candidate_mask(step_mask, rewards, group_mask, validate=validate)
         selected_step_mask = step_mask & candidate_mask.unsqueeze(-1)
         if validate:
@@ -226,18 +231,19 @@ def _reduce_step_values(
     *,
     validate: bool,
 ) -> Tensor:
-    weights = selected_step_mask.to(device=value.device, dtype=value.dtype)
+    value = value.to(dtype=torch.promote_types(value.dtype, torch.float32))
+    value = value.masked_fill(~selected_step_mask, 0)
     if reduction == "step_mean":
-        step_count = weights.sum()
+        step_count = selected_step_mask.sum()
         if validate and bool(step_count <= 0):
             raise ValueError("step_mask must select at least one step.")
-        return (value * weights).sum() / step_count
+        return value.sum() / step_count
     if reduction == "trajectory_mean":
-        step_counts = weights.sum(dim=-1)
+        step_counts = selected_step_mask.sum(dim=-1)
         if validate and bool((step_counts.masked_select(candidate_mask) <= 0).any()):
             raise ValueError("selected candidates must contain at least one rollout step.")
-        trajectory_value = (value * weights).sum(dim=-1) / step_counts.clamp_min(1)
-        candidate_weights = candidate_mask.to(dtype=trajectory_value.dtype)
+        trajectory_value = value.sum(dim=-1) / step_counts.clamp_min(1)
+        candidate_weights = candidate_mask.to(dtype=torch.int64)
         if validate and bool(candidate_weights.sum() <= 0):
             raise ValueError("group_mask must select at least one candidate.")
         return (trajectory_value * candidate_weights).sum() / candidate_weights.sum().clamp_min(1)

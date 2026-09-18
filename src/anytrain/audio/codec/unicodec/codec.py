@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
 from typing import Any, Protocol
 
 import torch
@@ -212,8 +213,8 @@ def _codebook_sizes(model: object) -> tuple[int, ...]:
 
 def _load_unicodec_model() -> Any:
     try:
-        from unicodec import Unicodec  # pyright: ignore[reportMissingImports]
-    except ImportError as exc:
+        Unicodec = import_module("unicodec").Unicodec
+    except (ImportError, AttributeError) as exc:
         raise ImportError(
             "UniCodec requires the installable UniCodec fork. Install it with "
             '`python -m pip install "unicodec @ git+https://github.com/rookiejune/UniCodec.git"`.'

@@ -1,4 +1,5 @@
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -76,6 +77,16 @@ class UniCodecAssetsTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "pinned Hugging Face revision"),
             ):
                 ensure_unicodec_assets(cache_dir=root)
+
+
+    def test_optional_unicodec_wrong_module_has_install_guidance(self):
+        from anytrain.audio.codec.unicodec.codec import _load_unicodec_model
+
+        with patch.dict("sys.modules", {"unicodec": types.ModuleType("unicodec")}):
+            with self.assertRaisesRegex(ImportError, "installable UniCodec fork"):
+                unicodec_assets._default_config_path("missing.yaml")
+            with self.assertRaisesRegex(ImportError, "installable UniCodec fork"):
+                _load_unicodec_model()
 
 
 if __name__ == "__main__":

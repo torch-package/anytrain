@@ -360,5 +360,50 @@ class StreamLayoutTest(unittest.TestCase):
         torch.testing.assert_close(output.values, torch.zeros(1, 3, 1))
 
 
+class AlignmentBoundaryTest(unittest.TestCase):
+    def test_nonfinite_padding_is_ignored_in_outputs_and_gradients(self):
+        for method in (
+            AlignMethod.IDENTITY, AlignMethod.NEAREST, AlignMethod.LINEAR,
+            AlignMethod.POOL, AlignMethod.BROADCAST,
+        ):
+            for dtype in (torch.float16, torch.float32, torch.float64):
+                with self.subTest(method=method, dtype=dtype):
+                    source_values = torch.tensor(
+                        [[[3.0], [float("nan")]], [[float("inf")], [float("nan")]]],
+                        dtype=dtype, requires_grad=True,
+                    )
+                    carrier_values = torch.tensor(
+                        [[[2.0], [float("inf")]], [[float("nan")], [float("inf")]]],
+                        dtype=dtype, requires_grad=True,
+                    )
+                    lengths = torch.tensor([1, 0])
+                    source = Features("source", source_values, lengths)
+                    carrier = Features("carrier", carrier_values, lengths)
+                    expression = Align("aligned", "carrier", "source", AlignSpec(method, AlignMerge.ADD))
+                    layout = compile_layout(expression, {"source": source.timeline, "carrier": carrier.timeline})
+                    output = Materializer()(bind(layout, {"source": source, "carrier": carrier}))
+                    torch.testing.assert_close(output.values, torch.tensor([[[5.0], [0]], [[0], [0]]], dtype=dtype))
+                    output.values.sum().backward()
+                    assert source_values.grad is not None and carrier_values.grad is not None
+                    expected = torch.tensor([[[1.0], [0]], [[0], [0]]], dtype=dtype)
+                    torch.testing.assert_close(source_values.grad, expected)
+                    torch.testing.assert_close(carrier_values.grad, expected)
+
+    def test_pool_and_broadcast_accumulate_in_float32_and_keep_output_dtype(self):
+        for method in (AlignMethod.POOL, AlignMethod.BROADCAST):
+            with self.subTest(method=method):
+                source_values = torch.full((1, 65536, 1), 0.5, dtype=torch.float16, requires_grad=True)
+                source = Features("source", source_values, torch.tensor([65536]))
+                carrier = Features("carrier", torch.zeros(1, 1, 1, dtype=torch.float16), torch.tensor([1]))
+                expression = Align("aligned", "carrier", "source", AlignSpec(method, AlignMerge.SOURCE))
+                layout = compile_layout(expression, {"source": source.timeline, "carrier": carrier.timeline})
+                output = Materializer()(bind(layout, {"source": source, "carrier": carrier}))
+                self.assertEqual(output.values.dtype, torch.float16)
+                self.assertEqual(output.values.item(), 0.5)
+                output.values.sum().backward()
+                assert source_values.grad is not None
+                torch.testing.assert_close(source_values.grad, torch.full_like(source_values, 1 / 65536))
+
+
 if __name__ == "__main__":
     unittest.main()

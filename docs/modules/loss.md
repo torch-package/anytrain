@@ -221,6 +221,10 @@ Tensor mapping 的 safetensors-only 保存链需要由调用方单独保存并�
 frame/codebook 的有效 reduction domain 为空时，loss 会抛出 `ValueError`，不会返回
 `nan` 或静默的零值。
 
+masked frame MSE 在减法、平方前将 prediction/target 提升到共同的至少 FP32 dtype，
+返回相同计算 dtype；任一输入为 FP64 时保持 FP64。有效帧数使用整数累计，
+padding 的 NaN/Inf 在数值运算前被屏蔽，不参与输出或梯度。
+
 ### 分片边界
 
 如果不同 rank、数据 shard 或 gradient-accumulation microbatch 覆盖的有效 count 不同，

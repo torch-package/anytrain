@@ -68,6 +68,11 @@ owner 仍然是 `b`。Align 的两个操作层是分开的：
   `StandardAlign` 提供 `IDENTITY`、`NEAREST`、`LINEAR`、`POOL`、`BROADCAST` 和
   `ADD`/`CONCAT`/`SOURCE`；`ATTENTION` 或投影类逻辑通过注册自定义 operator 实现。
 
+`StandardAlign` 在运算前屏蔽 source padding，合并后清零 target padding；无效位置的
+NaN/Inf 不参与有效输出或梯度，空 source 行提供零 conditioning。LINEAR、POOL 和
+BROADCAST 至少以 FP32 累积（FP64 输入保持 FP64），随后转回 source dtype；POOL 与
+BROADCAST 使用整数计数。LINEAR 中权重为零的分支也在乘法前屏蔽。
+
 离散 code 不会被 linear 插值。若需要在输出侧解释 hard alignment，可以使用布局中的
 source index；经过 linear、pool、add 或 projection 的连续结果不能反推可靠离散 label。
 

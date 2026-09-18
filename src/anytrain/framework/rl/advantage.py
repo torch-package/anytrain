@@ -32,17 +32,27 @@ def group_relative_advantages(
     if validate and not bool(torch.isfinite(rewards.masked_select(mask)).all()):
         raise ValueError("selected rewards must be finite.")
 
-    counts = mask.to(dtype=rewards.dtype).sum(dim=1)
+    rewards = _reward_values(rewards)
+    counts = mask.sum(dim=1)
     if validate and bool((counts < 2).any()):
         raise ValueError("each reward group must contain at least two valid candidates.")
 
     safe_rewards = rewards.masked_fill(~mask, 0)
     mean = safe_rewards.sum(dim=1, keepdim=True) / counts.unsqueeze(1)
     centered = (rewards - mean).masked_fill(~mask, 0)
-    variance = centered.square().sum(dim=1, keepdim=True) / counts.unsqueeze(1)
-    std = variance.sqrt()
-    advantages = centered / (std + rewards.new_tensor(float(eps)))
+    # vector_norm defines a finite zero gradient for an all-zero group.
+    std = torch.linalg.vector_norm(centered, dim=1, keepdim=True) / counts.to(
+        dtype=rewards.dtype
+    ).unsqueeze(1).sqrt()
+    advantages = centered / (std + eps)
     return advantages.masked_fill(~mask, 0)
+
+
+def _reward_values(rewards: Tensor) -> Tensor:
+    """Normalize real rewards in FP32 or FP64, including integer rewards."""
+    if rewards.is_complex() or rewards.dtype == torch.bool:
+        raise TypeError("rewards must be real-valued.")
+    return rewards if rewards.dtype == torch.float64 else rewards.float()
 
 
 def _candidate_mask(rewards: Tensor, group_mask: Tensor | None, *, validate: bool) -> Tensor:

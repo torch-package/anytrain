@@ -95,6 +95,10 @@ core 组件：
   observation count。`reduced()` 返回加权均值与精确 count；`weighted.reduce()` 批量归约指标，并让
   共享同一 weights tensor 的指标只同步读取一次 count。
 
+整数值的浮点 weights（包括 FP16/BF16）同样可用；校验后用 int64 精确累计 count，
+总数必须在 `1` 到 `2**53 - 1` 之间，超出范围会在整数转换前抛出 `ValueError`。
+该范围保护 count 的精确表示，不承诺浮点加权均值没有舍入误差。
+
 加权乘加至少使用 FP32，FP64 values 则保持 FP64，避免 FP16/BF16 的大 observation count 溢出或量化。
 归约会先把 count 为 0 的位置清零，因此 padding 位置即使含 NaN/Inf 也不会污染有效均值；正权重位置的
 非有限值仍会保留并由下游显式暴露。Lightning epoch/DDP 生命周期由

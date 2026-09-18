@@ -25,7 +25,14 @@ class Metric:
             raise ValueError(
                 "weighted metric weights must contain finite non-negative integer counts."
             )
-        count = int(weights.sum().item())
+        # Bound the total before int64 conversion/summation. Float64 can represent
+        # every supported count exactly; the final sum still uses integer arithmetic.
+        # MPS does not support float64, so only its bound check runs on the host.
+        bounded = weights.to(device="cpu") if weights.device.type == "mps" else weights
+        total = bounded.sum(dtype=torch.float64)
+        if bool(total > 2**53 - 1):
+            raise ValueError("weighted metric total count must not exceed 2**53 - 1.")
+        count = int(weights.to(dtype=torch.int64).sum().item())
         if count <= 0:
             raise ValueError("weighted metric weights must contain a positive total count.")
         return count

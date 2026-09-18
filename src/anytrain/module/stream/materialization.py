@@ -73,7 +73,7 @@ class StandardAlign(AlignOperator):
             values = carrier.values + aligned.values
         else:
             values = torch.cat((carrier.values, aligned.values), dim=-1)
-        values = values * layout.target.mask.unsqueeze(-1).to(dtype=values.dtype)
+        values = values.masked_fill(~layout.target.mask.unsqueeze(-1), 0)
         return Features(
             name=carrier.name,
             values=values,
@@ -262,6 +262,8 @@ class Materializer(nn.Module):
 def _apply_alignment(source: Features, layout: AlignLayout) -> Features:
     _validate_feature_timeline(source, layout.source, source.name)
     target = layout.target
+    safe_source = source.values.masked_fill(~source.timeline.mask.unsqueeze(-1), 0)
+    compute_dtype = torch.promote_types(source.values.dtype, torch.float32)
     if target.size == 0 or source.values.shape[1] == 0:
         values = source.values.new_zeros(
             (source.values.shape[0], target.size, source.values.shape[2])
@@ -270,36 +272,38 @@ def _apply_alignment(source: Features, layout: AlignLayout) -> Features:
         if layout.indices is None:
             raise RuntimeError("hard Align layout is missing indices.")
         batch = torch.arange(source.values.shape[0], device=source.values.device).unsqueeze(1)
-        values = source.values[batch, layout.indices]
+        values = safe_source[batch, layout.indices]
     elif layout.method is AlignMethod.LINEAR:
         if layout.indices is None or layout.weights is None:
             raise RuntimeError("linear Align layout is missing indices or weights.")
         batch = torch.arange(source.values.shape[0], device=source.values.device).view(-1, 1, 1)
-        picked = source.values[batch, layout.indices]
-        weights = layout.weights.to(dtype=source.values.dtype).unsqueeze(-1)
+        picked = safe_source[batch, layout.indices].to(dtype=compute_dtype)
+        weights = layout.weights.to(dtype=compute_dtype).unsqueeze(-1)
+        picked = picked.masked_fill(weights == 0, 0)
         values = (picked * weights).sum(dim=2)
     elif layout.method is AlignMethod.POOL:
         if layout.starts is None or layout.ends is None:
             raise RuntimeError("pool Align layout is missing windows.")
         prefix = torch.cat(
             (
-                source.values.new_zeros((source.values.shape[0], 1, source.values.shape[2])),
-                source.values.cumsum(dim=1),
+                source.values.new_zeros(
+                    (source.values.shape[0], 1, source.values.shape[2]), dtype=compute_dtype
+                ),
+                safe_source.cumsum(dim=1, dtype=compute_dtype),
             ),
             dim=1,
         )
         batch = torch.arange(source.values.shape[0], device=source.values.device).unsqueeze(1)
         sums = prefix[batch, layout.ends] - prefix[batch, layout.starts]
-        counts = (layout.ends - layout.starts).clamp_min(1).to(source.values.dtype)
+        counts = (layout.ends - layout.starts).clamp_min(1)
         values = sums / counts.unsqueeze(-1)
     elif layout.method is AlignMethod.BROADCAST:
-        valid = source.timeline.mask.unsqueeze(-1)
-        counts = source.lengths.clamp_min(1).to(source.values.dtype)
-        pooled = (source.values * valid).sum(dim=1) / counts.unsqueeze(-1)
+        counts = source.lengths.clamp_min(1)
+        pooled = safe_source.sum(dim=1, dtype=compute_dtype) / counts.unsqueeze(-1)
         values = pooled.unsqueeze(1).expand(-1, target.size, -1).clone()
     else:
         raise ValueError("attention alignment must be evaluated by a custom AlignOperator.")
-    values = values * target.mask.unsqueeze(-1).to(dtype=values.dtype)
+    values = values.to(dtype=source.values.dtype).masked_fill(~target.mask.unsqueeze(-1), 0)
     return Features(
         name=source.name,
         values=values,

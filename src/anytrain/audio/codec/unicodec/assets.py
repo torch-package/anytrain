@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
 from pathlib import Path
 from typing import TypedDict
 
@@ -51,8 +52,8 @@ def ensure_unicodec_assets(
 
 def _default_config_path(name: str) -> Path:
     try:
-        from unicodec import default_config_path  # pyright: ignore[reportMissingImports]
-    except ImportError as exc:
+        default_config_path = import_module("unicodec").default_config_path
+    except (ImportError, AttributeError) as exc:
         raise ImportError(
             "UniCodec integration requires the installable UniCodec fork. Install it with "
             '`python -m pip install "unicodec @ git+https://github.com/rookiejune/UniCodec.git"`.'

@@ -38,13 +38,13 @@ def sequence_logps(
     """Reduce token log-probs to one value per sequence using a boolean mask."""
 
     _validate_aligned_mask(token_logps, mask)
-    weights = mask.to(device=token_logps.device, dtype=token_logps.dtype)
+    token_logps = token_logps.to(dtype=torch.promote_types(token_logps.dtype, torch.float32))
     total = token_logps.masked_fill(~mask, 0).sum(dim=-1)
     resolved = cast(SequenceReduction, reduction)
     if resolved == "sum":
         return total
     if resolved == "mean":
-        counts = weights.sum(dim=-1)
+        counts = mask.sum(dim=-1)
         if bool((counts <= 0).any()):
             raise ValueError("mask must select at least one token for every sequence.")
         return total / counts
@@ -55,8 +55,8 @@ def masked_mean(value: Tensor, mask: Tensor) -> Tensor:
     """Return the mean over mask-selected entries."""
 
     _validate_aligned_mask(value, mask)
-    weights = mask.to(device=value.device, dtype=value.dtype)
-    count = weights.sum()
+    value = value.to(dtype=torch.promote_types(value.dtype, torch.float32))
+    count = mask.sum()
     if bool(count <= 0):
         raise ValueError("mask must select at least one value.")
     return value.masked_fill(~mask, 0).sum() / count

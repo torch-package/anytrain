@@ -397,19 +397,11 @@ class Chat:
 
     @asynccontextmanager
     async def _async_text_lock(self) -> AsyncIterator[None]:
-        # The synchronous API uses the same lock. Wait for it in a worker so
-        # another text request never blocks this event loop while in flight.
-        acquire = asyncio.create_task(asyncio.to_thread(self._lock.acquire))
-        cancelled = False
-        while True:
-            try:
-                await asyncio.shield(acquire)
-                break
-            except asyncio.CancelledError:
-                cancelled = True
-        if cancelled:
-            self._lock.release()
-            raise asyncio.CancelledError
+        # The synchronous API shares this lock. A nonblocking attempt avoids
+        # orphaning a to_thread acquire when event-loop shutdown cancels all
+        # tasks. Cancellation can only occur while sleeping, before ownership.
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(0.01)
         try:
             yield
         finally:

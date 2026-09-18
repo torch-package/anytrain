@@ -144,8 +144,9 @@ def _masked_frame_mse_loss(
 ) -> tuple[Tensor, Tensor]:
     _validate_frame_tensors(prediction, target, mask, name="frame MSE")
     frame_mask = mask[..., None]
-    safe_prediction = prediction.masked_fill(~frame_mask, 0)
-    safe_target = target.masked_fill(~frame_mask, 0)
+    dtype = torch.promote_types(torch.promote_types(prediction.dtype, target.dtype), torch.float32)
+    safe_prediction = prediction.to(dtype=dtype).masked_fill(~frame_mask, 0)
+    safe_target = target.to(dtype=dtype).masked_fill(~frame_mask, 0)
     frame_loss = F.mse_loss(safe_prediction, safe_target, reduction="none").mean(dim=-1)
     return _masked_mean(frame_loss, mask)
 
@@ -247,8 +248,8 @@ def _cosine_distance(prediction: Tensor, target: Tensor) -> Tensor:
 
 def _masked_mean(value: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
     frame_count = _checked_frame_count(mask)
-    count = frame_count.to(dtype=value.dtype)
-    return value.sum() / count, count
+    value = value.to(dtype=torch.promote_types(value.dtype, torch.float32))
+    return value.sum() / frame_count, frame_count
 
 
 def _checked_frame_count(mask: Tensor) -> Tensor:

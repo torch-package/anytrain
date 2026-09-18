@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 from .._validation import non_negative_real, positive_real, strict_bool
 from ._observation import emit, recommend, register
-from .advantage import group_relative_advantages
+from .advantage import _reward_values, group_relative_advantages
 from .types import NeighborReduction
 
 
@@ -69,8 +69,13 @@ class NeighborGRPOLoss(nn.Module):
             if rewards.shape != _candidate_shape(policy_neighbor_logps):
                 raise ValueError("rewards must have shape [batch, group].")
 
-        old_neighbor_logps = old_neighbor_logps.detach()
-        rewards = rewards.detach()
+        policy_neighbor_logps = policy_neighbor_logps.to(
+            dtype=torch.promote_types(policy_neighbor_logps.dtype, torch.float32)
+        )
+        old_neighbor_logps = old_neighbor_logps.detach().to(
+            dtype=torch.promote_types(old_neighbor_logps.dtype, torch.float32)
+        )
+        rewards = _reward_values(rewards.detach())
         candidate_mask = _candidate_mask(neighbor_mask, rewards, group_mask, validate=validate)
         selected_anchor_mask = _anchor_mask(neighbor_mask, anchor_mask, validate=validate)
         selected_neighbor_mask = _selected_neighbor_mask(
@@ -324,7 +329,8 @@ def _advantages(
 
     if validate and not bool(torch.isfinite(rewards.masked_select(group_mask)).all()):
         raise ValueError("selected rewards must be finite.")
-    counts = group_mask.to(dtype=rewards.dtype).sum(dim=1)
+    rewards = _reward_values(rewards)
+    counts = group_mask.sum(dim=1)
     if validate and bool((counts < 2).any()):
         raise ValueError("each reward group must contain at least two valid candidates.")
     safe_rewards = rewards.masked_fill(~group_mask, 0)
@@ -334,7 +340,7 @@ def _advantages(
         centered.abs().pow(rewards.new_tensor(float(norm_p))).sum(dim=1, keepdim=True)
         / counts.unsqueeze(1)
     ).pow(1.0 / norm_p)
-    advantages = centered / (scale + rewards.new_tensor(float(eps)))
+    advantages = centered / (scale + eps)
     return advantages.masked_fill(~group_mask, 0)
 
 
@@ -362,7 +368,8 @@ def _reduce_neighbor_values(
     validate: bool,
 ) -> Tensor:
     resolved = cast(NeighborReduction, reduction)
-    weights = selected_mask.to(device=value.device, dtype=value.dtype)
+    value = value.to(dtype=torch.promote_types(value.dtype, torch.float32))
+    weights = selected_mask.to(dtype=torch.int64)
     safe_value = value.masked_fill(~selected_mask, 0)
     if resolved == "neighbor_mean":
         neighbor_count = weights.sum()
@@ -378,7 +385,7 @@ def _reduce_neighbor_values(
             raise ValueError("neighbor_mask must select at least one anchor-step comparison.")
         # ``valid_anchor_steps`` is a device mask; use a weighted reduction so
         # trusted calls do not materialize a dynamic host-side predicate.
-        weights = valid_anchor_steps.to(dtype=anchor_step_value.dtype)
+        weights = valid_anchor_steps.to(dtype=torch.int64)
         return (anchor_step_value * weights).sum() / weights.sum().clamp_min(1)
     raise ValueError("neighbor_reduction must be 'neighbor_mean' or 'anchor_step_mean'.")
 

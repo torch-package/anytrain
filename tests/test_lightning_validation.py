@@ -200,6 +200,27 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertAlmostEqual(reports[0]["val/score"], 1 / 7, places=7)
 
+    def test_lightning_aggregates_low_precision_counts_across_batches_and_ranks(self):
+        trainer = Trainer(
+            accelerator="cpu",
+            devices=2,
+            strategy="ddp_fork",
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            enable_progress_bar=False,
+            logger=False,
+        )
+        # Each batch has an exact count of 257 or 514; BF16 sum rounds both.
+        values = torch.tensor([1.0, 3.0, 5.0, 7.0]).unsqueeze(1).expand(-1, 257)
+        weights = torch.tensor([1, 2, 1, 2], dtype=torch.bfloat16).unsqueeze(1).expand(-1, 257)
+        reports = trainer.validate(
+            _UnequalCountModule(),
+            dataloaders=DataLoader(TensorDataset(values, weights), batch_size=1),
+        )
+
+        self.assertEqual(len(reports), 1)
+        self.assertAlmostEqual(reports[0]["val/score"], 26 / 6, places=6)
+
     def test_history_separates_sanity_and_interval_and_restores_state(self):
         history = validation.History(prefix="dev")
         trainer = SimpleNamespace(
