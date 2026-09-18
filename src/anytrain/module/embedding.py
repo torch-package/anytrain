@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from numbers import Integral
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from anytrain.lightning.checkpoint import canonical_sha256, canonical_value
+from ._embedding_contract import owner_contract_state
 
 _SAFE_MODULE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 _MODULE_NAME_PREFIX = "__embedding_owner__"
@@ -71,7 +70,12 @@ class EmbeddingBank(nn.Module):
         logical_names: Sequence[str] = (),
         state: Mapping[str, object] | None = None,
     ) -> str:
-        """Register one canonical owner and optional logical aliases."""
+        """Register one canonical owner and optional logical aliases.
+
+        Owners may provide ``embedding_contract_state() -> Mapping[str, object]``
+        for their complete structural identity. ``state`` overrides its defaults.
+        Owners without that method retain legacy structural metadata inference.
+        """
         if not isinstance(name, str) or not name:
             raise ValueError("embedding owner name must be non-empty.")
         if not isinstance(module, nn.Module):
@@ -91,9 +95,7 @@ class EmbeddingBank(nn.Module):
                 raise ValueError("embedding logical owner names must be non-empty.")
             previous = self._logical_to_module.get(logical)
             if previous is not None and previous != module_name:
-                raise ValueError(
-                    f"embedding logical owner {logical!r} maps to two modules."
-                )
+                raise ValueError(f"embedding logical owner {logical!r} maps to two modules.")
         self.owners[module_name] = module
         for logical in aliases:
             self._logical_to_module[logical] = module_name
@@ -102,7 +104,7 @@ class EmbeddingBank(nn.Module):
 
     def contract_state(self) -> dict[str, object]:
         owners = {
-            name: _owner_contract_state(owner, self._owner_state.get(name, {}))
+            name: owner_contract_state(owner, self._owner_state.get(name, {}))
             for name, owner in self.owners.items()
         }
         return {
@@ -111,66 +113,6 @@ class EmbeddingBank(nn.Module):
             "logical_to_owner": dict(self._logical_to_module),
             "owners": owners,
         }
-
-
-def _owner_contract_state(
-    owner: nn.Module,
-    metadata: Mapping[str, object],
-) -> dict[str, object]:
-    result: dict[str, object] = dict(metadata)
-    implementation = result.get("implementation")
-    if implementation is None:
-        implementation = (
-            "dense-v1"
-            if isinstance(owner, nn.Embedding)
-            else f"{type(owner).__module__}.{type(owner).__qualname__}"
-        )
-        # Factorized owners conventionally expose these structural attributes;
-        # keep their identity visible without importing a domain implementation.
-        if hasattr(owner, "fsq_levels") and hasattr(owner, "codebook_sizes"):
-            implementation = "fsq-factorized-v1"
-        result["implementation"] = implementation
-    if isinstance(owner, nn.Embedding):
-        result.setdefault("family", "dense")
-        result.setdefault("rows", owner.num_embeddings)
-        result.setdefault("embedding_dim", owner.embedding_dim)
-    else:
-        rows = getattr(owner, "num_embeddings", None)
-        dim = getattr(owner, "embedding_dim", None)
-        if isinstance(rows, Integral) and not isinstance(rows, bool):
-            result.setdefault("rows", int(rows))
-        if isinstance(dim, Integral) and not isinstance(dim, bool):
-            result.setdefault("embedding_dim", int(dim))
-        # Factorized owners may expose ``weight`` as an expensive dense
-        # compatibility property. Their structural attributes above are
-        # sufficient for the contract, so avoid materializing that table.
-        if not (hasattr(owner, "fsq_levels") and hasattr(owner, "codebook_sizes")):
-            weight = getattr(owner, "weight", None)
-            if isinstance(weight, Tensor) and weight.ndim >= 2:
-                result.setdefault("rows", int(weight.shape[0]))
-                result.setdefault("embedding_dim", int(weight.shape[-1]))
-
-    config = getattr(owner, "config", None)
-    feature = getattr(config, "feature", None)
-    if feature is not None:
-        result.setdefault("feature", _value(feature))
-    for attribute in ("codebook_sizes", "fsq_levels", "radix_order"):
-        value = getattr(owner, attribute, None)
-        if value is not None:
-            result.setdefault(attribute, _json_value(value))
-    topology = getattr(owner, "topology", None)
-    if isinstance(topology, Tensor):
-        result.setdefault("topology", topology.detach().cpu().tolist())
-    level_values = getattr(owner, "level_values", None)
-    if isinstance(level_values, Tensor):
-        result.setdefault(
-            "level_values_sha256",
-            canonical_sha256(level_values.detach().cpu().tolist()),
-        )
-    canonical = canonical_value(result)
-    if not isinstance(canonical, dict):  # pragma: no cover - defensive guard
-        raise TypeError("embedding owner contract state must be a mapping.")
-    return canonical
 
 
 class EmbeddingView(nn.Module):
@@ -348,11 +290,7 @@ class EmbeddingView(nn.Module):
         if self.prediction_indices is None:
             return dict(self._stream_owner_names)
         return {
-            stream: (
-                self._stream_owner_names[stream]
-                if tied
-                else f"output_prediction_{stream}"
-            )
+            stream: (self._stream_owner_names[stream] if tied else f"output_prediction_{stream}")
             for stream, tied in self._head_tied_by_stream.items()
         }
 
@@ -424,9 +362,7 @@ class EmbeddingView(nn.Module):
                 for name, ranges in self._stream_token_ranges.items()
             },
             "stream_owner_names": dict(self._stream_owner_names),
-            "stream_configs": {
-                name: dict(config) for name, config in self.stream_configs.items()
-            },
+            "stream_configs": {name: dict(config) for name, config in self.stream_configs.items()},
             "owner_names": list(self.owner_names),
             "prediction_owner_names": dict(self.prediction_owner_names),
             "head_tied": self.head_tied,
@@ -534,14 +470,6 @@ def _positive_int(value: object, name: str) -> int:
 
 def _value(value: object) -> object:
     return getattr(value, "value", value)
-
-
-def _json_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_json_value(item) for item in value]
-    return _value(value)
 
 
 __all__ = ["EmbeddingBank", "EmbeddingView"]

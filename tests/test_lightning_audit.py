@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
+import anytrain._audit as audit_runtime
 import anytrain.lightning.audit as audit_module
 from anytrain.lightning import _capability
 from anytrain.lightning.audit import (
@@ -70,7 +71,7 @@ def test_sink_emit_uses_a_fixed_capacity_buffer_without_step_scan(
         del args, kwargs
         raise AssertionError("emit must not scan the retained step window")
 
-    monkeypatch.setattr(audit_module, "_recent_steps", unexpected_step_scan)
+    monkeypatch.setattr(audit_runtime, "_recent_steps", unexpected_step_scan)
     sink = JsonlAuditSink(tmp_path, flush_interval=0, max_events=3)
     for step in range(10):
         sink.emit("point", global_step=step)
@@ -103,7 +104,7 @@ def test_env_sink_initialization_is_thread_safe(tmp_path: Path, monkeypatch) -> 
                 assert release.wait(timeout=5)
             super().__init__(directory, *args, **kwargs)
 
-    monkeypatch.setattr(audit_module, "JsonlAuditSink", PausingSink)
+    monkeypatch.setattr(audit_runtime, "JsonlAuditSink", PausingSink)
     threads = [
         Thread(target=audit_module.audit_event, args=(f"thread_{index}",)) for index in range(2)
     ]
@@ -905,7 +906,7 @@ def test_sync_checkpoint_audit_spans_pair_and_share_checkpoint_key(
     callback = ModelCheckpoint(async_save=False)
     target = tmp_path / "sync.ckpt"
     with patch(
-        "anytrain.lightning.callback.checkpoint.audit_event",
+        "anytrain.lightning.callback._checkpoint_storage.audit_event",
         side_effect=capture,
     ):
         callback._save_checkpoint(cast(Any, _AuditCheckpointTrainer()), str(target))
@@ -967,7 +968,7 @@ def test_async_checkpoint_audit_uses_explicit_sink_in_worker_thread(
         )
         callback.wait_async_saves()
     finally:
-        callback._close_async_storage()
+        callback._storage.close()
         sink.close()
 
     path = tmp_path / "rank-0-worker-main.jsonl"
@@ -1067,10 +1068,10 @@ def test_shared_owned_audit_sink_stays_open_until_checkpoint_drain(
 
     training = TrainingAuditCallback(directory=tmp_path)
     checkpoint = ModelCheckpoint(async_save=True, audit_sink=training.sink)
-    trainer = _AuditCheckpointTrainer(payload=b"shared-sink")
+    trainer = cast(Any, _AuditCheckpointTrainer(payload=b"shared-sink"))
     copy_started = Event()
     release_copy = Event()
-    original_copy = checkpoint._copy_to_target
+    original_copy = checkpoint._storage._copy_to_target
 
     def blocked_copy(source: Path, target: Path) -> None:
         copy_started.set()
@@ -1078,7 +1079,7 @@ def test_shared_owned_audit_sink_stays_open_until_checkpoint_drain(
         original_copy(source, target)
 
     try:
-        with patch.object(checkpoint, "_copy_to_target", side_effect=blocked_copy):
+        with patch.object(checkpoint._storage, "_copy_to_target", side_effect=blocked_copy):
             checkpoint._save_checkpoint(trainer, str(tmp_path / "shared.ckpt"))
             assert copy_started.wait(timeout=2)
 
@@ -1088,6 +1089,7 @@ def test_shared_owned_audit_sink_stays_open_until_checkpoint_drain(
             training.on_fit_end(trainer, cast(Any, object()))
             release_copy.set()
             checkpoint.wait_async_saves()
+            assert isinstance(training.sink, JsonlAuditSink)
             assert not training.sink._closed
     finally:
         release_copy.set()
@@ -1124,7 +1126,7 @@ def test_sync_checkpoint_failure_closes_serialize_and_checkpoint_spans(
     callback = ModelCheckpoint(async_save=False)
     with (
         patch(
-            "anytrain.lightning.callback.checkpoint.audit_event",
+            "anytrain.lightning.callback._checkpoint_storage.audit_event",
             side_effect=capture,
         ),
         pytest.raises(OSError, match="local storage unavailable"),
@@ -1205,7 +1207,7 @@ def test_async_checkpoint_audit_pairs_copy_wait_publication_and_callback(
     wait_started = Event()
     wait_errors: list[BaseException] = []
     callback = ModelCheckpoint(async_save=True)
-    original_copy = callback._copy_to_target
+    original_copy = callback._storage._copy_to_target
 
     def capture(event: str, **fields: object) -> None:
         records.append({"event": event, **fields})
@@ -1229,10 +1231,10 @@ def test_async_checkpoint_audit_pairs_copy_wait_publication_and_callback(
     try:
         with (
             patch(
-                "anytrain.lightning.callback.checkpoint.audit_event",
+                "anytrain.lightning.callback._checkpoint_storage.audit_event",
                 side_effect=capture,
             ),
-            patch.object(callback, "_copy_to_target", side_effect=blocked_copy),
+            patch.object(callback._storage, "_copy_to_target", side_effect=blocked_copy),
         ):
             callback._save_checkpoint(
                 cast(Any, _AuditCheckpointTrainer(payload=b"async")),
@@ -1281,7 +1283,7 @@ def test_async_checkpoint_audit_pairs_copy_wait_publication_and_callback(
         release_copy.set()
         if wait_thread.is_alive():
             wait_thread.join(timeout=5)
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_overlapping_async_checkpoint_saves_keep_audit_bindings(
@@ -1342,7 +1344,7 @@ def test_overlapping_async_checkpoint_saves_keep_audit_bindings(
 
     try:
         with patch(
-            "anytrain.lightning.callback.checkpoint.audit_event",
+            "anytrain.lightning.callback._checkpoint_storage.audit_event",
             side_effect=capture,
         ):
             first_thread.start()
@@ -1373,7 +1375,7 @@ def test_overlapping_async_checkpoint_saves_keep_audit_bindings(
         first_save_returned.set()
         first_thread.join(timeout=5)
         second_thread.join(timeout=5)
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_async_checkpoint_copy_failure_closes_all_started_audit_spans(
@@ -1391,11 +1393,11 @@ def test_async_checkpoint_copy_failure_closes_all_started_audit_spans(
     try:
         with (
             patch(
-                "anytrain.lightning.callback.checkpoint.audit_event",
+                "anytrain.lightning.callback._checkpoint_storage.audit_event",
                 side_effect=capture,
             ),
             patch.object(
-                callback,
+                callback._storage,
                 "_copy_to_target",
                 side_effect=OSError("storage unavailable"),
             ),
@@ -1411,7 +1413,7 @@ def test_async_checkpoint_copy_failure_closes_all_started_audit_spans(
         assert "checkpoint_done" not in events
         assert all(record.get("checkpoint_key") for record in records)
     finally:
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_sync_checkpoint_callback_failure_is_not_reported_as_serialization(
@@ -1435,7 +1437,7 @@ def test_sync_checkpoint_callback_failure_is_not_reported_as_serialization(
     target = tmp_path / "sync-callback-error.ckpt"
     with (
         patch(
-            "anytrain.lightning.callback.checkpoint.audit_event",
+            "anytrain.lightning.callback._checkpoint_storage.audit_event",
             side_effect=capture,
         ),
         pytest.raises(RuntimeError, match="logger callback failed"),
@@ -1473,7 +1475,7 @@ def test_async_checkpoint_callback_failure_preserves_publication_success(
     target = tmp_path / "async-callback-error.ckpt"
     try:
         with patch(
-            "anytrain.lightning.callback.checkpoint.audit_event",
+            "anytrain.lightning.callback._checkpoint_storage.audit_event",
             side_effect=capture,
         ):
             callback._save_checkpoint(cast(Any, trainer), str(target))
@@ -1493,7 +1495,7 @@ def test_async_checkpoint_callback_failure_preserves_publication_success(
         assert "checkpoint_error" in events
         assert "checkpoint_done" not in events
     finally:
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_reaped_prepared_copy_waits_for_last_publication_before_success(
@@ -1516,7 +1518,7 @@ def test_reaped_prepared_copy_waits_for_last_publication_before_success(
     )
     persistent = tmp_path / "top.ckpt"
     last = tmp_path / "last.ckpt"
-    original_copy = callback._copy_to_target
+    original_copy = callback._storage._copy_to_target
 
     def fail_last_publication(source: Path, target: Path) -> None:
         if target == last:
@@ -1526,11 +1528,11 @@ def test_reaped_prepared_copy_waits_for_last_publication_before_success(
     try:
         with (
             patch(
-                "anytrain.lightning.callback.checkpoint.audit_event",
+                "anytrain.lightning.callback._checkpoint_storage.audit_event",
                 side_effect=capture,
             ),
             patch.object(
-                callback,
+                callback._storage,
                 "_copy_to_target",
                 side_effect=fail_last_publication,
             ),
@@ -1544,7 +1546,7 @@ def test_reaped_prepared_copy_waits_for_last_publication_before_success(
             assert prerequisite is not None
             prerequisite.result(timeout=5)
 
-            assert callback._collect_done_async_error() is None
+            assert callback._storage.collect_error() is None
             assert "checkpoint_done" not in {record["event"] for record in records}
 
             callback._save_last_checkpoint(cast(Any, trainer), {})
@@ -1563,7 +1565,7 @@ def test_reaped_prepared_copy_waits_for_last_publication_before_success(
         assert events.count("checkpoint_error") == 1
         assert "checkpoint_done" not in events
     finally:
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_reused_checkpoint_copy_reports_wait_before_it_is_released(
@@ -1592,7 +1594,7 @@ def test_reused_checkpoint_copy_reports_wait_before_it_is_released(
     )
     persistent = tmp_path / "top.ckpt"
     last = tmp_path / "last.ckpt"
-    original_copy = callback._copy_to_target
+    original_copy = callback._storage._copy_to_target
 
     def blocked_copy(source: Path, target: Path) -> None:
         if target == persistent:
@@ -1611,10 +1613,10 @@ def test_reused_checkpoint_copy_reports_wait_before_it_is_released(
     try:
         with (
             patch(
-                "anytrain.lightning.callback.checkpoint.audit_event",
+                "anytrain.lightning.callback._checkpoint_storage.audit_event",
                 side_effect=capture,
             ),
-            patch.object(callback, "_copy_to_target", side_effect=blocked_copy),
+            patch.object(callback._storage, "_copy_to_target", side_effect=blocked_copy),
         ):
             callback.last_model_path = str(last)
             callback._prepared_last_paths = ("", str(last))
@@ -1638,7 +1640,7 @@ def test_reused_checkpoint_copy_reports_wait_before_it_is_released(
         release_copy.set()
         if wait_thread.is_alive():
             wait_thread.join(timeout=5)
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_independent_last_publication_failure_pairs_wait_and_error_spans(
@@ -1685,11 +1687,11 @@ def test_independent_last_publication_failure_pairs_wait_and_error_spans(
     try:
         with (
             patch(
-                "anytrain.lightning.callback.checkpoint.audit_event",
+                "anytrain.lightning.callback._checkpoint_storage.audit_event",
                 side_effect=capture,
             ),
             patch.object(
-                callback,
+                callback._storage,
                 "_update_last_checkpoint_impl",
                 side_effect=fail_publication,
             ),
@@ -1700,7 +1702,7 @@ def test_independent_last_publication_failure_pairs_wait_and_error_spans(
                 checkpoint_kind="last",
                 reason="last_publication",
             )
-            callback._submit_async_last_update(
+            callback._storage.publish_last(
                 None,
                 persistent,
                 last,
@@ -1708,7 +1710,7 @@ def test_independent_last_publication_failure_pairs_wait_and_error_spans(
                 publication=(str(persistent), str(last), last),
                 audit=checkpoint_audit,
             )
-            callback._finish_checkpoint_submit(
+            callback._storage.finish_submit(
                 checkpoint_audit,
                 success=True,
                 publication_pending=True,
@@ -1732,7 +1734,7 @@ def test_independent_last_publication_failure_pairs_wait_and_error_spans(
         release_publication.set()
         if wait_thread.is_alive():
             wait_thread.join(timeout=5)
-        callback._close_async_storage()
+        callback._storage.close()
 
 
 def test_async_remove_failure_pairs_wait_remove_and_checkpoint_spans(
@@ -1773,10 +1775,10 @@ def test_async_remove_failure_pairs_wait_remove_and_checkpoint_spans(
     try:
         with (
             patch(
-                "anytrain.lightning.callback.checkpoint.audit_event",
+                "anytrain.lightning.callback._checkpoint_storage.audit_event",
                 side_effect=capture,
             ),
-            patch.object(callback, "_remove_target", side_effect=fail_remove),
+            patch.object(callback._storage, "_remove_target", side_effect=fail_remove),
         ):
             callback._remove_checkpoint(trainer, str(target))
             assert remove_started.wait(timeout=2)
@@ -1804,4 +1806,4 @@ def test_async_remove_failure_pairs_wait_remove_and_checkpoint_spans(
         release_remove.set()
         if wait_thread.is_alive():
             wait_thread.join(timeout=5)
-        callback._close_async_storage()
+        callback._storage.close()

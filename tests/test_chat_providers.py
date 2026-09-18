@@ -792,6 +792,8 @@ def _chat_for_request_tests() -> Chat:
     client._async_client_loop = None
     client._messages = []
     client._lock = threading.Lock()
+    client._closed = False
+    client._sync_client_closed = False
     client.last_response = None
     return client
 

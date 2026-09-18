@@ -4,6 +4,7 @@ import unittest
 import torch
 from torch import nn
 
+from anytrain._contract import canonical_sha256
 from anytrain.module.embedding import EmbeddingBank, EmbeddingView
 
 
@@ -71,6 +72,100 @@ class EmbeddingTest(unittest.TestCase):
         copied.double()
         self.assertIs(next(copied.bank.parameters()).dtype, torch.float64)
         self.assertIs(copied.bank, copied.owner)
+
+    def test_owner_provider_avoids_structural_probing_and_keeps_metadata_overrides(self):
+        class Owner(nn.Module):
+            revision = 1
+
+            @property
+            def weight(self):
+                raise AssertionError("contract must not materialize dense weights")
+
+            @property
+            def fsq_levels(self):
+                raise AssertionError("explicit provider must bypass legacy inference")
+
+            def embedding_contract_state(self):
+                return {"implementation": "custom-v1", "revision": self.revision, "rows": 8}
+
+        owner = Owner()
+        bank = EmbeddingBank(2)
+        bank.add_owner("custom", owner, state={"rows": 16})
+        before = bank.contract_state()
+        owners = before["owners"]
+        assert isinstance(owners, dict)
+        self.assertEqual(
+            owners["custom"],
+            {
+                "implementation": "custom-v1",
+                "revision": 1,
+                "rows": 16,
+            },
+        )
+        owner.revision = 2
+        after = bank.contract_state()
+        self.assertNotEqual(canonical_sha256(before), canonical_sha256(after))
+        self.assertEqual(owners["custom"]["revision"], 1)
+
+    def test_legacy_owner_contract_preserves_payload_and_digest(self):
+        class FactorizedOwner(nn.Module):
+            fsq_levels = (2, 3)
+            codebook_sizes = (6,)
+            num_embeddings = 6
+            embedding_dim = 2
+            radix_order = "little"
+
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("topology", torch.tensor([[0, 1]]))
+                self.register_buffer("level_values", torch.tensor([0.0, 1.0]))
+
+            @property
+            def weight(self):
+                raise AssertionError("legacy factorized owner must not materialize weight")
+
+        bank = EmbeddingBank(2)
+        bank.add_owner("factorized", FactorizedOwner(), state={"family": "custom"})
+        bank.add_owner("dense", nn.Embedding(3, 2))
+        expected = {
+            "grammar": "embedding-bank-v1",
+            "embedding_dim": 2,
+            "logical_to_owner": {"factorized": "factorized", "dense": "dense"},
+            "owners": {
+                "factorized": {
+                    "family": "custom",
+                    "implementation": "fsq-factorized-v1",
+                    "rows": 6,
+                    "embedding_dim": 2,
+                    "fsq_levels": [2, 3],
+                    "codebook_sizes": [6],
+                    "radix_order": "little",
+                    "topology": [[0, 1]],
+                    "level_values_sha256": canonical_sha256([0.0, 1.0]),
+                },
+                "dense": {
+                    "implementation": "dense-v1",
+                    "family": "dense",
+                    "rows": 3,
+                    "embedding_dim": 2,
+                },
+            },
+        }
+        self.assertEqual(bank.contract_state(), expected)
+        self.assertEqual(canonical_sha256(bank.contract_state()), canonical_sha256(expected))
+
+    def test_owner_provider_rejects_invalid_contract(self):
+        class InvalidOwner(nn.Module):
+            def __init__(self, provider):
+                super().__init__()
+                self.embedding_contract_state = provider
+
+        for provider in (42, lambda: [], lambda: {"invalid": object()}):
+            with self.subTest(provider=provider):
+                bank = EmbeddingBank()
+                bank.add_owner("invalid", InvalidOwner(provider))
+                with self.assertRaises(TypeError):
+                    bank.contract_state()
 
 
 if __name__ == "__main__":

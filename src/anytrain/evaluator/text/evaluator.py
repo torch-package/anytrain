@@ -4,9 +4,11 @@ from collections.abc import Sequence
 
 import torch.distributed as dist
 
+from .._corpus import compute_on_root
 from ..abc import EvaluatorABC
 from ..types import MetricDict
 from .normalization import TextNormalizationConfig, normalize_text_batch
+from .profile import TextMetricProfile
 from .scores import (
     bleu_signature,
     character_error_rate,
@@ -47,17 +49,18 @@ class TextComparisonEvaluator(EvaluatorABC):
             lowercase=lowercase,
             chinese=chinese,
         )
-        if not isinstance(bleu_smoothing, bool):
-            raise TypeError("bleu_smoothing must be a boolean.")
-        # Reuse the score helpers as the single validation owner for metric
-        # profile options without importing optional backends here.
-        bleu_signature(tokenize=bleu_tokenize, smooth=bleu_smoothing)
-        chrf_signature(word_order=chrf_word_order)
+        TextMetricProfile(self.normalization, bleu_smoothing, bleu_tokenize, chrf_word_order)
         self.bleu_smoothing = bleu_smoothing
         self.bleu_tokenize = bleu_tokenize
         self.chrf_word_order = chrf_word_order
         self._predictions: list[str] = []
         self._targets: list[str] = []
+
+    @property
+    def profile(self) -> TextMetricProfile:
+        return TextMetricProfile(
+            self.normalization, self.bleu_smoothing, self.bleu_tokenize, self.chrf_word_order
+        )
 
     def evaluate(
         self,
@@ -163,69 +166,23 @@ class TextComparisonEvaluator(EvaluatorABC):
     ) -> MetricDict:
         """Gather text to rank zero and broadcast one corpus result."""
 
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
         payload: _TextCorpusPayload = (
-            self._semantic_key(),
-            tuple(local[0]),
-            tuple(local[1]),
-        )
-        gathered: list[_TextCorpusPayload | None] | None
-        gathered = [None] * world_size if rank == 0 else None
-        from anytrain.lightning.audit import audit_collective
-
-        audit_collective(
-            "torch.distributed.gather_object",
-            lambda: dist.gather_object(payload, gathered, dst=0),
-            source="TextComparisonEvaluator._compute_distributed.gather",
-            object_type=type(payload).__name__,
-            local_item_count=len(local[0]),
-            world_size=world_size,
+            self._semantic_key(), tuple(local[0]), tuple(local[1]),
         )
 
-        envelope: list[object] = [None]
-        root_error: Exception | None = None
-        if rank == 0:
-            try:
-                if gathered is None:
-                    raise RuntimeError("Distributed text root did not allocate gather storage.")
-                predictions, targets = _merge_text_corpora(
-                    gathered,
-                    semantic_key=self._semantic_key(),
-                )
-                envelope[0] = {
-                    "status": "ok",
-                    "metrics": self._compute_corpus(predictions, targets),
-                }
-            except Exception as error:
-                root_error = error
-                envelope[0] = {
-                    "status": "error",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                }
-
-        audit_collective(
-            "torch.distributed.broadcast_object_list",
-            lambda: dist.broadcast_object_list(envelope, src=0),
-            source="TextComparisonEvaluator._compute_distributed.broadcast",
-            object_type="dict",
-            world_size=world_size,
-        )
-        result = envelope[0]
-        if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
-            raise RuntimeError("Distributed text compute returned an invalid result envelope.")
-        if result["status"] == "error":
-            error_type = result.get("error_type", "Exception")
-            error_message = result.get("error", "unknown root error")
-            failure = RuntimeError(
-                "Distributed text compute failed on rank zero: "
-                f"{error_type}: {error_message}"
+        def compute(gathered: Sequence[_TextCorpusPayload | None]) -> dict[str, object]:
+            predictions, targets = _merge_text_corpora(
+                gathered, semantic_key=self._semantic_key(),
             )
-            if root_error is not None:
-                raise failure from root_error
-            raise failure
+            return {"metrics": self._compute_corpus(predictions, targets)}
 
+        result = compute_on_root(
+            payload, compute,
+            source="TextComparisonEvaluator._compute_distributed",
+            label="text",
+            invalid_envelope="Distributed text compute returned an invalid result envelope.",
+            local_item_count=len(local[0]),
+        )
         metrics = result.get("metrics")
         if not isinstance(metrics, dict):
             raise RuntimeError("Distributed text compute returned invalid metrics.")

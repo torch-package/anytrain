@@ -48,7 +48,10 @@ def masked_mse_velocity_loss(
     denominator = weights.sum() * unmasked_width
     if not bool(denominator > 0):
         raise ValueError("mask must contain at least one valid item.")
-    return ((prediction - target).square() * weights).sum() / denominator
+    valid = weights.bool()
+    prediction = prediction.masked_fill(~valid, 0)
+    target = target.masked_fill(~valid, 0)
+    return (prediction - target).square().sum() / denominator
 
 
 def _require_scalar_loss(loss: Tensor) -> Tensor:

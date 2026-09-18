@@ -15,7 +15,6 @@ from enum import auto
 from functools import cache
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, TypedDict, Unpack, cast, overload
 from warnings import warn
 
@@ -25,7 +24,6 @@ from torch import Tensor
 from anytrain._compat import StrEnum
 from anytrain.tts import (
     AudioReference,
-    EncodedAudioReference,
     PathAudioReference,
     TTSAcousticEngine,
     TTSCapabilities,
@@ -45,6 +43,7 @@ from anytrain.tts._common import (
     positive_float,
     validate_mapping,
 )
+from anytrain.tts._reference import ReferenceFiles
 from anytrain.tts.environments import COSYVOICE_VLLM_ENVIRONMENT
 
 DEFAULT_MODEL_V2 = "FunAudioLLM/CosyVoice2-0.5B"
@@ -587,19 +586,16 @@ def _resolve_reference_aliases(
 @contextmanager
 def _prompt_audio(reference: AudioReference) -> Iterator[str]:
     if isinstance(reference, (str, PathLike)):
-        yield str(Path(reference).expanduser())
-        return
-    with TemporaryDirectory(prefix="anytrain-cosyvoice-") as directory:
-        if isinstance(reference, EncodedAudioReference):
-            path = Path(directory, f"reference{reference.suffix}")
-            path.write_bytes(reference.data)
-        elif isinstance(reference, WaveformReference):
-            path = Path(directory, "reference.wav")
-            waveform = _mono_waveform(reference.waveform)
-            _torchaudio().save(str(path), waveform, reference.sample_rate)
-        else:
-            raise TypeError("unsupported CosyVoice reference audio type.")
-        yield str(path)
+        reference = str(Path(reference).expanduser())
+    with ReferenceFiles(
+        prefix="anytrain-cosyvoice-", save_waveform=_save_prompt_waveform,
+        invalid="unsupported CosyVoice reference audio type.",
+    ) as files:
+        yield files.path(reference)
+
+
+def _save_prompt_waveform(reference: WaveformReference, path: Path) -> None:
+    _torchaudio().save(str(path), _mono_waveform(reference.waveform), reference.sample_rate)
 
 
 def _mono_waveform(waveform: Tensor) -> Tensor:

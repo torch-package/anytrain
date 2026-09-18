@@ -785,7 +785,7 @@ class MoETest(unittest.TestCase):
                 )
                 if top_k is None:
                     with patch(
-                        "anytrain.module.moe.bank.mix_expert_weights",
+                        "anytrain.module.moe._bank_conv.mix_expert_weights",
                         side_effect=AssertionError("linear path mixed full weights"),
                     ):
                         actual = moe.forward_manually(hidden, routing).hidden_states
@@ -948,9 +948,8 @@ class MoETest(unittest.TestCase):
             top_k=1,
         )
 
-        with patch.object(
-            moe.expert_bank,
-            "_forward_linear_topk_batched",
+        with patch(
+            "anytrain.module.moe._bank_linear.linear_topk_batched",
             side_effect=AssertionError("CPU should use grouped GEMM"),
         ):
             output = moe.forward_manually(hidden, routing).hidden_states

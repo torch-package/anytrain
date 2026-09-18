@@ -602,3 +602,16 @@ class FlowMatchingComponentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_masked_velocity_loss_excludes_padding_before_arithmetic():
+    from anytrain.framework.flow_matching import masked_mse_velocity_loss
+
+    prediction = torch.tensor([[[1.0], [float("nan")], [float("inf")]]], requires_grad=True)
+    target = torch.tensor([[[0.0], [float("inf")], [float("nan")]]], requires_grad=True)
+    mask = torch.tensor([[True, False, False]])
+    result = masked_mse_velocity_loss(prediction, target, {"mask": mask})
+    torch.testing.assert_close(result, torch.tensor(1.0))
+    result.backward()
+    torch.testing.assert_close(prediction.grad, torch.tensor([[[2.0], [0.0], [0.0]]]))
+    torch.testing.assert_close(target.grad, torch.tensor([[[-2.0], [0.0], [0.0]]]))

@@ -9,6 +9,7 @@ import torch
 from lightning import pytorch as pl
 from torch import nn
 
+import anytrain.lightning.callback._observation_state as observation_state
 import anytrain.lightning.callback.observation as observation_callback
 from anytrain import observation
 from anytrain.lightning import ObservationCallback
@@ -412,7 +413,7 @@ class ObservationEventTest(unittest.TestCase):
         self.assertEqual(callback.observed_modules, ("observed",))
 
         with mock.patch.object(
-            observation_callback,
+            observation_state,
             "_heatmap_image",
             side_effect=AssertionError("nonzero rank must not copy heatmap pixels"),
         ):
@@ -636,10 +637,10 @@ class ObservationEventTest(unittest.TestCase):
         self.assertEqual(strategy.all_gather_calls, 1)
         self.assertEqual(writer.images, [])
         self.assertEqual(
-            observation_callback._heatmap_schema(
+            observation_state._heatmap_schema(
                 observation.Heatmap(torch.zeros(1, 1), value_range=(0, 1))
             ),
-            observation_callback._heatmap_schema(
+            observation_state._heatmap_schema(
                 observation.Heatmap(torch.zeros(1, 1), value_range=(0.0, 1.0))
             ),
         )
@@ -688,7 +689,7 @@ class ObservationEventTest(unittest.TestCase):
         with (
             mock.patch.object(torch.compiler, "is_compiling", return_value=True),
             mock.patch.object(
-                observation_callback,
+                observation_state,
                 "_heatmap_image",
                 side_effect=AssertionError("compile capture must not observe events"),
             ),
@@ -698,7 +699,7 @@ class ObservationEventTest(unittest.TestCase):
 
         callback.on_fit_end(trainer, module)
         with mock.patch.object(
-            observation_callback,
+            observation_state,
             "_heatmap_image",
             side_effect=AssertionError("detached callback must not observe events"),
         ):

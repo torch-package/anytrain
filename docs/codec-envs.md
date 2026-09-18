@@ -59,8 +59,8 @@
 
 测试目录：
 
-- `122:/mnt/pami202/zhuyin/dynamic/debug/anytrain-codec-smoke`
-- `121:/mnt/pami202/zhuyin/dynamic/debug/anytrain-codec-smoke`
+- `122:${DYNAMIC_HOME}/debug/anytrain-codec-smoke`
+- `121:${DYNAMIC_HOME}/debug/anytrain-codec-smoke`
 
 结果：
 

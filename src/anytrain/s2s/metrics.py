@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
-from lightning import LightningModule, Trainer
-from lightning.pytorch.callbacks import Callback
 from torch import Tensor
-
-from anytrain.lightning import StepInterval, _capability, experiment
 
 from .data import GenerationRequest, Route
 from .model import GenerationOutput, LossStat, TokenLossStats
-from .training import REPORT_KEY, BatchUnits, StepReport
+from .training import BatchUnits, StepReport
 
 _GLOBAL_FIELDS = 6
 _ROUTE_FIELDS = 13
@@ -50,79 +46,6 @@ def generation_metrics(
                 stage.seconds / input_audio.duration_seconds
             )
     return values
-
-
-class S2SMetricsCallback(Callback):
-    """Accumulate exact S2S sums/counts and log one reduced metric window."""
-
-    def __init__(
-        self,
-        routes: Sequence[Route],
-        *,
-        every_n_steps: int,
-        sync_distributed: bool = True,
-    ) -> None:
-        super().__init__()
-        if isinstance(routes, (str, bytes)) or not isinstance(routes, Sequence):
-            raise TypeError("S2S metric routes must be a sequence of Route values.")
-        values = tuple(routes)
-        if not values:
-            raise ValueError("S2S metric routes must not be empty.")
-        if any(not isinstance(route, Route) for route in values):
-            raise TypeError("S2S metric routes must contain only Route values.")
-        if len(values) != len(set(values)):
-            raise ValueError("S2S metric routes must be unique.")
-        if not isinstance(sync_distributed, bool):
-            raise TypeError("sync_distributed must be a boolean.")
-        self.routes = values
-        self.interval = StepInterval(every_n_steps=every_n_steps)
-        self.sync_distributed = sync_distributed
-        self._window = _Window(values)
-
-    def on_train_batch_end(
-        self,
-        trainer: Trainer,
-        pl_module: LightningModule,
-        outputs: Tensor | Mapping[str, Any] | None,
-        batch: Any,
-        batch_idx: int,
-    ) -> None:
-        del pl_module, batch, batch_idx
-        if not isinstance(outputs, Mapping):
-            return
-        report = outputs.get(REPORT_KEY)
-        if report is None:
-            return
-        if not isinstance(report, StepReport):
-            raise TypeError(f"training output {REPORT_KEY!r} must be StepReport.")
-        self._window.update(report)
-        step = _capability.global_step(trainer)
-        if step > 0 and self.interval.should_run(step):
-            self._flush(trainer, step=step)
-
-    def on_train_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        del pl_module
-        if self._window:
-            self._flush(trainer, step=_capability.global_step(trainer))
-
-    def _flush(self, trainer: Trainer, *, step: int) -> None:
-        packed = self._window.pack()
-        if self.sync_distributed and _capability.world_size(trainer) > 1:
-            packed = _capability.strategy_reduce(
-                trainer,
-                packed,
-                reduce_op="sum",
-                error="Distributed S2S metrics require trainer.strategy.reduce.",
-            )
-        if _capability.is_global_zero(trainer):
-            writer = experiment.scalar(trainer)
-            if writer is None:
-                raise RuntimeError(
-                    "S2SMetricsCallback requires a logger with add_scalar capability."
-                )
-            for tag, value in _window_metrics(packed, self.routes).items():
-                writer.add_scalar(tag, value, step)
-        self._window.reset()
 
 
 class _RouteWindow:
@@ -281,3 +204,14 @@ def _add_losses(
 
 
 __all__ = ["S2SMetricsCallback", "generation_metrics"]
+
+
+def __getattr__(name: str) -> object:
+    if name == "S2SMetricsCallback":
+        from .integration import S2SMetricsCallback
+        return S2SMetricsCallback
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+if TYPE_CHECKING:
+    from .integration import S2SMetricsCallback as S2SMetricsCallback

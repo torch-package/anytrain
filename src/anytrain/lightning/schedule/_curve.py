@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Protocol
 
+from anytrain._lr_math import cosine_interpolate
+
 
 class LRCurve(Protocol):
     def ratio(self, progress: float) -> float: ...
@@ -47,8 +49,7 @@ class Cosine:
 
     def ratio(self, progress: float) -> float:
         resolved = _progress(progress)
-        cosine_progress = 0.5 * (1.0 - math.cos(math.pi * resolved))
-        return float(self.start) + (float(self.end) - float(self.start)) * cosine_progress
+        return cosine_interpolate(resolved, start=float(self.start), end=float(self.end))
 
 
 def curve_ratio(curve: LRCurve, progress: float) -> float:

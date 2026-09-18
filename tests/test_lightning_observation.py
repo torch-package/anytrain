@@ -12,6 +12,7 @@ from lightning import pytorch as pl
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+import anytrain.lightning.callback._observation_state as observation_state
 import anytrain.lightning.callback.observation as observation_callback
 from anytrain import observation
 from anytrain.lightning import ObservationCallback
@@ -691,10 +692,10 @@ class ObservationCallbackTest(unittest.TestCase):
 
         callback.on_train_batch_start(trainer, module, None, 0)
         module.observed(torch.tensor([0]))
-        callback.on_before_optimizer_step(trainer, module, object())
+        callback.on_before_optimizer_step(trainer, module, cast(torch.optim.Optimizer, object()))
         trainer.global_step = 1
         module.observed(torch.tensor([1]))
-        callback.on_before_optimizer_step(trainer, module, object())
+        callback.on_before_optimizer_step(trainer, module, cast(torch.optim.Optimizer, object()))
         trainer.global_step = 2
         callback.on_train_batch_end(trainer, module, None, None, 0)
 
@@ -753,10 +754,10 @@ class ObservationCallbackTest(unittest.TestCase):
 
         callback.on_train_batch_start(trainer, module, None, 0)
         module.observed(torch.tensor([2, 4]))
-        callback.on_before_optimizer_step(trainer, module, object())
+        callback.on_before_optimizer_step(trainer, module, cast(torch.optim.Optimizer, object()))
         trainer.global_step = 1
         module.observed(torch.tensor([6, 8]))
-        callback.on_before_optimizer_step(trainer, module, object())
+        callback.on_before_optimizer_step(trainer, module, cast(torch.optim.Optimizer, object()))
         trainer.global_step = 2
         callback.on_train_batch_end(trainer, module, None, None, 0)
 
@@ -787,10 +788,9 @@ class ObservationCallbackTest(unittest.TestCase):
         )
 
         class ManualModule(pl.LightningModule):
-            automatic_optimization = False
-
             def __init__(self):
                 super().__init__()
+                self.automatic_optimization = False
                 self.first = nn.Parameter(torch.tensor(1.0))
                 self.second = nn.Parameter(torch.tensor(1.0))
                 self.observed = ManualObserved()
@@ -798,7 +798,9 @@ class ObservationCallbackTest(unittest.TestCase):
 
             def training_step(self, batch, batch_idx):
                 del batch_idx
-                first_optimizer, second_optimizer = self.optimizers()
+                optimizers = self.optimizers()
+                assert isinstance(optimizers, list)
+                first_optimizer, second_optimizer = optimizers
                 value = batch[0]
                 self.observed(value)
                 first_optimizer.zero_grad()
@@ -1210,7 +1212,7 @@ class ObservationCallbackTest(unittest.TestCase):
             torch.tensor([[1.0, 2.0]], dtype=torch.float64),
             torch.tensor(3.0, dtype=torch.float64),
         )
-        reduced = observation_callback._sum_many(trainer, values, enabled=True)
+        reduced = observation_state._sum_many(trainer, values, enabled=True)
 
         self.assertEqual(strategy.reduce_calls, 1)
         self.assertEqual(strategy.reduce_op, "sum")
@@ -1225,7 +1227,7 @@ class ObservationCallbackTest(unittest.TestCase):
 
     def test_rank_local_batched_observation_reduce_returns_detached_clones(self):
         value = torch.tensor([1.0], requires_grad=True)
-        reduced = observation_callback._sum_many(
+        reduced = observation_state._sum_many(
             _trainer(_Writer()),
             (value,),
             enabled=True,
@@ -1252,7 +1254,7 @@ class ObservationCallbackTest(unittest.TestCase):
             torch.tensor([1, 2], dtype=torch.int64),
             torch.tensor([3.0], dtype=torch.float32),
         )
-        reduced = observation_callback._sum_many(
+        reduced = observation_state._sum_many(
             _trainer(_Writer(), world_size=2, strategy=strategy),
             values,
             enabled=True,

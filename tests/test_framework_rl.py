@@ -736,3 +736,20 @@ class NeighborGRPOLossTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_mask_helpers_ignore_nonfinite_padding_and_preserve_gradients():
+    from anytrain.framework.rl.logprob import masked_mean, sequence_logps
+
+    mask = torch.tensor([[True, False, False]])
+    for reduction in ("sum", "mean"):
+        value = torch.tensor([[-2.0, float("-inf"), float("nan")]], requires_grad=True)
+        result = sequence_logps(value, mask, reduction=reduction)
+        torch.testing.assert_close(result, torch.tensor([-2.0]))
+        result.sum().backward()
+        torch.testing.assert_close(value.grad, torch.tensor([[1.0, 0.0, 0.0]]))
+    value = torch.tensor([[-2.0, float("inf"), float("nan")]], requires_grad=True)
+    result = masked_mean(value, mask)
+    torch.testing.assert_close(result, torch.tensor(-2.0))
+    result.backward()
+    torch.testing.assert_close(value.grad, torch.tensor([[1.0, 0.0, 0.0]]))

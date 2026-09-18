@@ -52,6 +52,17 @@ response = await client.acall("compare it with the previous answer")
 线程回退的异步图片入口。因为 `Chat` 实例持有会话上下文，同一实例内的异步文本请求会串行执行，
 避免并发更新消息历史。
 
+## 显式释放客户端
+
+同步使用可写为 `with Chat("deepseek") as client:`，或在结束后调用 `client.close()`。
+异步使用可写为 `async with await Chat.async_create("deepseek") as client:`，或在使用该实例的
+事件循环中 `await client.aclose()`；它会等待在途文本请求，再关闭同步与异步 SDK client。
+已创建独立异步 client 时，同步 `close()` 会提示使用 `aclose()`，避免跨事件循环释放连接。
+关闭成功后可重复关闭，继续请求会报 `Chat is closed`。SDK 关闭失败可再次调用关闭方法重试。
+
+GLM 使用同步 SDK 的线程回退；取消异步请求会等待该线程返回再释放会话锁。SDK cleanup 本身
+受到取消时也会先完成资源收尾，因此关闭等待时长取决于在途 SDK 调用的 timeout。
+
 ## 当前实现
 
 当前模块实现稳定外部契约、实例内消息上下文、环境变量解析、DeepSeek OpenAI-compatible SDK 调用、GLM SDK 调用、OpenRouter OpenAI-compatible SDK 调用和 GLM 图片生成调用。缺少对应 optional 依赖时会明确抛出 `ImportError`，避免静默 fallback。

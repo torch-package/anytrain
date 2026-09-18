@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -53,7 +54,7 @@ def _finite_positive(value: object, *, name: str) -> float:
 def _require_callable(value: object, *, name: str) -> Callable[[Tensor, Tensor], Tensor]:
     if not callable(value):
         raise TypeError(f"{name} must be callable.")
-    return value
+    return cast(Callable[[Tensor, Tensor], Tensor], value)
 
 
 @register_loss

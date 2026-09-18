@@ -39,7 +39,7 @@ def sequence_logps(
 
     _validate_aligned_mask(token_logps, mask)
     weights = mask.to(device=token_logps.device, dtype=token_logps.dtype)
-    total = (token_logps * weights).sum(dim=-1)
+    total = token_logps.masked_fill(~mask, 0).sum(dim=-1)
     resolved = cast(SequenceReduction, reduction)
     if resolved == "sum":
         return total
@@ -59,7 +59,7 @@ def masked_mean(value: Tensor, mask: Tensor) -> Tensor:
     count = weights.sum()
     if bool(count <= 0):
         raise ValueError("mask must select at least one value.")
-    return (value * weights).sum() / count
+    return value.masked_fill(~mask, 0).sum() / count
 
 
 def _validate_aligned_mask(value: Tensor, mask: Tensor) -> None:

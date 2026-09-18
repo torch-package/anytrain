@@ -4,7 +4,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 import torch
@@ -13,12 +12,12 @@ from torch import Tensor
 from anytrain._compat import strict_zip
 from anytrain.tts import (
     AudioReference,
-    EncodedAudioReference,
     TTSOptions,
     WaveformReference,
     validate_text,
 )
 from anytrain.tts._common import positive_float, positive_int, probability, validate_mapping
+from anytrain.tts._reference import ReferenceFiles
 
 from ._config import MossRuntimeKwargs
 from ._types import AudioTokenizerProcessor, DeviceMovable, Processor
@@ -79,40 +78,11 @@ def audio_references(
 
 
 @contextmanager
-def materialized_audio_references(
-    values: Sequence[AudioReference | None],
-) -> Iterator[list[str | None]]:
-    """Expose references as paths for the complete MOSS generation lifecycle."""
-
-    temporary: TemporaryDirectory[str] | None = None
-    paths: list[str | None] = []
-    try:
-        for index, value in enumerate(values):
-            if value is None:
-                paths.append(None)
-                continue
-            if isinstance(value, (str, PathLike)):
-                paths.append(str(value))
-                continue
-            if temporary is None:
-                temporary = TemporaryDirectory(prefix="anytrain-moss-reference-")
-            root = Path(temporary.name)
-            if isinstance(value, WaveformReference):
-                path = root / f"reference-{index}.wav"
-                _save_waveform_reference(value, path)
-            elif isinstance(value, EncodedAudioReference):
-                path = root / f"reference-{index}{value.suffix}"
-                path.write_bytes(value.data)
-            else:
-                raise TypeError(
-                    "reference audio must be a path, WaveformReference, "
-                    "or EncodedAudioReference."
-                )
-            paths.append(str(path))
-        yield paths
-    finally:
-        if temporary is not None:
-            temporary.cleanup()
+def materialized_audio_references(values: Sequence[AudioReference | None]) -> Iterator[list[str | None]]:
+    with ReferenceFiles(
+        prefix="anytrain-moss-reference-", save_waveform=_save_waveform_reference,
+    ) as files:
+        yield [None if value is None else files.path(value, index=index) for index, value in enumerate(values)]
 
 
 def _save_waveform_reference(value: WaveformReference, path: Path) -> None:

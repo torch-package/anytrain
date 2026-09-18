@@ -34,7 +34,8 @@ mapping；module hook 默认在严格 state 恢复前调用，没有该 hook 的
 `module` 必须是 `torch.nn.Module`，`call_module_hook` 必须是严格的 `bool`；这两个控制参数
 在访问文件前校验，错误配置不会被路径错误或 Python 真值转换掩盖。
 
-源码保持三个 owner：`contract.py` 负责 canonical value、difference 和 state-dict schema，
+源码保持三个入口：`contract.py` 负责 state-dict schema，并兼容转发底层 `_contract.py`
+拥有的 canonical value、hash 和 difference；
 `loading.py` 只负责可信单文件 Lightning payload 的严格加载，`evaluation.py` 负责 checkpoint series
 发现和 evaluator 调度。
 
@@ -57,3 +58,17 @@ basedpyright --pythonpath /path/to/python src/anytrain/lightning/checkpoint \
   tests/test_lightning_checkpoint.py
 python -m pytest -q tests/test_lightning_checkpoint.py
 ```
+
+## 内部 storage owner（2026-09）
+
+`ModelCheckpoint` 保留 Lightning 触发、top-k/last 与 rank 协调。
+内部 `AsyncCheckpointStorage` 拥有 executor、临时文件和 job 生命周期；每个 job 集中记录
+future、源/目标、完成回调、publication 与 audit。只有完成发布通知才更新 Lightning 可见路径，
+保留 last 发布前的删除延迟、原子文件替换和失败传播顺序。storage 不读取 Trainer 或 callback 私有字段。
+训练 checkpoint state-dict 保持原格式；callback pickle 只保留 durable path，恢复时重建运行时资源。
+
+callback 通过 `prepare_local`、`publish_copy`、`publish_last`、`remove_after_pending`、
+`collect_error` 和 `close` 使用存储层，不访问 executor、队列或内部方法。
+`CheckpointOperation` 只作为传递给 storage 的操作句柄；阶段、耗时、结束状态和 audit 事件
+均由 storage 更新。callback 提供触发 metadata、Trainer 序列化函数及 logger 回调，继续拥有
+跨 rank 协调和 Lightning 可见状态；storage 不依赖 Lightning。

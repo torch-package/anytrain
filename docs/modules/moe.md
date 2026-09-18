@@ -68,6 +68,14 @@ Component boundaries:
 - Internal `ParamExpertBank`: family selected at bind time; weight-only cell
   execution then additive bias after restore when applicable.
 
+`bank.py` owns parameters, validates routing, selects the family, and restores
+bias. Stateless kernels live in `_bank_linear.py` (linear and generic experts)
+and `_bank_conv.py` (grouped convolutions); `_bank_routes.py` owns bank route
+grouping and accumulation helpers. Kernels receive parameter tensors explicitly
+and never register modules or change state-dict paths. The module-backed sparse
+dispatcher shares only host count transfer and memory budgeting via `_dispatch.py`;
+its hook handling and unused-parameter gradient semantics remain independent.
+
 ## Public API
 
 Unified entry:

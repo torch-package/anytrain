@@ -5,7 +5,8 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from queue import Full, Queue
+from queue import Empty, Full, Queue
+from time import monotonic
 
 
 @dataclass(frozen=True)
@@ -136,26 +137,42 @@ class BackgroundCostProducer:
         thread = self._thread
         if thread is None:
             return
-        self.check()
+        deadline = None if timeout is None else monotonic() + max(0.0, timeout)
         with self._lock:
             if self._closed and not thread.is_alive():
+                self.check()
                 return
             enqueue_stop = not self._closing
             self._closing = True
         if enqueue_stop:
-            try:
-                self._queue.put(None, timeout=timeout)
-            except Full as exc:
-                with self._lock:
-                    self._closing = False
-                raise TimeoutError(
-                    "background cost producer did not accept the stop request in time."
-                ) from exc
-        thread.join(timeout=timeout)
+            while thread.is_alive() and self._error is None:
+                remaining = None if deadline is None else max(0.0, deadline - monotonic())
+                try:
+                    self._queue.put(None, timeout=0.05 if remaining is None else min(0.05, remaining))
+                    break
+                except Full as exc:
+                    if deadline is not None and monotonic() >= deadline:
+                        with self._lock:
+                            self._closing = False
+                        raise TimeoutError(
+                            "background cost producer did not accept the stop request in time."
+                        ) from exc
+        remaining = None if deadline is None else max(0.0, deadline - monotonic())
+        thread.join(timeout=remaining)
         if thread.is_alive():
             raise TimeoutError("background cost producer did not stop in time.")
         with self._lock:
             self._closed = True
+            # A failed worker cannot consume pending items or the stop sentinel.
+            while True:
+                try:
+                    index = self._queue.get_nowait()
+                except Empty:
+                    break
+                if index is not None:
+                    self._inflight.discard(index)
+                    self._dropped += 1
+                self._queue.task_done()
         self.check()
 
     def __enter__(self) -> BackgroundCostProducer:

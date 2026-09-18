@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import json
 import os
-import time
-from contextlib import contextmanager
 from numbers import Integral
-from pathlib import Path
 from typing import Any, Protocol, cast
 
 import torch
 from torch import Tensor, nn
 
 from .._module import DeviceModule, integer_tensor, resolve_device, validate_frame_codes
+from . import _loading, _trace
 from .assets import (
     DECODER_SPECS,
     LongCatAssets,
@@ -95,11 +92,15 @@ class LongCat(DeviceModule):
             or isinstance(hop_length, bool)
             or not isinstance(hop_length, Integral)
         ):
-            raise TypeError("LongCat encoder must expose positive input_sample_rate and hop_length.")
+            raise TypeError(
+                "LongCat encoder must expose positive input_sample_rate and hop_length."
+            )
         sample_rate = int(sample_rate)
         hop_length = int(hop_length)
         if sample_rate <= 0 or hop_length <= 0:
-            raise TypeError("LongCat encoder must expose positive input_sample_rate and hop_length.")
+            raise TypeError(
+                "LongCat encoder must expose positive input_sample_rate and hop_length."
+            )
         return float(sample_rate / hop_length)
 
     @property
@@ -167,7 +168,7 @@ class LongCat(DeviceModule):
         force_download: bool = False,
         allow_unpinned_revision: bool = False,
     ) -> LongCat:
-        load_encoder, load_decoder = _load_longcat_loaders()
+        load_encoder, load_decoder = _loading.load_loaders()
         decoder_names = (decoder,)
         assets = ensure_longcat_assets(
             cache_dir=cache_dir,
@@ -179,7 +180,7 @@ class LongCat(DeviceModule):
         )
         resolved_device = resolve_device(device)
 
-        with _longcat_checkpoint_env(assets.ckpt_dir):
+        with _loading.checkpoint_env(assets.ckpt_dir):
             encoder = load_encoder(str(assets.configs.encoder), resolved_device)
             loaded_decoders: dict[str, nn.Module] = {
                 name: load_decoder(str(assets.configs.decoder(name)), resolved_device)
@@ -213,9 +214,7 @@ class LongCat(DeviceModule):
         values = integer_tensor(codes, "acoustic codebook codes")
         if values.dim() != 2:
             raise ValueError("acoustic codebook codes must have shape [batch, time].")
-        if bool((values < 0).any()) or bool(
-            (values >= self.acoustic_codebook_sizes[index]).any()
-        ):
+        if bool((values < 0).any()) or bool((values >= self.acoustic_codebook_sizes[index]).any()):
             raise ValueError("acoustic codebook codes contain an ID outside the codebook.")
         quantizer = self._acoustic_quantizer(index)
         size_b = _positive_int(quantizer.codebook_size_b, "acoustic codebook_size_b")
@@ -382,7 +381,9 @@ class LongCat(DeviceModule):
         for index, size in enumerate(self.acoustic_codebook_sizes[:count]):
             codes = values[..., index]
             if bool((codes < 0).any()) or bool((codes >= size).any()):
-                raise ValueError(f"LongCat acoustic codebook {index} contains an ID outside its range.")
+                raise ValueError(
+                    f"LongCat acoustic codebook {index} contains an ID outside its range."
+                )
         acoustic = getattr(self._decoder(), "acoustic_quantizer", None)
         convert = getattr(acoustic, "from_codes", None)
         if not callable(convert):
@@ -414,7 +415,7 @@ class LongCat(DeviceModule):
     ) -> Tensor:
         _validate_audio(audio)
         sample_rate = _sample_rate(sample_rate)
-        trace = _trace_start(audio, sample_rate, self.device)
+        trace = _trace.start(audio, sample_rate, self.device)
         try:
             backend_codes = self.encoder(
                 audio.to(self.device),
@@ -424,9 +425,7 @@ class LongCat(DeviceModule):
             semantic = integer_tensor(backend_codes[0], "LongCat semantic codes")
             acoustic = integer_tensor(backend_codes[1], "LongCat acoustic codes")
             if semantic.dim() != 2:
-                raise ValueError(
-                    "LongCat semantic encoder output must have shape [batch, time]."
-                )
+                raise ValueError("LongCat semantic encoder output must have shape [batch, time].")
             if acoustic.dim() != 3:
                 raise ValueError(
                     "LongCat acoustic encoder output must have shape [batch, codebook, time]."
@@ -437,9 +436,9 @@ class LongCat(DeviceModule):
             )
             codes = validate_frame_codes(codes, self.codebook_sizes)
         except BaseException as exc:
-            _trace_finish(trace, error=exc)
+            _trace.finish(trace, error=exc)
             raise
-        _trace_finish(trace, extra={"encoder_output_shapes": _shape(backend_codes)})
+        _trace.finish(trace, extra={"encoder_output_shapes": _trace.shape(backend_codes)})
         return codes
 
     @torch.no_grad()
@@ -479,7 +478,7 @@ class LongCat(DeviceModule):
             raise TypeError("LongCat encoder must provide length-aware encode methods.")
         encoder = cast(_LengthAwareEncoder, self.encoder)
 
-        trace = _trace_start(audio, sample_rate, self.device)
+        trace = _trace.start(audio, sample_rate, self.device)
         try:
             prepared = encoder.preprocess(audio.to(self.device), sample_rate)
             if not isinstance(prepared, Tensor):
@@ -496,9 +495,7 @@ class LongCat(DeviceModule):
             semantic = integer_tensor(semantic, "LongCat semantic codes").to(self.device)
             acoustic = integer_tensor(acoustic, "LongCat acoustic codes").to(self.device)
             if semantic.dim() != 2:
-                raise ValueError(
-                    "LongCat semantic encoder output must have shape [batch, time]."
-                )
+                raise ValueError("LongCat semantic encoder output must have shape [batch, time].")
             if semantic.size(0) != audio.size(0):
                 raise ValueError("LongCat semantic encoder output must align on the audio batch.")
             if acoustic.dim() != 3:
@@ -512,9 +509,7 @@ class LongCat(DeviceModule):
                     "LongCat acoustic encoder output must contain every configured codebook."
                 )
             if semantic.size(1) != acoustic.size(2):
-                raise ValueError(
-                    "LongCat semantic and acoustic padded code extents must align."
-                )
+                raise ValueError("LongCat semantic and acoustic padded code extents must align.")
 
             codes = torch.cat(
                 (semantic[..., None], acoustic.transpose(1, 2).contiguous()),
@@ -541,17 +536,17 @@ class LongCat(DeviceModule):
                     "LongCat semantic valid lengths must equal acoustic lengths or exceed "
                     "them by one tail frame."
                 )
-            _trace_finish(
+            _trace.finish(
                 trace,
                 extra={
-                    "encoder_output_shapes": _shape((semantic, acoustic)),
-                    "semantic_acoustic_length_delta": _length_summary(length_delta),
-                    "valid_code_lengths": _length_summary(acoustic_valid_lengths),
+                    "encoder_output_shapes": _trace.shape((semantic, acoustic)),
+                    "semantic_acoustic_length_delta": _trace.length_summary(length_delta),
+                    "valid_code_lengths": _trace.length_summary(acoustic_valid_lengths),
                 },
             )
             return codes, acoustic_valid_lengths
         except BaseException as error:
-            _trace_finish(trace, error=error)
+            _trace.finish(trace, error=error)
             raise
 
     @torch.no_grad()
@@ -570,7 +565,6 @@ class LongCat(DeviceModule):
             raise ValueError(
                 f"Decoder {self.decoder!r} is not loaded. Available decoders: {available}."
             ) from exc
-
 
 
 def _feature_tensor(
@@ -669,111 +663,3 @@ def _active_codebooks(value: object, total: int) -> int:
     if count > total:
         raise ValueError("LongCat active_codebooks exceeds the configured acoustic codebooks.")
     return count
-
-
-def _load_longcat_loaders():
-    try:
-        from longcat_audio_codec import (  # pyright: ignore[reportMissingImports]
-            load_decoder,
-            load_encoder,
-        )
-    except ImportError as exc:
-        raise ImportError(
-            "LongCat requires the installable LongCat fork. Install it with "
-            '`python -m pip install "longcat-audio-codec @ git+https://github.com/rookiejune/LongCat-Audio-Codec.git"`.'
-        ) from exc
-    return load_encoder, load_decoder
-
-
-@contextmanager
-def _longcat_checkpoint_env(ckpt_dir: Path):
-    name = "LONGCAT_AUDIO_CODEC_CKPT_DIR"
-    old = os.environ.get(name)
-    os.environ[name] = str(ckpt_dir)
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = old
-
-
-def _trace_start(
-    audio: Tensor,
-    sample_rate: int,
-    device: torch.device,
-) -> tuple[Path, float, torch.device | None, dict[str, object]] | None:
-    raw_path = os.environ.get("ANYTRAIN_LONGCAT_DEBUG_LOG")
-    if not raw_path:
-        return None
-    cuda_device = device if device.type == "cuda" else None
-    if cuda_device is not None:
-        torch.cuda.synchronize(cuda_device)
-        torch.cuda.reset_peak_memory_stats(cuda_device)
-    fields: dict[str, object] = {
-        "audio_batch": int(audio.size(0)),
-        "audio_dtype": str(audio.dtype),
-        "audio_numel": int(audio.numel()),
-        "audio_sample_rate": sample_rate,
-        "audio_shape": tuple(int(value) for value in audio.shape),
-        "audio_seconds": float(audio.size(-1) * audio.size(0) / sample_rate),
-        "device": str(device),
-        "event": "longcat_encode_boundary",
-    }
-    return Path(raw_path).expanduser(), time.perf_counter(), cuda_device, fields
-
-
-def _trace_finish(
-    trace: tuple[Path, float, torch.device | None, dict[str, object]] | None,
-    *,
-    extra: dict[str, object] | None = None,
-    error: BaseException | None = None,
-) -> None:
-    if trace is None:
-        return
-    path, started, cuda_device, fields = trace
-    if cuda_device is not None:
-        torch.cuda.synchronize(cuda_device)
-        fields.update(
-            {
-                "cuda_allocated_bytes": int(torch.cuda.memory_allocated(cuda_device)),
-                "cuda_max_allocated_bytes": int(torch.cuda.max_memory_allocated(cuda_device)),
-                "cuda_max_reserved_bytes": int(torch.cuda.max_memory_reserved(cuda_device)),
-                "cuda_reserved_bytes": int(torch.cuda.memory_reserved(cuda_device)),
-            }
-        )
-    fields["elapsed_seconds"] = time.perf_counter() - started
-    if error is None:
-        fields["status"] = "complete"
-        if extra:
-            fields.update(extra)
-    else:
-        fields.update(
-            {
-                "error": str(error),
-                "error_type": type(error).__name__,
-                "status": "error",
-            }
-        )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as stream:
-        json.dump(fields, stream, sort_keys=True, allow_nan=False)
-        stream.write("\n")
-
-
-def _shape(value: object) -> object:
-    if isinstance(value, Tensor):
-        return tuple(int(size) for size in value.shape)
-    if isinstance(value, (tuple, list)):
-        return [_shape(item) for item in value]
-    return type(value).__name__
-
-
-def _length_summary(value: Tensor) -> dict[str, int]:
-    return {
-        "count": int(value.numel()),
-        "maximum": int(value.max().item()),
-        "minimum": int(value.min().item()),
-        "nonzero": int(torch.count_nonzero(value).item()),
-    }

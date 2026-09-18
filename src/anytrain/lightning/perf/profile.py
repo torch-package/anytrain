@@ -23,7 +23,7 @@ def profile_forward_flops(
     kwargs: Mapping[str, Any] | None = None,
 ) -> float:
     call_kwargs = {} if kwargs is None else dict(kwargs)
-    was_training = module.training
+    training_states = tuple((child, child.training) for child in module.modules())
     module.eval()
     try:
         with torch.no_grad(), torch.profiler.profile(with_flops=True) as profiler:
@@ -31,7 +31,8 @@ def profile_forward_flops(
         if torch.cuda.is_available():
             torch.cuda.synchronize()
     finally:
-        module.train(was_training)
+        for child, training in training_states:
+            child.training = training
 
     flops = sum(float(getattr(event, "flops", 0) or 0) for event in profiler.key_averages())
     if flops <= 0:

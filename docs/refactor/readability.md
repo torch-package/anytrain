@@ -3,6 +3,9 @@
 本文是模块级可读性重构的集中审阅入口。每个条目只记录当前代码已经落地并通过验证的
 决策；公开行为的完整说明仍以 `docs/modules/` 中的对应模块文档为准。
 
+后续 checkpoint 接口、embedding 契约、MoE executor 和 LongCat 职责整理见
+[2026-09-18 实施记录](implementation-2026-09-18.md)，包含当前工作区的验证范围与限制。
+
 ## 原则
 
 - 先确定公开契约和 ownership，再整理文件与命名。
@@ -662,7 +665,7 @@
 状态：通过。
 
 - `python -m ruff check .`：通过。
-- `basedpyright --pythonpath /Users/zhuyin/miniconda3/envs/py312/bin/python`：0 errors，
+- `basedpyright --pythonpath <py312>/bin/python`：0 errors，
   0 warnings，0 notes。
 - `python -m pytest -q`：1293 passed，4 skipped，344 subtests passed，101 warnings。
 - 4 个 skip 来自环境条件控制的 optional dependency 路径；warnings 为 observation 推荐提示、

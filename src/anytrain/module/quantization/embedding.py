@@ -372,7 +372,7 @@ class EmbeddingVectorQuantizer(nn.Module):
         rank = torch.distributed.get_rank()
         available = torch.zeros(world_size, dtype=torch.long, device=flat_latents.device)
         available[rank] = int(flat_latents.shape[0] > 0)
-        from anytrain.lightning.audit import audit_collective
+        from anytrain._audit import audit_collective
 
         audit_collective(
             "torch.distributed.all_reduce",
@@ -507,7 +507,7 @@ class EmbeddingVectorQuantizer(nn.Module):
     def _sync_ema_stats(self, counts: Tensor, sums: Tensor) -> None:
         if not self._distributed_ready():
             return
-        from anytrain.lightning.audit import audit_collective
+        from anytrain._audit import audit_collective
 
         for tensor, source in (
             (counts, "EmbeddingVectorQuantizer._sync_ema_stats.counts"),

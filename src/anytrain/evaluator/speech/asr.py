@@ -51,8 +51,7 @@ class WhisperASREvaluator(EvaluatorABC):
         self._semantic_config = WhisperSemanticConfig(
             model_name=model_name,
             decode_options=tuple(sorted(self.decode_options.items())),
-            normalization=self.text_evaluator.normalization,
-            bleu_smoothing=self.text_evaluator.bleu_smoothing,
+            text_profile=self.text_evaluator.profile,
             backend_version=backend_version,
         )
         self.model_name = self._semantic_config.model_name

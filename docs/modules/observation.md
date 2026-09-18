@@ -265,3 +265,10 @@ basedpyright --pythonpath /path/to/python src/anytrain/observation \
 python -m pytest -q tests/test_observation.py tests/test_observation_event.py \
   tests/test_lightning_observation.py
 ```
+
+## 内部实现边界（2026-09）
+
+Lightning transport 的状态、delta、schema、快照与历史编解码由
+`lightning/callback/_observation_state.py` 集中拥有；writer 只消费快照。
+`ObservationCallback` 保留挂接、阶段时钟、rank 预检/归约和 writer 错误同步。
+历史 checkpoint v2/v3/v4 恢复规则及公开 observation 类型不变。

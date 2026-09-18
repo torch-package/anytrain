@@ -58,7 +58,7 @@ class LongCatCodecTest(unittest.TestCase):
                         side_effect=fake_ensure_assets,
                     ),
                     patch(
-                        "anytrain.audio.codec.longcat.codec._load_longcat_loaders",
+                        "anytrain.audio.codec.longcat._loading.load_loaders",
                         return_value=(fake_load_encoder, fake_load_decoder),
                     ),
                 ):

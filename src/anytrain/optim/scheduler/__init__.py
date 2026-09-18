@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from math import cos, pi
-
 import torch
+
+from anytrain._lr_math import cosine_interpolate
 
 
 def create_scheduler(
@@ -72,9 +72,7 @@ def create_scheduler(
 
 
 def _cosine_ratio(progress: float, *, min_lr_ratio: float) -> float:
-    clamped_progress = min(max(progress, 0.0), 1.0)
-    cosine_progress = 0.5 * (1.0 - cos(pi * clamped_progress))
-    return 1.0 + (min_lr_ratio - 1.0) * cosine_progress
+    return cosine_interpolate(progress, start=1.0, end=min_lr_ratio)
 
 
 def _validate_schedule(schedule: str) -> None:

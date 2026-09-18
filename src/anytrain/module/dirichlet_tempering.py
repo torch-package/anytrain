@@ -576,7 +576,7 @@ class AdaptiveDirichletTempering(nn.Module):
             return sums, square_sums, log_sums, count
 
         synced = torch.cat([sums, square_sums, log_sums, count.reshape(1)])
-        from anytrain.lightning.audit import audit_collective
+        from anytrain._audit import audit_collective
 
         audit_collective(
             "torch.distributed.all_reduce",

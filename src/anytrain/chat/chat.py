@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import math
 import mimetypes
 from collections.abc import AsyncIterator, Iterable
@@ -10,7 +11,8 @@ from numbers import Real
 from os import PathLike
 from pathlib import Path
 from threading import Lock
-from typing import TypeVar
+from types import TracebackType
+from typing import Self, TypeVar
 
 from ._openrouter import resolve_models
 from ._provider import (
@@ -50,7 +52,94 @@ class Chat:
         self._async_client_loop: asyncio.AbstractEventLoop | None = None
         self._messages = initial_messages(self.model_type)
         self._lock = Lock()
+        self._closed = False
+        self._sync_client_closed = False
         self.last_response: ChatResponse | None = None
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Chat is closed.")
+
+    def _close_sync_client(self) -> None:
+        if not self._sync_client_closed:
+            close = getattr(self._client, "close", None)
+            if callable(close):
+                close()
+            self._sync_client_closed = True
+
+    def close(self) -> None:
+        """Release a synchronous session; use aclose after async text requests."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._lock.acquire()
+        else:
+            if not self._lock.acquire(blocking=False):
+                raise RuntimeError("Chat has an in-flight request; await chat.aclose().")
+        try:
+            if self._async_client is not None and self._async_client is not self._client:
+                raise RuntimeError("Chat has an async client; await chat.aclose() on its event loop.")
+            self._closed = True
+            self._close_sync_client()
+            self._async_client = None
+        finally:
+            self._lock.release()
+
+    async def aclose(self) -> None:
+        """Wait for in-flight requests, then release both provider clients."""
+        async with self._async_text_lock():
+            if self._async_client is not None:
+                loop = asyncio.get_running_loop()
+                if self._async_client_loop is not None and self._async_client_loop is not loop:
+                    raise RuntimeError("Chat must be closed on the event loop that used its async client.")
+            self._closed = True
+            cleanup = asyncio.create_task(self._close_clients())
+            cancelled = False
+            while True:
+                try:
+                    await asyncio.shield(cleanup)
+                    break
+                except asyncio.CancelledError:
+                    # Keep the session lock until SDK cleanup completes, even
+                    # if the context's owning task is cancelled repeatedly.
+                    if cleanup.cancelled():
+                        raise
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
+
+    async def _close_clients(self) -> None:
+        try:
+            if self._async_client is not None and self._async_client is not self._client:
+                close = getattr(self._async_client, "close", None)
+                if callable(close):
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                self._async_client = None
+        finally:
+            await asyncio.to_thread(self._close_sync_client)
+        self._async_client = None
+
+    def __enter__(self) -> Self:
+        self._require_open()
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None,
+        exc: BaseException | None, tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    async def __aenter__(self) -> Self:
+        self._require_open()
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None,
+        exc: BaseException | None, tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
 
     @classmethod
     async def async_create(
@@ -73,6 +162,7 @@ class Chat:
 
     def refresh(self) -> None:
         with self._lock:
+            self._require_open()
             self._messages = initial_messages(self.model_type)
 
     def refresh_models(self) -> None:
@@ -80,6 +170,7 @@ class Chat:
         if self.model_type != ModelType.OPENROUTER:
             return
         with self._lock:
+            self._require_open()
             self._config = resolve_models(self._config, refresh=True)
 
     async def async_refresh_models(self) -> None:
@@ -174,6 +265,7 @@ class Chat:
         size = _non_empty_string(size, "size")
         model = _non_empty_string(model, "model")
         timeout = _validate_timeout(timeout)
+        self._require_open()
         return generate_image(
             self.model_type,
             self._config,
@@ -215,6 +307,7 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None,
         refresh: bool,
     ) -> ChatResponse:
+        self._require_open()
         content = _content_for_prompt(self.model_type, prompt, images=images)
         messages = self._messages_for_prompt(content, refresh=refresh)
         response = request_detail(
@@ -243,15 +336,30 @@ class Chat:
         images: ImageInput | Iterable[ImageInput] | None,
         refresh: bool,
     ) -> ChatResponse:
+        self._require_open()
         content = _content_for_prompt(self.model_type, prompt, images=images)
         messages = self._messages_for_prompt(content, refresh=refresh)
-        response = await async_request_detail(
-            self.model_type,
-            self._async_provider_client(),
-            self._config.model,
-            messages,
-            models=self._config.models,
+        request = async_request_detail(
+            self.model_type, self._async_provider_client(), self._config.model,
+            messages, models=self._config.models,
         )
+        if self.model_type == ModelType.GLM:
+            # Cancelling to_thread does not stop the SDK call. Hold the session
+            # lock until it returns, so another request or close cannot race it.
+            pending = asyncio.create_task(request)
+            cancelled = False
+            while True:
+                try:
+                    response = await asyncio.shield(pending)
+                    break
+                except asyncio.CancelledError:
+                    if pending.cancelled():
+                        raise
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
+        else:
+            response = await request
         self._record_response(messages, response)
         return response
 
@@ -277,6 +385,7 @@ class Chat:
         return self._async_client
 
     def _ensure_async_text_loop(self) -> None:
+        self._require_open()
         loop = asyncio.get_running_loop()
         if self._async_client_loop is None:
             self._async_client_loop = loop

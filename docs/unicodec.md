@@ -26,7 +26,7 @@ checkpoint 自动下载到缓存目录。路径优先级：
 远程服务器上推荐：
 
 ```bash
-export ANYTRAIN_HOME=/mnt/pami202/zhuyin/.anytrain
+export ANYTRAIN_HOME=${STATIC_HOME}/.anytrain
 ```
 
 默认 checkpoint 来自 Hugging Face 仓库 `Yidiii/UniCodec_ckpt` 的

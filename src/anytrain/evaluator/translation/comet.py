@@ -14,6 +14,7 @@ import torch.distributed as dist
 
 from anytrain._semantic import semantic_id
 
+from .._corpus import compute_on_root
 from ..abc import EvaluatorABC
 from ..text import TextNormalizationConfig
 from ..text.normalization import normalize_text_batch
@@ -305,62 +306,25 @@ class CometEvaluator(EvaluatorABC):
     ) -> MetricDict:
         """Gather corpus data to rank zero and broadcast one COMET result."""
 
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
         payload = (self.semantic_id(), tuple(local[0]), tuple(local[1]), tuple(local[2]))
-        gathered: list[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None] | None
-        gathered = [None] * world_size if rank == 0 else None
-        from anytrain.lightning.audit import audit_collective
 
-        audit_collective(
-            "torch.distributed.gather_object",
-            lambda: dist.gather_object(payload, gathered, dst=0),
-            source="CometEvaluator._compute_distributed.gather",
-            object_type=type(payload).__name__,
-            local_item_count=len(local[0]),
-            world_size=world_size,
-        )
-
-        envelope: list[object] = [None]
-        root_error: Exception | None = None
-        if rank == 0:
-            try:
-                if gathered is None:
-                    raise RuntimeError("Distributed COMET root did not allocate gather storage.")
-                sources, hypotheses, references = _merge_comet_corpora(
-                    gathered,
-                    semantic_id=self.semantic_id(),
-                )
-                metrics = self._compute_corpus(sources, hypotheses, references)
-                envelope[0] = {"status": "ok", "system_score": metrics["comet"]}
-            except Exception as error:
-                root_error = error
-                envelope[0] = {
-                    "status": "error",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                }
-
-        audit_collective(
-            "torch.distributed.broadcast_object_list",
-            lambda: dist.broadcast_object_list(envelope, src=0),
-            source="CometEvaluator._compute_distributed.broadcast",
-            object_type="dict",
-            world_size=world_size,
-        )
-        result = envelope[0]
-        if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
-            raise RuntimeError("Distributed COMET returned an invalid result envelope.")
-        if result["status"] == "error":
-            error_type = result.get("error_type", "Exception")
-            error_message = result.get("error", "unknown root error")
-            failure = RuntimeError(
-                "Distributed COMET compute failed on rank zero: "
-                f"{error_type}: {error_message}"
+        def compute(
+            gathered: Sequence[
+                tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None
+            ],
+        ) -> dict[str, object]:
+            sources, hypotheses, references = _merge_comet_corpora(
+                gathered, semantic_id=self.semantic_id(),
             )
-            if root_error is not None:
-                raise failure from root_error
-            raise failure
+            return {"system_score": self._compute_corpus(sources, hypotheses, references)["comet"]}
+
+        result = compute_on_root(
+            payload, compute,
+            source="CometEvaluator._compute_distributed",
+            label="COMET",
+            invalid_envelope="Distributed COMET returned an invalid result envelope.",
+            local_item_count=len(local[0]),
+        )
         return {"comet": _score(result.get("system_score"), name="system_score")}
 
 

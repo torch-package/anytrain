@@ -837,3 +837,20 @@ class SpeechEvaluatorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_whisper_preserves_complete_text_profile_and_legacy_identity():
+    from anytrain._semantic import semantic_id
+    from anytrain.evaluator.text import TextComparisonEvaluator
+
+    default = WhisperSemanticConfig()
+    payload = default.semantic_payload()
+    assert "text_profile" not in payload
+    assert default.semantic_id() == semantic_id("whisper-evaluator-v1", payload)
+    for options in ({"bleu_tokenize": "zh"}, {"chrf_word_order": 2}):
+        evaluator = WhisperASREvaluator(text_evaluator=TextComparisonEvaluator(**cast(Any, options)))
+        config = evaluator.semantic_config
+        assert config.semantic_id() != default.semantic_id()
+        restored = config.evaluator()
+        assert restored.text_evaluator.profile == evaluator.text_evaluator.profile
+        assert restored.semantic_id() == evaluator.semantic_id()

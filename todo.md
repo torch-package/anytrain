@@ -43,22 +43,6 @@
 - masked autoencoder 等训练范式只有在跨项目复用明确后再迁入；没有 owner 前不作为 active todo。
 - framework 不替用户写完整 `pl_module`，只提供训练逻辑可复用组件。
 
-## MOSS vLLM-Omni codec loading
-
-- id: anytrain-moss-vllm-omni-codec-loading
-- priority: P1
-- rationale: 40 GB A100 的 low-memory deploy 已跨过 MOSS vLLM-Omni 初始化 OOM 边界，但 Audio Tokenizer 权重映射仍缺 6 个参数，阻止音频生成。
-- state: blocked
-- entry: workspace/jobs/tts/moss.sh
-- num_gpus: 1
-- gpu: 1xA100-40GB
-- min_vram_gb_per_gpu: 34
-- preferred_hosts: 121
-- estimated_hours: 2
-- monitor: result 015 与 `moss/omni-a100-shm-lowmem-offline-c1-t128-20260813-a.log`；修复后记录 c1 音频、显存和吞吐
-- ready_gate: upstream/adapter resolves the 1600/1606 codec weight load, then c1 audio smoke succeeds
-- output_root: $DYNAMIC_HOME/debug/anytrain/tts-performance/moss
-- task: 修复或等待 vLLM-Omni codec 权重映射后，使用 low-memory 0.60/0.12 配置重跑 c1，再扩展 c2/c4；本轮不修改 third_party 上游源码。
 
 ## Descript Audio Codec
 

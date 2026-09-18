@@ -267,7 +267,7 @@ class CosyVoiceConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive integer"):
             CosyVoiceTTSConfig(max_concurrency=0)
         with self.assertRaisesRegex(TypeError, "positive integer"):
-            CosyVoiceTTSConfig(max_concurrency=1.5)
+            CosyVoiceTTSConfig(max_concurrency=cast(Any, 1.5))
 
     def test_runtime_speed_rejects_nonfinite_values(self):
         for value in (float("nan"), float("inf"), float("-inf")):

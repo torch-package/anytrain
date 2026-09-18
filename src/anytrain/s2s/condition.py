@@ -3,16 +3,11 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING
 
 import torch
-from lightning import LightningModule, Trainer
-from lightning.pytorch.callbacks import Callback
-
-from anytrain.lightning import StepInterval, _capability, experiment
-from anytrain.lightning.oom import annotate
 
 from .data import Modality, Route, TokenBatch
 from .model import LossStat, TokenScorer, score_tokens
@@ -345,118 +340,6 @@ def condition_gain_metrics(
     return metrics
 
 
-class ConditionGainCallback(Callback):
-    """Periodically score fixed interventions through the strategy-wrapped model."""
-
-    def __init__(
-        self,
-        probes: Sequence[ConditionGainProbe],
-        *,
-        probe_set_id: str,
-        every_n_steps: int,
-        bootstrap_samples: int = 1_000,
-        bootstrap_seed: int = 0,
-    ) -> None:
-        super().__init__()
-        self.probes = _probes(probes)
-        _tag_segment(probe_set_id, "condition gain probe_set_id")
-        _non_negative_int(bootstrap_samples, "condition gain bootstrap_samples")
-        _non_negative_int(bootstrap_seed, "condition gain bootstrap_seed")
-        self.probe_set_id = probe_set_id
-        self.interval = StepInterval(every_n_steps=every_n_steps)
-        self.bootstrap_samples = bootstrap_samples
-        self.bootstrap_seed = bootstrap_seed
-
-    @property
-    def state_key(self) -> str:
-        return self._generate_state_key(
-            probe_set_id=self.probe_set_id,
-            every_n_steps=self.interval.every_n_steps,
-            bootstrap_samples=self.bootstrap_samples,
-            bootstrap_seed=self.bootstrap_seed,
-        )
-
-    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self._run_if_due(trainer, pl_module)
-
-    def on_train_batch_end(
-        self,
-        trainer: Trainer,
-        pl_module: LightningModule,
-        outputs: Any,
-        batch: Any,
-        batch_idx: int,
-    ) -> None:
-        del outputs, batch, batch_idx
-        self._run_if_due(trainer, pl_module)
-
-    def state_dict(self) -> dict[str, dict[str, int | None]]:
-        return {"interval": self.interval.state_dict()}
-
-    def load_state_dict(self, state_dict: Mapping[str, object]) -> None:
-        if set(state_dict) != {"interval"}:
-            raise ValueError("condition gain callback state must contain only interval.")
-        interval = state_dict["interval"]
-        if not isinstance(interval, Mapping):
-            raise TypeError("condition gain interval state must be a mapping.")
-        self.interval.load_state_dict(interval)
-
-    def _run_if_due(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        step = _capability.global_step(trainer)
-        if not self.interval.should_run(step):
-            return
-        device = getattr(pl_module, "device", None)
-        if not isinstance(device, torch.device):
-            raise TypeError("condition gain callback requires pl_module.device.")
-        model = trainer.strategy.model
-        if not isinstance(model, torch.nn.Module):
-            raise RuntimeError("condition gain callback requires trainer.strategy.model.")
-        provider = cast(TokenScorer, model)
-        module_modes = tuple((module, module.training) for module in model.modules())
-        rng_devices = [] if device.type == "cpu" else [device]
-        rng_device_type = "cuda" if device.type == "cpu" else device.type
-        try:
-            with torch.random.fork_rng(
-                devices=rng_devices,
-                device_type=rng_device_type,
-            ):
-                model.eval()
-                probes = tuple(probe.to(device) for probe in self.probes)
-                with trainer.precision_plugin.forward_context():
-                    results = condition_gain(
-                        provider,
-                        probes,
-                        bootstrap_samples=self.bootstrap_samples,
-                        bootstrap_seed=self.bootstrap_seed,
-                    )
-        except torch.OutOfMemoryError as error:
-            annotate(
-                error,
-                phase="condition_gain",
-                inputs={
-                    "probe_set_id": self.probe_set_id,
-                    "probe_count": len(self.probes),
-                },
-            )
-            raise
-        finally:
-            for module, training in module_modes:
-                module.training = training
-        if not _capability.is_global_zero(trainer):
-            return
-        writer = experiment.scalar(trainer)
-        if writer is None:
-            raise RuntimeError(
-                "ConditionGainCallback requires a logger with add_scalar capability."
-            )
-        for result in results:
-            for tag, value in condition_gain_metrics(
-                result,
-                probe_set_id=self.probe_set_id,
-            ).items():
-                writer.add_scalar(tag, value, step)
-
-
 def _case(batch: TokenBatch, key: ConditionGainKey, name: str) -> None:
     if batch.batch_size != 1:
         raise ValueError(f"condition gain {name} case must contain exactly one row.")
@@ -635,3 +518,14 @@ __all__ = [
     "condition_gain",
     "condition_gain_metrics",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name == "ConditionGainCallback":
+        from .integration import ConditionGainCallback
+        return ConditionGainCallback
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+if TYPE_CHECKING:
+    from .integration import ConditionGainCallback as ConditionGainCallback

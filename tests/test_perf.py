@@ -985,3 +985,20 @@ class PerformanceCallbackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_flops_profile_restores_mixed_modes_on_success_and_error():
+    import pytest
+    import torch
+
+    from anytrain.lightning.perf import profile_forward_flops
+
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout())
+    model.train()
+    model[1].eval()
+    expected = [child.training for child in model.modules()]
+    assert profile_forward_flops(model, (torch.ones(1, 4),)) > 0
+    assert [child.training for child in model.modules()] == expected
+    with pytest.raises(RuntimeError):
+        profile_forward_flops(model, (torch.ones(1, 3),))
+    assert [child.training for child in model.modules()] == expected

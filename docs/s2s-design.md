@@ -333,3 +333,9 @@ contract tests 使用三个不加载权重的 fake provider：
 
 上线前仍需在目标 CUDA/Torch/Liger 组合上用真实 S2S/UniSS scorer 做数值和吞吐 smoke；该验证属于
 具体 provider，不在 AnyTrain 内增加 Liger wrapper。
+
+## Lightning integration 边界（2026-09）
+
+`ConditionGainCallback` 与 `S2SMetricsCallback` 位于 `anytrain.s2s.integration`。
+原有根包及 condition/metrics 导入路径通过 lazy export 兼容；仅导入 data/model、纯 condition
+或 metrics 时不加载 Lightning。领域 callback 仍留在 S2S 子包，未进入通用 Lightning core。

@@ -17,6 +17,7 @@ except ImportError as exc:  # pragma: no cover - depends on the optional environ
         "Install it with `python -m pip install 'anytrain[peft]'`."
     ) from exc
 
+from ._adapter import is_exact_or_fsdp
 from ._params import build_parameter_plan
 from .adamw import create_adamw_optimizer_from_plan
 from .compose import CompositeOptimizer
@@ -64,7 +65,7 @@ def lora_factor_pairs(
                 f"PEFT LoRA layer {label!r} uses tensor parallelism, which LoRA-Muon "
                 "does not support."
             )
-        if not _is_supported_peft_linear(layer):
+        if not is_exact_or_fsdp(layer, PeftLinear):
             raise TypeError(
                 f"PEFT LoRA layer {label!r} has unsupported type "
                 f"{type(layer).__name__}; only vanilla PEFT Linear is supported."
@@ -266,24 +267,8 @@ def _factor_pair(
     return LoRAFactorPair(left=left, right=right, scale=scale_value)
 
 
-def _is_supported_peft_linear(layer: nn.Module) -> bool:
-    if type(layer) is PeftLinear:
-        return True
-    try:
-        from torch.distributed.fsdp import FSDPModule
-    except ImportError:  # pragma: no cover - torch>=2.8 exposes FSDPModule.
-        return False
-    return isinstance(layer, FSDPModule) and isinstance(layer, PeftLinear)
-
-
 def _is_supported_linear_factor(module: nn.Module) -> bool:
-    if type(module) is nn.Linear:
-        return True
-    try:
-        from torch.distributed.fsdp import FSDPModule
-    except ImportError:  # pragma: no cover - torch>=2.8 exposes FSDPModule.
-        return False
-    return isinstance(module, FSDPModule) and isinstance(module, nn.Linear)
+    return is_exact_or_fsdp(module, nn.Linear)
 
 
 def _uses_tensor_parallel(layer: LoraLayer) -> bool:

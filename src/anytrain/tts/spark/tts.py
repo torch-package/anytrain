@@ -12,14 +12,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, TypedDict, Unpack, overload
 
 import torch
 
 from anytrain.tts import (
     AudioReference,
-    EncodedAudioReference,
     PathAudioReference,
     TTSCapabilities,
     TTSOptions,
@@ -30,6 +28,7 @@ from anytrain.tts import (
     waveform_duration,
 )
 from anytrain.tts._common import config_hash, hashable_mapping, validate_mapping
+from anytrain.tts._reference import ReferenceFiles
 
 DEFAULT_MODEL = "SparkAudio/Spark-TTS-0.5B"
 
@@ -356,34 +355,11 @@ def _resolve_reference_aliases(
 
 
 @contextmanager
-def _materialized_audio_references(
-    values: Sequence[AudioReference],
-) -> Iterator[list[str]]:
-    temporary: TemporaryDirectory[str] | None = None
-    paths: list[str] = []
-    try:
-        for index, value in enumerate(values):
-            if isinstance(value, (str, PathLike)):
-                paths.append(str(value))
-                continue
-            if temporary is None:
-                temporary = TemporaryDirectory(prefix="anytrain-spark-reference-")
-            root = Path(temporary.name)
-            if isinstance(value, WaveformReference):
-                path = root / f"reference-{index}.wav"
-                _save_waveform_reference(value, path)
-            elif isinstance(value, EncodedAudioReference):
-                path = root / f"reference-{index}{value.suffix}"
-                path.write_bytes(value.data)
-            else:
-                raise TypeError(
-                    "reference audio must be a path, WaveformReference, or EncodedAudioReference."
-                )
-            paths.append(str(path))
-        yield paths
-    finally:
-        if temporary is not None:
-            temporary.cleanup()
+def _materialized_audio_references(values: Sequence[AudioReference]) -> Iterator[list[str]]:
+    with ReferenceFiles(
+        prefix="anytrain-spark-reference-", save_waveform=_save_waveform_reference,
+    ) as files:
+        yield [files.path(value, index=index) for index, value in enumerate(values)]
 
 
 def _save_waveform_reference(value: WaveformReference, path: Path) -> None:

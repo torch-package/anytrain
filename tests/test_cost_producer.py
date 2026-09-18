@@ -85,3 +85,54 @@ def test_background_cost_producer_rejects_submissions_once_close_starts() -> Non
     closer.join(timeout=1)
     assert not closer.is_alive()
     assert not producer.submit(3)
+
+
+def test_close_detects_worker_failure_while_queue_is_full() -> None:
+    from unittest.mock import patch
+
+    release = Event()
+    entered = Event()
+    stopping = Event()
+    errors: list[BaseException] = []
+
+    def compute(index: int) -> int:
+        entered.set()
+        release.wait()
+        raise ValueError(f"failed {index}")
+
+    producer = BackgroundCostProducer(compute, max_queue_size=1)
+    producer.start()
+    producer.submit(0)
+    assert entered.wait(1)
+    producer.submit(1)
+    original_put = producer._queue.put
+
+    def put(item: int | None, block: bool = True, timeout: float | None = None) -> None:
+        if item is None:
+            stopping.set()
+        original_put(item, block, timeout)
+
+    def close() -> None:
+        try:
+            producer.close()
+        except BaseException as error:
+            errors.append(error)
+
+    closer = Thread(target=close, daemon=True)
+    with patch.object(producer._queue, "put", side_effect=put):
+        closer.start()
+        try:
+            assert stopping.wait(1)
+            release.set()
+            closer.join(1)
+            assert not closer.is_alive(), "close waited on a queue whose worker exited"
+        finally:
+            release.set()
+            if closer.is_alive():
+                producer._queue.get_nowait()
+                producer._queue.task_done()
+                closer.join(1)
+    assert len(errors) == 1
+    assert isinstance(errors[0].__cause__, ValueError)
+    assert producer.pending == 0
+    assert not producer.started

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from anytrain._semantic import semantic_id, semantic_options
 
-from ..text import TextNormalizationConfig
+from ..text import TextMetricProfile, TextNormalizationConfig
 
 if TYPE_CHECKING:
     from .asr import WhisperASREvaluator
@@ -58,8 +58,22 @@ class WhisperSemanticConfig:
     backend_version: str = OPENAI_WHISPER_VERSION
     decoder_protocol: str = WHISPER_DECODER_PROTOCOL
     metric_protocol: str = WHISPER_METRIC_PROTOCOL
+    text_profile: TextMetricProfile | None = None
 
     def __post_init__(self) -> None:
+        profile = self.text_profile
+        if profile is None:
+            profile = TextMetricProfile(self.normalization, self.bleu_smoothing)
+        elif not isinstance(profile, TextMetricProfile):
+            raise TypeError("text_profile must be a TextMetricProfile.")
+        else:
+            if self.normalization != TextNormalizationConfig() and self.normalization != profile.normalization:
+                raise ValueError("normalization conflicts with text_profile.")
+            if self.bleu_smoothing is not True and self.bleu_smoothing != profile.bleu_smoothing:
+                raise ValueError("bleu_smoothing conflicts with text_profile.")
+        object.__setattr__(self, "text_profile", profile)
+        object.__setattr__(self, "normalization", profile.normalization)
+        object.__setattr__(self, "bleu_smoothing", profile.bleu_smoothing)
         if self.model_name not in WHISPER_MODEL_SHA256:
             raise ValueError(
                 "model_name must be one of "
@@ -86,7 +100,7 @@ class WhisperSemanticConfig:
 
     def semantic_payload(self) -> dict[str, object]:
         normalization = self.normalization
-        return {
+        payload: dict[str, object] = {
             "artifact_sha256": self.artifact_sha256,
             "backend": {
                 "package": "openai-whisper",
@@ -109,6 +123,12 @@ class WhisperSemanticConfig:
             },
         }
 
+        # Preserve existing identities for the historical default metric profile.
+        profile = self.text_profile
+        if profile is not None and (profile.bleu_tokenize != "none" or profile.chrf_word_order != 0):
+            payload["text_profile"] = profile.semantic_payload()
+        return payload
+
     def semantic_id(self) -> str:
         return semantic_id("whisper-evaluator-v1", self.semantic_payload())
 
@@ -116,21 +136,15 @@ class WhisperSemanticConfig:
         self,
         load_options: WhisperLoadOptions | None = None,
     ) -> WhisperASREvaluator:
-        from ..text import TextComparisonEvaluator
         from .asr import WhisperASREvaluator
 
         load = WhisperLoadOptions() if load_options is None else load_options
         if not isinstance(load, WhisperLoadOptions):
             raise TypeError("load_options must be WhisperLoadOptions.")
-        normalization = self.normalization
-        text_evaluator = TextComparisonEvaluator(
-            strip=normalization.strip,
-            collapse_whitespace=normalization.collapse_whitespace,
-            remove_punctuation=normalization.remove_punctuation,
-            lowercase=normalization.lowercase,
-            chinese=normalization.chinese,
-            bleu_smoothing=self.bleu_smoothing,
-        )
+        profile = self.text_profile
+        if profile is None:  # resolved by __post_init__
+            raise RuntimeError("Whisper text profile was not initialized.")
+        text_evaluator = profile.evaluator()
         backend_load_options = {"in_memory": load.in_memory}
         return WhisperASREvaluator(
             text_evaluator=text_evaluator,

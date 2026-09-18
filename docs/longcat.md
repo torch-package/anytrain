@@ -41,7 +41,7 @@ checkpoint 自动下载到缓存目录。路径优先级：
 远程服务器上推荐：
 
 ```bash
-export ANYTRAIN_HOME=/mnt/pami202/zhuyin/.anytrain
+export ANYTRAIN_HOME=${STATIC_HOME}/.anytrain
 ```
 
 下载后的 LongCat 权重在 `$HF_HOME/longcat-audio-codec/ckpts`，生成的 patched
@@ -81,6 +81,13 @@ shape and audio seconds, encoder output shapes, synchronized elapsed time, CUDA
 current/peak memory when running on CUDA, and an error status if the encoder
 fails. The switch is disabled by default and records no waveform or token
 values.
+
+The diagnostic implementation lives in `_trace.py`. CUDA probes synchronize the
+device and reset peak memory statistics at the start of encoding, so peak values
+describe that measured call and affect the device's subsequent peak counters.
+`_loading.py` owns optional upstream imports and temporarily sets/restores the
+checkpoint environment variable, including when loading fails. `codec.py` keeps
+the tensor, length, and codebook contracts.
 
 主离散接口遵循统一 codec 契约：`audio` 是 `[batch, channels, time]`，`codes` 是
 `[batch, frame, codebook]`。4-codebook decoder 的 `codebook_sizes` 是

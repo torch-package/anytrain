@@ -8,12 +8,8 @@ import torch
 from torch import Tensor, nn
 from torch.nn.modules import module as nn_module
 
+from ._dispatch import _host_int_list, _linear_route_memory_fits
 from .routing import ExpertRouting, flat_active_mask, validate_sparse_expert_routing
-
-# Route-wise parameter gathers are intentionally bounded.  A top-k dispatch
-# can otherwise materialize a very large ``(routes, out_features,
-# in_features)`` temporary before the batched matrix multiplication starts.
-_LINEAR_ROUTE_WEIGHT_BUDGET_BYTES = 64 * 1024 * 1024
 
 
 def sparse_dispatch(
@@ -228,9 +224,7 @@ def _empty_output(
     graph_zero = output.new_zeros(())
     for graph_input in graph_inputs:
         # Empty reductions retain a zero-gradient edge without reading NaN/Inf data.
-        graph_zero = graph_zero + graph_input.unsqueeze(0)[:0].sum().to(
-            dtype=output_dtype
-        )
+        graph_zero = graph_zero + graph_input.unsqueeze(0)[:0].sum().to(dtype=output_dtype)
     return output + graph_zero
 
 
@@ -244,18 +238,6 @@ def _empty_expert_probe(expert: nn.Module, empty_input: Tensor) -> Tensor:
     finally:
         for module, training in training_states:
             module.training = training
-
-
-def _host_int_list(values: Tensor) -> list[int]:
-    """Materialize a short device count vector for generic Python dispatch."""
-
-    if values.device.type == "cpu":
-        # ``tolist`` uses one native conversion for the whole short vector;
-        # iterating scalar tensors is substantially slower for large expert
-        # banks and offers no synchronization benefit on CPU.
-        return values.tolist()
-    host_values = values.detach().to(device="cpu")
-    return host_values.tolist()
 
 
 dispatch_to_experts = sparse_dispatch
@@ -325,33 +307,6 @@ def _can_batch_linear_experts(experts: Sequence[nn.Module]) -> bool:
             ):
                 return False
     return True
-
-
-def _linear_route_memory_fits(
-    route_count: int,
-    weight: Tensor,
-    bias: Tensor | None = None,
-    *,
-    stacked_expert_count: int = 0,
-    budget_bytes: int = _LINEAR_ROUTE_WEIGHT_BUDGET_BYTES,
-) -> bool:
-    """Return whether route-parameter temporaries fit the fast-path budget.
-
-    ``route_count`` is supplied from tensor shape metadata (rather than an
-    active-route reduction), so checking the budget never synchronizes a CUDA
-    scalar back to the host. ``stacked_expert_count`` accounts for the full
-    ``torch.stack`` temporary used by the module-backed sparse path; callers
-    that already own an expert-major weight tensor can leave it at zero. The
-    estimate is deliberately conservative and includes both gathered weights
-    and gathered bias when present.
-    """
-
-    parameter_bytes = weight.numel() * weight.element_size()
-    bytes_required = (route_count + stacked_expert_count) * parameter_bytes
-    if bias is not None:
-        bias_bytes = bias.numel() * bias.element_size()
-        bytes_required += (route_count + stacked_expert_count) * bias_bytes
-    return bytes_required <= budget_bytes
 
 
 def _linear_fast_path_preserves_unused_gradients(
@@ -470,9 +425,7 @@ def _sparse_dispatch_linear(
         # the empty probe also obtains the module's output feature shape.
         output = _empty_output(flat_hidden, route_weights, experts)
         if active_routes is not None:
-            output = output + original_route_weights.unsqueeze(0)[:0].sum().to(
-                dtype=output.dtype
-            )
+            output = output + original_route_weights.unsqueeze(0)[:0].sum().to(dtype=output.dtype)
         return output.reshape(*leading_shape, *output.shape[1:]), tokens_per_expert
 
     linear_experts = [expert for expert in experts if isinstance(expert, nn.Linear)]
@@ -485,11 +438,7 @@ def _sparse_dispatch_linear(
     route_input = flat_hidden.index_select(0, route_token_indices)
     if linear_experts[0].bias is not None:
         stacked_bias = torch.stack(
-            [
-                expert.bias
-                for expert in linear_experts
-                if expert.bias is not None
-            ],
+            [expert.bias for expert in linear_experts if expert.bias is not None],
             dim=0,
         )
         route_bias = stacked_bias.index_select(0, route_expert_indices)
@@ -518,9 +467,7 @@ def _sparse_dispatch_linear(
     if active_routes is not None:
         # Preserve a zero-gradient edge for masked route weights that were
         # filtered before the batched kernel, without reading their values.
-        output = output + original_route_weights.unsqueeze(0)[:0].sum().to(
-            dtype=output.dtype
-        )
+        output = output + original_route_weights.unsqueeze(0)[:0].sum().to(dtype=output.dtype)
     return output.reshape(*leading_shape, *output.shape[1:]), tokens_per_expert
 
 

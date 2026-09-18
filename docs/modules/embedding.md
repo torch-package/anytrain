@@ -16,3 +16,14 @@ from anytrain.module.embedding import EmbeddingBank, EmbeddingView
 bank = EmbeddingBank(embedding_dim=1024)
 bank.add_owner("shared", nn.Embedding(1024, 1024))
 ```
+
+## Owner contract
+
+新 owner 可以实现 `embedding_contract_state() -> Mapping[str, object]`，显式返回完整的
+结构身份；`add_owner(..., state=...)` 提供的 metadata 覆盖同名默认值。bank 每次生成
+contract 时调用 provider，并用既有 canonical JSON 值域校验返回值；provider 必须返回
+mapping，其内部异常直接传播。此路径不会读取 `weight` 或猜测量化器属性。
+
+没有 provider 的 owner 继续通过 `_embedding_contract.py` 中的 legacy adapter 生成
+原有身份，包括 dense 和 factorized owner 的历史字段及摘要。已有 checkpoint 不需要迁移。
+新 owner 应由自身描述结构，不再向 legacy adapter 增加 family 分支；不引入 provider registry。

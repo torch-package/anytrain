@@ -1,5 +1,6 @@
+from typing import TYPE_CHECKING
+
 from .condition import (
-    ConditionGainCallback,
     ConditionGainKey,
     ConditionGainProbe,
     ConditionGainResult,
@@ -23,7 +24,7 @@ from .data import (
     TokenInput,
     TokenTargets,
 )
-from .metrics import S2SMetricsCallback, generation_metrics
+from .metrics import generation_metrics
 from .model import (
     GenerationError,
     GenerationOptions,
@@ -100,3 +101,18 @@ __all__ = [
     "step_report",
     "token_objective",
 ]
+
+
+if TYPE_CHECKING:
+    from .integration import ConditionGainCallback as ConditionGainCallback
+    from .integration import S2SMetricsCallback as S2SMetricsCallback
+
+
+def __getattr__(name: str) -> object:
+    if name == "ConditionGainCallback":
+        from .integration import ConditionGainCallback
+        return ConditionGainCallback
+    if name == "S2SMetricsCallback":
+        from .integration import S2SMetricsCallback
+        return S2SMetricsCallback
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

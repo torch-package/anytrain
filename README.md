@@ -161,7 +161,7 @@ PYTHONPATH=src python examples/tiny_regression.py
 常用检查使用顶层 dev-env 约定的 `py312`：
 
 ```bash
-PY312=/Users/zhuyin/miniconda3/envs/py312/bin/python
+PY312=<py312>/bin/python   # 本机 conda 环境的 py312 解释器，或先 conda activate py312
 "$PY312" -m pytest
 "$PY312" -m ruff check .
 "$PY312" -m basedpyright --pythonpath "$PY312"

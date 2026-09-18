@@ -408,6 +408,7 @@ class LossTest(unittest.TestCase):
         generator_parameter = nn.Parameter(torch.randn(4))
         optimizer = torch.optim.SGD([generator_parameter], lr=0.1)
         fake = generator_parameter.unsqueeze(0).expand(3, -1)
+        assert discriminator.norm.running_mean is not None
         running_mean = discriminator.norm.running_mean.detach().clone()
 
         generator_step(
@@ -539,7 +540,7 @@ class LossTest(unittest.TestCase):
             loss_fn.generator_loss(fake, real)
 
     def test_feature_matching_rejects_non_tensor_loss(self):
-        matcher = _FeatureMatching(loss_fn=lambda fake, real: 1.0)
+        matcher = _FeatureMatching(loss_fn=cast(Any, lambda fake, real: 1.0))
 
         with self.assertRaisesRegex(TypeError, "return a Tensor"):
             matcher([[torch.ones(2, 3)]], [[torch.zeros(2, 3)]])
