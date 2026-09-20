@@ -174,3 +174,24 @@ native `codebook_sizes` 从 `model.model.bottleneck.quantizer` 读取；wrapper 
 时，speech 模型使用 `(17^6,) == (24137569,)` 的 native FSQ。现有 wrapper
 签名和上游 `0.1.2` 对齐，不需要为了 Stable Codec 修改 `anytrain` 主环境或
 `pyproject.toml`。
+
+## GLM intermediate features and durable feature shards
+
+`anytrain.audio.codec.glm4.features.GLM4PreVQTokenizer(backend)` adapts an existing
+`GLM4Tokenizer` backend. `extract_padded(audio, sample_rate, lengths)` returns
+continuous pre-VQ states, exact codebook IDs and valid lengths; `extract_prefix`
+also returns explicitly requested pre-pool layers. Feature extraction, async
+preprocessing, geometry validation and official-forward parity belong to this
+adapter. It neither locates workspace assets nor writes datasets. The historical
+extraction implementation ID is retained because the numerical algorithm is
+unchanged. Deterministic CPU contract tests are in `tests/test_glm4_features.py`;
+real CUDA/checkpoint parity still requires the deployed optional GLM runtime.
+
+`anytrain.audio.codec.shards.ShardWriter` owns exclusive writer locking, immutable
+shard naming and a committed JSONL index. Domain writers validate their payload
+schemas and manifests, call `write_shard`, then `commit`. A durable byte watermark
+publishes the index prefix; readers ignore an interrupted append beyond it. A
+failed writer must be reopened. `truncate` is only for an enclosing group-commit
+recovery protocol; it preserves immutable payloads. The module has no dataset,
+asset-name or teacher-model assumptions. Legacy complete indexes without a
+watermark remain readable, while malformed committed records fail explicitly.
