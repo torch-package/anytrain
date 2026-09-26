@@ -1356,6 +1356,14 @@ class LossTest(unittest.TestCase):
 
         self.assertLess(float(loss), 0.0)
 
+    def test_temporal_losses_promote_half_precision_accumulators(self):
+        estimate = torch.zeros(1, 65536, dtype=torch.float16, requires_grad=True)
+        reference = torch.zeros_like(estimate)
+        loss = SDRLoss(scale_invariant=False)(estimate, reference)
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertTrue(torch.isfinite(estimate.grad).all())
+
     def test_sdr_loss_handles_mono_batch_time_layout(self):
         reference = torch.randn(4, 32)
         estimate = reference + 0.1 * torch.randn(4, 32)

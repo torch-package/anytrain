@@ -44,7 +44,7 @@ class DPOLoss(nn.Module):
         validate = strict_bool(validate, "validate")
         if validate:
             _validate_pair(policy_chosen_logps, policy_rejected_logps, name="policy")
-        policy_margin = policy_chosen_logps - policy_rejected_logps
+        policy_margin = _logprob_margin(policy_chosen_logps, policy_rejected_logps)
         if self.reference_free:
             reference_margin = torch.zeros_like(policy_margin)
         else:
@@ -54,7 +54,7 @@ class DPOLoss(nn.Module):
                 _validate_pair(ref_chosen_logps, ref_rejected_logps, name="reference")
                 if ref_chosen_logps.shape != policy_chosen_logps.shape:
                     raise ValueError("reference and policy log-probs must have the same shape.")
-            reference_margin = (ref_chosen_logps - ref_rejected_logps).detach()
+            reference_margin = _logprob_margin(ref_chosen_logps, ref_rejected_logps).detach()
 
         logits = self.beta * (policy_margin - reference_margin)
         losses = (
@@ -72,6 +72,11 @@ class DPOLoss(nn.Module):
             },
         )
         return loss
+
+
+def _logprob_margin(chosen: Tensor, rejected: Tensor) -> Tensor:
+    dtype = torch.promote_types(torch.promote_types(chosen.dtype, rejected.dtype), torch.float32)
+    return chosen.to(dtype=dtype) - rejected.to(dtype=dtype)
 
 
 def _validate_pair(chosen: Tensor, rejected: Tensor, *, name: str) -> None:

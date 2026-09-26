@@ -126,6 +126,8 @@ def gaussian_log_prob(
     _validate_gaussian_inputs(value, mean, std)
     if reduction not in {"mean", "sum"}:
         raise ValueError("reduction must be 'mean' or 'sum'.")
+    dtype = torch.promote_types(mean.dtype, torch.float32)
+    value, mean, std = (tensor.to(dtype=dtype) for tensor in (value, mean, std))
     log_prob = (
         -0.5 * ((value - mean) / std).square()
         - torch.log(std)
@@ -155,6 +157,10 @@ def gaussian_kl_from_means(
     _validate_gaussian_inputs(policy_mean, reference_mean, std)
     if reduction not in {"mean", "sum"}:
         raise ValueError("reduction must be 'mean' or 'sum'.")
+    dtype = torch.promote_types(policy_mean.dtype, torch.float32)
+    policy_mean, reference_mean, std = (
+        tensor.to(dtype=dtype) for tensor in (policy_mean, reference_mean, std)
+    )
     kl = (policy_mean - reference_mean).square() / (2.0 * std.square())
     dims = tuple(range(1, kl.ndim))
     if not dims:

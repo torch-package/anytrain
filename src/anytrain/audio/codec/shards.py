@@ -248,14 +248,19 @@ class ShardWriter:
         if count == len(self._rows):
             return
         path = self.root / "index.jsonl"
-        payload = index_bytes(path)
-        size = sum(len(line) for line in payload.splitlines(keepends=True)[:count])
-        # Hide the suffix before truncating; a crash between these steps is safe.
-        atomic_bytes(_marker(path), str(size).encode())
-        with path.open("r+b") as stream:
-            stream.truncate(size)
-            stream.flush()
-            os.fsync(stream.fileno())
+        try:
+            payload = index_bytes(path)
+            size = sum(len(line) for line in payload.splitlines(keepends=True)[:count])
+            # Hide the suffix before truncating; a crash between these steps is safe.
+            atomic_bytes(_marker(path), str(size).encode())
+            with path.open("r+b") as stream:
+                stream.truncate(size)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            # The durable prefix may already differ from our in-memory rows.
+            self._failed = True
+            raise
         self._rows = self._rows[:count]
         self._reset()
 

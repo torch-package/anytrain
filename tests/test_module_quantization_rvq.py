@@ -295,6 +295,31 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
         self.assertTrue((output.indices[2] == -1).all())
         self.assertTrue((output.codebook_vectors[2] == 0).all())
         self.assertTrue((output.latents[2] == 0).all())
+
+    def test_dropout_loss_count_accumulates_in_wide_dtype(self):
+        quantizer = ResidualVectorQuantizer(
+            _rvq_config(
+                input_dim=1,
+                num_codebooks=2,
+                codebook_size=1,
+                codebook_dim=1,
+                normalize_lookup=False,
+                projection_bias=False,
+                dropout=0.5,
+            )
+        ).half()
+        for stage in quantizer.quantizers:
+            stage.codebook.weight.data.zero_()
+        latents = torch.full(
+            (1, 65536, 1), 0.5, dtype=torch.float16, requires_grad=True
+        )
+        active_mask = torch.tensor([[True, False]], dtype=torch.bool).expand(65536, 2)
+        with mock.patch.object(quantizer, "_sample_active_mask", return_value=active_mask):
+            output = quantizer(latents)
+        assert output.loss is not None
+        self.assertTrue(torch.isfinite(output.loss.commitment))
+        self.assertAlmostEqual(float(output.loss.commitment.detach()), 0.25, places=3)
+        self.assertTrue((output.latents[:, :, 1] == 0).all())
         assert output.loss is not None
         (output.quantized_latents.sum() + output.loss.total).backward()
         self.assertIsNotNone(latents.grad)

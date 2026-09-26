@@ -69,9 +69,10 @@ def run_residual_quantization(
     indices_list: list[Tensor] = []
     vector_list: list[Tensor] = []
     latent_list: list[Tensor] = []
-    commitment_loss_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
-    codebook_loss_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
-    loss_weight_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
+    loss_dtype = torch.promote_types(flat_latents.dtype, torch.float32)
+    commitment_loss_sum = torch.zeros((), dtype=loss_dtype, device=flat_latents.device)
+    codebook_loss_sum = torch.zeros((), dtype=loss_dtype, device=flat_latents.device)
+    loss_weight_sum = torch.zeros((), dtype=torch.int64, device=flat_latents.device)
     has_loss = False
 
     # CPU scalar conversion is synchronous only with respect to host memory,
@@ -143,9 +144,15 @@ def run_residual_quantization(
             latents_i[mask] = output.latents
 
         if output.loss is not None:
-            loss_weight = mask.sum().to(dtype=flat_latents.dtype)
-            commitment_loss_sum = commitment_loss_sum + output.loss.commitment * loss_weight
-            codebook_loss_sum = codebook_loss_sum + output.loss.codebook * loss_weight
+            loss_weight = mask.sum()
+            commitment = output.loss.commitment.to(
+                dtype=torch.promote_types(output.loss.commitment.dtype, loss_dtype)
+            )
+            codebook = output.loss.codebook.to(
+                dtype=torch.promote_types(output.loss.codebook.dtype, loss_dtype)
+            )
+            commitment_loss_sum = commitment_loss_sum + commitment * loss_weight
+            codebook_loss_sum = codebook_loss_sum + codebook * loss_weight
             loss_weight_sum = loss_weight_sum + loss_weight
             has_loss = True
 
@@ -156,8 +163,8 @@ def run_residual_quantization(
     loss = None
     if has_loss:
         loss = QuantizationLoss(
-            commitment=commitment_loss_sum / loss_weight_sum,
-            codebook=codebook_loss_sum / loss_weight_sum,
+            commitment=commitment_loss_sum / loss_weight_sum.to(dtype=loss_dtype),
+            codebook=codebook_loss_sum / loss_weight_sum.to(dtype=loss_dtype),
         )
 
     return QuantizeOutput(
@@ -192,8 +199,9 @@ def _run_all_active(
     indices_list: list[Tensor] = []
     vector_list: list[Tensor] = []
     latent_list: list[Tensor] = []
-    commitment_loss_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
-    codebook_loss_sum = torch.zeros((), dtype=flat_latents.dtype, device=flat_latents.device)
+    loss_dtype = torch.promote_types(flat_latents.dtype, torch.float32)
+    commitment_loss_sum = torch.zeros((), dtype=loss_dtype, device=flat_latents.device)
+    codebook_loss_sum = torch.zeros((), dtype=loss_dtype, device=flat_latents.device)
     loss_count = 0
 
     for quantizer in quantizers[:active_count]:
@@ -206,8 +214,8 @@ def _run_all_active(
         vector_list.append(_require_output_tensor(output.codebook_vectors, "codebook_vectors").reshape(-1, codebook_dim))
         latent_list.append(_require_output_tensor(output.latents, "latents").reshape(-1, codebook_dim))
         if output.loss is not None:
-            commitment_loss_sum = commitment_loss_sum + output.loss.commitment
-            codebook_loss_sum = codebook_loss_sum + output.loss.codebook
+            commitment_loss_sum = commitment_loss_sum + output.loss.commitment.to(dtype=loss_dtype)
+            codebook_loss_sum = codebook_loss_sum + output.loss.codebook.to(dtype=loss_dtype)
             loss_count += 1
 
     loss = None

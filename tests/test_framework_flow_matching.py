@@ -497,8 +497,22 @@ class FlowMatchingComponentTest(unittest.TestCase):
             gaussian_kl_from_means(reference_mean, reference_mean, std),
             torch.zeros(2),
         )
+
+    def test_gaussian_helpers_promote_half_precision_math(self):
+        from anytrain.framework.flow_matching import gaussian_kl_from_means, gaussian_log_prob
+
+        mean = torch.zeros(1, 2, dtype=torch.float16, requires_grad=True)
+        std = torch.full_like(mean, 1e-4)
+        kl = gaussian_kl_from_means(mean, torch.zeros_like(mean), std)
+        log_prob_mean = torch.zeros(1, 2, dtype=torch.float16, requires_grad=True)
+        log_prob = gaussian_log_prob(log_prob_mean, torch.zeros_like(log_prob_mean), std)
+        self.assertTrue(torch.isfinite(kl).all())
+        self.assertTrue(torch.isfinite(log_prob).all())
         kl.sum().backward()
-        self.assertIsNotNone(policy_mean.grad)
+        self.assertTrue(torch.isfinite(mean.grad).all())
+        log_prob.sum().backward()
+        self.assertIsNotNone(log_prob_mean.grad)
+        self.assertTrue(torch.isfinite(log_prob_mean.grad).all())
 
     def test_rectified_flow_sde_step_matches_fixed_next_x_log_prob_and_kl(self):
         from anytrain.framework.flow_matching import (

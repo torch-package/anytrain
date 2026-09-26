@@ -51,9 +51,11 @@ def global_sdr(estimate: Tensor, reference: Tensor, *, eps: float = 1e-8) -> Ten
     _validate_audio_pair(estimate, reference)
     eps = _finite_parameter(eps, name="eps", positive=True)
 
+    dtype = torch.promote_types(torch.promote_types(estimate.dtype, reference.dtype), torch.float32)
+    estimate, reference = estimate.to(dtype=dtype), reference.to(dtype=dtype)
     error = estimate - reference
-    numerator = _sum_channels_and_time(reference) + eps
-    denominator = _sum_channels_and_time(error) + eps
+    numerator = _sum_channels_and_time(reference) + reference.new_tensor(eps)
+    denominator = _sum_channels_and_time(error) + reference.new_tensor(eps)
     return 10 * torch.log10(numerator / denominator)
 
 
@@ -75,10 +77,12 @@ def scale_invariant_signal(
     else:
         reduce_dims = (-2, -1)
 
+    dtype = torch.promote_types(torch.promote_types(estimate.dtype, reference.dtype), torch.float32)
+    estimate, reference = estimate.to(dtype=dtype), reference.to(dtype=dtype)
     reference_energy = (reference * reference).sum(dim=reduce_dims)
     estimate_energy = (estimate * estimate).sum(dim=reduce_dims)
     projection = (estimate * reference).sum(dim=reduce_dims)
-    scale = projection / (reference_energy + eps)
+    scale = projection / (reference_energy + reference.new_tensor(eps))
     fallback = torch.full_like(scale, fallback_scale)
     scale = torch.where(estimate_energy < min_energy, fallback, scale)
     while scale.ndim < estimate.ndim:

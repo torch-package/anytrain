@@ -164,6 +164,16 @@ class LogProbTest(unittest.TestCase):
 
 
 class DPOLossTest(unittest.TestCase):
+    def test_half_precision_logprob_margin_is_finite(self):
+        chosen = torch.tensor([-1000.0], dtype=torch.float16, requires_grad=True)
+        rejected = torch.tensor([-60000.0], dtype=torch.float16, requires_grad=True)
+        loss = DPOLoss(reference_free=True)(
+            policy_chosen_logps=chosen,
+            policy_rejected_logps=rejected,
+        )
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertTrue(torch.isfinite(chosen.grad).all())
     def test_reference_free_dpo_values_and_diagnostics_are_detached(self):
         chosen = torch.tensor([1.0, 0.5], requires_grad=True)
         rejected = torch.tensor([0.0, 0.5], requires_grad=True)

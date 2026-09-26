@@ -23,6 +23,7 @@ class ParameterEMA:
         *,
         decay: float,
         parameter_names: Iterable[str] | None = None,
+        tracked_parameter_names: Iterable[str] | None = None,
     ) -> None:
         if isinstance(decay, bool) or not isinstance(decay, (int, float)):
             raise TypeError("decay must be a number.")
@@ -36,6 +37,26 @@ class ParameterEMA:
             if len(set(names)) != len(names):
                 raise ValueError("parameter_names must be unique.")
         self._names = names
+        named = dict(module.named_parameters())
+        tracked_names = (
+            None
+            if tracked_parameter_names is None
+            else tuple(tracked_parameter_names)
+        )
+        if tracked_names is not None:
+            if not tracked_names:
+                raise ValueError("tracked_parameter_names must not be empty.")
+            if len(set(tracked_names)) != len(tracked_names):
+                raise ValueError("tracked_parameter_names must be unique.")
+        elif names is None:
+            tracked_names = tuple(
+                name
+                for name, parameter in named.items()
+                if parameter.requires_grad and torch.is_floating_point(parameter)
+            )
+        else:
+            tracked_names = names
+        self._tracked_names = tracked_names
         self.shadow = {
             name: parameter.detach().float().clone()
             for name, parameter in self._parameters(module)
@@ -92,6 +113,7 @@ class ParameterEMA:
         return {
             "decay": self.decay,
             "names": self._names,
+            "tracked_names": self._tracked_names,
             "num_updates": self.num_updates,
             "shadow": {name: value.detach() for name, value in self.shadow.items()},
         }
@@ -105,6 +127,9 @@ class ParameterEMA:
         names = state.get("names")
         if names != self._names:
             raise ValueError("EMA parameter name set mismatch.")
+        tracked_names = state.get("tracked_names", tuple(state.get("shadow", {})))
+        if tuple(tracked_names) != self._tracked_names:
+            raise ValueError("EMA tracked parameter name set mismatch.")
         num_updates = state.get("num_updates")
         if isinstance(num_updates, bool) or not isinstance(num_updates, int) or num_updates < 0:
             raise TypeError("EMA num_updates must be a non-negative integer.")
@@ -127,23 +152,15 @@ class ParameterEMA:
         self._backup = None
 
     def _parameters(self, module: nn.Module) -> list[tuple[str, nn.Parameter]]:
-        named = list(module.named_parameters())
-        if self._names is None:
-            selected = [
-                (name, parameter)
-                for name, parameter in named
-                if parameter.requires_grad and torch.is_floating_point(parameter)
-            ]
-        else:
-            lookup = dict(named)
-            selected = []
-            for name in self._names:
-                parameter = lookup.get(name)
-                if parameter is None:
-                    raise ValueError(f"EMA parameter {name!r} is missing from the module.")
-                if not torch.is_floating_point(parameter):
-                    raise TypeError(f"EMA parameter {name!r} must be floating point.")
-                selected.append((name, parameter))
+        lookup = dict(module.named_parameters())
+        selected = []
+        for name in self._tracked_names:
+            parameter = lookup.get(name)
+            if parameter is None:
+                raise ValueError(f"EMA parameter {name!r} is missing from the module.")
+            if not torch.is_floating_point(parameter):
+                raise TypeError(f"EMA parameter {name!r} must be floating point.")
+            selected.append((name, parameter))
         return selected
 
 
@@ -181,21 +198,7 @@ class EMACallback(pl.Callback):
         self._restored_last_global_step = False
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        names = self.parameter_names
-        if names is None and self.parameter_filter is not None:
-            names = tuple(
-                name
-                for name, parameter in pl_module.named_parameters()
-                if self.parameter_filter(name, parameter)
-            )
-        self.ema = ParameterEMA(pl_module, decay=self.decay, parameter_names=names)
-        pending = self._pending_ema
-        if pending is not None:
-            self.ema.load_state_dict(pending)
-            self._pending_ema = None
-        if not self._restored_last_global_step:
-            self._last_global_step = _capability.global_step(trainer)
-        self._restored_last_global_step = False
+        self._ensure_initialized(trainer, pl_module)
         self._active = False
 
     def on_train_batch_end(
@@ -220,7 +223,7 @@ class EMACallback(pl.Callback):
             self._last_global_step = next_step
 
     def on_validation_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        del trainer
+        self._ensure_initialized(trainer, pl_module)
         self._enter_ema(pl_module)
 
     def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -228,7 +231,7 @@ class EMACallback(pl.Callback):
         self._exit_ema(pl_module)
 
     def on_test_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        del trainer
+        self._ensure_initialized(trainer, pl_module)
         self._enter_ema(pl_module)
 
     def on_test_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -236,7 +239,7 @@ class EMACallback(pl.Callback):
         self._exit_ema(pl_module)
 
     def on_predict_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        del trainer
+        self._ensure_initialized(trainer, pl_module)
         self._enter_ema(pl_module)
 
     def on_predict_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -343,6 +346,41 @@ class EMACallback(pl.Callback):
         if self.ema is None:
             raise RuntimeError("EMACallback requires on_fit_start before use.")
         return self.ema
+
+    def _ensure_initialized(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        if self.ema is not None:
+            return
+        names = self.parameter_names
+        if names is None and self.parameter_filter is not None:
+            names = tuple(
+                name
+                for name, parameter in pl_module.named_parameters()
+                if self.parameter_filter(name, parameter)
+            )
+        pending = self._pending_ema
+        pending_tracked_names = None
+        if pending is not None:
+            pending_tracked_names = pending.get(
+                "tracked_names", pending.get("shadow", {})
+            )
+            if not isinstance(pending_tracked_names, (tuple, list)):
+                raise TypeError("pending EMA tracked parameter names must be a sequence.")
+        self.ema = ParameterEMA(
+            pl_module,
+            decay=self.decay,
+            parameter_names=names,
+            tracked_parameter_names=pending_tracked_names,
+        )
+        if pending is not None:
+            self.ema.load_state_dict(pending)
+            self._pending_ema = None
+        if not self._restored_last_global_step:
+            self._last_global_step = _capability.global_step(trainer)
+        self._restored_last_global_step = False
 
 
 def find_ema_callback(trainer: pl.Trainer) -> EMACallback | None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -58,6 +60,27 @@ def test_group_recovery_preserves_immutable_shards(tmp_path):
         assert writer.completed_samples == 1
         writer.commit([{"source_index": 1, "sample_id": "b"}])
     assert len(shards.read_index(tmp_path / "index.jsonl")) == 2
+
+
+def test_failed_truncate_marks_writer_unusable(tmp_path, monkeypatch):
+    with shards.ShardWriter(tmp_path) as writer:
+        writer.commit(
+            [{"source_index": 0, "sample_id": "a"}, {"source_index": 1, "sample_id": "b"}]
+        )
+        original_open = Path.open
+
+        def fail_open(path, mode="r", *args, **kwargs):
+            if path.name == "index.jsonl" and mode == "r+b":
+                raise OSError("truncate interrupted")
+            return original_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fail_open)
+        with pytest.raises(OSError, match="truncate interrupted"):
+            writer.truncate(1)
+        with pytest.raises(RuntimeError, match="reopen"):
+            writer.commit([{"source_index": 1, "sample_id": "b"}])
+    with shards.ShardWriter(tmp_path) as writer:
+        assert writer.completed_samples == 1
 
 
 def test_failed_writer_cannot_overwrite_published_shard(tmp_path, monkeypatch):

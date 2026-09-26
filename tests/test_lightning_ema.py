@@ -67,8 +67,26 @@ class ParameterEMATests(unittest.TestCase):
             ema.store(module)
         ema.restore(module)
 
+    def test_tracking_is_stable_when_requires_grad_changes(self) -> None:
+        module = _LinearModule()
+        ema = ParameterEMA(module, decay=0.5)
+        module.weight.requires_grad_(False)
+        ema.store(module)
+        ema.copy_to(module)
+        ema.restore(module)
+        self.assertIn("weight", ema.shadow)
+        module.weight.requires_grad_(True)
+        ema.update(module)
+
 
 class EMACallbackTests(unittest.TestCase):
+    def test_evaluation_stage_initializes_ema_without_fit(self) -> None:
+        module = _LinearModule()
+        callback = EMACallback(decay=0.5)
+        trainer = SimpleNamespace(global_step=0, callbacks=[callback])
+        callback.on_validation_start(trainer, module)  # type: ignore[arg-type]
+        self.assertIsNotNone(callback.ema)
+        callback.on_validation_end(trainer, module)  # type: ignore[arg-type]
     def test_updates_when_global_step_advances(self) -> None:
         module = _LinearModule()
         callback = EMACallback(decay=0.5)
