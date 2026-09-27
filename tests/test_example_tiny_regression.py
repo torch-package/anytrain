@@ -1,11 +1,14 @@
 import unittest
 from typing import Any, cast
 
+import torch
+
 
 class TinyRegressionExampleTest(unittest.TestCase):
     def test_run_tiny_regression(self):
         from examples.tiny_regression import run_tiny_regression
 
+        previous_precision = torch.get_float32_matmul_precision()
         trainer, module = run_tiny_regression(
             num_samples=8,
             batch_size=4,
@@ -16,6 +19,7 @@ class TinyRegressionExampleTest(unittest.TestCase):
         self.assertEqual(str(trainer.default_root_dir), "outputs/anytrain/tiny_regression")
         self.assertEqual(module.model.in_features, 4)
         self.assertIsNotNone(module.optimizer)
+        self.assertEqual(torch.get_float32_matmul_precision(), previous_precision)
 
     def test_example_controls_and_datamodule_lifecycle_are_explicit(self):
         from torch import nn

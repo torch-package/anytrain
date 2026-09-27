@@ -73,14 +73,15 @@ def sparse_dispatch(
     # ``nn.Linear`` experts are stateless apart from their parameters.  Route
     # gathers can therefore be evaluated by one batched matrix multiplication
     # on accelerators, avoiding the host count conversion and one Python/module
-    # launch per non-empty expert in the generic path. CPU keeps the grouped
-    # GEMM path, which is faster for route-wise small matrix products on common
-    # BLAS backends. Keep the generic dispatcher below for arbitrary modules
-    # (whose forward methods may have state or side effects that cannot be
-    # safely vectorized).
+    # launch per non-empty expert in the generic path. Single-route CPU calls
+    # keep the grouped GEMM path, which is faster for small matrix products on
+    # common BLAS backends; CPU top-k calls use the same route-batched kernel as
+    # accelerators so they do not need a host count conversion either. Keep the
+    # generic dispatcher below for arbitrary modules (whose forward methods may
+    # have state or side effects that cannot be safely vectorized).
     first_linear = experts[0] if experts else None
     if (
-        flat_hidden.device.type == "cuda"
+        (top_k > 1 or flat_hidden.device.type == "cuda")
         and _can_batch_linear_experts(experts)
         and isinstance(first_linear, nn.Linear)
         and first_linear.weight.device == flat_hidden.device

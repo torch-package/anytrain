@@ -55,25 +55,27 @@ def linear(
         if active_indices is not None:
             y = _restore_active_tokens(y, active_indices, token_count)
     else:
+        indices, _, top_k = routing.require_topk()
         if (
             type(expert) is LinearExpert
-            and flat.device.type == "cuda"
+            and (top_k > 1 or flat.device.type == "cuda")
             and weight.device == flat.device
             and weight.layout == torch.strided
             and (bias is None or bias.layout == torch.strided)
             and (bias is None or bias.device == flat.device)
             and (bias is None or bias.dtype == weight.dtype)
             and _linear_route_memory_fits(
-                routing.indices.numel() if routing.indices is not None else 0,
+                indices.numel(),
                 weight[0],
             )
         ):
             # A linear expert is pure and has no per-module state, so all
             # selected routes can share one batched matrix multiplication.
             # This avoids host count materialization and one accelerator
-            # launch per non-empty expert in the old grouped path. CPU
-            # keeps the grouped GEMM path, which is faster for route-wise
-            # small matrix products on common BLAS backends.
+            # launch per non-empty expert in the old grouped path. Single-route
+            # CPU calls keep the grouped GEMM path, which is faster for small
+            # route-wise matrix products on common BLAS backends; CPU top-k
+            # calls use the same route-batched kernel as accelerators.
             y = linear_topk_batched(expert, weight, flat, routing)
         else:
             route_tokens, route_weights, token_counts = _grouped_topk_routes(routing, num_experts)

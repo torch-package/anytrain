@@ -107,7 +107,6 @@ def run_tiny_regression(
     if not isinstance(enable_progress_bar, bool):
         raise TypeError("enable_progress_bar must be a bool.")
 
-    torch.set_float32_matmul_precision("medium")
     pl.seed_everything(0, workers=True)
 
     module = TinyRegressionModule(
@@ -128,7 +127,15 @@ def run_tiny_regression(
         enable_progress_bar=enable_progress_bar,
         default_root_dir=default_root_dir,
     )
-    trainer.fit(module, datamodule=data_module)
+    # Keep the example's performance hint local to its fit.  The precision
+    # setting is process-global; leaking it into a caller changes unrelated
+    # CUDA matmuls and can leave PyTorch's legacy/new precision APIs mixed.
+    previous_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("medium")
+    try:
+        trainer.fit(module, datamodule=data_module)
+    finally:
+        torch.set_float32_matmul_precision(previous_precision)
     return trainer, module
 
 
