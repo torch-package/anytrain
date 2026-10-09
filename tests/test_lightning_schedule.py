@@ -321,7 +321,7 @@ class ScheduleTest(unittest.TestCase):
         restored.load_state_dict(state)
         self.assertEqual(restored.total_valid, 100.0)
 
-    def test_unit_clock_resume_rejects_budget_reduction(self):
+    def test_unit_clock_resume_warns_on_budget_reduction(self):
         old_schedule = LRSchedule(
             clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
             phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
@@ -333,8 +333,106 @@ class ScheduleTest(unittest.TestCase):
             stop_at=50.0,
         )
         state = UnitScheduleCallback(old_schedule).state_dict()
-        with self.assertRaisesRegex(ValueError, "cannot be smaller"):
-            UnitScheduleCallback(new_schedule).load_state_dict(state)
+        restored = UnitScheduleCallback(new_schedule)
+        with self.assertLogs("anytrain.lightning.schedule._callback", level="WARNING"):
+            restored.load_state_dict(state)
+        self.assertEqual(restored.total_valid, 0.0)
+
+    def test_unit_clock_resume_warns_on_budget_introduction(self):
+        old_schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+        )
+        new_schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+            stop_at=50.0,
+        )
+        state = UnitScheduleCallback(old_schedule).state_dict()
+        restored = UnitScheduleCallback(new_schedule)
+        with self.assertLogs("anytrain.lightning.schedule._callback", level="WARNING"):
+            restored.load_state_dict(state)
+        self.assertEqual(restored.total_valid, 0.0)
+
+    def test_unit_clock_resume_adopts_configured_lrs_on_mismatch(self):
+        schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+        )
+        source = UnitScheduleCallback(schedule)
+        source.on_train_start(
+            SimpleNamespace(
+                global_step=0,
+                optimizers=[_optimizer(lr=8e-5)],
+                lr_scheduler_configs=[],
+            ),
+            _module(),
+        )
+        state = source.state_dict()
+        self.assertEqual(state["base_lrs"], [[8e-5]])
+
+        restored = UnitScheduleCallback(schedule)
+        restored.remember_configured_lrs([_optimizer(lr=8e-6)])
+        with self.assertLogs("anytrain.lightning.schedule._callback", level="WARNING"):
+            restored.load_state_dict(state)
+        self.assertEqual(restored._base_lrs, [[8e-6]])
+
+    def test_unit_clock_resume_adopts_configured_lrs_at_train_start(self):
+        """Lightning restores callbacks before configure_optimizers runs."""
+
+        schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+        )
+        source = UnitScheduleCallback(schedule)
+        source.on_train_start(
+            SimpleNamespace(
+                global_step=0,
+                optimizers=[_optimizer(lr=8e-5)],
+                lr_scheduler_configs=[],
+            ),
+            _module(),
+        )
+        state = source.state_dict()
+
+        # Resume order: load_state_dict first (configured LRs unknown yet),
+        # then configure_optimizers records them, then on_train_start runs.
+        restored = UnitScheduleCallback(schedule)
+        restored.load_state_dict(state)
+        self.assertEqual(restored._base_lrs, [[8e-5]])
+
+        optimizer = _optimizer(lr=8e-5)  # checkpoint overwrite after restore
+        restored.remember_configured_lrs([_optimizer(lr=8e-6)])
+        with self.assertLogs("anytrain.lightning.schedule._callback", level="WARNING"):
+            restored.on_train_start(
+                SimpleNamespace(
+                    global_step=0,
+                    optimizers=[optimizer],
+                    lr_scheduler_configs=[],
+                ),
+                _module(),
+            )
+        self.assertEqual(restored._base_lrs, [[8e-6]])
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 8e-6)
+
+    def test_unit_clock_resume_keeps_checkpoint_lrs_without_configured(self):
+        schedule = LRSchedule(
+            clock=UnitClock(unit="tokens", provider=_Provider(), sync_cuda=False),
+            phases=[Phase("main", duration=10.0, lr=Constant(1.0))],
+        )
+        source = UnitScheduleCallback(schedule)
+        source.on_train_start(
+            SimpleNamespace(
+                global_step=0,
+                optimizers=[_optimizer(lr=8e-5)],
+                lr_scheduler_configs=[],
+            ),
+            _module(),
+        )
+        state = source.state_dict()
+        restored = UnitScheduleCallback(schedule)
+        restored.load_state_dict(state)
+        self.assertEqual(restored._base_lrs, [[8e-5]])
 
     def test_unit_clock_resume_marks_checkpoint_at_budget(self):
         schedule = LRSchedule(

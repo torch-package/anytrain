@@ -230,6 +230,15 @@ def fit_memory_calibration(
     intercept_bytes = mean_peak - slope_bytes * mean_cost
     if not math.isfinite(slope_bytes) or slope_bytes <= 0.0:
         raise ValueError("memory calibration produced a non-positive memory slope.")
+    if intercept_bytes < 0.0:
+        # Slightly superlinear peak memory (common on 2-point CUDA probes) makes
+        # OLS intercept negative. resolve_auto_cost rejects that, and feeding a
+        # negative intercept would inflate usable memory. Use a through-origin
+        # envelope instead: intercept=0 and slope=max(peak/cost).
+        slope_bytes = max(peak / cost for cost, peak in normalized)
+        intercept_bytes = 0.0
+        if not math.isfinite(slope_bytes) or slope_bytes <= 0.0:
+            raise ValueError("memory calibration produced a non-positive memory slope.")
     return AutoCostMemoryCalibration(
         mib_per_cost=slope_bytes / _MIB,
         # Peak-memory noise can place the unconstrained least-squares intercept

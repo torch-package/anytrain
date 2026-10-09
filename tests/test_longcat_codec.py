@@ -115,14 +115,17 @@ class LongCatCodecTest(unittest.TestCase):
         self.assertEqual(tuple(output.codes["semantic"].shape), (2, 3))
         self.assertTrue(torch.equal(output.lengths["semantic"], torch.tensor([2, 1])))
 
-    def test_padded_encode_requires_length_aware_encoder_and_native_sample_rate(self):
+    def test_padded_encode_resamples_to_native_rate_and_requires_length_aware_encoder(
+        self,
+    ):
         codec = _codec(FakeLongCatEncoder())
-        with self.assertRaisesRegex(ValueError, "pre-resampled to 16000 Hz"):
-            codec.encode_padded(
-                torch.zeros((2, 1, 12)),
-                48_000,
-                torch.tensor([12, 7]),
-            )
+        codes, lengths = codec.encode_padded(
+            torch.zeros((2, 1, 36)),
+            48_000,
+            torch.tensor([36, 15]),
+        )
+        self.assertEqual(tuple(codes.shape[:2]), (2, 2))
+        self.assertTrue(torch.equal(lengths, torch.tensor([2, 1])))
 
         encoder = nn.Identity()
         cast(Any, encoder).input_sample_rate = 16_000
@@ -132,6 +135,45 @@ class LongCatCodecTest(unittest.TestCase):
                 16_000,
                 torch.tensor([12, 7]),
             )
+
+    def test_padded_encode_clamps_sub_frame_rows_to_one_frame(self):
+        # Without the clamp a sub-frame row encodes to zero valid frames and
+        # the "code lengths must be positive" validation kills the caller
+        # (production: centralized-ASR zh_nexdata view job 81694 died on a
+        # 43 ms slice after 1.46 M committed samples).
+        codec = _codec(FakeLongCatEncoder(zero_below=6))
+        codes, lengths = codec.encode_padded(
+            torch.zeros((2, 1, 12)),
+            16_000,
+            torch.tensor([12, 3]),
+        )
+
+        self.assertEqual(tuple(codes.shape[:2]), (2, 2))
+        self.assertTrue(torch.equal(lengths, torch.tensor([2, 1])))
+
+    def test_padded_tokenizer_clamps_sub_frame_rows_for_every_stream(self):
+        codec = _codec(FakeLongCatEncoder(zero_below=6))
+        tokenizer = represent_tokenizer(codec, _code_spec(), AudioBackendIdentity("longcat"))
+
+        output = tokenizer.tokenize_padded(
+            torch.zeros((2, 1, 12)),
+            16_000,
+            torch.tensor([12, 3]),
+        )
+
+        for lengths in output.lengths.values():
+            self.assertTrue(torch.equal(lengths, torch.tensor([2, 1])))
+
+    def test_padded_encode_all_sub_frame_batch_reports_one_frame_each(self):
+        codec = _codec(FakeLongCatEncoder(zero_below=6))
+        codes, lengths = codec.encode_padded(
+            torch.zeros((2, 1, 8)),
+            16_000,
+            torch.tensor([3, 4]),
+        )
+
+        self.assertTrue(torch.equal(lengths, torch.tensor([1, 1])))
+        self.assertEqual(tuple(codes.shape[:2]), (2, 2))
 
     def test_encode_debug_boundary_writes_shape_and_elapsed_record(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -468,12 +510,23 @@ class FakeFactorLongCatDecoder(FakeLongCatDecoder):
 
 
 class FakeLongCatEncoder(nn.Module):
-    def __init__(self, *, semantic_tail: bool = False) -> None:
+    def __init__(self, *, semantic_tail: bool = False, zero_below: int | None = None) -> None:
         super().__init__()
         register_buffer(self, "device_probe", torch.empty(0), persistent=False)
         self.input_sample_rate: Any = 16000
         self.hop_length: Any = 960
         self.semantic_tail = semantic_tail
+        self.zero_below = zero_below
+
+    def _base_lengths(self, lengths: torch.Tensor) -> torch.Tensor:
+        code_lengths = torch.div(lengths + 5, 6, rounding_mode="floor")
+        if self.zero_below is not None:
+            code_lengths = torch.where(
+                lengths < self.zero_below,
+                torch.zeros_like(code_lengths),
+                code_lengths,
+            )
+        return code_lengths
 
     def forward(
         self,
@@ -499,7 +552,7 @@ class FakeLongCatEncoder(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch = audio.size(0)
         codes = torch.tensor([[7, 8, 9]], device=audio.device).expand(batch, -1)
-        code_lengths = torch.div(lengths + 5, 6, rounding_mode="floor")
+        code_lengths = self._base_lengths(lengths)
         if self.semantic_tail:
             code_lengths = code_lengths + 1
         return codes[:, : 3 if self.semantic_tail else 2], code_lengths
@@ -518,7 +571,7 @@ class FakeLongCatEncoder(nn.Module):
             dtype=torch.long,
             device=audio.device,
         )
-        return codes, torch.div(lengths + 5, 6, rounding_mode="floor")
+        return codes, self._base_lengths(lengths)
 
     def get_semantic_codebook(self) -> torch.Tensor:
         return torch.zeros((3, 8192))

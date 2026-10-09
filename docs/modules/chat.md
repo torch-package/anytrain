@@ -69,13 +69,14 @@ GLM 使用同步 SDK 的线程回退；取消异步请求会等待该线程返�
 
 ## 当前实现
 
-当前模块实现稳定外部契约、实例内消息上下文、环境变量解析、DeepSeek OpenAI-compatible SDK 调用、GLM SDK 调用、OpenRouter OpenAI-compatible SDK 调用和 GLM 图片生成调用。缺少对应 optional 依赖时会明确抛出 `ImportError`，避免静默 fallback。
+当前模块实现稳定外部契约、实例内消息上下文、环境变量解析、DeepSeek OpenAI-compatible SDK 调用、GLM SDK 调用、OpenRouter OpenAI-compatible SDK 调用、Zoom DevMate `llm_proxy` OpenAI-compatible SDK 调用和 GLM 图片生成调用。缺少对应 optional 依赖时会明确抛出 `ImportError`，避免静默 fallback。
 
 支持的 `model_type`：
 
 - `deepseek`
 - `glm`
 - `openrouter`
+- `llm_proxy`（Zoom DevMate OpenAI-compatible gateway；pi `llm-proxy` 同款）
 
 环境变量：
 
@@ -92,10 +93,14 @@ GLM 使用同步 SDK 的线程回退；取消异步请求会等待该线程返�
 - `OPENROUTER_MODELS`（live 模式下为可选白名单；static 模式下为必填的候选列表）
 - `OPENROUTER_CATALOG_TTL`（可选，默认 `300` 秒；设为 `0` 禁用 live catalog 缓存）
 - `OPENROUTER_CANDIDATE_LIMIT`（可选，默认 `4`；主模型 + 最多 3 个 OpenRouter fallback）
+- `LLM_PROXY_API_KEY`（必填；未设时可回退 `DEVMATE_API_KEY`）
+- `LLM_PROXY_BASE_URL`（可选，默认 `https://devmate.zoom.us/api/v1/llm-proxy/v1`）
+- `LLM_PROXY_MODEL`（可选，默认 `google_gemma_4_31b_it_dev_mate`）
 
 DeepSeek / GLM 变量缺失或为空时，`Chat(...)` 会直接抛出 `ValueError`。OpenRouter 在 `OPENROUTER_API_KEY` 缺失、白名单为空串、或候选 limit 非法时同样直接抛错。
 如果 `OPENROUTER_BASE_URL` 指向非官方 host，必须使用 HTTPS 并设置
 `OPENROUTER_ALLOW_CUSTOM_BASE_URL=1`；否则不会把 API key 发给该 endpoint。
+`llm_proxy` 在 API key 缺失、或显式把 `LLM_PROXY_BASE_URL` / `LLM_PROXY_MODEL` 设为空串时抛错；未设置 URL/模型时使用上述默认值。
 
 `openrouter` 面向低成本、低智能要求的对话任务（例如给任务生成 prompt），不是 DeepSeek/GLM 的平替智能后端。构造 `Chat("openrouter")` 时会请求 `{base_url}/models`，按直播定价选择候选：
 
@@ -155,6 +160,15 @@ OpenRouter 调用使用：
 - 无强制 system prompt
 - `stream=False`
 - 主模型为选型后的第一个候选；其余候选放入 `extra_body={"models": [...]}`
+
+LLM proxy（DevMate）调用使用：
+
+- `from openai import OpenAI`
+- `OpenAI(api_key=LLM_PROXY_API_KEY, base_url=LLM_PROXY_BASE_URL)`
+- 无强制 system prompt
+- `stream=False`
+- 不走 OpenRouter catalog 选型；模型由 `LLM_PROXY_MODEL`（或默认 Gemma）固定
+- 不支持 image input / image generation
 
 GLM 图片生成使用同步 HTTP 调用：
 

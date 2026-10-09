@@ -238,6 +238,52 @@ class ChatProviderTest(unittest.TestCase):
             with self.assertRaises(NotImplementedError):
                 client("describe this", images=["https://example.test/cat.png"])
 
+    def test_llm_proxy_backend_uses_openai_client_without_system_prompt(self):
+        calls = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = types.SimpleNamespace(content="done")
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice])
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                calls.append({"api_key": api_key, "base_url": base_url})
+                self.chat = types.SimpleNamespace(
+                    completions=FakeCompletions(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            "LLM_PROXY_BASE_URL": "https://example.test/llm-proxy/v1",
+            "LLM_PROXY_MODEL": "google_gemma_4_31b_it_dev_mate",
+            "LLM_PROXY_API_KEY": "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"openai": fake_openai}),
+        ):
+            response = Chat("llm_proxy")("hello")
+
+        self.assertEqual(response, "done")
+        self.assertEqual(
+            calls[0],
+            {
+                "api_key": "secret",
+                "base_url": "https://example.test/llm-proxy/v1",
+            },
+        )
+        self.assertEqual(
+            calls[1],
+            {
+                "model": "google_gemma_4_31b_it_dev_mate",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+
     def test_chat_logs_request_lifecycle_with_elapsed_and_finish_reason(self):
         class FakeCompletions:
             def create(self, **kwargs):

@@ -40,6 +40,7 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(chat_api.ModelType.DEEPSEEK.value, "deepseek")
         self.assertEqual(chat_api.ModelType.GLM.value, "glm")
         self.assertEqual(chat_api.ModelType.OPENROUTER.value, "openrouter")
+        self.assertEqual(chat_api.ModelType.LLM_PROXY.value, "llm_proxy")
 
     def test_chat_request_returns_response_metadata_and_call_returns_text(self):
         class AttrUsage:

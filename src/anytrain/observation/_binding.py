@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import os
+import sys
 import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
@@ -129,6 +131,22 @@ def context_prefix() -> tuple[str, ...]:
     return _context.get()
 
 
+_OBSERVATION_DEBUG = os.environ.get("ANYTRAIN_OBSERVATION_DEBUG") == "1"
+
+
+def _debug_emit(stage: str, module: nn.Module, name: str) -> None:
+    """Env-gated trace of why an observation was dropped (default off)."""
+
+    if not _OBSERVATION_DEBUG:
+        return
+    print(
+        f"observation.debug.{stage} module={type(module).__name__} "
+        f"event={name} ctx={'/'.join(context_prefix())}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def emit(module: nn.Module, name: str, value: ObservationResult) -> None:
     """Publish one declared local forward value to attached observers.
 
@@ -139,14 +157,18 @@ def emit(module: nn.Module, name: str, value: ObservationResult) -> None:
     if not isinstance(module, nn.Module):
         raise TypeError("observation.emit requires an nn.Module.")
     if torch.compiler.is_compiling():
+        _debug_emit("skip.compiling", module, name)
         return
     runtime = _runtimes.get(module)
     if runtime is None or not any(runtime.event_sinks.values()):
+        _debug_emit("skip.no_runtime_or_sinks", module, name)
         return
     spec = _event_spec(module, name)
     sinks = runtime.event_sinks.get(spec.name.strip("/"))
     if not sinks:
+        _debug_emit("skip.no_event_sinks", module, name)
         return
+    _debug_emit("published", module, name)
     for sink_id, sink in tuple(sinks.items()):
         if not sink(module, value):
             sinks.pop(sink_id, None)

@@ -421,6 +421,8 @@ def _content_for_prompt(
         raise ValueError("images must not be empty.")
     if model_type == ModelType.DEEPSEEK:
         raise NotImplementedError("DeepSeek image inputs are not supported.")
+    if model_type == ModelType.LLM_PROXY:
+        raise NotImplementedError("LLM proxy image inputs are not supported.")
 
     parts: list[ChatContentPart] = [{"type": "text", "text": prompt}]
     parts.extend(

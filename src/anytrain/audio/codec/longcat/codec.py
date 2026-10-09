@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast
 import torch
 from torch import Tensor, nn
 
+from .._audio import resample
 from .._module import DeviceModule, integer_tensor, resolve_device, validate_frame_codes
 from . import _loading, _trace
 from .assets import (
@@ -459,18 +460,23 @@ class LongCat(DeviceModule):
         input_rate = int(input_rate)
         if input_rate <= 0:
             raise TypeError("LongCat encoder must expose a positive input_sample_rate.")
-        if sample_rate != input_rate:
-            raise ValueError(
-                "LongCat padded encode requires waveforms pre-resampled to "
-                f"{input_rate} Hz; got {sample_rate} Hz."
-            )
 
         prepared_lengths = _waveform_lengths(
             lengths,
             batch_size=audio.size(0),
             maximum=audio.size(-1),
-            device=self.device,
+            device=audio.device,
         )
+        if sample_rate != input_rate:
+            audio, prepared_lengths = _resample_padded_audio(
+                audio,
+                prepared_lengths,
+                sample_rate=sample_rate,
+                target_rate=input_rate,
+            )
+            sample_rate = input_rate
+
+        prepared_lengths = prepared_lengths.to(device=self.device)
         preprocess = getattr(self.encoder, "preprocess", None)
         semantic_call = getattr(self.encoder, "get_semantic_codes_with_lengths", None)
         acoustic_call = getattr(self.encoder, "get_acoustic_codes_with_lengths", None)
@@ -492,6 +498,14 @@ class LongCat(DeviceModule):
                 prepared_lengths,
                 n_acoustic_codebooks=len(self.acoustic_codebook_sizes),
             )
+            # Rows shorter than one encoder frame emit zero valid code frames
+            # (convolutions over the zero-masked tail still produce frames, so
+            # the codes are deterministic silence encodings).  Encode such a
+            # row as exactly one frame instead of failing the positive-length
+            # validation below — the padded encode must not reject short
+            # audio that the caller legitimately asked to tokenize.
+            semantic_lengths = _positive_frame_lengths(semantic_lengths)
+            acoustic_lengths = _positive_frame_lengths(acoustic_lengths)
             semantic = integer_tensor(semantic, "LongCat semantic codes").to(self.device)
             acoustic = integer_tensor(acoustic, "LongCat acoustic codes").to(self.device)
             if semantic.dim() != 2:
@@ -600,6 +614,39 @@ def _sample_rate(value: object) -> int:
     return resolved
 
 
+def _resample_padded_audio(
+    audio: Tensor,
+    lengths: Tensor,
+    *,
+    sample_rate: int,
+    target_rate: int,
+) -> tuple[Tensor, Tensor]:
+    """Resample each valid clip, then re-pad so length-aware encode stays aligned."""
+
+    if sample_rate == target_rate:
+        return audio, lengths
+
+    rows: list[Tensor] = []
+    resized: list[int] = []
+    for index, length in enumerate(int(value) for value in lengths.tolist()):
+        clip = audio[index, ..., :length].contiguous()
+        resampled = resample(clip.unsqueeze(0), sample_rate, target_rate).squeeze(0)
+        if resampled.dim() != 2 or resampled.size(0) != NUM_CHANNELS:
+            raise ValueError(
+                "LongCat resampled audio must keep mono shape [1, time]."
+            )
+        if resampled.size(-1) <= 0:
+            raise ValueError("LongCat resampled audio must not be empty.")
+        rows.append(resampled)
+        resized.append(int(resampled.size(-1)))
+
+    maximum = max(resized)
+    padded = audio.new_zeros((audio.size(0), NUM_CHANNELS, maximum))
+    for index, row in enumerate(rows):
+        padded[index, ..., : row.size(-1)] = row
+    return padded, torch.tensor(resized, dtype=torch.long, device=lengths.device)
+
+
 def _waveform_lengths(
     value: Tensor,
     *,
@@ -641,6 +688,21 @@ def _code_lengths(
     if bool((lengths > maximum).any()):
         raise ValueError(f"LongCat {name} code lengths exceed the padded code extent.")
     return lengths
+
+
+def _positive_frame_lengths(value: Tensor) -> Tensor:
+    """Clamp backend-reported code lengths to at least one frame.
+
+    A waveform shorter than one encoder frame legitimately encodes to zero
+    frames; the frames at padded positions are deterministic encodings of
+    silence, so reporting one frame keeps the padded contract total instead
+    of raising on sub-frame rows.  Non-tensor backend outputs pass through so
+    ``_code_lengths`` still reports the shape/type problem.
+    """
+
+    if isinstance(value, Tensor):
+        return value.clamp(min=1)
+    return value
 
 
 def _positive_int(value: object, name: str) -> int:

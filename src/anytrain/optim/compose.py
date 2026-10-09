@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
+from torch import nn
 from torch.optim import Optimizer
+
+if TYPE_CHECKING:
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
 
 
 def checkpoint_optimizers(optimizer: Optimizer) -> tuple[Optimizer, ...]:
@@ -38,6 +42,105 @@ def checkpoint_optimizers(optimizer: Optimizer) -> tuple[Optimizer, ...]:
 
     visit(optimizer)
     return tuple(optimizers)
+
+
+def checkpoint_leaf_states(
+    optimizers: Sequence[Optimizer],
+    optimizer_state: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Split one merged DCP optimizer state into per-optimizer leaf states.
+
+    ``get_optimizer_state_dict(model, checkpoint_optimizers(optimizer))`` merges
+    the leaf parameter groups and per-parameter state under one state dict;
+    this helper re-splits it so each leaf can be restored independently.
+    """
+    state = optimizer_state.get("state")
+    groups = optimizer_state.get("param_groups")
+    if not isinstance(state, Mapping) or not isinstance(groups, Sequence):
+        raise ValueError(
+            "Optimizer checkpoint state must contain 'state' and 'param_groups'."
+        )
+    if isinstance(groups, (str, bytes)):
+        raise TypeError("Optimizer checkpoint param_groups must be a sequence.")
+
+    offset = 0
+    assigned_state_keys: set[Any] = set()
+    leaf_states: list[dict[str, Any]] = []
+    for optimizer in optimizers:
+        if not isinstance(optimizer, Optimizer):
+            raise TypeError("checkpoint leaves must be torch.optim.Optimizer instances.")
+        next_offset = offset + len(optimizer.param_groups)
+        leaf_groups = list(groups[offset:next_offset])
+        if len(leaf_groups) != len(optimizer.param_groups):
+            raise ValueError(
+                "Optimizer checkpoint parameter-group count does not match the configured optimizers."
+            )
+
+        parameter_keys: set[Any] = set()
+        copied_groups: list[dict[str, Any]] = []
+        for group in leaf_groups:
+            if not isinstance(group, Mapping):
+                raise TypeError("Optimizer checkpoint parameter groups must be mappings.")
+            parameters = group.get("params")
+            if not isinstance(parameters, Sequence) or isinstance(
+                parameters, (str, bytes)
+            ):
+                raise TypeError(
+                    "Optimizer checkpoint parameter groups must contain parameter sequences."
+                )
+            parameter_keys.update(parameters)
+            copied_group = dict(group)
+            copied_group["params"] = list(parameters)
+            copied_groups.append(copied_group)
+
+        leaf_state = {
+            key: value for key, value in state.items() if key in parameter_keys
+        }
+        assigned_state_keys.update(leaf_state)
+        leaf_states.append({"state": leaf_state, "param_groups": copied_groups})
+        offset = next_offset
+
+    if offset != len(groups):
+        raise ValueError(
+            "Optimizer checkpoint parameter-group count does not match the configured optimizers."
+        )
+    unassigned_state_keys = set(state) - assigned_state_keys
+    if unassigned_state_keys:
+        raise ValueError(
+            "Optimizer checkpoint contains state that is not owned by any parameter group."
+        )
+    return tuple(leaf_states)
+
+
+def restore_optimizer_states(
+    model: nn.Module,
+    optimizers: Sequence[Optimizer],
+    optimizer_state: Mapping[str, Any],
+    options: StateDictOptions,
+) -> None:
+    """Restore merged DCP state one optimizer at a time.
+
+    DCP cannot load a merged state containing both stateful and stateless
+    optimizers in strict mode, and full-state loading cannot infer a device
+    from an entirely empty ``state`` mapping. Stateless leaves only need their
+    parameter-group metadata restored, which the ordinary optimizer API can do
+    without tensor redistribution.
+    """
+    from torch.distributed.checkpoint.state_dict import set_optimizer_state_dict
+
+    states = checkpoint_leaf_states(optimizers, optimizer_state)
+    for optimizer, state in zip(optimizers, states, strict=True):
+        if not isinstance(optimizer, Optimizer):
+            raise TypeError("optimizer leaves must be torch.optim.Optimizer instances.")
+        if state["state"]:
+            set_optimizer_state_dict(
+                model,
+                optimizer,
+                optim_state_dict=state,
+                options=options,
+            )
+        else:
+            optimizer.load_state_dict(state)
 
 
 class CompositeOptimizer(Optimizer):
@@ -105,6 +208,13 @@ class CompositeOptimizer(Optimizer):
         }
         for name, optimizer in self.optimizers.items():
             optimizer.load_state_dict(optimizer_states[name])
+        self.refresh_param_groups()
+
+    def refresh_param_groups(self) -> None:
+        """Re-collect child parameter groups after distributed state restore."""
+        for optimizer in self.optimizers.values():
+            if isinstance(optimizer, CompositeOptimizer):
+                optimizer.refresh_param_groups()
         self.param_groups = self._collect_param_groups()
 
     def _validate_optimizers(

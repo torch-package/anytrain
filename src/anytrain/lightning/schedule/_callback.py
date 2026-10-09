@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import logging
 import math
 import time
 from collections import deque
@@ -18,6 +19,8 @@ from ._data import UnitBatch, padding_ratio, units_per_second
 from ._spec import LRSchedule, UnitClock
 
 _LEGACY_NO_MATCH = object()
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,7 @@ class UnitScheduleCallback(pl.Callback):
         self._pending = _PendingUnits()
         self._last_global_step: int | None = None
         self._base_lrs: list[list[float]] | None = None
+        self._configured_lrs: list[list[float]] | None = None
         self._last_lrs: list[list[float]] | None = None
         self._next_log_at: float | None = None
         self._measurements: deque[_Measurement] = deque()
@@ -160,11 +164,24 @@ class UnitScheduleCallback(pl.Callback):
         if not any(candidate is consumer for candidate in self._unit_schedule_consumers):
             self._unit_schedule_consumers.append(consumer)
 
+    def remember_configured_lrs(self, optimizers: list[torch.optim.Optimizer]) -> None:
+        """Record the optimizers' LRs as configured for this run.
+
+        Called when the optimizers are created, before checkpoint resume can
+        overwrite their param-group LRs.  Resume compares these values against
+        the checkpoint base_lrs and, on mismatch, warns and adopts the
+        configured values instead of silently keeping the checkpoint ones.
+        """
+
+        self._configured_lrs = _current_lrs(optimizers)
+
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._unit_epochs_advanced = 0
         self._reject_lightning_schedulers(trainer)
         if self._base_lrs is None:
             self._base_lrs = _current_lrs(_optimizers(trainer))
+        else:
+            self._base_lrs = self._adopt_configured_lrs(self._base_lrs)
         self._last_global_step = _capability.global_step(trainer)
         self._next_log_at = _next_log_at(
             self.total_valid,
@@ -356,7 +373,7 @@ class UnitScheduleCallback(pl.Callback):
         if not _schedule_fingerprint_matches(raw_schedule, self.schedule):
             raise ValueError("UnitScheduleCallback state schedule does not match callback.")
         saved_stop_at = _saved_stop_at(state_dict, raw_schedule, self.schedule)
-        _validate_resume_stop_at(saved_stop_at, self.schedule.stop_unit())
+        _warn_resume_stop_at(saved_stop_at, self.schedule.stop_unit())
         total_valid = _non_negative_float(state_dict.get("total_valid"), "total_valid")
         total_padded = _non_negative_float(state_dict.get("total_padded"), "total_padded")
         raw_base_lrs = state_dict.get("base_lrs")
@@ -366,6 +383,8 @@ class UnitScheduleCallback(pl.Callback):
             raise TypeError("UnitScheduleCallback last_global_step must be an integer or None.")
         raw_last_lrs = state_dict.get("last_lrs")
         last_lrs = None if raw_last_lrs is None else _lr_groups(raw_last_lrs, "last_lrs")
+        if base_lrs is not None and self._configured_lrs is not None:
+            base_lrs = self._adopt_configured_lrs(base_lrs)
 
         self.total_valid = total_valid
         self.total_padded = total_padded
@@ -373,6 +392,21 @@ class UnitScheduleCallback(pl.Callback):
         self._last_global_step = last_step
         self._last_lrs = last_lrs
         self._unit_epochs_advanced = 0
+
+    def _adopt_configured_lrs(
+        self,
+        base_lrs: list[list[float]],
+    ) -> list[list[float]]:
+        configured = self._configured_lrs
+        if configured is None or _lrs_close(base_lrs, configured):
+            return base_lrs
+        _logger.warning(
+            "UnitScheduleCallback checkpoint base LRs %s differ from the "
+            "configured LRs %s; adopting the configured LRs.",
+            base_lrs,
+            configured,
+        )
+        return configured
 
     def _local_units(self, units: object) -> _ResolvedUnits:
         if not isinstance(units, UnitBatch):
@@ -658,6 +692,22 @@ def _optimizers(trainer: pl.Trainer) -> list[torch.optim.Optimizer]:
     return optimizers
 
 
+def _lrs_close(
+    left: list[list[float]],
+    right: list[list[float]],
+) -> bool:
+    if len(left) != len(right):
+        return False
+    return all(
+        len(groups) == len(other_groups)
+        and all(
+            math.isclose(lr, other_lr, rel_tol=1e-9, abs_tol=1e-12)
+            for lr, other_lr in zip(groups, other_groups, strict=False)
+        )
+        for groups, other_groups in zip(left, right, strict=False)
+    )
+
+
 def _current_lrs(optimizers: list[torch.optim.Optimizer]) -> list[list[float]]:
     return [[float(group["lr"]) for group in optimizer.param_groups] for optimizer in optimizers]
 
@@ -736,20 +786,23 @@ def _saved_stop_at(
     return None
 
 
-def _validate_resume_stop_at(saved: float | None, current: float | None) -> None:
-    """Permit only stop-budget extensions when resuming a checkpoint."""
+def _warn_resume_stop_at(saved: float | None, current: float | None) -> None:
+    """Warn on resume stop-budget changes instead of rejecting them."""
 
     if saved is None:
         if current is not None:
-            raise ValueError(
-                "UnitScheduleCallback resume stop_at cannot introduce a finite "
-                "budget when the checkpoint was unbounded."
+            _logger.warning(
+                "UnitScheduleCallback resume introduces a finite stop budget "
+                "stop_at=%s although the checkpoint was unbounded.",
+                current,
             )
         return
     if current is not None and current < saved:
-        raise ValueError(
-            "UnitScheduleCallback resume stop_at cannot be smaller than the "
-            "checkpoint budget."
+        _logger.warning(
+            "UnitScheduleCallback resume stop_at=%s is smaller than the "
+            "checkpoint budget %s; training will stop at the new budget.",
+            current,
+            saved,
         )
 
 

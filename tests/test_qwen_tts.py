@@ -4,12 +4,14 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import numpy as np
 import torch
 
 from anytrain.tts import TTSOptions, TTSVoiceMode
 from anytrain.tts.qwen import (
+    QwenVoiceCloneTTS,
     CUSTOM_VOICE_PROMPT_PROTOCOL,
     QwenCustomVoicePromptEstimator,
     QwenCustomVoiceTTS,
@@ -447,3 +449,215 @@ class _fake_transformers:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeVoiceCloneModel:
+    loaded: ClassVar[Any] = None
+
+    def __init__(self, load_args):
+        self.load_args = load_args
+        self.calls = []
+        type(self).loaded = self
+
+    @classmethod
+    def from_pretrained(cls, model, **kwargs):
+        return cls((model, kwargs))
+
+    def generate_voice_clone(self, **kwargs):
+        self.calls.append(kwargs)
+        text = kwargs["text"]
+        if isinstance(text, list):
+            return [
+                torch.tensor([float(index), float(index) + 0.5]) for index in range(len(text))
+            ], 24000
+        return [torch.tensor([0.5, -0.5, 0.25])], 24000
+
+
+class _fake_clone_qwen_tts:
+    def __init__(self) -> None:
+        self.environment = patch("anytrain.tts.qwen.tts.QWEN_TORCH_ENVIRONMENT")
+
+    def __enter__(self):
+        self.environment.start()
+        module: Any = types.ModuleType("qwen_tts")
+        module.Qwen3TTSModel = FakeVoiceCloneModel
+        self.previous = {"qwen_tts": sys.modules.get("qwen_tts")}
+        sys.modules["qwen_tts"] = module
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.environment.stop()
+        previous = self.previous["qwen_tts"]
+        if previous is None:
+            sys.modules.pop("qwen_tts", None)
+        else:
+            sys.modules["qwen_tts"] = previous
+
+
+class QwenVoiceCloneTTSTest(unittest.TestCase):
+    def test_capabilities_expose_reference_audio_only(self):
+        with _fake_clone_qwen_tts():
+            tts = QwenVoiceCloneTTS.from_pretrained()
+
+        self.assertTrue(tts.capabilities().supports(TTSVoiceMode.REFERENCE_AUDIO))
+        self.assertFalse(tts.capabilities().supports(TTSVoiceMode.SPEAKER_ID))
+        self.assertIsNone(tts.capabilities().speaker_ids)
+
+    def test_from_pretrained_defaults_to_base_model(self):
+        with _fake_clone_qwen_tts():
+            tts = QwenVoiceCloneTTS.from_pretrained()
+
+        self.assertEqual(FakeVoiceCloneModel.loaded.load_args[0], "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+
+    def test_synthesize_passes_verbatim_reference_and_language(self):
+        from anytrain.tts import WaveformReference
+
+        with _fake_clone_qwen_tts():
+            tts = QwenVoiceCloneTTS.from_pretrained()
+
+        reference = WaveformReference(torch.ones(1, 4) * 0.1, 16_000)
+        output = tts.synthesize(
+            "hello",
+            TTSOptions(prompt_text="hel", language="en"),
+            reference_audio=reference,
+        )
+
+        call = FakeVoiceCloneModel.loaded.calls[0]
+        self.assertEqual(call["text"], "hello")
+        self.assertEqual(call["ref_text"], "hel")
+        self.assertEqual(call["language"], "English")
+        # The payload is a wav data URI (vllm_omni builder natively accepts
+        # data:audio URIs; its (wav, sr) tuple branch is broken).
+        numpy_audio, rate = call["ref_audio"]
+        self.assertEqual(rate, 16_000)
+        self.assertEqual(numpy_audio.ndim, 1)
+        self.assertEqual(numpy_audio.dtype, np.float32)
+        self.assertEqual(output.sample_rate, 24_000)
+        self.assertEqual(output.waveform.shape, (1, 3))
+
+    def test_synthesize_requires_reference_and_known_language(self):
+        from anytrain.tts import WaveformReference
+
+        with _fake_clone_qwen_tts():
+            tts = QwenVoiceCloneTTS.from_pretrained()
+
+        with self.assertRaisesRegex(ValueError, "reference audio"):
+            tts.synthesize("hello", TTSOptions(prompt_text="hel", language="en"))
+        reference = WaveformReference(torch.ones(1, 4) * 0.1, 16_000)
+        with self.assertRaisesRegex(ValueError, "requires language"):
+            tts.synthesize(
+                "hello",
+                TTSOptions(prompt_text="hel"),
+                reference_audio=reference,
+            )
+
+    def test_batch_requires_one_prompt_text_per_text(self):
+        from anytrain.tts import WaveformReference
+
+        with _fake_clone_qwen_tts():
+            tts = QwenVoiceCloneTTS.from_pretrained()
+
+        reference = WaveformReference(torch.ones(1, 4) * 0.1, 16_000)
+        with self.assertRaisesRegex(ValueError, "prompt_text"):
+            tts.synthesize(["a", "b"], TTSOptions(language="en"), reference_audio=reference)
+
+
+class QwenOmniClonePromptBuilderTest(unittest.TestCase):
+    def _builder(self):
+        from anytrain.tts.qwen import QwenOmniVoiceClonePromptBuilder
+
+        tokenizer = Mock()
+        tokenizer.return_value = {"input_ids": [1, 2, 3]}
+        estimator = Mock()
+        estimator.estimate_prompt_len_from_additional_information.return_value = 12
+        return (
+            QwenOmniVoiceClonePromptBuilder(
+                tokenizer=tokenizer, talker_config=Mock(), estimator=estimator
+            ),
+            estimator,
+        )
+
+    def test_build_emits_base_task_with_ref_fields(self):
+        builder, estimator = self._builder()
+        ref = (np.zeros(16_000, dtype=np.float32), 16_000)
+        prompts = builder.build(
+            ["hello"],
+            [ref],
+            ["hel"],
+            ["English"],
+            TTSOptions(max_new_tokens=512),
+        )
+
+        info = prompts[0]["additional_information"]
+        self.assertEqual(info["task_type"], ["Base"])
+        self.assertEqual(info["ref_text"], ["hel"])
+        self.assertEqual(info["language"], ["English"])
+        self.assertEqual(info["max_new_tokens"], [512])
+        self.assertIs(info["ref_audio"][0], ref)
+        call = estimator.estimate_prompt_len_from_additional_information.call_args
+        self.assertEqual(call.args[0], info)
+        self.assertEqual(call.kwargs["task_type"], "Base")
+        self.assertIsNotNone(call.kwargs["estimate_ref_code_len"])
+
+    def test_vllm_omni_branch_routes_through_generate(self):
+        from anytrain.tts import TTSOptions, WaveformReference
+        from anytrain.tts.qwen import QwenVoiceCloneTTS
+
+        engine = FakeOmniCloneEngine()
+        tts = QwenVoiceCloneTTS(engine)
+        tts.omni_prompt_builder = self._builder()[0]
+        reference = WaveformReference(torch.ones(1, 8) * 0.1, 16_000)
+
+        output = tts.synthesize(
+            "hello",
+            TTSOptions(prompt_text="hel", language="en"),
+            reference_audio=reference,
+        )
+
+        self.assertEqual(output.sample_rate, tts.sample_rate)
+        prompts, _sampling = engine.calls[0]
+        info = prompts[0]["additional_information"]
+        self.assertEqual(info["task_type"], ["Base"])
+        self.assertTrue(str(info["ref_audio"][0]).startswith("data:audio/wav;base64,"))
+
+
+class FakeOmniCloneEngine:
+    default_sampling_params_list: ClassVar[list[dict[str, object]]] = [{}]
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, prompts, sampling, use_tqdm=False):
+        self.calls.append((prompts, sampling))
+        raws = []
+        for index in range(len(prompts)):
+            raws.append(types.SimpleNamespace(
+                request_id=f"{index}_req",
+                multimodal_output={"audio": torch.zeros(1, 2400), "sample_rate": 24_000},
+            ))
+        return raws
+
+
+
+class QwenVoiceCloneBatchTest(unittest.TestCase):
+    def test_batched_synthesize_uses_single_backend_call(self):
+        from anytrain.tts import TTSOptions, WaveformReference
+
+        with _fake_clone_qwen_tts():
+            tts = QwenVoiceCloneTTS.from_pretrained()
+
+        reference = WaveformReference(torch.ones(1, 4) * 0.1, 16_000)
+        outputs = tts.synthesize(
+            ["a", "b", "c"],
+            TTSOptions(prompt_text=["ra", "rb", "rc"], language="en"),
+            reference_audio=reference,
+        )
+
+        call = FakeVoiceCloneModel.loaded.calls[0]
+        self.assertEqual(call["text"], ["a", "b", "c"])
+        self.assertEqual(call["ref_text"], ["ra", "rb", "rc"])
+        numpy_audio, rate = call["ref_audio"][0]
+        self.assertEqual(rate, 16_000)
+        self.assertEqual(numpy_audio.ndim, 1)
+        self.assertEqual(numpy_audio.dtype, np.float32)
+        self.assertEqual(len(outputs), 3)
+        self.assertEqual([o.waveform.shape[-1] for o in outputs], [2, 2, 2])

@@ -141,6 +141,25 @@ class ChatImageGenerationTest(unittest.TestCase):
             with self.assertRaises(NotImplementedError):
                 client.image("draw a cat")
 
+    def test_llm_proxy_image_generation_is_not_supported(self):
+        class FakeOpenAI:
+            def __init__(self, *, api_key, base_url):
+                self.chat = types.SimpleNamespace(
+                    completions=types.SimpleNamespace(),
+                )
+
+        fake_openai = types.SimpleNamespace(OpenAI=FakeOpenAI)
+        env = {
+            "LLM_PROXY_API_KEY": "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"openai": fake_openai}),
+        ):
+            client = Chat("llm_proxy")
+            with self.assertRaises(NotImplementedError):
+                client.image("draw a cat")
+
     def test_image_generation_rejects_empty_fields_before_http(self):
         class FakeZhipuAiClient:
             def __init__(self, *, api_key, base_url):

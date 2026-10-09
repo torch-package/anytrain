@@ -109,16 +109,21 @@ class AutoCostTest(unittest.TestCase):
         self.assertAlmostEqual(calibration.mib_per_cost, 4.0)
         self.assertAlmostEqual(calibration.intercept_mib, 2.0)
 
-    def test_fit_floors_a_negative_intercept_for_conservative_resolution(self) -> None:
+    def test_fit_clamps_negative_intercept_to_origin_envelope(self) -> None:
+        # Slightly superlinear peaks → OLS intercept < 0 (74735 failure mode).
         calibration = fit_memory_calibration(
             [
-                (2, 10 * 1024**2),
-                (4, 22 * 1024**2),
+                (23528, 10351179776),
+                (48896, 21533332992),
             ]
         )
 
-        self.assertAlmostEqual(calibration.mib_per_cost, 6.0)
         self.assertEqual(calibration.intercept_mib, 0.0)
+        expected_mib_per_cost = max(
+            10351179776 / 23528,
+            21533332992 / 48896,
+        ) / (1024**2)
+        self.assertAlmostEqual(calibration.mib_per_cost, expected_mib_per_cost)
 
     def test_probe_rejects_non_positive_target(self) -> None:
         with self.assertRaisesRegex(ValueError, "target_cost"):

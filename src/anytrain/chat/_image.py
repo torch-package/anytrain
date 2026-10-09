@@ -29,6 +29,8 @@ def generate_image(
         raise NotImplementedError("DeepSeek image generation is not supported.")
     if model_type == ModelType.OPENROUTER:
         raise NotImplementedError("OpenRouter image generation is not supported.")
+    if model_type == ModelType.LLM_PROXY:
+        raise NotImplementedError("LLM proxy image generation is not supported.")
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
 
