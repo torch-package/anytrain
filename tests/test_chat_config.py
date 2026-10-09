@@ -13,9 +13,15 @@ from anytrain.chat.config import (
     DEEPSEEK_API_KEY_ENV,
     DEEPSEEK_BASE_URL_ENV,
     DEEPSEEK_MODEL_ENV,
+    DEVMATE_API_KEY_ENV,
     GLM_API_KEY_ENV,
     GLM_BASE_URL_ENV,
     GLM_MODEL_ENV,
+    LLM_PROXY_API_KEY_ENV,
+    LLM_PROXY_BASE_URL_ENV,
+    LLM_PROXY_DEFAULT_BASE_URL,
+    LLM_PROXY_DEFAULT_MODEL,
+    LLM_PROXY_MODEL_ENV,
     OPENROUTER_ALLOW_CUSTOM_BASE_URL_ENV,
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_BASE_URL_ENV,
@@ -261,6 +267,54 @@ class ChatConfigTest(unittest.TestCase):
             resolved = resolve_models(config)
 
         self.assertEqual(resolved.models, ("valid/free",))
+
+    def test_config_from_env_uses_llm_proxy_defaults(self):
+        env = {LLM_PROXY_API_KEY_ENV: "secret"}
+        with patch.dict(os.environ, env, clear=True):
+            config = chat_api.config_from_env("llm_proxy")
+
+        self.assertEqual(config.base_url, LLM_PROXY_DEFAULT_BASE_URL)
+        self.assertEqual(config.model, LLM_PROXY_DEFAULT_MODEL)
+        self.assertEqual(config.models, (LLM_PROXY_DEFAULT_MODEL,))
+        self.assertNotIn("secret", repr(config))
+
+    def test_config_from_env_uses_llm_proxy_overrides(self):
+        env = {
+            LLM_PROXY_BASE_URL_ENV: "https://example.test/llm-proxy/v1",
+            LLM_PROXY_MODEL_ENV: "custom-model",
+            LLM_PROXY_API_KEY_ENV: "secret",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = chat_api.config_from_env(chat_api.ModelType.LLM_PROXY)
+
+        self.assertEqual(config.base_url, "https://example.test/llm-proxy/v1")
+        self.assertEqual(config.model, "custom-model")
+        self.assertEqual(config.models, ("custom-model",))
+
+    def test_llm_proxy_api_key_falls_back_to_devmate(self):
+        env = {DEVMATE_API_KEY_ENV: "devmate-secret"}
+        with patch.dict(os.environ, env, clear=True):
+            config = chat_api.config_from_env("llm_proxy")
+
+        self.assertEqual(config.api_key, "devmate-secret")
+
+    def test_llm_proxy_rejects_non_https_base_url(self):
+        env = {
+            LLM_PROXY_BASE_URL_ENV: "http://example.test/llm-proxy/v1",
+            LLM_PROXY_API_KEY_ENV: "secret",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(ValueError, LLM_PROXY_BASE_URL_ENV),
+        ):
+            chat_api.config_from_env("llm_proxy")
+
+    def test_llm_proxy_missing_api_key_fails(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesRegex(ValueError, LLM_PROXY_API_KEY_ENV),
+        ):
+            chat_api.config_from_env("llm_proxy")
 
     def test_missing_env_fails_explicitly(self):
         with (

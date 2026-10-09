@@ -11,6 +11,7 @@ class ModelType(StrEnum):
     DEEPSEEK = auto()
     GLM = auto()
     OPENROUTER = auto()
+    LLM_PROXY = auto()
 
 
 class ChatTextPart(TypedDict):

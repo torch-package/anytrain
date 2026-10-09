@@ -44,7 +44,7 @@ class _CompletionSpec:
 def initial_messages(model_type: ModelType) -> list[ChatMessage]:
     if model_type == ModelType.DEEPSEEK:
         return [{"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT}]
-    if model_type in {ModelType.GLM, ModelType.OPENROUTER}:
+    if model_type in {ModelType.GLM, ModelType.OPENROUTER, ModelType.LLM_PROXY}:
         return []
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
@@ -157,6 +157,12 @@ def _completion_spec(
     if model_type == ModelType.OPENROUTER:
         return _openrouter_completion_spec(
             models if models is not None else (model,),
+        )
+    if model_type == ModelType.LLM_PROXY:
+        return _CompletionSpec(
+            provider="LLMProxy",
+            model=model,
+            options=(("stream", False),),
         )
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 

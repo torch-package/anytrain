@@ -1,3 +1,4 @@
+from ._omni import QwenOmniVoiceClonePromptBuilder
 from .prompt import CUSTOM_VOICE_PROMPT_PROTOCOL, QwenCustomVoicePromptEstimator
 from .tts import (
     DEFAULT_MODEL,
@@ -6,6 +7,7 @@ from .tts import (
     QwenCustomVoiceTTS,
     QwenCustomVoiceTTSConfig,
     QwenLoadKwargs,
+    QwenVoiceCloneTTS,
 )
 
 __all__ = [
@@ -17,4 +19,5 @@ __all__ = [
     "QwenCustomVoiceTTS",
     "QwenCustomVoiceTTSConfig",
     "QwenLoadKwargs",
+    "QwenVoiceCloneTTS",
 ]

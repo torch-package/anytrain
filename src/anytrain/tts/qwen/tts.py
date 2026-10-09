@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict, Unpack, cast, overload
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -21,6 +22,8 @@ from anytrain.tts import (
     TTSOutput,
     TTSTransformerEngine,
     TTSVoiceMode,
+    EncodedAudioReference,
+    WaveformReference,
     validate_text,
     waveform_duration,
 )
@@ -549,3 +552,304 @@ def _waveform(value: object) -> Tensor:
     if not torch.isfinite(waveform).all():
         raise RuntimeError("Qwen3-TTS returned a non-finite waveform.")
     return waveform
+
+
+class QwenVoiceCloneTTS:
+    """Qwen3-TTS Base ICL (voice-clone) inference adapter.
+
+    Wraps ``qwen_tts.Qwen3TTSModel.generate_voice_clone``: the reference is
+    one audio clip plus its verbatim transcript (``prompt_text``), mirroring
+    the CosyVoice zero-shot interface so producers stay engine-agnostic.
+    The Base family does not take speaker ids; a reference is required.
+
+    Transformer engines: ``TORCH`` (in-process qwen_tts) and ``VLLM_OMNI``
+    (offline vLLM-Omni engine; ``omni_kwargs`` carries the deploy config,
+    e.g. the dual-GPU talker/Code2Wav split).
+    """
+
+    VOICE_CLONE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    sample_rate = DEFAULT_SAMPLE_RATE
+
+    def __init__(self, model: Any) -> None:
+        is_omni = hasattr(model, "generate") and not hasattr(model, "generate_voice_clone")
+        if not hasattr(model, "generate_voice_clone") and not is_omni:
+            raise TypeError(
+                "QwenVoiceCloneTTS requires a Qwen3TTSModel or vLLM-Omni backend."
+            )
+        self.model = model
+        self.omni_prompt_builder: Any | None = None
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model: str | Path | None = None,
+        *,
+        inference: TTSInferenceConfig | None = None,
+        omni_kwargs: Mapping[str, object] | None = None,
+        dtype: Any = torch.bfloat16,
+        attn_implementation: str = "flash_attention_2",
+        device_map: str | Any = "cuda:0",
+        **load_options: Any,
+    ) -> QwenVoiceCloneTTS:
+        selected = inference or TTSInferenceConfig()
+        ENGINE_CAPABILITIES.validate(selected, "Qwen3-TTS voice clone")
+        if selected.transformer_engine is TTSTransformerEngine.VLLM_OMNI:
+            source = str(model or cls.VOICE_CLONE_MODEL)
+            engine = load_omni(source, dict(omni_kwargs or {}))
+            instance = cls(engine)
+            instance.omni_prompt_builder = (
+                _load_voice_clone_prompt_builder(
+                    source,
+                    cache_dir=load_options.get("cache_dir"),
+                    revision=load_options.get("revision"),
+                    local_files_only=bool(load_options.get("local_files_only", False)),
+                )
+            )
+            return instance
+        QWEN_TORCH_ENVIRONMENT.validate()
+        try:
+            from qwen_tts import Qwen3TTSModel
+        except ImportError as exc:
+            raise ImportError("QwenVoiceCloneTTS requires the qwen-tts package.") from exc
+        backend = Qwen3TTSModel.from_pretrained(
+            model or cls.VOICE_CLONE_MODEL,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+            device_map=device_map,
+            **load_options,
+        )
+        return cls(backend)
+
+    def capabilities(self) -> TTSCapabilities:
+        return TTSCapabilities(
+            voice_modes=frozenset((TTSVoiceMode.REFERENCE_AUDIO,)),
+            engines=ENGINE_CAPABILITIES,
+        )
+
+    @torch.no_grad()
+    def synthesize(
+        self,
+        text: str | Sequence[str],
+        options: TTSOptions | None = None,
+        *,
+        reference_audio: AudioReference | None = None,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_path: PathAudioReference | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
+    ) -> TTSOutput | list[TTSOutput]:
+        resolved = TTSOptions().merged(options)
+        single = isinstance(text, str)
+        texts = [validate_text(text)] if single else list(text)
+        references = _clone_reference_batch(
+            reference_audio=reference_audio,
+            reference_audios=reference_audios,
+            reference_audio_path=reference_audio_path,
+            reference_audio_paths=reference_audio_paths,
+            count=len(texts),
+            single=single,
+        )
+        prompt_texts = resolved.prompt_text
+        if not isinstance(prompt_texts, str):
+            if not isinstance(prompt_texts, Sequence) or len(prompt_texts) != len(texts):
+                raise ValueError("Qwen ICL synthesis requires one verbatim prompt_text per text.")
+        prompt_text_list = (
+            [prompt_texts] * len(texts) if isinstance(prompt_texts, str) else list(prompt_texts)
+        )
+        languages = (
+            [_clone_language(resolved.language)] * len(texts)
+            if resolved.language is not None
+            else None
+        )
+        if self.omni_prompt_builder is not None:
+            if self.omni_prompt_builder is None:
+                raise RuntimeError("Qwen3-TTS vLLM-Omni clone prompt builder is not loaded.")
+            ref_payloads = [
+                _clone_reference_data_uri(reference) for reference in references
+            ]
+            prompts = self.omni_prompt_builder.build(
+                texts,
+                ref_payloads,
+                prompt_text_list,
+                languages,
+                resolved,
+            )
+            outputs = generate_audio(
+                cast(OmniEngine, self.model),
+                prompts,
+                options=resolved,
+                sample_rate=self.sample_rate,
+                backend=self.name,
+                prompt_extra_keys=frozenset({"ref_audio", "ref_text"}),
+                meta=[{"language": language} for language in languages],
+            )
+            return outputs[0] if single else outputs
+        if len(texts) == 1:
+            output = self._synthesize_one(
+                texts[0], references[0], prompt_text_list[0], resolved.language
+            )
+            return output
+        # Batched: one generate_voice_clone call with list inputs lets the
+        # backend batch the talker decode, which is the whole point of the
+        # vLLM-free scaling route.
+        ref_payloads = [_clone_reference_payload(reference) for reference in references]
+        wavs, sample_rate = self.model.generate_voice_clone(
+            text=texts,
+            language=_clone_language(resolved.language),
+            ref_audio=ref_payloads,
+            ref_text=prompt_text_list,
+        )
+        outputs = []
+        for wav in wavs:
+            waveform = _waveform(wav)
+            outputs.append(
+                TTSOutput(
+                    waveform=waveform,
+                    sample_rate=int(sample_rate),
+                    duration=waveform_duration(waveform, sample_rate),
+                    meta={
+                        "backend": self.VOICE_CLONE_MODEL,
+                        "voice_mode": TTSVoiceMode.REFERENCE_AUDIO.value,
+                        "language": resolved.language,
+                    },
+                )
+            )
+        return outputs
+
+    name = "qwen_voice_clone"
+
+    def _synthesize_one(
+        self,
+        text: str,
+        reference: AudioReference,
+        prompt_text: str,
+        language: str | None,
+    ) -> TTSOutput:
+        wavs, sample_rate = self.model.generate_voice_clone(
+            text=text,
+            language=_clone_language(language),
+            ref_audio=_clone_reference_payload(reference),
+            ref_text=prompt_text,
+        )
+        if not wavs:
+            raise RuntimeError("Qwen3-TTS voice clone returned no waveform.")
+        waveform = _waveform(wavs[0])
+        return TTSOutput(
+            waveform=waveform,
+            sample_rate=int(sample_rate),
+            duration=waveform_duration(waveform, sample_rate),
+            meta={
+                "backend": self.VOICE_CLONE_MODEL,
+                "voice_mode": TTSVoiceMode.REFERENCE_AUDIO.value,
+                "language": language,
+            },
+        )
+
+
+def _load_voice_clone_prompt_builder(
+    model: str,
+    *,
+    cache_dir: object = None,
+    revision: object = None,
+    local_files_only: bool = False,
+) -> Any:
+    """Load the Base-task prompt builder from the vLLM-Omni install."""
+
+    from ._omni import QwenOmniVoiceClonePromptBuilder
+
+    return QwenOmniVoiceClonePromptBuilder.from_pretrained(
+        model,
+        cache_dir=cache_dir,  # type: ignore[arg-type]
+        revision=revision,  # type: ignore[arg-type]
+        local_files_only=local_files_only,
+    )
+
+
+def _clone_language(language: str | None) -> str:
+    """Normalize language codes and names to the full names qwen-tts expects."""
+
+    value = str(language or "").strip().lower()
+    if value in {"zh", "zh-cn", "chinese"}:
+        return "Chinese"
+    if value in {"en", "english"}:
+        return "English"
+    raise ValueError(f"Qwen ICL synthesis requires language 'zh'/'en', got {language!r}.")
+
+
+def _mono_float32(waveform) -> "np.ndarray":
+    import numpy as np
+
+    array = np.asarray(waveform, dtype=np.float32)
+    if array.ndim > 1:
+        array = array.mean(axis=0)
+    return array.reshape(-1)
+
+
+def _clone_reference_payload(reference: AudioReference) -> object:
+    """Torch-backend payload: 1-D float32 mono (the qwen_tts downmix branch
+    mutates its (wav, sr) tuple in place for multichannel input, so the mono
+    form also avoids that crash)."""
+    if isinstance(reference, (str, Path)):
+        return str(reference)
+    if isinstance(reference, WaveformReference):
+        return (_mono_float32(reference.waveform), int(reference.sample_rate))
+    if isinstance(reference, EncodedAudioReference):
+        raise ValueError("Qwen ICL references accept a path or waveform, not encoded bytes.")
+    raise TypeError(f"Unsupported Qwen ICL reference type: {type(reference)!r}.")
+
+
+def _clone_reference_data_uri(reference: AudioReference) -> str:
+    """Omni-backend payload: wav data URI (the vLLM-Omni prompt builder
+    natively accepts data:audio URIs)."""
+    import base64
+    import io
+    import wave
+
+    if isinstance(reference, (str, Path)):
+        return str(reference)
+    if isinstance(reference, WaveformReference):
+        pcm = (_mono_float32(reference.waveform) * 32767.0).astype("<i2").tobytes()
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(int(reference.sample_rate))
+            handle.writeframes(pcm)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:audio/wav;base64,{encoded}"
+    if isinstance(reference, EncodedAudioReference):
+        raise ValueError("Qwen ICL references accept a path or waveform, not encoded bytes.")
+    raise TypeError(f"Unsupported Qwen ICL reference type: {type(reference)!r}.")
+
+
+def _clone_reference_batch(
+    *,
+    reference_audio: AudioReference | None,
+    reference_audios: Sequence[AudioReference] | None,
+    reference_audio_path: PathAudioReference | None,
+    reference_audio_paths: Sequence[PathAudioReference] | None,
+    count: int,
+    single: bool,
+) -> list[AudioReference]:
+    if single:
+        reference: AudioReference | None = reference_audio
+        if reference is None and reference_audio_path is not None:
+            reference = reference_audio_path
+        if reference is None and reference_audios is not None:
+            if len(reference_audios) != 1:
+                raise ValueError("Single-text ICL synthesis takes exactly one reference.")
+            reference = reference_audios[0]
+        if reference is None and reference_audio_paths is not None:
+            if len(reference_audio_paths) != 1:
+                raise ValueError("Single-text ICL synthesis takes exactly one reference.")
+            reference = reference_audio_paths[0]
+        if reference is None:
+            raise ValueError("Qwen ICL synthesis requires reference audio.")
+        return [reference]
+    references = reference_audios
+    if references is None and reference_audio_paths is not None:
+        references = list(reference_audio_paths)
+    if references is None and reference_audio is not None:
+        references = [reference_audio] * count
+    if references is None or len(references) != count:
+        raise ValueError("Batched ICL synthesis requires one reference per text.")
+    return list(references)

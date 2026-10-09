@@ -48,14 +48,18 @@ def load_omni(model: str, kwargs: Mapping[str, object]) -> OmniEngine:
     try:
         from vllm_omni import Omni  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
+        # Chain the original error: the vllm_omni package __init__ pulls a
+        # deep dependency graph, and the missing module is never vllm_omni
+        # itself once metadata says it is installed.
         raise ImportError(
-            "vLLM-Omni TTS requires `vllm-omni`; install a version that "
-            "supports the selected TTS checkpoint."
+            f"vLLM-Omni TTS requires a working `vllm-omni` import: {exc}"
         ) from exc
     try:
         return cast(OmniEngine, Omni(model=model, **kwargs))
     except Exception as exc:
-        raise RuntimeError(f"failed to load vLLM-Omni TTS checkpoint {model!r}") from exc
+        raise RuntimeError(
+            f"failed to load vLLM-Omni TTS checkpoint {model!r}: {exc}"
+        ) from exc
 
 
 def generate_audio(

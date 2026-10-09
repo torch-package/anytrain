@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
+import sys
 import time
 import warnings
 from collections.abc import Callable, Mapping
@@ -711,6 +713,18 @@ class _ForwardCollectorHook:
         callback._forward(collector, module, inputs, kwargs, output)
 
 
+_OBSERVATION_DEBUG = os.environ.get("ANYTRAIN_OBSERVATION_DEBUG") == "1"
+
+
+def _observation_debug(event: str, **fields: object) -> None:
+    """Env-gated trace of the collection pipeline (default off)."""
+
+    if not _OBSERVATION_DEBUG:
+        return
+    payload = " ".join(f"{key}={value}" for key, value in fields.items())
+    print(f"observation.collector.{event} {payload}", file=sys.stderr, flush=True)
+
+
 class _ForwardEventSink:
     def __init__(
         self,
@@ -1316,10 +1330,18 @@ class ObservationCallback(pl.Callback):
         value: ObservationResult,
     ) -> None:
         if not self._forward_active:
+            _observation_debug(
+                "event.skip.forward_inactive", prefix=collector.state_prefix
+            )
             return
         stage = self._require_active_stage()
         spec = cast(ForwardEvent, collector.spec)
         if spec.history is None and not self._render_active:
+            _observation_debug(
+                "event.skip.render_inactive",
+                prefix=collector.state_prefix,
+                stage=stage,
+            )
             return
         started_at = self._start_observation_timer()
         try:
@@ -1347,12 +1369,23 @@ class ObservationCallback(pl.Callback):
         stage: Literal["train", "validation"],
     ) -> None:
         if self._pending_observation_error is not None:
+            _observation_debug(
+                "collector.skip.pending_error",
+                prefix=collector.state_prefix,
+                stage=stage,
+            )
             return
         try:
             self._record(collector, collect(), stage=stage)
         except Exception as error:
             if not self._defer_observation_errors:
                 raise
+            _observation_debug(
+                "collector.collect_failed",
+                prefix=collector.state_prefix,
+                stage=stage,
+                error=f"{type(error).__name__}: {error}",
+            )
             self._pending_observation_error = (
                 "runtime",
                 f"observation collector {collector.state_prefix!r} failed: "
@@ -1367,6 +1400,9 @@ class ObservationCallback(pl.Callback):
         stage: Literal["train", "validation"],
     ) -> None:
         if result is None:
+            _observation_debug(
+                "record.skip.none", prefix=collector.state_prefix, stage=stage
+            )
             return
         if isinstance(result, (Curve, Distribution, Profile, Bins, Heatmap)):
             values: Mapping[str, Observation] = {"value": result}
@@ -1392,6 +1428,14 @@ class ObservationCallback(pl.Callback):
             tag_context = self._tag_context(stage)
             key = join_tag(context, collector.state_prefix, item)
             tag = join_tag(tag_context, self.tag, collector.tag_prefix, item)
+            _observation_debug(
+                "record.write",
+                prefix=collector.state_prefix,
+                stage=stage,
+                context=context,
+                tag=tag,
+                item=item,
+            )
             self._update_state(
                 key,
                 tag,

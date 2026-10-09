@@ -31,6 +31,9 @@ class ScheduleRuntime:
                 "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
             }
         if isinstance(self.schedule.clock, UnitClock):
+            for callback in self.callbacks():
+                if isinstance(callback, UnitScheduleCallback):
+                    callback.remember_configured_lrs([optimizer])
             return optimizer
         raise TypeError("schedule clock must be StepClock or UnitClock.")
 

@@ -20,6 +20,12 @@ OPENROUTER_CANDIDATE_LIMIT_ENV = "OPENROUTER_CANDIDATE_LIMIT"
 OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DEFAULT_CANDIDATE_LIMIT = 4
 OPENROUTER_MAX_FALLBACK_MODELS = 3
+LLM_PROXY_BASE_URL_ENV = "LLM_PROXY_BASE_URL"
+LLM_PROXY_MODEL_ENV = "LLM_PROXY_MODEL"
+LLM_PROXY_API_KEY_ENV = "LLM_PROXY_API_KEY"
+DEVMATE_API_KEY_ENV = "DEVMATE_API_KEY"
+LLM_PROXY_DEFAULT_BASE_URL = "https://devmate.zoom.us/api/v1/llm-proxy/v1"
+LLM_PROXY_DEFAULT_MODEL = "google_gemma_4_31b_it_dev_mate"
 
 
 class ChatConfig:
@@ -89,6 +95,8 @@ def config_from_env(model_type: ModelType | str) -> ChatConfig:
     resolved = ModelType(model_type)
     if resolved == ModelType.OPENROUTER:
         return _openrouter_config_from_env()
+    if resolved == ModelType.LLM_PROXY:
+        return _llm_proxy_config_from_env()
     names = ENV_NAMES[resolved]
     base_url = _required_env(names.base_url)
     model = _required_env(names.model)
@@ -99,6 +107,53 @@ def config_from_env(model_type: ModelType | str) -> ChatConfig:
         api_key=api_key,
         models=(model,),
     )
+
+
+def _llm_proxy_config_from_env() -> ChatConfig:
+    model = _optional_env(LLM_PROXY_MODEL_ENV, LLM_PROXY_DEFAULT_MODEL)
+    return ChatConfig(
+        base_url=_llm_proxy_base_url(),
+        model=model,
+        api_key=_llm_proxy_api_key(),
+        models=(model,),
+    )
+
+
+def _llm_proxy_base_url() -> str:
+    value = os.environ.get(LLM_PROXY_BASE_URL_ENV)
+    if value is None:
+        return LLM_PROXY_DEFAULT_BASE_URL
+    if value == "":
+        raise ValueError(f"{LLM_PROXY_BASE_URL_ENV} must not be empty.")
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "https":
+        raise ValueError(f"{LLM_PROXY_BASE_URL_ENV} must use https.")
+    if not parsed.netloc:
+        raise ValueError(f"{LLM_PROXY_BASE_URL_ENV} must include a host.")
+    return value
+
+
+def _llm_proxy_api_key() -> str:
+    for name in (LLM_PROXY_API_KEY_ENV, DEVMATE_API_KEY_ENV):
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        if value == "":
+            raise ValueError(f"{name} must not be empty.")
+        return value
+    raise ValueError(
+        f"{LLM_PROXY_API_KEY_ENV} must be set for anytrain.chat "
+        f"(or {DEVMATE_API_KEY_ENV} as fallback)."
+    )
+
+
+def _optional_env(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    if value == "":
+        raise ValueError(f"{name} must not be empty.")
+    return value
 
 
 def _openrouter_config_from_env() -> ChatConfig:

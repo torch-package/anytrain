@@ -5,10 +5,15 @@ from .config import ChatConfig
 from .types import ModelType
 
 
+_OPENAI_COMPATIBLE = frozenset(
+    {ModelType.DEEPSEEK, ModelType.OPENROUTER, ModelType.LLM_PROXY}
+)
+
+
 def create_client(model_type: ModelType, config: ChatConfig) -> object:
     if model_type == ModelType.GLM:
         return _create_glm_client(config)
-    if model_type in {ModelType.DEEPSEEK, ModelType.OPENROUTER}:
+    if model_type in _OPENAI_COMPATIBLE:
         return _create_openai_client(config, provider=_provider_name(model_type))
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
@@ -16,7 +21,7 @@ def create_client(model_type: ModelType, config: ChatConfig) -> object:
 def create_async_client(model_type: ModelType, config: ChatConfig) -> object:
     if model_type == ModelType.GLM:
         return _create_glm_client(config)
-    if model_type in {ModelType.DEEPSEEK, ModelType.OPENROUTER}:
+    if model_type in _OPENAI_COMPATIBLE:
         return _create_async_openai_client(config, provider=_provider_name(model_type))
     raise AssertionError(f"Unhandled model_type: {model_type!r}")
 
@@ -59,4 +64,6 @@ def _provider_name(model_type: ModelType) -> str:
         return "DeepSeek"
     if model_type == ModelType.OPENROUTER:
         return "OpenRouter"
+    if model_type == ModelType.LLM_PROXY:
+        return "LLMProxy"
     raise AssertionError(f"Unhandled openai-compatible model_type: {model_type!r}")
