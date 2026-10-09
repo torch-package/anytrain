@@ -173,7 +173,9 @@ class DPOLossTest(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(loss))
         loss.backward()
-        self.assertTrue(torch.isfinite(chosen.grad).all())
+        chosen_grad = chosen.grad
+        assert chosen_grad is not None
+        self.assertTrue(torch.isfinite(chosen_grad).all())
     def test_reference_free_dpo_values_and_diagnostics_are_detached(self):
         chosen = torch.tensor([1.0, 0.5], requires_grad=True)
         rejected = torch.tensor([0.0, 0.5], requires_grad=True)

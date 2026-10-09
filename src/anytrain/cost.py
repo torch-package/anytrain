@@ -7,6 +7,7 @@ import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from queue import Empty, PriorityQueue
+from typing import TypedDict
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,25 @@ class CostProducerStats:
     completed: int
     failed: int
     dropped: int
+
+
+class WaitSnapshot(TypedDict):
+    """Wait-attribution fields for one planner-miss diagnostic sample."""
+
+    alive: bool
+    queue_size: int
+    pending_count: int
+    index_pending: bool
+    index_active: bool
+    in_cost_row_index: int
+    submitted: int
+    completed: int
+    failed: int
+    dropped: int
+    inflight_count: int
+    urgent_queued: int
+    active_workers: int
+    error: str
 
 
 class BackgroundCostProducer:
@@ -102,7 +122,7 @@ class BackgroundCostProducer:
                 dropped=self._dropped,
             )
 
-    def wait_snapshot(self, index: int | None = None) -> dict[str, int | bool]:
+    def wait_snapshot(self, index: int | None = None) -> WaitSnapshot:
         """Return wait-attribution fields for planner miss diagnostics."""
 
         with self._lock:

@@ -509,10 +509,13 @@ class FlowMatchingComponentTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(kl).all())
         self.assertTrue(torch.isfinite(log_prob).all())
         kl.sum().backward()
-        self.assertTrue(torch.isfinite(mean.grad).all())
+        mean_grad = mean.grad
+        assert mean_grad is not None
+        self.assertTrue(torch.isfinite(mean_grad).all())
         log_prob.sum().backward()
-        self.assertIsNotNone(log_prob_mean.grad)
-        self.assertTrue(torch.isfinite(log_prob_mean.grad).all())
+        log_prob_mean_grad = log_prob_mean.grad
+        assert log_prob_mean_grad is not None
+        self.assertTrue(torch.isfinite(log_prob_mean_grad).all())
 
     def test_rectified_flow_sde_step_matches_fixed_next_x_log_prob_and_kl(self):
         from anytrain.framework.flow_matching import (

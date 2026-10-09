@@ -4,9 +4,7 @@ from ._constants import INSTALL_HINT
 from .config import ChatConfig
 from .types import ModelType
 
-_OPENAI_COMPATIBLE = frozenset(
-    {ModelType.DEEPSEEK, ModelType.OPENROUTER, ModelType.LLM_PROXY}
-)
+_OPENAI_COMPATIBLE = frozenset({ModelType.DEEPSEEK, ModelType.OPENROUTER, ModelType.LLM_PROXY})
 
 
 def create_client(model_type: ModelType, config: ChatConfig) -> object:

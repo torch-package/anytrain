@@ -1362,7 +1362,9 @@ class LossTest(unittest.TestCase):
         loss = SDRLoss(scale_invariant=False)(estimate, reference)
         self.assertTrue(torch.isfinite(loss))
         loss.backward()
-        self.assertTrue(torch.isfinite(estimate.grad).all())
+        estimate_grad = estimate.grad
+        assert estimate_grad is not None
+        self.assertTrue(torch.isfinite(estimate_grad).all())
 
     def test_sdr_loss_handles_mono_batch_time_layout(self):
         reference = torch.randn(4, 32)

@@ -608,7 +608,7 @@ class QwenVoiceCloneTTS:
             return instance
         QWEN_TORCH_ENVIRONMENT.validate()
         try:
-            from qwen_tts import Qwen3TTSModel
+            from qwen_tts import Qwen3TTSModel  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
             raise ImportError("QwenVoiceCloneTTS requires the qwen-tts package.") from exc
         backend = Qwen3TTSModel.from_pretrained(
@@ -625,6 +625,26 @@ class QwenVoiceCloneTTS:
             voice_modes=frozenset((TTSVoiceMode.REFERENCE_AUDIO,)),
             engines=ENGINE_CAPABILITIES,
         )
+
+    @overload
+    def synthesize(
+        self,
+        text: str,
+        options: TTSOptions | None = None,
+        *,
+        reference_audio: AudioReference | None = None,
+        reference_audio_path: PathAudioReference | None = None,
+    ) -> TTSOutput: ...
+
+    @overload
+    def synthesize(
+        self,
+        text: Sequence[str],
+        options: TTSOptions | None = None,
+        *,
+        reference_audios: Sequence[AudioReference] | None = None,
+        reference_audio_paths: Sequence[PathAudioReference] | None = None,
+    ) -> list[TTSOutput]: ...
 
     @torch.no_grad()
     def synthesize(
@@ -656,14 +676,8 @@ class QwenVoiceCloneTTS:
         prompt_text_list = (
             [prompt_texts] * len(texts) if isinstance(prompt_texts, str) else list(prompt_texts)
         )
-        languages = (
-            [_clone_language(resolved.language)] * len(texts)
-            if resolved.language is not None
-            else None
-        )
+        languages = [_clone_language(resolved.language)] * len(texts)
         if self.omni_prompt_builder is not None:
-            if self.omni_prompt_builder is None:
-                raise RuntimeError("Qwen3-TTS vLLM-Omni clone prompt builder is not loaded.")
             ref_payloads = [
                 _clone_reference_data_uri(reference) for reference in references
             ]

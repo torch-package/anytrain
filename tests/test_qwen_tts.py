@@ -559,7 +559,9 @@ class QwenVoiceCloneTTSTest(unittest.TestCase):
 
         reference = WaveformReference(torch.ones(1, 4) * 0.1, 16_000)
         with self.assertRaisesRegex(ValueError, "prompt_text"):
-            tts.synthesize(["a", "b"], TTSOptions(language="en"), reference_audio=reference)
+            tts.synthesize(
+                ["a", "b"], TTSOptions(language="en"), reference_audios=[reference] * 2
+            )
 
 
 class QwenOmniClonePromptBuilderTest(unittest.TestCase):
@@ -568,7 +570,7 @@ class QwenOmniClonePromptBuilderTest(unittest.TestCase):
 
         tokenizer = Mock()
         tokenizer.return_value = {"input_ids": [1, 2, 3]}
-        estimator = Mock()
+        estimator: Any = Mock()
         estimator.estimate_prompt_len_from_additional_information.return_value = 12
         return (
             QwenOmniVoiceClonePromptBuilder(
@@ -589,6 +591,7 @@ class QwenOmniClonePromptBuilderTest(unittest.TestCase):
         )
 
         info = prompts[0]["additional_information"]
+        assert isinstance(info, dict)
         self.assertEqual(info["task_type"], ["Base"])
         self.assertEqual(info["ref_text"], ["hel"])
         self.assertEqual(info["language"], ["English"])
@@ -649,7 +652,7 @@ class QwenVoiceCloneBatchTest(unittest.TestCase):
         outputs = tts.synthesize(
             ["a", "b", "c"],
             TTSOptions(prompt_text=["ra", "rb", "rc"], language="en"),
-            reference_audio=reference,
+            reference_audios=[reference] * 3,
         )
 
         call = FakeVoiceCloneModel.loaded.calls[0]

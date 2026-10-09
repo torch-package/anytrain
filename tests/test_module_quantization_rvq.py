@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -308,7 +309,7 @@ class ResidualVectorQuantizerTest(unittest.TestCase):
                 dropout=0.5,
             )
         ).half()
-        for stage in quantizer.quantizers:
+        for stage in cast(Sequence[EmbeddingVectorQuantizer], quantizer.quantizers):
             stage.codebook.weight.data.zero_()
         latents = torch.full(
             (1, 65536, 1), 0.5, dtype=torch.float16, requires_grad=True

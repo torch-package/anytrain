@@ -264,7 +264,12 @@ def _ref_code_length(ref_audio: object) -> int | None:
     elif isinstance(ref_audio, str) and ref_audio.startswith("data:audio"):
         with wave.open(io.BytesIO(base64.b64decode(ref_audio.split(",", 1)[1]))) as handle:
             rate = handle.getframerate()
-            waveform = np.frombuffer(handle.readframes(handle.getnframes()), dtype=np.int16).astype(np.float32) / 32767.0
+            waveform = (
+                np.frombuffer(handle.readframes(handle.getnframes()), dtype=np.int16).astype(
+                    np.float32
+                )
+                / 32767.0
+            )
     if waveform is None or rate <= 0 or waveform.size == 0:
         return None
     # The talker consumes ~12.5 codec frames per second of audio; pad a

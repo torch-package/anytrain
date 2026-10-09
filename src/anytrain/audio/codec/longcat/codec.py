@@ -632,9 +632,7 @@ def _resample_padded_audio(
         clip = audio[index, ..., :length].contiguous()
         resampled = resample(clip.unsqueeze(0), sample_rate, target_rate).squeeze(0)
         if resampled.dim() != 2 or resampled.size(0) != NUM_CHANNELS:
-            raise ValueError(
-                "LongCat resampled audio must keep mono shape [1, time]."
-            )
+            raise ValueError("LongCat resampled audio must keep mono shape [1, time].")
         if resampled.size(-1) <= 0:
             raise ValueError("LongCat resampled audio must not be empty.")
         rows.append(resampled)
