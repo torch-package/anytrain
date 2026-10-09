@@ -11,11 +11,11 @@ import torch
 
 from anytrain.tts import TTSOptions, TTSVoiceMode
 from anytrain.tts.qwen import (
-    QwenVoiceCloneTTS,
     CUSTOM_VOICE_PROMPT_PROTOCOL,
     QwenCustomVoicePromptEstimator,
     QwenCustomVoiceTTS,
     QwenCustomVoiceTTSConfig,
+    QwenVoiceCloneTTS,
 )
 
 _REVISION = "0c0e3051f131929182e2c023b9537f8b1c68adfe"
@@ -505,7 +505,7 @@ class QwenVoiceCloneTTSTest(unittest.TestCase):
 
     def test_from_pretrained_defaults_to_base_model(self):
         with _fake_clone_qwen_tts():
-            tts = QwenVoiceCloneTTS.from_pretrained()
+            QwenVoiceCloneTTS.from_pretrained()
 
         self.assertEqual(FakeVoiceCloneModel.loaded.load_args[0], "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 

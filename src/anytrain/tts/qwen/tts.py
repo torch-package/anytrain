@@ -13,6 +13,7 @@ from torch import Tensor
 
 from anytrain.tts import (
     AudioReference,
+    EncodedAudioReference,
     PathAudioReference,
     TTSAcousticEngine,
     TTSCapabilities,
@@ -22,7 +23,6 @@ from anytrain.tts import (
     TTSOutput,
     TTSTransformerEngine,
     TTSVoiceMode,
-    EncodedAudioReference,
     WaveformReference,
     validate_text,
     waveform_duration,
@@ -649,9 +649,10 @@ class QwenVoiceCloneTTS:
             single=single,
         )
         prompt_texts = resolved.prompt_text
-        if not isinstance(prompt_texts, str):
-            if not isinstance(prompt_texts, Sequence) or len(prompt_texts) != len(texts):
-                raise ValueError("Qwen ICL synthesis requires one verbatim prompt_text per text.")
+        if not isinstance(prompt_texts, str) and (
+            not isinstance(prompt_texts, Sequence) or len(prompt_texts) != len(texts)
+        ):
+            raise ValueError("Qwen ICL synthesis requires one verbatim prompt_text per text.")
         prompt_text_list = (
             [prompt_texts] * len(texts) if isinstance(prompt_texts, str) else list(prompt_texts)
         )
@@ -775,7 +776,7 @@ def _clone_language(language: str | None) -> str:
     raise ValueError(f"Qwen ICL synthesis requires language 'zh'/'en', got {language!r}.")
 
 
-def _mono_float32(waveform) -> "np.ndarray":
+def _mono_float32(waveform) -> np.ndarray:
     import numpy as np
 
     array = np.asarray(waveform, dtype=np.float32)

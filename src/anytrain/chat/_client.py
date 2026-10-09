@@ -4,7 +4,6 @@ from ._constants import INSTALL_HINT
 from .config import ChatConfig
 from .types import ModelType
 
-
 _OPENAI_COMPATIBLE = frozenset(
     {ModelType.DEEPSEEK, ModelType.OPENROUTER, ModelType.LLM_PROXY}
 )

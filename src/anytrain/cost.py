@@ -208,7 +208,6 @@ class BackgroundCostProducer:
         threads = list(self._threads)
         if not threads:
             return
-        deadline = None if timeout is None else monotonic() + max(0.0, timeout)
         with self._lock:
             if self._closed and not any(thread.is_alive() for thread in threads):
                 return

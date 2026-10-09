@@ -19,5 +19,6 @@ __all__ = [
     "QwenCustomVoiceTTS",
     "QwenCustomVoiceTTSConfig",
     "QwenLoadKwargs",
+    "QwenOmniVoiceClonePromptBuilder",
     "QwenVoiceCloneTTS",
 ]

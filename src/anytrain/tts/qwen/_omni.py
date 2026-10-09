@@ -206,8 +206,8 @@ class QwenOmniVoiceClonePromptBuilder:
         if max_new_tokens is None:
             max_new_tokens = options.extra.get("max_new_tokens", 2048)
         max_new_tokens = positive_int(max_new_tokens, "max_new_tokens")
-        for index, (text, ref_audio, ref_text, language) in enumerate(
-            zip(texts, ref_audios, ref_texts, languages, strict=True)
+        for text, ref_audio, ref_text, language in zip(
+            texts, ref_audios, ref_texts, languages, strict=True
         ):
             info: dict[str, Any] = {
                 "task_type": ["Base"],
